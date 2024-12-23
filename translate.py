@@ -2,13 +2,21 @@ import json
 import os  # Import os module
 from openai import OpenAI
 import math
+import pyperclip
+import copy
+import argparse
+from dotenv import load_dotenv
+
+load_dotenv()
+
+api_token = os.getenv("OPENAI_KEY")
+debug_mode = os.getenv("DEBUG") == "True"
 
 MODEL_NAME = "gpt-4o"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) + "/"
 MAX_CHARS = 2400  # We'll split text into chunks if it's above this character count.
 
-# TODO: adjust to use env variables
-client = OpenAI(api_key="your api key")
+client = OpenAI(api_key=api_token)
 
 
 def combine_json_entities(old_entities, new_entities):
@@ -52,13 +60,11 @@ def entities_inside_text(text_lines, all_entities, current_chapter, do_count=Tru
             # If already found in this pass, just increment
             if key in found_entities:
                 if do_count:
-                    print(f">> {key} ({value['translation']}) found {occurrence_count} times in text")
                     found_entities[key]["count"] += occurrence_count
             else:
                 # Initialize new entity record
                 if do_count:
                     existing_count = value.get("count", 0) + occurrence_count
-                    print(f"]] {key} ({value['translation']}) found {occurrence_count} times in text")
                 else:
                     existing_count = value.get("count", 0)
 
@@ -176,7 +182,8 @@ ENTITIES: """ + entities_json.decode() + '\n' + """
         \"places\": {
             \"剑门山\": {\"translation\": \"Jianmen Mountain\", \"count\": 4, \"last_chapter\": 3},
             \"大荒\": {\"translation\": \"Great Wilderness\", \"count\": 6, \"last_chapter\": 3},
-            \"青元山脉\": {\"translation\": \"Green Spirit Mountains\", \"count\": 2, \"last_chapter\": 1}
+            \"染霜城\": {\"translation\": \"Frostveil City\", \"count\": 2, \"last_chapter\": 75
+        }
         },
         \"organizations\": {
             \"风氏\": {\"translation\": \"Feng Clan\", \"count\": 7, \"last_chapter\": 3}
@@ -308,7 +315,7 @@ def review_and_edit_entries(data):
             if field == "translation":
                 yesno = input("\nDo you want to ask the LLM for translation options? (yes to proceed, no to exit): ").strip().lower()
                 if yesno == 'yes' or yesno == 'y':
-                    node = selected_item
+                    node = selected_item.copy()
                     node['category'] = selected_category
                     node['untranslated'] = selected_item_key
                     advice = get_translation_options(node)
@@ -370,7 +377,7 @@ def get_translation_options(node):
     dict: A dictionary in this format:
     {"message":"A message from the LLM about the characters being translated.", "options":["translation option1", "translation option 2", "translation option 3"]}
     """
-    prompt = """Your task is to offer translation options. Below in the user text is a JSON node consisting of a translation you have performed previously. The user did not like the translation and wants to change it, so please offer three alternatives, as well as a short message (less than 100 words) about the untranslated Chinese characters and why you chose to translate it this way.
+    prompt = """Your task is to offer translation options. Below in the user text is a JSON node consisting of a translation you have performed previously. The user did not like the translation and wants to change it, so please offer three alternatives, as well as a short message (less than 150 words) about the untranslated Chinese characters and why you chose to translate it this way. You should include a very literal translation of each character in your message, but not necessarily in your alternatives, unless the translation is phonetic (foreign words). Order the alternatives by your preference.
     
     Your output should be in this schema:
     {
@@ -419,6 +426,64 @@ def get_translation_options(node):
         return {'message':f'The translation failed: {e}', 'options':[]}
     return parsed_response
 
+def update_translated_text(translated_text, entity):
+    """
+    Does a substitution on translated_text, replacing entity['old_translation'] for entity['translation'].
+
+    Parameters:
+    translated_text (list of str): An array of strings, the translated text.
+    entity (dict): A dictionary in our standard entity format, except this has an additional attribute 'old_translation'.
+    """
+    old_translation = entity.get('old_translation', '')
+    new_translation = entity['translation']
+
+    print(f"We will update {old_translation} for {new_translation}...")
+    
+    # Iterate through the translated text and replace old translations with the new ones
+    for i in range(len(translated_text)):
+        translated_text[i] = translated_text[i].replace(old_translation, new_translation)
+
+    return translated_text
+
+def file_to_array(filename):
+    with open(filename, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+    # Strip newline characters
+    return [line.strip() for line in lines]
+
+# Create the parser
+parser = argparse.ArgumentParser(description="Process input from clipboard, file, or no input.")
+
+# Create a mutually exclusive group
+group = parser.add_mutually_exclusive_group()
+
+# Add arguments to the group
+group.add_argument("--clipboard", action="store_true", help="Process input from the clipboard")
+group.add_argument("--file", type=str, help="Process input from a specified file")
+
+# Parse arguments
+args = parser.parse_args()
+
+# Handle the cases
+if args.clipboard:
+    print("Processing input from the clipboard.")
+    pretext = pyperclip.paste()
+elif args.file:
+    print(f"Processing input from the file: {args.file}")
+    file_to_array(args.file)
+else:
+    print("Enter/Paste your content. Type ENDEND or Ctrl-D out to start translating.")
+    pretext = []
+    while True:
+        try:
+            line = input()
+            if line == "ENDEND":
+                break
+            pretext.append(line)
+        except EOFError:
+            break
+total_char_count = sum(len(line) for line in pretext)
+
 try:
     file_pointer = open(SCRIPT_DIR + 'entities.json', 'rb')
 except OSError:
@@ -435,19 +500,6 @@ else:
 
 real_old_entities = old_entities
 
-print("Enter/Paste your content. Type ENDEND or Ctrl-D out to start translating.")
-pretext = []
-total_char_count = 0
-
-while True:
-    try:
-        line = input()
-        total_char_count += len(line)
-        if line == "ENDEND":
-            break
-        pretext.append(line)
-    except EOFError:
-        break
 
 chunks_count = math.ceil(total_char_count / MAX_CHARS)
 
@@ -510,12 +562,7 @@ for chunk in split_text:
         print(response.choices[0].message.content)
         print(f"Error: {e}")
         exit(1)
-
-    # On the second chunk, we know the first chunk is done, so we can display some info
-    if chunk_index == 2:
-        print(f"TITLE: {parsed_chunk['title']}")
-        print(parsed_chunk['summary'])
-        current_chapter = parsed_chunk['chapter']
+    current_chapter = parsed_chunk['chapter']
 
     end_object = combine_json_chunks(end_object, parsed_chunk, current_chapter)
 
@@ -530,20 +577,6 @@ for chunk in split_text:
     # to prevent a situation where two chunks translate words differently because they havent been told they're entities yet
     system_prompt = generate_system_prompt(pretext, old_entities, do_count=False)
 
-chapter_title = end_object['title']
-filename = chapter_title + ".txt"
-
-translated_total_words = 0
-translated_total_chars = 0
-
-with open(SCRIPT_DIR + chapter_title + '.json', 'w') as fp_json:
-    json.dump(end_object, fp_json, indent=4)
-
-with open(SCRIPT_DIR + filename, "w") as txt_file:
-    for line in end_object['content']:
-        translated_total_words += len(line.split())
-        translated_total_chars += len(line)
-        txt_file.write(line + '\n')
 
 # Occasionally the LLM will skip returning a part of the dictionary if it is empty.
 # This isn't ideal, but we will structure this following line so that it fails gracefully,
@@ -563,16 +596,25 @@ new_entities = {
 # Lastly, the LLM can sometimes provide poor translation, especially in Chinese representations of phonetic English names
 # The user will have an opportunity to ask the LLM to provide 3 alternative translations, or just enter their own
 
+# we'll make a temporary copy of the old_entities in order to have something to reference in case we change them in review_and_edit...
+oldest_entities = copy.deepcopy(old_entities)
+
 if totally_new_entities != {'characters':{},'places':{},'organizations': {},'abilities':{},'equipment':{}}:
     edited_entities = review_and_edit_entries(totally_new_entities)
 else:
     edited_entities = {}
 
+print(json.dumps(edited_entities,indent=4,ensure_ascii=False))
+
 if edited_entities:
-    # TODO: Actually go through the translated text and do a substitution if we edited any tranlated names
-    # If someone edited a gender it would probably be best to just re-translate the chapter due to pronoun use
-    print("The entities have been edited. However, this will not make changes to the translated chapter, but only going forward.")
-    print("If changes are simple, like substituting a new name, then you can just edit the chapter text.")
+    # loop through totally_new_entities 
+    for category in edited_entities:
+        for key, value in edited_entities[category].items():
+            node = value.copy()
+            node['old_translation'] = oldest_entities[category][key]['translation']
+            end_object['content'] = update_translated_text(end_object['content'], node)
+
+    print("The entities have been edited. If you edited a translated name, we've conducted a substitution to change it in the translated text. Simple changes like that should be fine.")
     print("If they're more complex, like pronouns for a character, then you need to retranslate this chapter. The edited entities will be preserved and used for the retranslation.")
 
 # Convert any "THIS CHAPTER" placeholder in last_chapter to the actual chapter number
@@ -587,6 +629,29 @@ combined_entities = combine_json_entities(old_entities, new_entities)
 for entity_key, entity_value in combined_entities[category].items():
     if entity_value["last_chapter"] == "THIS CHAPTER":
         combined_entities[category][entity_key]["last_chapter"] = current_chapter
+
+# Write our output
+chapter_title = end_object['title']
+filename = chapter_title + ".txt"
+
+translated_total_words = 0
+translated_total_chars = 0
+
+end_object['untranslated'] = pretext
+
+with open(SCRIPT_DIR + chapter_title + '.json', 'w') as fp_json:
+    json.dump(end_object, fp_json, indent=4)
+
+with open(SCRIPT_DIR + filename, "w") as txt_file:
+    for line in end_object['content']:
+        translated_total_words += len(line.split())
+        translated_total_chars += len(line)
+        txt_file.write(line + '\n')
+
+pyperclip.copy("\n".join(end_object['content']))
+print(f"TITLE: {end_object['title']}")
+print(end_object['summary'])
+print("Translated text copied to clipboard for pasting.")
 
 with open(SCRIPT_DIR + 'entities.json', 'w') as fp_entities:
     json.dump(combined_entities, fp_entities, indent=4)
