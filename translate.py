@@ -6,18 +6,65 @@ import pyperclip
 import copy
 import argparse
 from dotenv import load_dotenv
+import logging
+import questionary
+from rich import print_json
+import re
+
 
 load_dotenv()
 
-api_token = os.getenv("OPENAI_KEY")
+api_token = os.getenv("OPENAI_API_KEY")
 debug_mode = os.getenv("DEBUG") == "True"
+
+# Create the logger
+logger = logging.getLogger("translate_logger")
+logger.setLevel(logging.DEBUG if debug_mode else logging.ERROR)
+
+# Formatter for log messages
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+# File handler
+file_handler = logging.FileHandler("translate.log", mode="w")  # Overwrites the file
+file_handler.setLevel(logging.DEBUG if debug_mode else logging.ERROR)
+file_handler.setFormatter(formatter)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG if debug_mode else logging.ERROR)
+console_handler.setFormatter(formatter)
+
+# Add handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
 
 MODEL_NAME = "gpt-4o"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) + "/"
 MAX_CHARS = 2400  # We'll split text into chunks if it's above this character count.
 
-client = OpenAI(api_key=api_token)
+def load_json_file(filepath, default=None):
+    """Load JSON data from a file with error handling."""
+    if not os.path.exists(filepath):
+        return default or {}
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as file:
+         return json.load(file)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode JSON from file '{filepath}': {e}")
+        return default or {}
+    except OSError as e:
+        logger.error(f"Failed to read file '{filepath}': {e}")
+        return default or {}
 
+def save_json_file(filepath, data):
+    """Save data to a JSON file with error handling."""
+    try:
+        with open(filepath, 'w', encoding='utf-8') as file:
+            json.dump(data, file, indent=4, ensure_ascii=False)
+    except OSError as e:
+        logging.error(f"Failed to write to file '{filepath}': {e}")
 
 def combine_json_entities(old_entities, new_entities):
     """
@@ -34,7 +81,6 @@ def combine_json_entities(old_entities, new_entities):
         old_entities[category] = old_category_dict
 
     return old_entities
-
 
 def entities_inside_text(text_lines, all_entities, current_chapter, do_count=True):
     """
@@ -56,6 +102,7 @@ def entities_inside_text(text_lines, all_entities, current_chapter, do_count=Tru
     for key, value in all_entities.items():
         if key in combined_text:
             occurrence_count = combined_text.count(key)
+            logger.info(f"{key} ({value['translation']}) was found {occurrence_count} times.")
 
             # If already found in this pass, just increment
             if key in found_entities:
@@ -142,6 +189,8 @@ Key Guidelines:
     Entities:
         Always translate proper nouns (characters, places, organizations, etc.).
         Translate most place names meaningfully (e.g., 黑风镇 → "Black Wind Town").
+        Places, abilities and characters are especially important and should always be incorporated into the new entities record.
+        Abilities could encompass skills, techniques, spells, etc
         Use provided pre-translated entities for consistency; translate new ones as required.
         Categories: CHARACTERS, PLACES, ORGANIZATIONS, ABILITIES, EQUIPMENT.
         If there are no entities to put in the category then just leave it blank but include the full JSON empty dictionary format:
@@ -255,113 +304,193 @@ def combine_json_chunks(chunk1_data, chunk2_data, current_chapter):
 
     return chunk1_data
 
+def display_current_data(data):
+    """Prints the current data structure to the console."""
+    print("\nTotally New Entities In This Chapter:")
+    print_json(data=data)
+
 def review_and_edit_entries(data):
     """
-    Displays items from the JSON schema to the user, allows review, and facilitates changes.
-
-    Parameters:
-    data (dict): JSON data containing categories like characters, places, etc.
-
-    Returns:
-    dict: A dictionary containing only the edited entries.
+    Using questionary to display interactive prompts.
+    Returns a dictionary of edited data.
     """
     edited_data = {}
 
     while True:
-        print("\nTotally New Entities In This Chapter:")
-        print(json.dumps(data, indent=4, ensure_ascii=False))
+        # 1. Display current data
+        display_current_data(data)
 
-        make_changes = input("\nDo you want to make any changes? (yes to proceed, no to exit): ").strip().lower()
-        if make_changes != 'yes':
+        # 2. Ask if user wants to make changes (yes/no)
+        make_changes = questionary.confirm(
+            "Do you want to make any changes?"
+        ).ask()  # returns True/False
+        if not make_changes:
             break
 
-        print("\nCategories:")
+        # 3. Select a category
+        if not data:
+            print("No categories available.")
+            break
+
         categories = list(data.keys())
-        for i, category in enumerate(categories):
-            print(f"  {i + 1}. {category}")
 
-        category_choice = input("\nSelect a category to edit (enter number, or press Enter to stop): ").strip()
-        if not category_choice.isdigit() or int(category_choice) < 1 or int(category_choice) > len(categories):
-            print("Exiting changes.")
+        # Let the user pick from a list, or choose "Exit"
+        category_choice = questionary.select(
+            "Select a category to edit:",
+            choices=categories + ["Exit"]
+        ).ask()
+
+        if category_choice == "Exit":
             break
 
-        selected_category = categories[int(category_choice) - 1]
-        items = data[selected_category]
+        selected_category = category_choice
 
+        # 4. Select an item within that category
+        items = data[selected_category]
         if not items:
             print(f"No items in category '{selected_category}'.")
             continue
 
-        print(f"\nItems in '{selected_category}':")
-        item_keys = list(items.keys())
-        for i, key in enumerate(item_keys):
-            print(f"  {i + 1}. {key} ({items[key]['translation']})")
+        # Build a list of questionary Choices, each with a title like "Frodo (Фродо)"
+        # but the underlying value is just "Frodo".
+        item_choices = []
+        for key, item_data in items.items():
+            translation = item_data.get("translation", "")
+            display_title = f"{key} ({translation})" if translation else key
+            item_choices.append(questionary.Choice(title=display_title, value=key))
 
-        item_choice = input("\nSelect an item to edit (enter number, or press Enter to stop): ").strip()
-        if not item_choice.isdigit() or int(item_choice) < 1 or int(item_choice) > len(item_keys):
-            print("Exiting changes.")
+        # Add a "Back" option
+        item_choices.append("Back")
+
+        item_choice = questionary.select(
+            f"Select an item in '{selected_category}' to manage:",
+            choices=item_choices
+        ).ask()
+
+        if item_choice == "Back":
             continue
 
-        selected_item_key = item_keys[int(item_choice) - 1]
+        selected_item_key = item_choice
         selected_item = items[selected_item_key]
 
+        # 5. Ask what the user wants to do with this item
+        action = questionary.select(
+            f"What do you want to do with '{selected_item_key}'?",
+            choices=["Edit item", "Delete item", "Change category", "Go back"]
+        ).ask()
+
+        if action == "Go back":
+            continue
+
+        if action == "Delete item":
+            del data[selected_category][selected_item_key]
+            print(f"Item '{selected_item_key}' deleted.")
+            # Optionally record deletion in edited_data if you want.
+            continue
+
+        if action == "Change category":
+            # Prompt for the new category
+            new_category = questionary.select(
+                "Select the new category to move this item:",
+                # Exclude the current category from the list
+                choices=[cat for cat in categories if cat != selected_category]
+            ).ask()
+
+            if not new_category:
+                # user canceled or ctrl-c
+                continue
+
+            # Remove from old category
+            del data[selected_category][selected_item_key]
+            # Move/add to new category (create if doesn't exist)
+            data.setdefault(new_category, {})
+            data[new_category][selected_item_key] = selected_item
+
+            # Record the change
+            edited_data.setdefault(new_category, {})
+            edited_data[new_category][selected_item_key] = selected_item
+
+            print(f"Moved '{selected_item_key}' from '{selected_category}' to '{new_category}'.")
+            continue
+
+        # If user chose "Edit item"
         print(f"\nEditing item: {selected_item_key}")
-        item_edited = False
-        fields = list(selected_item.keys())  # Create a list of keys
-        i = 0
-        while i < len(fields):
-            field = fields[i]
-            value = selected_item[field]
+        was_item_edited = False
+
+        # For each field in the item
+        for field, value in list(selected_item.items()):
             if field == "translation":
-                yesno = input("\nDo you want to ask the LLM for translation options? (yes to proceed, no to exit): ").strip().lower()
-                if yesno == 'yes' or yesno == 'y':
+                # Ask if user wants LLM translation
+                wants_llm = questionary.confirm(
+                    f"Do you want to ask the LLM for translation options for '{selected_item_key}'?"
+                ).ask()
+
+                if wants_llm:
                     node = selected_item.copy()
                     node['category'] = selected_category
                     node['untranslated'] = selected_item_key
                     advice = get_translation_options(node)
-                    print(MODEL_NAME + " says, \"" + advice['message'] + "\"") # this is a message directly from the model
-                    options = advice['options'] # an array of 3 alternative options generated by the model
-                    options.append("Custom Translation [Your Input]")
-                    options_keys = list(range(len(options)))
-                    for i, key in enumerate(options):
-                        print(f"  {i + 1}. {key}")
-                    option_choice = input("\nSelect an item to edit (enter number, or press Enter to keep original translation): ").strip()
-                    if not option_choice.isdigit() or int(option_choice) < 1 or int(option_choice) > len(options):
-                        print("Keeping original translation:")
-                        new_value = False
+
+                    print("\nLLM says:")
+                    print(f"  \"{advice['message']}\"\n")
+
+                    # Add an extra "Custom" option
+                    translation_options = advice['options'] + ["Custom Translation [Your Input]", "Skip"]
+
+                    # Display translations as a list
+                    chosen_translation = questionary.select(
+                        "Choose a translation option:",
+                        choices=translation_options
+                    ).ask()
+
+                    if chosen_translation == "Skip":
+                        pass
+                    elif chosen_translation == "Custom Translation [Your Input]":
+                        # user types a custom translation
+                        custom_val = questionary.text(
+                            "Enter your custom translation (press Enter to cancel):"
+                        ).ask()
+                        if custom_val:
+                            selected_item[field] = custom_val
+                            was_item_edited = True
                     else:
-                        selected_option_key = options_keys[int(option_choice) - 1]
-                        selected_option_item = options[selected_option_key]
-                        if selected_option_item == "Custom Translation [Your Input]":
-                            selected_option_item = input("Enter your translation:")
-                        new_value = selected_option_item
+                        # user picked one of the suggested translations
+                        selected_item[field] = chosen_translation
+                        was_item_edited = True
+
                 else:
-                    print(f"  {field}: {value}")
-                    new_value = input(f"    Update {field} (press Enter to keep current value): ").strip()
+                    # Simply prompt for updating the value
+                    new_val = questionary.text(
+                        f"{field} (current: {value}). Press Enter to keep, or type new value:",
+                        default=""
+                    ).ask()
+                    if new_val:
+                        selected_item[field] = new_val
+                        was_item_edited = True
+
             else:
-                print(f"  {field}: {value}")
-                new_value = input(f"    Update {field} (press Enter to keep current value): ").strip()
+                # For non-translation fields
+                new_val = questionary.text(
+                    f"{field} (current: {value}). Press Enter to keep, or type new value:",
+                    default=""
+                ).ask()
 
-            if new_value:
-                item_edited = True
-                if isinstance(value, int):
-                    try:
-                        selected_item[field] = int(new_value)
-                    except ValueError:
-                        print(f"    Invalid input for {field}. Keeping original value.")
-                else:
-                    selected_item[field] = new_value
-            i += 1
+                if new_val:
+                    # If it’s an int field, try to convert
+                    if isinstance(value, int):
+                        try:
+                            selected_item[field] = int(new_val)
+                        except ValueError:
+                            print(f"Invalid input for {field}. Keeping original value.")
+                            continue
+                    else:
+                        selected_item[field] = new_val
+                    was_item_edited = True
 
-        delete_entry = input(f"\nDo you want to delete '{selected_item_key}'? (yes or y to delete, no or enter to keep): ").strip().lower()
-        if delete_entry == 'yes' or delete_entry == 'y':
-            del items[selected_item_key]
-            item_edited = True
-            print(f"Item '{selected_item_key}' deleted.")
-
-        if item_edited:
-            if selected_category not in edited_data:
-                edited_data[selected_category] = {}
+        # 6. Save item changes if it was edited
+        if was_item_edited:
+            data[selected_category][selected_item_key] = selected_item
+            edited_data.setdefault(selected_category, {})
             edited_data[selected_category][selected_item_key] = selected_item
 
     return edited_data
@@ -428,7 +557,8 @@ def get_translation_options(node):
 
 def update_translated_text(translated_text, entity):
     """
-    Does a substitution on translated_text, replacing entity['old_translation'] for entity['translation'].
+    Does a substitution on translated_text, replacing entity['old_translation'] with entity['translation'],
+    in a case-insensitive way but respecting the original case of the matched text.
 
     Parameters:
     translated_text (list of str): An array of strings, the translated text.
@@ -437,11 +567,22 @@ def update_translated_text(translated_text, entity):
     old_translation = entity.get('old_translation', '')
     new_translation = entity['translation']
 
-    print(f"We will update {old_translation} for {new_translation}...")
-    
+    print(f"We will update '{old_translation}' for '{new_translation}'...")
+
+    # Helper function to match case
+    def match_case(match):
+        matched_text = match.group()
+        if matched_text.isupper():
+            return new_translation.upper()
+        elif matched_text[0].isupper():
+            return new_translation.capitalize()
+        else:
+            return new_translation.lower()
+
     # Iterate through the translated text and replace old translations with the new ones
+    pattern = re.compile(re.escape(old_translation), re.IGNORECASE)
     for i in range(len(translated_text)):
-        translated_text[i] = translated_text[i].replace(old_translation, new_translation)
+        translated_text[i] = pattern.sub(match_case, translated_text[i])
 
     return translated_text
 
@@ -462,7 +603,20 @@ group.add_argument("--clipboard", action="store_true", help="Process input from 
 group.add_argument("--file", type=str, help="Process input from a specified file")
 
 # Parse arguments
+
+# Model arguments
+parser.add_argument("--model", type=str, help=f"Specify a specific model. Default is {MODEL_NAME}")
+parser.add_argument("--key", type=str, help=f"Specify an API key. Default is getting key from environmental variables or .env")
+
 args = parser.parse_args()
+
+if args.key:
+    api_token = args.key
+
+client = OpenAI(api_key=api_token)
+
+if args.model:
+    MODEL_NAME = args.model
 
 # Handle the cases
 if args.clipboard:
@@ -488,8 +642,7 @@ try:
     file_pointer = open(SCRIPT_DIR + 'entities.json', 'rb')
 except OSError:
     old_entities = {"characters": {}, "places": {}, "organizations": {}, "abilities": {}, "equipment": {}}
-    with open(SCRIPT_DIR + 'entities.json', 'w') as file_pointer_write:
-        json.dump(old_entities, file_pointer_write, indent=4)
+    save_json_file(f"{SCRIPT_DIR}/entities.json",old_entities)
     file_pointer = None
 
 if file_pointer:
@@ -639,8 +792,7 @@ translated_total_chars = 0
 
 end_object['untranslated'] = pretext
 
-with open(SCRIPT_DIR + chapter_title + '.json', 'w') as fp_json:
-    json.dump(end_object, fp_json, indent=4)
+save_json_file(f"{SCRIPT_DIR}/{chapter_title}.json",end_object)
 
 with open(SCRIPT_DIR + filename, "w") as txt_file:
     for line in end_object['content']:
@@ -653,8 +805,7 @@ print(f"TITLE: {end_object['title']}")
 print(end_object['summary'])
 print("Translated text copied to clipboard for pasting.")
 
-with open(SCRIPT_DIR + 'entities.json', 'w') as fp_entities:
-    json.dump(combined_entities, fp_entities, indent=4)
+save_json_file(f"{SCRIPT_DIR}/entities.json",combined_entities)
 
 print(
     "Translated. Input text is "
