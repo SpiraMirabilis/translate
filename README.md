@@ -7,6 +7,7 @@ It features advanced features such as remembering both the translated names of c
 
 When a new entity shows up in a chapter being translated, you will enter an interactive mode that looks like below, allowing you to update the entity's attributes:
 
+```
 Totally New Entities In This Chapter:
 {
     "characters": {
@@ -51,3 +52,4 @@ gpt-4o says, "The untranslated Chinese characters '马泰尔' sound like 'Ma-Tai
 Select an item to edit (enter number, or press Enter to keep original translation): 1
 
 Do you want to delete '马泰尔'? (yes or y to delete, no or enter to keep): 
+```
