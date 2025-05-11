@@ -28,7 +28,7 @@ A comprehensive guide to installing, configuring, and using the Translator utili
 Clone or download the Translator from the repository:
 
 ```bash
-git clone [repository-url]
+git clone https://github.com/SpiraMirabilis/translate
 cd translator
 ```
 
