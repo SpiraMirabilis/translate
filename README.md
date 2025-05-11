@@ -1,6 +1,8 @@
 # Translator User Guide
 
-A comprehensive guide to installing, configuring, and using the Translator utility for translating text and EPUB files.
+This is a utility designed to translate web novels to english. Mostly it is designed to translate Chinese web novels.
+It is capable of importing chapters of untranslated novels as a batch, either from all files in a directory if you scraped it yourself
+or out of an epub file, in the format that WebToEpub Chrome extension outputs (https://github.com/dteviot/WebToEpub || https://chromewebstore.google.com/detail/webtoepub/akiljllkbielkidmammnifcnibaigelm)
 
 ## Table of Contents
 
