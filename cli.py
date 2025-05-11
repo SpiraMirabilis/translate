@@ -7,6 +7,7 @@ from ui import UserInterface
 from output_formatter import OutputFormatter
 import json
 import sqlite3
+import re
 
 class CommandLineInterface(UserInterface):
     """Command-line interface implementation"""

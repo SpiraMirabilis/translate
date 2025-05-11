@@ -4,6 +4,7 @@ from entities import EntityManager
 from logger import Logger
 from translation_engine import TranslationEngine
 import json
+import re
 
 class UserInterface(ABC):
     """Abstract base class for different user interfaces"""

@@ -3,6 +3,7 @@ import unicodedata
 import sqlite3
 import os
 from typing import Dict, List, Optional, Any, Union, Tuple
+from itertools import zip_longest
 
 class EntityManager:
     """Class to manage entity operations, storage, and consistency using SQLite"""
