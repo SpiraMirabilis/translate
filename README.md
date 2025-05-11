@@ -28,7 +28,7 @@ A comprehensive guide to installing, configuring, and using the Translator utili
 Clone or download the Translator from the repository:
 
 ```bash
-git clone https://github.com/SpiraMirabilis/translate
+git clone [repository-url]
 cd translator
 ```
 
@@ -395,7 +395,7 @@ Save this as `process_queue.sh`, make it executable with `chmod +x process_queue
 If you see API errors:
 - Check that your API keys are correctly set in the `.env` file
 - Verify you have sufficient credits/quota on your API account
-- Try using a different model (e.g., `--model gpt-3.5-turbo`)
+- Try using a different model (e.g., `--model oai:gpt-3.5-turbo or --model deepseek:deepseek-chat`)
 
 ### EPUB Issues
 
@@ -425,7 +425,7 @@ If you notice inconsistent translations:
 Specify a different model for translation:
 
 ```bash
-python translator.py --file input.txt --model gpt-4-turbo
+python translator.py --file input.txt --model oai:gpt-4-turbo
 ```
 
 ### Using a Different API Key

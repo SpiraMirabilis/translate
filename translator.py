@@ -28,9 +28,9 @@ class TranslationConfig:
         self.deepseek_key = os.getenv("DEEPSEEK_KEY")
         self.openai_key = os.getenv("OPENAI_KEY")
         
-        # Model settings
-        self.translation_model = os.getenv("TRANSLATION_MODEL", "o3-mini")
-        self.advice_model = os.getenv("ADVICE_MODEL", "o3-mini")
+        # Model settings - now stored with provider prefix
+        self.translation_model = os.getenv("TRANSLATION_MODEL", "oai:o3-mini")
+        self.advice_model = os.getenv("ADVICE_MODEL", "oai:o3-mini")
         
         # Debug mode
         self.debug_mode = os.getenv("DEBUG") == "True"
@@ -39,14 +39,60 @@ class TranslationConfig:
         self.script_dir = os.path.dirname(os.path.abspath(__file__)) + "/"
         
         # Translation settings
-        self.max_chars = int(os.getenv("MAX_CHARS", "10000"))
-    
-    def get_client(self, use_deepseek=False):
-        """Return an appropriate API client based on configuration"""
-        if use_deepseek:
-            return OpenAI(api_key=self.deepseek_key, base_url="https://api.deepseek.com")
+        self.max_chars = int(os.getenv("MAX_CHARS", "6000"))
+
+    def get_client(self, model_spec=None):
+        """
+        Return an appropriate API client based on model specification.
+        
+        Args:
+            model_spec: String in format "provider:model" or just "model"
+                        If not provided, uses translation_model
+        
+        Returns:
+            tuple: (client, model_name)
+        """
+        if model_spec is None:
+            model_spec = self.translation_model
+        
+        # Parse provider and model
+        if ":" in model_spec:
+            provider, model_name = model_spec.split(":", 1)
         else:
-            return OpenAI(api_key=self.openai_key)
+            # Default to OpenAI if no provider specified
+            provider = "oai"
+            model_name = model_spec
+        
+        # Create appropriate client
+        if provider.lower() in ["deepseek", "ds"]:
+            if not self.deepseek_key:
+                raise ValueError("DeepSeek API key not configured. Set DEEPSEEK_KEY in .env file.")
+            client = OpenAI(api_key=self.deepseek_key, base_url="https://api.deepseek.com")
+        else:  # Default to OpenAI
+            if not self.openai_key:
+                raise ValueError("OpenAI API key not configured. Set OPENAI_KEY in .env file.")
+            client = OpenAI(api_key=self.openai_key)
+        
+        return client, model_name
+    
+    def parse_model_spec(self, model_spec):
+        """
+        Parse a model specification string.
+        
+        Args:
+            model_spec: String in format "provider:model" or just "model"
+        
+        Returns:
+            tuple: (provider, model_name)
+        """
+        if ":" in model_spec:
+            provider, model_name = model_spec.split(":", 1)
+        else:
+            # Default to OpenAI if no provider specified
+            provider = "oai"
+            model_name = model_spec
+            
+        return provider.lower(), model_name
 
 
 class Logger:
@@ -1022,8 +1068,8 @@ ENTITIES: """ + entities_json + '\n' + """
             self.logger.error(f"Error checking for duplicate translations: {e}")
         
         # Use the advice model for this
-        advice_client = self.config.get_client(use_deepseek=(self.config.advice_model == "deepseek-chat"))
-        
+
+        advice_client, advice_model_name = self.config.get_client(self.config.advice_model)
         # Modify the prompt to include awareness of duplicates
         prompt = """Your task is to offer translation options. Below in the user text is a JSON node consisting of a translation you have performed previously, which may include "context" which is 20-50 characters before and after the untranslated text. The user did not like the translation and wants to change it, so please offer three alternatives, as well as a short message (less than 200 words) about the untranslated Chinese characters and why you chose to translate it this way. 
 
@@ -1046,7 +1092,7 @@ ENTITIES: """ + entities_json + '\n' + """
         print(dumped_node)
         
         response = advice_client.chat.completions.create(
-            model=self.config.advice_model,
+            model=advice_model_name,
             messages=[
                 {
                     "role": "system",
@@ -1105,6 +1151,8 @@ ENTITIES: """ + entities_json + '\n' + """
         """
         # Initialize current_chapter to a default value
         current_chapter = 0
+
+        client, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")
         self.logger.debug(f"API client initialized: {self.client is not None}")
         self.logger.debug(f"translate_chapter called with text of {len(chapter_text)} lines")
@@ -1164,7 +1212,7 @@ ENTITIES: """ + entities_json + '\n' + """
             user_text = "Translate the following into English: \n" + chunk_str
             self.logger.debug(f"About to call {self.config.translation_model} with chunk {chunk_index} of {len(split_text)}")
             response = self.client.chat.completions.create(
-                model=self.config.translation_model,
+                model=model_name,
                 messages=[
                     {
                         "role": "system",
@@ -1522,10 +1570,43 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--check-duplicates", action="store_true", help="Check for duplicate entities in the database")
         
         # Model arguments
-        parser.add_argument("--model", type=str, help=f"Specify a specific model. Default is {self.translator.config.translation_model}")
-        parser.add_argument("--key", type=str, help=f"Specify an API key. Default is from environmental variables or .env")
+        parser.add_argument("--model", type=str, 
+                        help="Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or deepseek:deepseek-chat)")
+        parser.add_argument("--advice-model", type=str, 
+                    help="Specify model for entity translation advice (format: [provider:]model,e.g. oai:gpt-4 or deepseek:deepseek-chat)")
+        parser.add_argument("--key", type=str, 
+                    help="Specify API key (for the provider specified in --model)")
         
         args = parser.parse_args()
+
+        # CLI provided API keys
+        if args.key:
+            # Determine which key to set based on the model provider
+            if args.model:
+                provider, _ = self.translator.config.parse_model_spec(args.model)
+                if provider in ["deepseek", "ds"]:
+                    self.translator.config.deepseek_key = args.key
+                else:  # Default to OpenAI
+                    self.translator.config.openai_key = args.key
+            else:
+                # If no model specified, use the provider from translation_model
+                provider, _ = self.translator.config.parse_model_spec(self.translator.config.translation_model)
+                if provider in ["deepseek", "ds"]:
+                    self.translator.config.deepseek_key = args.key
+                else:  # Default to OpenAI
+                    self.translator.config.openai_key = args.key
+            
+            # Reinitialize client with new key
+            self.translator.client, self.translator.model_name = self.translator.config.get_client()
+
+        # CLI provided model
+        if args.model:
+            self.translator.config.translation_model = args.model
+            self.translator.client, self.translator.model_name = self.translator.config.get_client(args.model)
+
+        # Handle advice model override
+        if args.advice_model:
+            self.translator.config.advice_model = args.advice_model
 
         # Process directory
         if args.dir:
@@ -2622,7 +2703,7 @@ class CommandLineInterface(UserInterface):
                     
         except Exception as e:
             print(f"Error reading queue: {e}")
-            
+
     def _process_directory(self, directory_path, sort_strategy="auto", file_pattern="*.txt"):
         """Process all text files in a directory and add them to the queue."""
         try:
