@@ -4,6 +4,7 @@ from entities import EntityManager
 from logger import Logger
 from translation_engine import TranslationEngine
 from ui import UserInterface
+from output_formatter import OutputFormatter
 import json
 import sqlite3
 
