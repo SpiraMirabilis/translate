@@ -1,3 +1,5 @@
+import os
+from epub_processor import EPUBProcessor
 from typing import Dict, List, Optional, Any, Union, Tuple
 from abc import ABC, abstractmethod
 from entities import EntityManager
