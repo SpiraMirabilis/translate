@@ -23,37 +23,6 @@ from translation_engine import TranslationEngine
 from ui import UserInterface
 from cli import CommandLineInterface
 
-
-
-class WebUserInterface(UserInterface):
-    """Basic web interface implementation - could be expanded in future"""
-    
-    def __init__(self, translator: TranslationEngine, entity_manager: EntityManager, logger: Logger):
-        super().__init__(translator, entity_manager, logger)
-        # Any web-specific initialization would go here
-    
-    def get_input(self) -> List[str]:
-        """
-        In a real implementation, this would get input from a web form
-        Placeholder implementation for now
-        """
-        raise NotImplementedError("Web interface not yet implemented")
-    
-    def display_results(self, results: Dict) -> None:
-        """
-        In a real implementation, this would display results in the web interface
-        Placeholder implementation for now
-        """
-        raise NotImplementedError("Web interface not yet implemented")
-    
-    def review_entities(self, entities: Dict, untranslated_text: List[str]) -> Dict:
-        """
-        In a real implementation, this would provide a web form for entity review
-        Placeholder implementation for now
-        """
-        raise NotImplementedError("Web interface not yet implemented")
-
-
 class TranslationApp:
     """
     Main application class that ties everything together.
