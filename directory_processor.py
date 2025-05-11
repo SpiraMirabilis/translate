@@ -110,7 +110,7 @@ class DirectoryProcessor:
             }
             
             # Try to extract chapter number from filename
-            chapter_match = re.search(r'(?:chapter|ch)[\s_-]*(\d+)|^(\d+)', os.path.basename(file_path), re.IGNORECASE)
+            chapter_match = re.search(r'(?:chapter|ch|第)[\s_-]*(\d+)|^(\d+)', os.path.basename(file_path), re.IGNORECASE)
             if chapter_match:
                 # Use the first matching group that captured something
                 chapter_number = next(g for g in chapter_match.groups() if g is not None)
