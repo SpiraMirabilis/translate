@@ -1,0 +1,22 @@
+# Core dependencies
+openai>=1.0.0
+python-dotenv>=0.19.0
+
+# User interface
+questionary>=1.10.0
+rich>=10.11.0
+pyperclip>=1.8.2
+
+# Database
+sqlite3
+
+# EPUB processing
+ebooklib>=0.17.1
+beautifulsoup4>=4.10.0
+html2text>=2020.1.16
+
+# Optional for PDF output
+# weasyprint>=53.0
+
+# Optional for optimized HTML parsing
+lxml>=4.6.3
