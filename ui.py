@@ -302,6 +302,13 @@ class UserInterface(ABC):
                     
             # Display results
             self.display_results(end_object, book_info)
+
+            self.logger.debug(f"Has _current_queue attribute: {hasattr(self, '_current_queue')}")
+            if hasattr(self, '_current_queue'):
+                if isinstance(self._current_queue,list):
+                    self.logger.debug(f"_current_queue length: {len(self._current_queue)}")
+                else:
+                    self.logger.debug(f"_current_queue is not a list: {type(self._current_queue)}")
             
             # If this was a queue item, update the queue after successful translation
             if hasattr(self, '_current_queue') and self._current_queue:

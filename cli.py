@@ -334,6 +334,8 @@ class CommandLineInterface(UserInterface):
             
             # Get the first item from the queue
             first_item = queue_json[0]
+
+            self._current_queue = queue_json 
             
             # Handle different possible formats in the queue
             if isinstance(first_item, list):
