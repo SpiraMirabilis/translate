@@ -88,6 +88,8 @@ class CommandLineInterface(UserInterface):
                                 help="Delete a specific chapter (requires --book-id and --chapter-number)")
         chapter_group.add_argument("--export-book", type=int, 
                                 help="Export all chapters of a book (book ID) to specified format")
+        chapter_group.add_argument("--retranslate", action="store_true", 
+                    help="Retranslate a chapter (requires --book-id and --chapter-number)")
         
 
         # output options
@@ -202,6 +204,16 @@ class CommandLineInterface(UserInterface):
             self.chapter_number = args.chapter_number
         else:
             self.chapter_number = None
+
+        # Handle retranslation
+        if args.retranslate:
+            if not args.book_id or not args.chapter_number:
+                print("Error: --retranslate requires --book-id and --chapter-number")
+                exit(1)
+            
+            return self._retranslate_chapter(args.book_id, args.chapter_number)
+        
+    # Rest of the method...
 
         # CLI provided API keys
         if args.key:
@@ -1074,6 +1086,30 @@ class CommandLineInterface(UserInterface):
             
             print(f"\nAll chapters exported to directory: {book_dir}")
 
+    def _retranslate_chapter(self, book_id, chapter_number):
+        """Retrieve and retranslate a specific chapter"""
+        # Get the chapter from the database
+        chapter = self.entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        
+        if not chapter:
+            print(f"Chapter {chapter_number} not found for book ID {book_id}")
+            exit(1)
+        
+        # Delete the existing chapter
+        result = self.entity_manager.delete_chapter(book_id=book_id, chapter_number=chapter_number)
+        
+        if not result:
+            print(f"Failed to delete chapter {chapter_number}. Cannot retranslate.")
+            exit(1)
+        
+        print(f"Deleted chapter {chapter_number} for retranslation")
+        
+        # Get the untranslated content
+        if isinstance(chapter['untranslated'], list):
+            return chapter['untranslated']
+        else:
+            # If it's a string, split it into lines
+            return chapter['untranslated'].split('\n')
         
     
     # Book specific prompt template private methods
