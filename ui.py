@@ -175,10 +175,6 @@ class UserInterface(ABC):
                     # Skip this iteration if the key is missing
                     continue
             
-            self.logger.debug("--- Final entity saving state ---")
-            for category, entities in self.entity_manager.entities.items():
-                for key, value in entities.items():
-                    self.logger.debug(f"Saving entity: {category}/{key}")
 
             # Save updated entities
             #self.entity_manager.save_entities()

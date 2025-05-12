@@ -49,6 +49,9 @@ class CommandLineInterface(UserInterface):
         group.add_argument("--resume", action="store_true", help="Take input from the queue, and translate sequentially")
         group.add_argument("--file", type=str, help="Process input from a specified file")
         group.add_argument("--epub", type=str, help="Process an EPUB file and add chapters to the queue")
+        parser.add_argument("--create-book-from-epub", action="store_true", 
+                        help="Create a new book from EPUB metadata when processing/queuing EPUB file")
+        
 
         # directory input and options
         group.add_argument("--dir", type=str, help="Process all text files in a directory and add to queue")
@@ -336,40 +339,62 @@ class CommandLineInterface(UserInterface):
             if isinstance(first_item, list):
                 # Already a list of strings
                 pretext = first_item
+                
+                # Look for book_id in metadata
+                for line in pretext[:10]:  # Check first few lines for metadata
+                    if isinstance(line, str) and line.startswith("# Book ID:"):
+                        try:
+                            book_id = int(line.replace("# Book ID:", "").strip())
+                            self.book_id = book_id
+                            
+                            # Get book info
+                            book = self.entity_manager.get_book(book_id=book_id)
+                            if book:
+                                self.book_title = book["title"]
+                                self.logger.info(f"Processing queue item for book '{book['title']}' (ID: {book_id})")
+                            else:
+                                self.logger.warning(f"Book ID {book_id} from queue item not found in database")
+                        except (ValueError, TypeError) as e:
+                            self.logger.warning(f"Invalid Book ID in queue item metadata: {e}")
+                        
+                        break
             elif isinstance(first_item, str):
                 # Single string, split into lines
                 pretext = first_item.splitlines()
+                
+                # Check for book_id metadata
+                for line in pretext[:10]:
+                    if line.startswith("# Book ID:"):
+                        try:
+                            book_id = int(line.replace("# Book ID:", "").strip())
+                            self.book_id = book_id
+                            
+                            # Get book info
+                            book = self.entity_manager.get_book(book_id=book_id)
+                            if book:
+                                self.book_title = book["title"]
+                                self.logger.info(f"Processing queue item for book '{book['title']}' (ID: {book_id})")
+                            else:
+                                self.logger.warning(f"Book ID {book_id} from queue item not found in database")
+                        except (ValueError, TypeError) as e:
+                            self.logger.warning(f"Invalid Book ID in queue item metadata: {e}")
+                        
+                        break
             else:
                 # Unknown format
                 self.logger.error(f"Unknown queue item format: {type(first_item)}")
                 print(f"Queue item has unexpected format: {type(first_item)}")
                 exit(1)
-            
-            # Verify the item is not empty
-            if not pretext:
-                self.logger.error("Empty item in queue.")
-                print("The first item in the queue is empty. Removing it.")
-                
-                # Remove the empty item and save the updated queue
-                updated_queue = queue_json[1:]
-                self.entity_manager.save_json_file(f"{self.entity_manager.config.script_dir}/queue.json", updated_queue)
-                
-                # Exit or recurse to get the next item
-                if not updated_queue:
-                    print("Queue is now empty.")
-                    exit(1)
-                else:
-                    print("Trying next item in queue...")
-                    return self.get_input()  # Recursive call to try the next item
-            
-            self.logger.info(f"Processing queue item with {len(pretext)} lines.")
-            
-            # Store the queue for later updating after successful translation
-            self._current_queue = queue_json
-            
-            return pretext
         elif args.epub:
-            self._process_epub_file(args.epub)
+            if not args.book_id and not args.create_book_from_epub:
+                print("When ingesting an --epub you MUST select either --book-id # or --create-book-from-epub to properly associate queued chapters with correct book")
+                exit(1)
+            elif args.book_id and args.create_book_from_epub:
+                print("When ingesting an epub with --epub, --book-id and --create-book-from-epub are mutually exclusive. choose one or the other.")
+                exit(1)
+            book_id = args.book_id
+            create_book = args.create_book_from_epub
+            self._process_epub_file(args.epub, book_id, create_book)
             exit(0)  # Exit after processing EPUB
         else:
             # Manual entry
@@ -395,14 +420,48 @@ class CommandLineInterface(UserInterface):
         
         return pretext
     
-    def _process_epub_file(self, epub_path):
-        """Process an EPUB file and add chapters to the queue."""
+    def _process_epub_file(self, epub_path, book_id=None, create_book=False):
+        """Process an EPUB file and add chapters to the queue with book association."""
         try:
             # Initialize EPUB processor
             processor = EPUBProcessor(self.entity_manager.config, self.logger)
             
-            print(f"Processing EPUB file: {epub_path}")
-            success, num_chapters, message = processor.process_epub(epub_path)
+            # Load basic EPUB metadata if needed for book creation
+            if create_book:
+                book_metadata = processor.get_epub_metadata(epub_path)
+                
+                if not book_id:  # Only create a book if one wasn't specified
+                    # Create a new book from EPUB metadata
+                    book_title = book_metadata.get('title', os.path.basename(epub_path))
+                    book_author = book_metadata.get('author', 'Unknown')
+                    
+                    # Create book in database
+                    book_id = self.entity_manager.create_book(
+                        title=book_title,
+                        author=book_author,
+                        language="en",  # Default target language
+                        source_language="zh",  # Default source language
+                        description=f"Imported from {os.path.basename(epub_path)}"
+                    )
+                    
+                    if book_id:
+                        print(f"Created new book '{book_title}' (ID: {book_id}) from EPUB metadata")
+                    else:
+                        print("Failed to create book from EPUB metadata")
+            
+            # Validate book_id if provided
+            if book_id:
+                book = self.entity_manager.get_book(book_id=book_id)
+                if not book:
+                    print(f"Error: Book with ID {book_id} not found")
+                    return
+                
+                print(f"Processing EPUB file: {epub_path} for book '{book['title']}' (ID: {book_id})")
+            else:
+                print(f"Processing EPUB file: {epub_path} (no book association)")
+            
+            # Process the EPUB with the book_id
+            success, num_chapters, message = processor.process_epub(epub_path, book_id)
             
             if success:
                 print(f"Success! {message}")

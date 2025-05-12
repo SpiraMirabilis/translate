@@ -222,12 +222,13 @@ class EPUBProcessor:
         
         return None
     
-    def add_chapters_to_queue(self, chapters):
+    def add_chapters_to_queue(self, chapters, book_id=None, epub_path=None):
         """
         Add chapters to the translation queue.
         
         Args:
             chapters: List of chapter dicts
+            book_id: Optional book ID to associate with the chapters
             
         Returns:
             int: Number of chapters added to queue
@@ -253,8 +254,14 @@ class EPUBProcessor:
             metadata = [
                 f"# Title: {chapter['title']}",
                 f"# Chapter: {chapter['number']}",
-                "# ---"
+                f"# Source: {chapter.get('file_path', epub_path)}"
             ]
+            
+            # Add book ID metadata if available
+            if book_id is not None:
+                metadata.append(f"# Book ID: {book_id}")
+            
+            metadata.append("# ---")
             
             chapter_with_metadata = metadata + content_lines
             queue.append(chapter_with_metadata)
@@ -269,12 +276,13 @@ class EPUBProcessor:
             self.logger.error(f"Error saving queue: {e}")
             return 0
     
-    def process_epub(self, epub_path):
+    def process_epub(self, epub_path, book_id=None):
         """
         Process an EPUB file and add chapters to the translation queue.
         
         Args:
             epub_path: Path to the EPUB file
+            book_id: Optional book ID to associate with the chapters
             
         Returns:
             tuple: (success, num_chapters, message)
@@ -296,7 +304,7 @@ class EPUBProcessor:
         if not chapters:
             return False, 0, "No chapters found in EPUB"
         
-        # Add to queue
-        num_added = self.add_chapters_to_queue(chapters)
+        # Add to queue with book_id
+        num_added = self.add_chapters_to_queue(chapters, book_id, epub_path)
         
         return True, num_added, f"Successfully added {num_added} chapters to queue"
