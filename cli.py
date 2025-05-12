@@ -10,6 +10,10 @@ from output_formatter import OutputFormatter
 import json
 import sqlite3
 import re
+import curses
+import tempfile
+import subprocess
+import platform
 
 class CommandLineInterface(UserInterface):
     """Command-line interface implementation"""
@@ -52,14 +56,47 @@ class CommandLineInterface(UserInterface):
                     help="Sorting strategy for directory files (default: auto)")
         parser.add_argument("--pattern", type=str, default="*.txt",
                     help="File pattern for directory processing (default: *.txt)")
+        
+        # Book management
+        book_group = parser.add_argument_group('Book Management')
+        book_group.add_argument("--create-book", type=str, help="Create a new book with the specified title")
+        book_group.add_argument("--book-author", type=str, help="Specify author when creating a book")
+        book_group.add_argument("--book-language", type=str, help="Specify language code when creating a book")
+        book_group.add_argument("--book-description", type=str, help="Specify description when creating a book")
+        
+        book_group.add_argument("--list-books", action="store_true", help="List all books in the database")
+        book_group.add_argument("--book-info", type=int, help="Get detailed information about a book by ID")
+        book_group.add_argument("--edit-book", type=int, help="Edit book information by ID")
+        book_group.add_argument("--delete-book", type=int, help="Delete a book and all its chapters by ID")
+
+        # book specific model group
+        parser.add_argument("--show-prompt-template", type=int, help="Show the current prompt template for a book (by ID)")
+        parser.add_argument("--set-prompt-template", type=int, help="Set a custom prompt template for a book (by ID)")
+        parser.add_argument("--prompt-file", type=str, help="Load prompt template from a file")
+        parser.add_argument("--export-default-prompt", type=str, help="Export the default prompt template to a file")
+        parser.add_argument("--edit-prompt", type=int, help="Edit the prompt template for a book using your system editor")
+
+        
+        # Chapter management
+        chapter_group = parser.add_argument_group('Chapter Management')
+        chapter_group.add_argument("--book-id", type=int, help="Specify book ID for translation or chapter operations")
+        chapter_group.add_argument("--chapter-number", type=int, help="Specify chapter number for translation or retrieval")
+        chapter_group.add_argument("--list-chapters", type=int, help="List all chapters for a book by ID")
+        chapter_group.add_argument("--get-chapter", action="store_true", 
+                                help="Get a specific chapter (requires --book-id and --chapter-number)")
+        chapter_group.add_argument("--delete-chapter", action="store_true", 
+                                help="Delete a specific chapter (requires --book-id and --chapter-number)")
+        chapter_group.add_argument("--export-book", type=int, 
+                                help="Export all chapters of a book (book ID) to specified format")
+        
 
         # output options
         parser.add_argument("--format", type=str, choices=["text", "html", "markdown", "epub"], default="text",
                    help="Output format for translation results (default: text)")
-        parser.add_argument("--book-title", type=str, help="Book title for EPUB output")
-        parser.add_argument("--book-author", type=str, help="Book author for EPUB output")
-        parser.add_argument("--book-language", type=str, default="en", help="Book language code for EPUB output (default: en)")
-        parser.add_argument("--edit-book-info", action="store_true", help="Edit book information for EPUB output")
+        parser.add_argument("--epub-title", type=str, help="Book title for EPUB output")
+        parser.add_argument("--epub-author", type=str, help="Book author for EPUB output")
+        parser.add_argument("--epub-language", type=str, default="en", help="Book language code for EPUB output (default: en)")
+        parser.add_argument("--edit-epub-info", action="store_true", help="Edit book information for EPUB output")
         
         # Queue argument and manipulation
         parser.add_argument("--queue", action="store_true", help="Add a chapter to the queue, for later sequential translation")
@@ -82,6 +119,89 @@ class CommandLineInterface(UserInterface):
                     help="Specify API key (for the provider specified in --model)")
         
         args = parser.parse_args()
+     
+        # Book management
+        if args.create_book:
+            self._create_book(args.create_book, args.book_author, args.book_language, args.book_description)
+            exit(0)
+            
+        if args.list_books:
+            self._list_books()
+            exit(0)
+            
+        if args.book_info:
+            self._show_book_info(args.book_info)
+            exit(0)
+            
+        if args.edit_book:
+            self._edit_book(args.edit_book)
+            exit(0)
+            
+        if args.delete_book:
+            self._delete_book(args.delete_book)
+            exit(0)
+
+        # Book specific prompt section
+        if args.edit_prompt:
+            self._edit_prompt_template(args.edit_prompt)
+            exit(0)
+
+        if args.show_prompt_template:
+            self._show_prompt_template(args.show_prompt_template)
+            exit(0)
+
+        if args.set_prompt_template:
+            if not args.prompt_file:
+                print("Error: --set-prompt-template requires --prompt-file")
+                exit(1)
+            self._set_prompt_template(args.set_prompt_template, args.prompt_file)
+            exit(0)
+
+        if args.export_default_prompt:
+            self._export_default_prompt(args.export_default_prompt)
+            exit(0)
+        
+        # Chapter management
+        if args.list_chapters:
+            self._list_chapters(args.list_chapters)
+            exit(0)
+            
+        if args.get_chapter:
+            if not args.book_id or not args.chapter_number:
+                print("Error: --get-chapter requires --book-id and --chapter-number")
+                exit(1)
+            self._get_chapter(args.book_id, args.chapter_number, args.format or "text")
+            exit(0)
+            
+        if args.delete_chapter:
+            if not args.book_id or not args.chapter_number:
+                print("Error: --delete-chapter requires --book-id and --chapter-number")
+                exit(1)
+            self._delete_chapter(args.book_id, args.chapter_number)
+            exit(0)
+            
+        if args.export_book:
+            self._export_book(args.export_book, args.format or "text")
+            exit(0)
+        
+        # Store book_id if specified
+        if args.book_id:
+            # Verify book exists
+            book = self.entity_manager.get_book(book_id=args.book_id)
+            if not book:
+                print(f"Error: Book with ID {args.book_id} not found")
+                exit(1)
+            self.book_id = args.book_id
+            self.book_title = book["title"]
+        else:
+            self.book_id = None
+            self.book_title = None
+        
+        # Store chapter_number if specified
+        if args.chapter_number:
+            self.chapter_number = args.chapter_number
+        else:
+            self.chapter_number = None
 
         # CLI provided API keys
         if args.key:
@@ -118,7 +238,7 @@ class CommandLineInterface(UserInterface):
             exit(0)  # Exit after processing directory
 
         # edit epub info from --edit-book-info
-        if args.edit_book_info:
+        if args.edit_epub_info:
             self._edit_book_info()
             exit(0)
 
@@ -140,12 +260,12 @@ class CommandLineInterface(UserInterface):
             self.book_info = self._get_book_info()
             
             # Override with command line arguments if provided
-            if args.book_title:
-                self.book_info["title"] = args.book_title
+            if args.epub_title:
+                self.book_info["title"] = args.epub_title
             if args.book_author:
-                self.book_info["author"] = args.book_author
+                self.book_info["author"] = args.epub_author
             if args.book_language:
-                self.book_info["language"] = args.book_language
+                self.book_info["language"] = args.epub_language
         else:
             self.book_info = None
 
@@ -627,7 +747,519 @@ class CommandLineInterface(UserInterface):
             print("No duplicate translations found.")
         
         conn.close()
+
+    # Book private methods
+    def _create_book(self, title, author=None, language=None, description=None):
+        """Create a new book in the database"""
+        book_id = self.entity_manager.create_book(
+            title, 
+            author=author,
+            language=language or 'en',
+            description=description
+        )
+        
+        if book_id:
+            print(f"Book created: '{title}' (ID: {book_id})")
+            print(f"Use --book-id {book_id} when translating chapters for this book")
+        else:
+            print(f"Failed to create book: '{title}'")
+
+    def _list_books(self):
+        """List all books in the database"""
+        books = self.entity_manager.list_books()
+        
+        if not books:
+            print("No books found in the database.")
+            return
+        
+        print(f"Found {len(books)} books:\n")
+        
+        for book in books:
+            print(f"ID: {book['id']} - {book['title']}")
+            if book['author']:
+                print(f"  Author: {book['author']}")
+            print(f"  Language: {book['language']}")
+            print(f"  Created: {book['created_date']}")
+            print(f"  Chapters: {book['chapter_count']}")
+            print()
+
+    def _show_book_info(self, book_id):
+        """Show detailed information about a book"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        print(f"Book: {book['title']} (ID: {book['id']})")
+        print(f"Author: {book['author'] or 'Unknown'}")
+        print(f"Language: {book['language']}")
+        print(f"Source Language: {book['source_language']}")
+        print(f"Target Language: {book['target_language']}")
+        print(f"Created: {book['created_date']}")
+        print(f"Last Modified: {book['modified_date']}")
+        
+        if book['description']:
+            print(f"\nDescription: {book['description']}")
+        
+        # Get chapters count
+        chapters = self.entity_manager.list_chapters(book_id)
+        print(f"\nChapters: {len(chapters)}")
+        
+        if chapters:
+            print("\nFirst 5 chapters:")
+            for i, chapter in enumerate(chapters[:5]):
+                print(f"  Chapter {chapter['chapter']}: {chapter['title']}")
+
+    def _edit_book(self, book_id):
+        """Edit book information interactively"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        print(f"Editing book: {book['title']} (ID: {book['id']})")
+        
+        if self.has_rich_ui:
+            # Interactive editing with questionary
+            new_title = self.questionary.text(
+                "Title:",
+                default=book['title']
+            ).ask()
+            
+            new_author = self.questionary.text(
+                "Author:",
+                default=book['author'] or ""
+            ).ask()
+            
+            new_language = self.questionary.text(
+                "Language code (e.g., en, zh, ja):",
+                default=book['language']
+            ).ask()
+            
+            new_description = self.questionary.text(
+                "Description:",
+                default=book['description'] or ""
+            ).ask()
+            
+            new_source_language = self.questionary.text(
+                "Source language code:",
+                default=book['source_language']
+            ).ask()
+            
+            new_target_language = self.questionary.text(
+                "Target language code:",
+                default=book['target_language']
+            ).ask()
+        else:
+            # Basic input
+            print("\nEnter new values (press Enter to keep current values):")
+            new_title = input(f"Title [{book['title']}]: ") or book['title']
+            new_author = input(f"Author [{book['author'] or ''}]: ") or book['author']
+            new_language = input(f"Language code [{book['language']}]: ") or book['language']
+            new_description = input(f"Description [{book['description'] or ''}]: ") or book['description']
+            new_source_language = input(f"Source language code [{book['source_language']}]: ") or book['source_language']
+            new_target_language = input(f"Target language code [{book['target_language']}]: ") or book['target_language']
+        
+        # Update the book
+        result = self.entity_manager.update_book(
+            book_id,
+            title=new_title,
+            author=new_author if new_author else None,
+            language=new_language,
+            description=new_description if new_description else None,
+            source_language=new_source_language,
+            target_language=new_target_language
+        )
+        
+        if result:
+            print(f"Successfully updated book: {new_title}")
+        else:
+            print("Failed to update book information.")
+
+    def _delete_book(self, book_id):
+        """Delete a book and all its chapters"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        # Get chapters count
+        chapters = self.entity_manager.list_chapters(book_id)
+        
+        # Confirm deletion
+        if self.has_rich_ui:
+            confirm = self.questionary.confirm(
+                f"Are you sure you want to delete '{book['title']}' with {len(chapters)} chapter(s)? This cannot be undone."
+            ).ask()
+        else:
+            confirm = input(f"Are you sure you want to delete '{book['title']}' with {len(chapters)} chapter(s)? This cannot be undone. (y/n): ")
+            confirm = confirm.lower() == 'y'
+        
+        if not confirm:
+            print("Operation cancelled.")
+            return
+        
+        result = self.entity_manager.delete_book(book_id)
+        
+        if result:
+            print(f"Successfully deleted book: {book['title']} (ID: {book_id}) and all its chapters.")
+        else:
+            print(f"Failed to delete book: {book['title']} (ID: {book_id}).")
+
+    def _list_chapters(self, book_id):
+        """List all chapters for a book"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        chapters = self.entity_manager.list_chapters(book_id)
+        
+        if not chapters:
+            print(f"No chapters found for book: {book['title']}")
+            return
+        
+        print(f"Chapters for '{book['title']}' (ID: {book_id}):\n")
+        
+        for chapter in chapters:
+            print(f"Chapter {chapter['chapter']}: {chapter['title']}")
+            print(f"  ID: {chapter['id']}")
+            print(f"  Translated: {chapter['translation_date']}")
+            print(f"  Model: {chapter['model']}")
+            print()
+
+    def _get_chapter(self, book_id, chapter_number, format="text"):
+        """Get and display a specific chapter"""
+        chapter = self.entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        
+        if not chapter:
+            print(f"Chapter {chapter_number} not found for book ID {book_id}.")
+            return
+        
+        # Initialize OutputFormatter if needed
+        if not hasattr(self, 'output_formatter'):
+            self.output_formatter = OutputFormatter(self.entity_manager.config, self.logger)
+        
+        # Set format
+        self.output_format = format
+        
+        # Get book info if needed for EPUB
+        if format == 'epub':
+            book = self.entity_manager.get_book(book_id=book_id)
+            self.book_info = {
+                "title": book["title"],
+                "author": book["author"] or "Translator",
+                "language": book["language"],
+                "description": book["description"] or ""
+            }
+        else:
+            self.book_info = None
+        
+        # Format and display
+        output_path = self.output_formatter.save_output(
+            chapter, 
+            format=format,
+            book_info=self.book_info
+        )
+        
+        print(f"Chapter {chapter_number}: {chapter['title']}")
+        print(f"Exported in {format.upper()} format to: {output_path}")
+
+    def _delete_chapter(self, book_id, chapter_number):
+        """Delete a specific chapter"""
+        # Get chapter info first
+        chapter = self.entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        
+        if not chapter:
+            print(f"Chapter {chapter_number} not found for book ID {book_id}.")
+            return
+        
+        # Confirm deletion
+        if self.has_rich_ui:
+            confirm = self.questionary.confirm(
+                f"Are you sure you want to delete Chapter {chapter_number}: '{chapter['title']}'? This cannot be undone."
+            ).ask()
+        else:
+            confirm = input(f"Are you sure you want to delete Chapter {chapter_number}: '{chapter['title']}'? This cannot be undone. (y/n): ")
+            confirm = confirm.lower() == 'y'
+        
+        if not confirm:
+            print("Operation cancelled.")
+            return
+        
+        result = self.entity_manager.delete_chapter(book_id=book_id, chapter_number=chapter_number)
+        
+        if result:
+            print(f"Successfully deleted Chapter {chapter_number}: '{chapter['title']}'.")
+        else:
+            print(f"Failed to delete chapter.")
+
+    def _export_book(self, book_id, format="text"):
+        """Export all chapters of a book to the specified format"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        chapters = self.entity_manager.list_chapters(book_id)
+        
+        if not chapters:
+            print(f"No chapters found for book: {book['title']}")
+            return
+        
+        print(f"Exporting {len(chapters)} chapters from '{book['title']}' to {format.upper()} format...")
+        
+        # Initialize OutputFormatter if needed
+        if not hasattr(self, 'output_formatter'):
+            self.output_formatter = OutputFormatter(self.entity_manager.config, self.logger)
+        
+        # Set format
+        self.output_format = format
+        
+        # Create book-specific output directory
+        book_dir = os.path.join(self.entity_manager.config.script_dir, "output", self._clean_filename(book['title']))
+        if not os.path.exists(book_dir):
+            os.makedirs(book_dir)
+        
+        # For EPUB, prepare book info and only process once
+        if format == 'epub':
+            # Prepare book info
+            self.book_info = {
+                "title": book["title"],
+                "author": book["author"] or "Translator",
+                "language": book["language"],
+                "description": book["description"] or ""
+            }
+            
+            # Create list of chapters
+            all_chapters = []
+            for chapter_info in sorted(chapters, key=lambda x: x['chapter']):
+                chapter_data = self.entity_manager.get_chapter(chapter_id=chapter_info['id'])
+                if chapter_data:
+                    all_chapters.append(chapter_data)
+            
+            # Export as a single EPUB
+            if all_chapters:
+                # For EPUB, pass all chapters to a special method
+                output_path = self.output_formatter.save_book_as_epub(all_chapters, self.book_info)
+                print(f"Exported book to: {output_path}")
+            else:
+                print("No chapter data found to export.")
+        else:
+            # For other formats, process each chapter individually
+            for chapter_info in sorted(chapters, key=lambda x: x['chapter']):
+                chapter_data = self.entity_manager.get_chapter(chapter_id=chapter_info['id'])
+                if not chapter_data:
+                    print(f"Error retrieving chapter {chapter_info['chapter']}")
+                    continue
+                
+                # Set chapter-specific output path
+                chapter_filename = f"chapter_{chapter_data['chapter']:03d}_{self._clean_filename(chapter_data['title'])}"
+                output_path = os.path.join(book_dir, f"{chapter_filename}.{format}")
+                
+                # Format and save
+                result_path = self.output_formatter.save_output(
+                    chapter_data, 
+                    format=format,
+                    book_info=None,
+                    output_path=output_path
+                )
+                
+                print(f"Exported Chapter {chapter_data['chapter']}: {chapter_data['title']} to {result_path}")
+            
+            print(f"\nAll chapters exported to directory: {book_dir}")
+
+        
     
+    # Book specific prompt template private methods
+
+    def _edit_prompt_template(self, book_id):
+        """Edit the prompt template for a book using the system editor"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        # Get current template
+        current_template = self.entity_manager.get_book_prompt_template(book_id)
+        
+        if not current_template:
+            # Export default template with placeholder
+            entities_json = {
+                "characters": {},
+                "places": {},
+                "organizations": {},
+                "abilities": {},
+                "titles": {},
+                "equipment": {}
+            }
+            
+            # Get the default template
+            default_template = self.translator.generate_system_prompt([], entities_json, do_count=False)
+            
+            # Replace with placeholder
+            current_template = default_template.replace(
+                json.dumps(entities_json, ensure_ascii=False, indent=4),
+                "{{ENTITIES_JSON}}"
+            )
+        
+        # Add header with instructions
+        template_with_instructions = (
+            "# Edit this prompt template for book: " + book['title'] + "\n"
+            "# Make sure to keep the {{ENTITIES_JSON}} placeholder where you want entities to appear\n"
+            "# Save and exit when done\n\n"
+            + current_template
+        )
+        
+        # Open editor
+        edited_template = self.edit_text_with_system_editor(template_with_instructions)
+        
+        # Remove instruction comments
+        edited_template = "\n".join([
+            line for line in edited_template.split("\n") 
+            if not line.strip().startswith("# ")
+        ])
+        
+        # Check for placeholder
+        if "{{ENTITIES_JSON}}" not in edited_template:
+            print("Error: Prompt template must contain the {{ENTITIES_JSON}} placeholder.")
+            return
+        
+        # Save the edited template
+        result = self.entity_manager.set_book_prompt_template(book_id, edited_template)
+        
+        if result:
+            print(f"Successfully updated prompt template for '{book['title']}' (ID: {book_id}).")
+        else:
+            print("Failed to update prompt template.")
+
+    def _show_prompt_template(self, book_id):
+        """Show the current prompt template for a book"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        template = self.entity_manager.get_book_prompt_template(book_id)
+        
+        print(f"Prompt template for '{book['title']}' (ID: {book_id}):")
+        
+        if template:
+            print("\n" + template)
+        else:
+            print("This book is using the default prompt template.")
+            print("You can set a custom template with --set-prompt-template and --prompt-file")
+
+    def _set_prompt_template(self, book_id, prompt_file):
+        """Set a custom prompt template for a book"""
+        book = self.entity_manager.get_book(book_id=book_id)
+        
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        
+        try:
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                template = f.read()
+            
+            # Check if the template contains the required placeholder
+            if "{{ENTITIES_JSON}}" not in template:
+                print("Error: Prompt template must contain the {{ENTITIES_JSON}} placeholder.")
+                print("This is where the entities dictionary will be inserted.")
+                return
+            
+            result = self.entity_manager.set_book_prompt_template(book_id, template)
+            
+            if result:
+                print(f"Successfully set custom prompt template for '{book['title']}' (ID: {book_id}).")
+            else:
+                print(f"Failed to set prompt template for book.")
+        except Exception as e:
+            print(f"Error reading prompt file: {e}")
+
+    def _export_default_prompt(self, output_file):
+        """Export the default prompt template to a file"""
+        # Create a small placeholder entities JSON for the template
+        entities_json = {
+            "characters": {},
+            "places": {},
+            "organizations": {},
+            "abilities": {},
+            "titles": {},
+            "equipment": {}
+        }
+        
+        # Get the default template from the translator
+        default_template = self.translator.generate_system_prompt([], entities_json, do_count=False)
+        
+        # Replace the actual entities JSON with the placeholder
+        template_with_placeholder = default_template.replace(
+            json.dumps(entities_json, ensure_ascii=False, indent=4),
+            "{{ENTITIES_JSON}}"
+        )
+        
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(template_with_placeholder)
+            
+            print(f"Default prompt template exported to {output_file}")
+            print("You can modify this file and use it with --set-prompt-template")
+        except Exception as e:
+            print(f"Error exporting default prompt: {e}")
+
+
+    def edit_text_with_system_editor(self, initial_text=""):
+        """
+        Opens the system's default editor to edit text.
+        Works cross-platform by detecting the appropriate editor.
+        """
+        # Create a temporary file
+        fd, path = tempfile.mkstemp(suffix=".txt")
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(initial_text)
+            
+            # Determine which editor to use
+            editor = None
+            if platform.system() == 'Windows':
+                # Try to use notepad or notepad++ on Windows
+                editor = 'notepad.exe'
+                if os.path.exists("C:\\Program Files\\Notepad++\\notepad++.exe"):
+                    editor = "C:\\Program Files\\Notepad++\\notepad++.exe"
+                elif os.path.exists("C:\\Program Files (x86)\\Notepad++\\notepad++.exe"):
+                    editor = "C:\\Program Files (x86)\\Notepad++\\notepad++.exe"
+            else:
+                # Use environment variables on Unix-like systems
+                editor = os.environ.get('EDITOR', 'vi')
+            
+            # Show instructions
+            print(f"Opening editor ({editor}) to edit the text.")
+            print("Save the file and exit the editor when you're done.")
+            
+            # Launch the editor
+            if platform.system() == 'Windows':
+                subprocess.call([editor, path])
+            else:
+                subprocess.call([editor, path])
+            
+            # Read the edited content
+            with open(path, 'r') as f:
+                return f.read()
+                
+        finally:
+            # Clean up the temporary file
+            try:
+                os.unlink(path)
+            except:
+                pass
+
     def file_to_array(self, filename):
         """Convert a file to an array of lines"""
         with open(filename, 'r', encoding='utf-8') as file:
@@ -907,7 +1539,7 @@ class CommandLineInterface(UserInterface):
         
         return edited_data
 
-    def display_results(self, end_object):
+    def display_results(self, end_object, book_info=None):
         """Display translation results to the user and save in the specified format"""
         # Get title with a default value if missing
         chapter_title = end_object.get('title', 'Untitled Chapter')
@@ -920,7 +1552,7 @@ class CommandLineInterface(UserInterface):
         output_path = self.output_formatter.save_output(
             end_object, 
             format=getattr(self, 'output_format', 'text'),
-            book_info=getattr(self, 'book_info', None)
+            book_info=book_info
         )
         
         # Calculate statistics

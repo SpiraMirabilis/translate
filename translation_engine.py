@@ -70,7 +70,7 @@ class TranslationEngine:
             self.logger.debug(f"Chunk {i+1}: indices {start_idx} to {end_idx}")
             yield sequence[start_idx:end_idx]
     
-    def generate_system_prompt(self, pretext, entities, do_count=True):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
         """
@@ -98,7 +98,11 @@ class TranslationEngine:
         entities_json = json.dumps(end_entities, ensure_ascii=False, indent=4)
         
         # This large template string remains the same as your original implementation
-        prompt = """Your task is to translate the provided material into English, preserving the original content, title, and entities. Focus on semantic accuracy, cultural relevance, and stylistic fidelity.
+        if book_prompt_template:
+            # Insert the entities JSON into the custom template
+            prompt = book_prompt_template.replace("{{ENTITIES_JSON}}", entities_json)
+        else:
+            prompt = """Your task is to translate the provided material into English, preserving the original content, title, and entities. Focus on semantic accuracy, cultural relevance, and stylistic fidelity.
 Key Guidelines:
 
     Content:
@@ -403,7 +407,7 @@ ENTITIES: """ + entities_json + '\n' + """
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text):
+    def translate_chapter(self, chapter_text, book_id=None, stream=False):
         """
         Translate a chapter of text using the configured LLM.
         
@@ -415,6 +419,10 @@ ENTITIES: """ + entities_json + '\n' + """
         """
         # Initialize current_chapter to a default value
         current_chapter = 0
+
+        book_prompt_template = None
+        if book_id:
+            book_prompt_template = self.entity_manager.get_book_prompt_template(book_id)
 
         client, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")
@@ -447,7 +455,8 @@ ENTITIES: """ + entities_json + '\n' + """
         chunks_count = max(1, math.ceil(total_char_count / self.config.max_chars))
 
         # Generate the initial system prompt
-        system_prompt = self.generate_system_prompt(chapter_text, old_entities)
+        system_prompt = self.generate_system_prompt(chapter_text, old_entities, 
+                                               book_prompt_template=book_prompt_template)
 
         # Split the text into chunks for the LLM if necessary due to output token limits
         split_text = list(self.split_by_n(chapter_text, chunks_count))

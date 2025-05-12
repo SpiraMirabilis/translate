@@ -2,8 +2,10 @@ import json
 import unicodedata
 import sqlite3
 import os
+import datetime
 from typing import Dict, List, Optional, Any, Union, Tuple
 from itertools import zip_longest
+import re
 
 class EntityManager:
     """Class to manage entity operations, storage, and consistency using SQLite"""
@@ -32,13 +34,55 @@ class EntityManager:
                 last_chapter TEXT,
                 incorrect_translation TEXT,
                 gender TEXT,
-                UNIQUE(category, untranslated)
+                book_id INTEGER,
+                UNIQUE(category, untranslated, book_id)
             )
             ''')
+        
             
             # Create indices for faster lookups
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON entities(category)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_untranslated ON entities(untranslated)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_book_id ON entities(book_id)')
+            
+            # Create books table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                author TEXT,
+                language TEXT DEFAULT 'en',
+                description TEXT,
+                created_date TEXT,
+                modified_date TEXT,
+                prompt_template TEXT,
+                source_language TEXT DEFAULT 'zh',
+                target_language TEXT DEFAULT 'en',
+                UNIQUE(title)
+            )
+            ''')
+            
+            # Create chapters table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chapters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                chapter_number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                untranslated_content TEXT NOT NULL,
+                translated_content TEXT NOT NULL,
+                summary TEXT,
+                translation_date TEXT,
+                translation_model TEXT,
+                UNIQUE(book_id, chapter_number),
+                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+            )
+            ''')
+            
+            # Create indices for chapters table
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_chapters_book_id ON chapters(book_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_chapter_number ON chapters(chapter_number)')
+            
             
             conn.commit()
             conn.close()
@@ -46,8 +90,607 @@ class EntityManager:
         except sqlite3.Error as e:
             self.logger.error(f"Database initialization error: {e}")
             raise
+
+    # Book management section 
+    def create_book(self, title, author=None, language='en', description=None, source_language='zh', target_language='en'):
+        """
+        Create a new book in the database.
+        
+        Args:
+            title: Book title
+            author: Book author (optional)
+            language: Target language code (default: en)
+            description: Book description (optional)
+            source_language: Source language code (default: zh)
+            target_language: Target language code (default: en)
+            
+        Returns:
+            int: Book ID if successful, None otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if book already exists
+            cursor.execute("SELECT id FROM books WHERE title = ?", (title,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                self.logger.info(f"Book '{title}' already exists with ID {existing[0]}")
+                conn.close()
+                return existing[0]
+            
+            # Current timestamp
+            timestamp = datetime.datetime.now().isoformat()
+            
+            cursor.execute('''
+            INSERT INTO books
+            (title, author, language, description, created_date, modified_date, source_language, target_language)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (title, author, language, description, timestamp, timestamp, source_language, target_language))
+            
+            book_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"Created new book: '{title}' with ID {book_id}")
+            return book_id
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error creating book: {e}")
+            return None
     
-    def _load_entities(self) -> Dict:
+
+    def get_book_prompt_template(self, book_id):
+        """
+        Get the prompt template for a specific book.
+        Returns None if no custom template is set.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT prompt_template FROM books
+            WHERE id = ?
+            ''', (book_id,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result and result[0]:
+                return result[0]
+            return None
+        except sqlite3.Error as e:
+            self.logger.error(f"Error retrieving book prompt template: {e}")
+            return None
+
+    def set_book_prompt_template(self, book_id, prompt_template):
+        """
+        Set the prompt template for a specific book.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            UPDATE books
+            SET prompt_template = ?
+            WHERE id = ?
+            ''', (prompt_template, book_id))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Error setting book prompt template: {e}")
+            return False
+
+    def get_book(self, book_id=None, title=None):
+        """
+        Get book information from the database.
+        
+        Args:
+            book_id: Book ID (optional if title is provided)
+            title: Book title (optional if book_id is provided)
+            
+        Returns:
+            dict: Book information dictionary or None if not found
+        """
+        if not book_id and not title:
+            self.logger.error("Either book_id or title must be provided")
+            return None
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if book_id:
+                cursor.execute('''
+                SELECT id, title, author, language, description, created_date, modified_date, 
+                    source_language, target_language
+                FROM books
+                WHERE id = ?
+                ''', (book_id,))
+            else:
+                cursor.execute('''
+                SELECT id, title, author, language, description, created_date, modified_date, 
+                    source_language, target_language
+                FROM books
+                WHERE title = ?
+                ''', (title,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if not row:
+                return None
+                
+            book_info = {
+                "id": row[0],
+                "title": row[1],
+                "author": row[2],
+                "language": row[3],
+                "description": row[4],
+                "created_date": row[5],
+                "modified_date": row[6],
+                "source_language": row[7],
+                "target_language": row[8]
+            }
+            
+            return book_info
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error getting book information: {e}")
+            return None
+
+    def update_book(self, book_id, **kwargs):
+        """
+        Update book information.
+        
+        Args:
+            book_id: Book ID to update
+            **kwargs: Fields to update (title, author, language, description, etc.)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if book exists
+            cursor.execute("SELECT 1 FROM books WHERE id = ?", (book_id,))
+            if not cursor.fetchone():
+                self.logger.warning(f"Book with ID {book_id} not found")
+                conn.close()
+                return False
+            
+            # Build the SET clause dynamically based on provided kwargs
+            set_clause = []
+            values = []
+            
+            # Update modified_date automatically
+            kwargs["modified_date"] = datetime.datetime.now().isoformat()
+            
+            for key, value in kwargs.items():
+                if key in ['title', 'author', 'language', 'description', 'source_language', 
+                        'target_language', 'modified_date']:
+                    set_clause.append(f"{key} = ?")
+                    values.append(value)
+            
+            if not set_clause:
+                self.logger.warning("No valid fields to update")
+                conn.close()
+                return False
+            
+            # Complete the parameter list with book_id
+            values.append(book_id)
+            
+            # Execute the update
+            cursor.execute(f'''
+            UPDATE books 
+            SET {', '.join(set_clause)}
+            WHERE id = ?
+            ''', values)
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"Updated book with ID {book_id}")
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error updating book: {e}")
+            return False
+
+    def list_books(self):
+        """
+        List all books in the database.
+        
+        Returns:
+            list: List of book information dictionaries
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT id, title, author, language, created_date, 
+                (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count
+            FROM books
+            ORDER BY title
+            ''')
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            result = []
+            for row in rows:
+                book_id, title, author, language, created_date, chapter_count = row
+                result.append({
+                    "id": book_id,
+                    "title": title,
+                    "author": author,
+                    "language": language,
+                    "created_date": created_date,
+                    "chapter_count": chapter_count
+                })
+            
+            return result
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error listing books: {e}")
+            return []
+
+    def delete_book(self, book_id):
+        """
+        Delete a book and all its chapters from the database.
+        
+        Args:
+            book_id: Book ID to delete
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if book exists
+            cursor.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+            book = cursor.fetchone()
+            
+            if not book:
+                self.logger.warning(f"Book with ID {book_id} not found")
+                conn.close()
+                return False
+            
+            book_title = book[0]
+            
+            # Enable foreign key constraints
+            cursor.execute("PRAGMA foreign_keys = ON")
+            
+            # Delete book (will cascade to chapters)
+            cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
+            
+            # Also delete book-specific entities
+            cursor.execute("DELETE FROM entities WHERE book_id = ?", (book_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"Deleted book '{book_title}' (ID: {book_id}) and all its chapters")
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error deleting book: {e}")
+            return False
+        
+    # Private Book methods
+
+    
+    # End Book management section    
+    
+    # Chapter management section
+    def save_chapter(self, book_id, chapter_number, title, untranslated_content, translated_content, 
+                    summary=None, translation_model=None):
+        """
+        Save a chapter to the database.
+        
+        Args:
+            book_id: Book ID
+            chapter_number: Chapter number
+            title: Chapter title
+            untranslated_content: Original untranslated text (list of lines)
+            translated_content: Translated text (list of lines)
+            summary: Chapter summary (optional)
+            translation_model: Model used for translation (optional)
+            
+        Returns:
+            int: Chapter ID if successful, None otherwise
+        """
+        try:
+            # Get book info to make sure it exists
+            book = self.get_book(book_id=book_id)
+            if not book:
+                self.logger.error(f"Book with ID {book_id} not found")
+                return None
+            
+            # Serialize content if it's a list
+            if isinstance(untranslated_content, list):
+                untranslated_text = json.dumps(untranslated_content, ensure_ascii=False)
+            else:
+                untranslated_text = untranslated_content
+                
+            if isinstance(translated_content, list):
+                translated_text = json.dumps(translated_content, ensure_ascii=False)
+            else:
+                translated_text = translated_content
+            
+            # Current timestamp
+            timestamp = datetime.datetime.now().isoformat()
+            
+            # Get current translation model if not specified
+            if translation_model is None:
+                translation_model = self.config.translation_model
+                
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if chapter already exists
+            cursor.execute('''
+            SELECT id FROM chapters 
+            WHERE book_id = ? AND chapter_number = ?
+            ''', (book_id, chapter_number))
+            
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing chapter
+                chapter_id = existing[0]
+                
+                cursor.execute('''
+                UPDATE chapters
+                SET title = ?, untranslated_content = ?, translated_content = ?, 
+                    summary = ?, translation_date = ?, translation_model = ?
+                WHERE id = ?
+                ''', (title, untranslated_text, translated_text, summary, timestamp, 
+                    translation_model, chapter_id))
+                    
+                # Update book modified date
+                cursor.execute('''
+                UPDATE books
+                SET modified_date = ?
+                WHERE id = ?
+                ''', (timestamp, book_id))
+                
+                self.logger.info(f"Updated chapter {chapter_number} for book ID {book_id}")
+            else:
+                # Insert new chapter
+                cursor.execute('''
+                INSERT INTO chapters
+                (book_id, chapter_number, title, untranslated_content, translated_content, 
+                summary, translation_date, translation_model)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (book_id, chapter_number, title, untranslated_text, translated_text, 
+                    summary, timestamp, translation_model))
+                    
+                chapter_id = cursor.lastrowid
+                
+                # Update book modified date
+                cursor.execute('''
+                UPDATE books
+                SET modified_date = ?
+                WHERE id = ?
+                ''', (timestamp, book_id))
+                
+                self.logger.info(f"Added chapter {chapter_number} to book ID {book_id}")
+            
+            conn.commit()
+            conn.close()
+            
+            return chapter_id
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error saving chapter: {e}")
+            return None
+
+    def get_chapter(self, chapter_id=None, book_id=None, chapter_number=None):
+        """
+        Get chapter data from the database.
+        
+        Args:
+            chapter_id: Chapter ID (optional if book_id and chapter_number are provided)
+            book_id: Book ID (required if chapter_id is not provided)
+            chapter_number: Chapter number (required if chapter_id is not provided)
+            
+        Returns:
+            dict: Chapter data dictionary or None if not found
+        """
+        if not chapter_id and (not book_id or not chapter_number):
+            self.logger.error("Either chapter_id or both book_id and chapter_number must be provided")
+            return None
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if chapter_id:
+                cursor.execute('''
+                SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content, 
+                    c.translated_content, c.summary, c.translation_date, c.translation_model,
+                    b.title as book_title
+                FROM chapters c
+                JOIN books b ON c.book_id = b.id
+                WHERE c.id = ?
+                ''', (chapter_id,))
+            else:
+                cursor.execute('''
+                SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content, 
+                    c.translated_content, c.summary, c.translation_date, c.translation_model,
+                    b.title as book_title
+                FROM chapters c
+                JOIN books b ON c.book_id = b.id
+                WHERE c.book_id = ? AND c.chapter_number = ?
+                ''', (book_id, chapter_number))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if not row:
+                return None
+                
+            # Deserialize JSON content
+            try:
+                untranslated_content = json.loads(row[4])
+            except json.JSONDecodeError:
+                untranslated_content = row[4].split('\n')
+                
+            try:
+                translated_content = json.loads(row[5])
+            except json.JSONDecodeError:
+                translated_content = row[5].split('\n')
+                
+            chapter_data = {
+                "id": row[0],
+                "book_id": row[1],
+                "chapter": row[2],
+                "title": row[3],
+                "untranslated": untranslated_content,
+                "content": translated_content,
+                "summary": row[6],
+                "translation_date": row[7],
+                "model": row[8],
+                "book_title": row[9]
+            }
+            
+            return chapter_data
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error retrieving chapter data: {e}")
+            return None
+
+    def list_chapters(self, book_id):
+        """
+        List all chapters for a specific book.
+        
+        Args:
+            book_id: Book ID
+            
+        Returns:
+            list: List of chapter metadata dictionaries
+        """
+        try:
+            # Verify book exists
+            book = self.get_book(book_id=book_id)
+            if not book:
+                self.logger.warning(f"Book with ID {book_id} not found")
+                return []
+                
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT id, chapter_number, title, translation_date, translation_model
+            FROM chapters
+            WHERE book_id = ?
+            ORDER BY chapter_number
+            ''', (book_id,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            result = []
+            for row in rows:
+                chapter_id, chapter_number, title, translation_date, model = row
+                result.append({
+                    "id": chapter_id,
+                    "chapter": chapter_number,
+                    "title": title,
+                    "translation_date": translation_date,
+                    "model": model
+                })
+            
+            return result
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error listing chapters: {e}")
+            return []
+
+    def delete_chapter(self, chapter_id=None, book_id=None, chapter_number=None):
+        """
+        Delete a chapter from the database.
+        
+        Args:
+            chapter_id: Chapter ID (optional if book_id and chapter_number are provided)
+            book_id: Book ID (required if chapter_id is not provided)
+            chapter_number: Chapter number (required if chapter_id is not provided)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not chapter_id and (not book_id or not chapter_number):
+            self.logger.error("Either chapter_id or both book_id and chapter_number must be provided")
+            return False
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get chapter details first (for logging)
+            if chapter_id:
+                cursor.execute('''
+                SELECT book_id, chapter_number, title FROM chapters WHERE id = ?
+                ''', (chapter_id,))
+            else:
+                cursor.execute('''
+                SELECT id, title FROM chapters WHERE book_id = ? AND chapter_number = ?
+                ''', (book_id, chapter_number))
+                
+            chapter = cursor.fetchone()
+            
+            if not chapter:
+                self.logger.warning("Chapter not found")
+                conn.close()
+                return False
+                
+            # Delete the chapter
+            if chapter_id:
+                cursor.execute("DELETE FROM chapters WHERE id = ?", (chapter_id,))
+            else:
+                cursor.execute('''
+                DELETE FROM chapters WHERE book_id = ? AND chapter_number = ?
+                ''', (book_id, chapter_number))
+            
+            # Update book modified date
+            timestamp = datetime.datetime.now().isoformat()
+            
+            if chapter_id:
+                book_id = chapter[0]
+            
+            cursor.execute('''
+            UPDATE books
+            SET modified_date = ?
+            WHERE id = ?
+            ''', (timestamp, book_id))
+            
+            conn.commit()
+            conn.close()
+            
+            if chapter_id:
+                self.logger.info(f"Deleted chapter {chapter[1]}: '{chapter[2]}' from book ID {chapter[0]}")
+            else:
+                self.logger.info(f"Deleted chapter {chapter_number} (ID: {chapter[0]}): '{chapter[1]}' from book ID {book_id}")
+                
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error deleting chapter: {e}")
+            return False
+    
+    def _load_entities(self, book_id=None):
         """Load existing entities from database into memory cache"""
         
         # Define default entity categories
@@ -65,13 +708,24 @@ class EntityManager:
             cursor = conn.cursor()
             
             # Get all entities grouped by category
-            cursor.execute('SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender FROM entities')
+            if book_id is not None:
+                cursor.execute('''
+                SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id
+                FROM entities
+                WHERE book_id = ? OR book_id IS NULL
+                ''', (book_id,))
+            else:
+                cursor.execute('''
+                SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id
+                FROM entities
+                ''')
+                
             rows = cursor.fetchall()
             
             # Process results
             entities = default_entities.copy()
             for row in rows:
-                category, untranslated, translation, last_chapter, incorrect_translation, gender = row
+                category, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id = row
                 
                 # Initialize category if needed (should be unnecessary with defaults)
                 entities.setdefault(category, {})
@@ -84,6 +738,8 @@ class EntityManager:
                     entity_data["incorrect_translation"] = incorrect_translation
                 if gender:
                     entity_data["gender"] = gender
+                if entity_book_id:
+                    entity_data["book_id"] = entity_book_id
                 
                 # Add to our entities dictionary
                 entities[category][untranslated] = entity_data
@@ -92,7 +748,7 @@ class EntityManager:
             self.entities = entities
             self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities from database")
             return entities
-            
+                
         except sqlite3.Error as e:
             self.logger.error(f"Error loading entities from database: {e}")
             # Return default empty structure on error
@@ -150,6 +806,9 @@ class EntityManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Track which entities we've already saved to avoid duplicates
+            processed_entities = set()
+            
             # For each category and entity in memory cache
             for category, entities in self.entities.items():
                 for untranslated, entity_data in entities.items():
@@ -157,13 +816,47 @@ class EntityManager:
                     last_chapter = entity_data.get('last_chapter', '')
                     incorrect_translation = entity_data.get('incorrect_translation', None)
                     gender = entity_data.get('gender', None)
+                    book_id = entity_data.get('book_id', None)  # Include book_id
                     
-                    # Use INSERT OR REPLACE to handle both new entities and updates
-                    cursor.execute('''
-                    INSERT OR REPLACE INTO entities 
-                    (category, untranslated, translation, last_chapter, incorrect_translation, gender)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender))
+                    # Create a unique key to track this entity
+                    entity_key = (category, untranslated, book_id)
+                    
+                    # Skip if we've already processed this entity
+                    if entity_key in processed_entities:
+                        continue
+                    
+                    # Add to processed set
+                    processed_entities.add(entity_key)
+                    
+                    # Look for existing entity to determine whether to insert or update
+                    if book_id is not None:
+                        cursor.execute('''
+                        SELECT id FROM entities 
+                        WHERE category = ? AND untranslated = ? AND book_id = ?
+                        ''', (category, untranslated, book_id))
+                    else:
+                        cursor.execute('''
+                        SELECT id FROM entities 
+                        WHERE category = ? AND untranslated = ? AND book_id IS NULL
+                        ''', (category, untranslated))
+                    
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # Update existing entity
+                        entity_id = existing[0]
+                        cursor.execute('''
+                        UPDATE entities 
+                        SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?
+                        WHERE id = ?
+                        ''', (translation, last_chapter, incorrect_translation, gender, entity_id))
+                    else:
+                        # Insert new entity
+                        cursor.execute('''
+                        INSERT INTO entities 
+                        (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id))
             
             conn.commit()
             conn.close()
@@ -173,6 +866,7 @@ class EntityManager:
             # Consider creating a backup JSON in this case
             self.save_json_file("entities_backup.json", self.entities)
             self.logger.info("Created backup of entities in entities_backup.json")
+
     
     def entities_inside_text(self, text_lines, all_entities, current_chapter, do_count=True):
         """
@@ -296,33 +990,48 @@ class EntityManager:
         """Normalize text for consistent comparison"""
         return unicodedata.normalize('NFC', text)
     
-    def add_entity(self, category, untranslated, translation, last_chapter=None, incorrect_translation=None, gender=None):
+    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None):
         """
         Add a new entity to the database.
         Returns True if successful, False if the entity already exists in a different category.
+        
+        Args:
+            category: Entity category
+            untranslated: Original untranslated text
+            translation: Translated text
+            book_id: Book ID (optional - if None, entity is global)
+            last_chapter: Last chapter where entity was found
+            incorrect_translation: Previous incorrect translation
+            gender: Entity gender (for characters)
         """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # First check if this entity exists in any other category
-            cursor.execute('''
-            SELECT category FROM entities 
-            WHERE untranslated = ? AND category != ?
-            ''', (untranslated, category))
+            # First check if this entity exists in any other category for this book
+            if book_id is not None:
+                cursor.execute('''
+                SELECT category FROM entities 
+                WHERE untranslated = ? AND category != ? AND book_id = ?
+                ''', (untranslated, category, book_id))
+            else:
+                cursor.execute('''
+                SELECT category FROM entities 
+                WHERE untranslated = ? AND category != ? AND book_id IS NULL
+                ''', (untranslated, category))
             
             existing = cursor.fetchone()
             if existing:
-                self.logger.warning(f"Entity '{untranslated}' already exists in category '{existing[0]}', not adding to '{category}'")
+                self.logger.warning(f"Entity '{untranslated}' already exists in category '{existing[0]}' for the same book, not adding to '{category}'")
                 conn.close()
                 return False
             
             # Add or update the entity
             cursor.execute('''
             INSERT OR REPLACE INTO entities 
-            (category, untranslated, translation, last_chapter, incorrect_translation, gender)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender))
+            (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender))
             
             conn.commit()
             conn.close()
@@ -336,10 +1045,12 @@ class EntityManager:
                 entity_data["incorrect_translation"] = incorrect_translation
             if gender:
                 entity_data["gender"] = gender
-                
+            if book_id:
+                entity_data["book_id"] = book_id
+                    
             self.entities[category][untranslated] = entity_data
             return True
-            
+                
         except sqlite3.Error as e:
             self.logger.error(f"Error adding entity to database: {e}")
             return False

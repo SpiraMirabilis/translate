@@ -3,8 +3,10 @@ from abc import ABC, abstractmethod
 from entities import EntityManager
 from logger import Logger
 from translation_engine import TranslationEngine
+import datetime
 import json
 import re
+import sqlite3
 
 class UserInterface(ABC):
     """Abstract base class for different user interfaces"""
@@ -20,7 +22,7 @@ class UserInterface(ABC):
         pass
     
     @abstractmethod
-    def display_results(self, results: Dict) -> None:
+    def display_results(self, results: Dict, book_info=None) -> None:
         """Display the translation results to the user"""
         pass
     
@@ -37,12 +39,46 @@ class UserInterface(ABC):
         
             # Get input
             chapter_text = self.get_input()
+
+            self.logger.debug(f"Book ID: {self.book_id}, Book Title: {getattr(self, 'book_title', 'Unknown')}")
+            self.logger.debug(f"Chapter Number: {getattr(self, 'chapter_number', 'None')}")
+
+            # Check for book ID and create default if needed
+            if not hasattr(self, 'book_id') or self.book_id is None:
+                # Look for a default book
+                default_book = self.entity_manager.get_book(title="Default Book")
+                
+                if default_book:
+                    self.book_id = default_book["id"]
+                    self.book_title = default_book["title"]
+                    self.logger.info(f"Using existing Default Book (ID: {self.book_id})")
+                else:
+                    # Create a default book
+                    self.book_id = self.entity_manager.create_book(
+                        "Default Book", 
+                        author="Translator",
+                        description="Default book for translations without a specified book ID"
+                    )
+                    if self.book_id:
+                        self.book_title = "Default Book"
+                        self.logger.info(f"Created Default Book (ID: {self.book_id}) for this translation")
+                    else:
+                        self.logger.info("Warning: Failed to create default book, chapter will not be saved to database")
         
             # Perform translation
-            translation_results = self.translator.translate_chapter(chapter_text)
+            translation_results = self.translator.translate_chapter(
+                chapter_text, 
+                book_id=getattr(self, 'book_id', None)
+            )
+
             if translation_results is None:
                 self.logger.error("Translation process failed - translation_results is None")
                 return None
+            
+            self.logger.debug("--- Entity handling debug ---")
+            for category, entities in translation_results["new_entities"].items():
+                for key, value in entities.items():
+                    self.logger.debug(f"New entity: {category}/{key}")
                 
             # Allow entity review if new entities were found
             totally_new_entities = translation_results["totally_new_entities"]
@@ -139,36 +175,137 @@ class UserInterface(ABC):
                     # Skip this iteration if the key is missing
                     continue
             
-            # Add new entities to SQLite database
-            for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
-                if category not in end_object['entities']:
-                    continue
-                    
-                for key, entity_data in end_object['entities'][category].items():
-                    # Skip if the entity already exists in our database (in any category)
-                    translation = entity_data.get("translation", "")
-                    last_chapter = entity_data.get("last_chapter", current_chapter)
-                    incorrect_translation = entity_data.get("incorrect_translation", None)
-                    gender = entity_data.get("gender", None)
-                    
-                    # Add to database, with uniqueness constraint
-                    self.entity_manager.add_entity(
-                        category, 
-                        key, 
-                        translation, 
-                        last_chapter, 
-                        incorrect_translation, 
-                        gender
-                    )
-            
+            self.logger.debug("--- Final entity saving state ---")
+            for category, entities in self.entity_manager.entities.items():
+                for key, value in entities.items():
+                    self.logger.debug(f"Saving entity: {category}/{key}")
+
             # Save updated entities
-            self.entity_manager.save_entities()
+            #self.entity_manager.save_entities()
+
+            # Save entities directly to database to avoid duplication
+            self.logger.debug("--- Direct entity saving ---")
+            try:
+                conn = sqlite3.connect(self.entity_manager.db_path)
+                cursor = conn.cursor()
+                
+                # Process each entity from end_object
+                for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+                    if category not in end_object['entities']:
+                        continue
+                        
+                    for key, entity_data in end_object['entities'][category].items():
+                        translation = entity_data.get("translation", "")
+                        last_chapter = entity_data.get("last_chapter", current_chapter)
+                        incorrect_translation = entity_data.get("incorrect_translation", None)
+                        gender = entity_data.get("gender", None)
+                        
+                        # Check if entity exists with this book_id
+                        cursor.execute('''
+                        SELECT id FROM entities 
+                        WHERE category = ? AND untranslated = ? AND book_id = ?
+                        ''', (category, key, self.book_id))
+                        
+                        existing = cursor.fetchone()
+                        
+                        if existing:
+                            # Update existing
+                            cursor.execute('''
+                            UPDATE entities
+                            SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?
+                            WHERE id = ?
+                            ''', (translation, last_chapter, incorrect_translation, gender, existing[0]))
+                            self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
+                        else:
+                            # Insert new
+                            cursor.execute('''
+                            INSERT INTO entities
+                            (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id))
+                            self.logger.debug(f"Added entity {key} ({translation}) to category {category} with book_id={self.book_id}")
+                
+                conn.commit()
+                conn.close()
+                self.logger.info("Entities saved to database successfully")
+            except sqlite3.Error as e:
+                self.logger.error(f"Error saving entities to database: {e}")
+            
+            # Update in-memory cache for consistent state
+            self.entity_manager._load_entities(book_id=self.book_id)
             
             # Add original text to output
             end_object['untranslated'] = chapter_text
             
+
+            self.logger.debug(f"About to save chapter with book_id={self.book_id}, chapter_number={getattr(self, 'chapter_number', 'None')}")
+            self.logger.debug(f"Current chapter from translation: {current_chapter}")
+            
+            # If book_id and chapter_number are set, save as a book chapter
+            if hasattr(self, 'book_id') and self.book_id is not None:
+                # Use provided chapter number or the detected one
+                chapter_number = end_object.get('chapter')
+    
+                # Ensure we have a valid chapter number
+                if not chapter_number or not isinstance(chapter_number, int) or chapter_number <= 0:
+                # Fall back to explicitly provided chapter number or default to 1
+                    chapter_number = getattr(self, 'chapter_number', 1)
+                    self.logger.warning(f"Invalid chapter number in translation results, using {chapter_number}")
+                
+                # Save chapter to database
+                chapter_id = self.entity_manager.save_chapter(
+                    self.book_id,
+                    chapter_number,
+                    end_object.get('title', f'Chapter {chapter_number}'),
+                    chapter_text,  # untranslated content
+                    end_object.get('content', []),  # translated content
+                    summary=end_object.get('summary', ''),
+                    translation_model=self.translator.config.translation_model
+                )
+                
+                if chapter_id:
+                    print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
+                    
+                    # Also save book-specific entities
+                    for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+                        if category not in end_object['entities']:
+                            continue
+                            
+                        for key, entity_data in end_object['entities'][category].items():
+                            # Add to database with book_id
+                            translation = entity_data.get("translation", "")
+                            last_chapter = entity_data.get("last_chapter", current_chapter)
+                            incorrect_translation = entity_data.get("incorrect_translation", None)
+                            gender = entity_data.get("gender", None)
+                            
+                            # Add to database, with book_id
+                            self.entity_manager.add_entity(
+                                category, 
+                                key, 
+                                translation, 
+                                book_id=self.book_id,
+                                last_chapter=last_chapter, 
+                                incorrect_translation=incorrect_translation, 
+                                gender=gender
+                            )
+            
+            # In run_translation method, when calling display_results:
+            if hasattr(self, 'book_id') and self.book_id is not None:
+                # Get book info for output
+                book = self.entity_manager.get_book(book_id=self.book_id)
+                if book:
+                    book_info = {
+                        "title": book["title"],
+                        "author": book["author"] or "Translator",
+                        "language": book["language"] or "en"
+                    }
+                else:
+                    book_info = None
+            else:
+                book_info = None
+                    
             # Display results
-            self.display_results(end_object)
+            self.display_results(end_object, book_info)
             
             # If this was a queue item, update the queue after successful translation
             if hasattr(self, '_current_queue') and self._current_queue:

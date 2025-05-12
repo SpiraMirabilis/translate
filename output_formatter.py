@@ -33,7 +33,7 @@ class OutputFormatter:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
     
-    def save_output(self, translation_result: Dict, format: str = "text", book_info: Dict = None) -> str:
+    def save_output(self, translation_result: Dict, format: str = "text", book_info: Dict = None, output_path: str = None) -> str:
         """
         Save the translation result in the specified format.
         
@@ -41,6 +41,7 @@ class OutputFormatter:
             translation_result: Dictionary containing translation data
             format: Output format ('text', 'html', 'markdown', 'epub')
             book_info: Optional dictionary with book metadata for EPUB
+            output_path: Optional specific output path
             
         Returns:
             str: Path to the saved output file
@@ -48,24 +49,53 @@ class OutputFormatter:
         # Get basic information
         title = translation_result.get('title', 'Untitled Chapter')
         chapter = translation_result.get('chapter', 0)
-        content = translation_result.get('content', [])
         
-        # Generate clean filename from title
-        filename_base = self._clean_filename(title)
+        # Handle both 'content' (existing format) and 'translated_content' (archive format)
+        if 'content' in translation_result:
+            content = translation_result['content']
+        else:
+            content = []
+        
+        # Use specified output path or generate one
+        if output_path:
+            final_output_path = output_path
+        else:
+            # Generate clean filename from title
+            filename_base = self._clean_filename(title)
+            
+            # Create book-specific directory if book info is provided
+            if book_info and 'title' in book_info:
+                book_dir = os.path.join(self.output_dir, self._clean_filename(book_info['title']))
+                if not os.path.exists(book_dir):
+                    os.makedirs(book_dir)
+                
+                # Format chapter number if available
+                if chapter:
+                    chapter_prefix = f"chapter_{chapter:03d}_"
+                else:
+                    chapter_prefix = ""
+                
+                # Create path with book directory
+                final_output_path = os.path.join(book_dir, f"{chapter_prefix}{filename_base}.{format}")
+            else:
+                # Use regular output directory
+                final_output_path = os.path.join(self.output_dir, f"{filename_base}.{format}")
         
         # Process based on format
         if format.lower() == "text":
-            return self._save_text(filename_base, content, title)
+            return self._save_text(content, title, final_output_path)
         elif format.lower() == "html":
-            return self._save_html(filename_base, content, title, chapter)
+            return self._save_html(content, title, chapter, final_output_path)
         elif format.lower() == "markdown":
-            return self._save_markdown(filename_base, content, title, chapter)
+            return self._save_markdown(content, title, chapter, final_output_path)
         elif format.lower() == "epub":
-            return self._save_epub(filename_base, content, title, chapter, book_info)
+            if not book_info:
+                book_info = self.get_book_info()
+            return self._save_epub(content, title, chapter, book_info, final_output_path)
         else:
             self.logger.warning(f"Unknown format '{format}', defaulting to text")
-            return self._save_text(filename_base, content, title)
-    
+            return self._save_text(content, title, final_output_path)
+        
     def _clean_filename(self, title: str) -> str:
         """
         Generate a clean filename from a title.
@@ -86,21 +116,22 @@ class OutputFormatter:
         
         return cleaned
     
-    def _save_text(self, filename_base: str, content: List[str], title: str) -> str:
+    def _save_text(self, content: List[str], title: str, output_path: str) -> str:
         """
         Save content as plain text.
         
         Args:
-            filename_base: Base filename
             content: List of content lines
             title: Chapter title
+            output_path: Path to save the file
             
         Returns:
             str: Path to the saved file
         """
-        output_path = os.path.join(self.output_dir, f"{filename_base}.txt")
-        
         try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"{title}\n\n")
                 for line in content:
@@ -112,22 +143,23 @@ class OutputFormatter:
             self.logger.error(f"Error saving text output: {e}")
             return ""
     
-    def _save_html(self, filename_base: str, content: List[str], title: str, chapter: Union[int, str]) -> str:
+    def _save_html(self, content: List[str], title: str, chapter: Union[int, str], output_path: str) -> str:
         """
         Save content as HTML.
         
         Args:
-            filename_base: Base filename
             content: List of content lines
             title: Chapter title
             chapter: Chapter number
+            output_path: Path to save the file
             
         Returns:
             str: Path to the saved file
         """
-        output_path = os.path.join(self.output_dir, f"{filename_base}.html")
-        
         try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write('<!DOCTYPE html>\n')
                 f.write('<html lang="en">\n')
@@ -177,6 +209,10 @@ class OutputFormatter:
         output_path = os.path.join(self.output_dir, f"{filename_base}.md")
         
         try:
+
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"# {title}\n\n")
                 
@@ -322,6 +358,9 @@ class OutputFormatter:
                 book.toc.append(epub.Link(chapter_filename, title, chapter_id))
             
             # Save the EPUB file
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             epub.write_epub(output_path, book, {})
             
             self.logger.info(f"Saved EPUB output to {output_path}")
