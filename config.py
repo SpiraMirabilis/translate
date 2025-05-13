@@ -24,7 +24,7 @@ class TranslationConfig:
         self.script_dir = os.path.dirname(os.path.abspath(__file__)) + "/"
         
         # Translation settings
-        self.max_chars = int(os.getenv("MAX_CHARS", "6000"))
+        self.max_chars = int(os.getenv("MAX_CHARS", "5000"))
 
     def get_client(self, model_spec=None):
         """
