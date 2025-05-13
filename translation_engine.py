@@ -3,6 +3,9 @@ from openai import OpenAI
 import json
 import sqlite3
 import math
+import os
+import time
+
 
 class TranslationEngine:
     """Core class for handling text translation logic"""
@@ -407,7 +410,7 @@ ENTITIES: """ + entities_json + '\n' + """
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text, book_id=None, stream=False):
+    def translate_chapter(self, chapter_text, book_id=None, stream=True):
         """
         Translate a chapter of text using the configured LLM.
         
@@ -419,7 +422,9 @@ ENTITIES: """ + entities_json + '\n' + """
         """
         # Initialize current_chapter to a default value
         current_chapter = 0
-
+        total_input_chars = 0
+        total_output_tokens = 0
+        average_ratio = 1.0
         book_prompt_template = None
         if book_id:
             book_prompt_template = self.entity_manager.get_book_prompt_template(book_id)
@@ -483,48 +488,127 @@ ENTITIES: """ + entities_json + '\n' + """
             self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
             chunk_str = "\n".join(chunk)
             user_text = "Translate the following into English: \n" + chunk_str
-            self.logger.debug(f"About to call {self.config.translation_model} with chunk {chunk_index} of {len(split_text)}")
-            response = self.client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": system_prompt
-                            }
-                        ]
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": user_text
-                            }
-                        ]
-                    }
-                ],
-                temperature=1,
-                top_p=1,
-                frequency_penalty=0,
-                presence_penalty=0,
-                max_tokens=8192,
-                response_format={"type": "json_object"}
-            )
+            total_input_chars += len(chunk_str)
+            self.logger.debug(f"TransEng> Stream mode is {stream}")
+            if stream:
+                # Streaming API call
+                print(f"\nTranslating chunk {chunk_index} of {len(split_text)}")
+                
+                response_text = ""
+                token_count = 0
+                start_time = time.time()
+                try:
+                    ratio_file = os.path.join(self.config.script_dir, "token_ratios.json")
+                    if os.path.exists(ratio_file):
+                        with open(ratio_file, 'r') as f:
+                            ratios = json.load(f)
+                            average_ratio = ratios.get("average", 1.0)
+                except Exception as e:
+                    self.logger.warning(f"Could not load token ratios: {e}")
+                    average_ratio = 1.0
+                expected_tokens = len(chunk_str) * average_ratio 
+                print(f"Based on {total_input_chars} input characters * {average_ratio:.2f} (our historic average ratio) we expect {expected_tokens:.0f} tokens.")
+                response_stream = self.client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": [{"type": "text", "text": system_prompt}]
+                        },
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": user_text}]
+                        }
+                    ],
+                    temperature=1,
+                    top_p=1,
+                    frequency_penalty=0,
+                    presence_penalty=0,
+                    max_tokens=8192,
+                    response_format={"type": "json_object"},
+                    stream=True
+                )
+                
+                # Get progress bar width based on terminal size
+                terminal_width = 80
+                try:
+                    import shutil
+                    terminal_width = shutil.get_terminal_size().columns
+                except:
+                    pass
+                progress_width = min(50, terminal_width - 30)
+                
+                # Process streaming response
+                for chunk in response_stream:
+                    if chunk.choices[0].delta.content:
+                        delta_text = chunk.choices[0].delta.content
+                        response_text += delta_text
+                        token_count += 1
+                        
+                        # Update progress display
+                        if token_count % 10 == 0:  # Update every 10 tokens
+                            elapsed = time.time() - start_time
+                            tokens_per_second = token_count / elapsed if elapsed > 0 else 0
+                            completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
+                            progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
+                            print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
+                print("")
+                total_output_tokens += token_count
+                self.logger.info(f"Chunk {chunk_index}/{len(split_text)} - Input chars: {len(chunk_str)}, Output tokens: {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
+                print("\rTranslation complete. Parsing response...                 ")
+                
+                # Parse the completed response
+                try:
+                    parsed_chunk = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    print("Failed to parse JSON. Payload:")
+                    print(response_text[:500] + "..." if len(response_text) > 500 else response_text)
+                    print(f"Error: {e}")
+                    exit(1)
+            else:
+                self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
+                chunk_str = "\n".join(chunk)
+                user_text = "Translate the following into English: \n" + chunk_str
+                self.logger.debug(f"About to call {self.config.translation_model} with chunk {chunk_index} of {len(split_text)}")
+                response = self.client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": system_prompt
+                                }
+                            ]
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": user_text
+                                }
+                            ]
+                        }
+                    ],
+                    temperature=1,
+                    top_p=1,
+                    frequency_penalty=0,
+                    presence_penalty=0,
+                    max_tokens=8192,
+                    response_format={"type": "json_object"}
+                )
+                try:
+                    parsed_chunk = json.loads(response.choices[0].message.content)
+                except json.JSONDecodeError as e:
+                    print("Failed to parse JSON. Payload:")
+                    print(response.choices[0].message.content)
+                    print(f"Error: {e}")
+                    exit(1)
             
             self.logger.info(f"Translation of chunk {chunk_index} complete.")
             self.logger.debug(f"API call completed for chunk {chunk_index}")
-            self.entity_manager.save_json_file(f"{self.config.script_dir}/response.tmp", response.choices[0].message.content)
-            
-            try:
-                parsed_chunk = json.loads(response.choices[0].message.content)
-            except json.JSONDecodeError as e:
-                print("Failed to parse JSON. Payload:")
-                print(response.choices[0].message.content)
-                print(f"Error: {e}")
-                exit(1)
             
             current_chapter = parsed_chunk['chapter']
             
@@ -541,6 +625,32 @@ ENTITIES: """ + entities_json + '\n' + """
             system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False)
         
         self.logger.debug("Finished processing all chunks")
+
+        if total_input_chars > 0:
+            ratio = total_output_tokens / total_input_chars
+            self.logger.info(f"Chapter completion - Total input chars: {total_input_chars}, Total output tokens: {total_output_tokens}, Overall ratio: {ratio:.2f}")
+            # Save this ratio for future reference
+            try:
+                # Create or update a JSON file with historical ratios
+                ratio_file = os.path.join(self.config.script_dir, "token_ratios.json")
+                if os.path.exists(ratio_file):
+                    with open(ratio_file, 'r') as f:
+                        ratios = json.load(f)
+                else:
+                    ratios = {"ratios": [], "average": 0.9}
+                    
+                # Add new ratio
+                ratios["ratios"].append(ratio)
+                ratios["average"] = sum(ratios["ratios"]) / len(ratios["ratios"])
+                ratios["samples"] = len(ratios["ratios"])
+                
+                # Save updated ratios
+                with open(ratio_file, 'w') as f:
+                    json.dump(ratios, f)
+                    
+                self.logger.info(f"Updated token ratio statistics - Current average: {ratios['average']:.2f} based on {ratios['samples']} samples")
+            except Exception as e:
+                self.logger.error(f"Failed to save token ratio statistics: {e}")
         
         # Check for duplicate entities based on translation value
         self._check_for_translation_duplicates(end_object['entities'])

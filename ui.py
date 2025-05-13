@@ -71,9 +71,12 @@ class UserInterface(ABC):
                             self.logger.info("Warning: Failed to create default book, chapter will not be saved to database")
             
                 # Perform translation
+                stream = getattr(self,'stream', False)
+                self.logger.debug(f"Stream mode is {stream}")
                 translation_results = self.translator.translate_chapter(
                     chapter_text, 
-                    book_id=getattr(self, 'book_id', None)
+                    book_id=getattr(self, 'book_id', None),
+                    stream=getattr(self, 'stream', False)
                 )
 
                 if translation_results is None:
@@ -322,7 +325,7 @@ class UserInterface(ABC):
                     self.logger.info(f"Updated queue - {len(updated_queue)} items remaining.")
                     # Break the loop if queue is empty or if we're not in resume mode
                     if not updated_queue:
-                         self.logger.debug(f"Breaking out after updating queue cause queue empty now")
+                        self.logger.debug(f"Breaking out after updating queue cause queue empty now")
                         break
                 else:
                     # if not processing a queue, just do one translation

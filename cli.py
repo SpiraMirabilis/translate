@@ -123,8 +123,16 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--key", type=str, 
                     help="Specify API key (for the provider specified in --model)")
         
+        parser.add_argument("--no-stream", action="store_true", 
+                    help="Disable streaming API and progress tracking (slightly faster for very short texts)")
+        
         args = parser.parse_args()
-     
+   
+        if args.no_stream:
+            self.stream = False
+        else:
+            self.stream = True
+
         # Book management
         if args.create_book:
             self._create_book(args.create_book, args.book_author, args.book_language, args.book_description)
