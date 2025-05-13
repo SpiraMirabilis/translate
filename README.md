@@ -4,10 +4,6 @@ This is a utility designed to translate web novels to english. Mostly it is desi
 It is capable of importing chapters of untranslated novels as a batch, either from all files in a directory if you scraped it yourself
 or out of an epub file, in the format that WebToEpub Chrome extension outputs (https://github.com/dteviot/WebToEpub || https://chromewebstore.google.com/detail/webtoepub/akiljllkbielkidmammnifcnibaigelm)
 
-# AI-Powered Translation Tool
-
-An advanced translation system that uses AI to translate texts while maintaining consistency of entities (characters, places, etc.) across chapters and books. Specifically optimized for Chinese to English translations of novels and web fiction.
-
 ## Getting Started
 
 ### Prerequisites
