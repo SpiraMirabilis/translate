@@ -898,9 +898,11 @@ class EntityManager:
         
         # Normalize the combined text for consistent matching
         combined_text = self._normalize_text(combined_text)
-        
         # Query all entities from the database if all_entities is empty
         if not all_entities:
+            self.logger.error("all_entities is empty, querying database... but not implemented yet")
+            exit(1)
+        else:
             all_entities_dict = {}
             for key, value in all_entities.items():
                 key_normalized = self._normalize_text(key)
@@ -926,7 +928,6 @@ class EntityManager:
                     
                     # Update global entities
                     all_entities[key]["last_chapter"] = current_chapter
-        
         return found_entities
     
     def find_new_entities(self, old_data, new_data):

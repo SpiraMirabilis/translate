@@ -105,105 +105,22 @@ class TranslationEngine:
             # Insert the entities JSON into the custom template
             prompt = book_prompt_template.replace("{{ENTITIES_JSON}}", entities_json)
         else:
-            prompt = """Your task is to translate the provided material into English, preserving the original content, title, and entities. Focus on semantic accuracy, cultural relevance, and stylistic fidelity.
-Key Guidelines:
+            # Try to load prompt from file
+            prompt_file_path = os.path.join(self.config.script_dir, "system_prompt.txt")
+            
+            try:
+                if os.path.exists(prompt_file_path):
+                    with open(prompt_file_path, 'r', encoding='utf-8') as file:
+                        # Read lines and filter out comments
+                        lines = [line for line in file.readlines() if not line.strip().startswith('#')]
+                        prompt = ''.join(lines)
+                        
+                    self.logger.info(f"Loaded system prompt from {prompt_file_path}")
+            except Exception as e:
+                self.logger.error(f"Error loading system prompt from file: {e}")
+                self.logger.error(f"You're going to need to redownload the system_prompt.txt from the github or create your own")
+                exit(1)
 
-    Content:
-        I have permission to translate this content.
-        Translate all content without summarizing. Double-space lines for clarity.
-        Ensure the translation reflects the meaning, tone, and flow of the original text, including slang, idioms, and subtle nuances.
-        Use double quotes for speech and maintain correct English grammar, syntax, and tenses.
-        Retain formatting symbols (e.g., 【】) unless specified otherwise.
-        NEVER Summarize "content"! Always translate!
-        Prioritize meaningful translation over literal transliteration (e.g., 天海国 → "Heavenly Sea Kingdom").
-        This is a Chinese xianxia story.
-	
-    Entities:
-        Always translate proper nouns (characters, places, organizations, etc.).
-        Translate most place names meaningfully (e.g., 黑风镇 → "Black Wind Town").
-        Places, abilities and characters are especially important and should always be incorporated into the new entities record.
-        Abilities could encompass skills, techniques, spells, etc
-        Use provided pre-translated entities for consistency; translate new ones as required.
-        Categories: CHARACTERS, PLACES, ORGANIZATIONS, ABILITIES, TITLES, and EQUIPMENT.
-        If there are no entities to put in the category then just leave it blank but include the full JSON empty dictionary format:
-{}
-
-    Entities Format:
-        Use this JSON format for entities:
-
-Translate entities accurately, ensuring their relevance and significance in the context of the text.
-
-Here is a list of pre-translated entities, in JSON. If and when you see these nouns in this text, please translate them as provided for a consistent translation experience. If an entity (as described above) is not in this list, translate it yourself:
-
-ENTITIES: """ + entities_json + '\n' + """
-
----
-
-#### Response Template Example
-
-{
-    \"title\": \"Chapter 3 - The Great Apcalyptic Battle\",
-    \"chapter\": 3,
-    \"summary\": \"A concise 75-word or less summary of this chapter. This is the only place where you can summarize.\",
-    \"content\": [
-        \"This is an example of the great battle. We must remember to NEVER summarise the content.\",
-        \"\",
-        \"Now we are on a new line to express the fact we should go to new lines.\",
-        \"\",
-        \"'I wonder what I am supposed to do now.'\",
-        \"\",
-        \"Now we are on the last line, which shouldn't include any linebreaks.\"
-    ],
-    \"entities\": {
-        \"characters\": {
-            \"钟岳\": {\"translation\": \"Zhong Yue\", \"gender\":\"male\", \"last_chapter\": 3},
-            \"夏儿\": {\"translation\": \"Xia'er\", \"gender\":\"female\", \"last_chapter\": 3},
-            \"方剑\": {\"translation\": \"Fang Jian\", \"gender\":\"male\", \"last_chapter\": 2}
-        },
-        \"places\": {
-            \"剑门山\": {\"translation\": \"Jianmen Mountain\", \"last_chapter\": 3},
-            \"大荒\": {\"translation\": \"Great Wilderness\", \"last_chapter\": 3},
-            \"染霜城\": {\"translation\": \"Frostveil City\", \"last_chapter\": 75
-        }
-        },
-        \"organizations\": {
-            \"风氏\": {\"translation\": \"Feng Clan\", \"last_chapter\": 3}
-        },
-        \"abilities\": {
-            \"太极拳\": {\"translation\": \"Supreme Ultimate Fist\", \"last_chapter\": 3},
-            \"天级上品武技·星陨斩\": {\"translation\": \"High-level Heaven Rank Martial Skill: Starfall Slash\", \"last_chapter\": 2}
-        },
-        \"titles\": {
-            \"鉴宝师\": {\"translation\": \"Treasure Appraiser\", \"last_chapter\": 1},
-            \"真君\": {\"translation\": \"True Sovereign\", \"last_chapter\": 5},
-            \"筑道\": {\"translation\": \"Foundation Establishment\", \"last_chapter\": 7}
-        },
-        \"equipment\": {
-            \"蓝龙药鼎\": {\"translation\": \"Azure Dragon Medicinal Cauldron\", \"last_chapter\": 3},
-            \"血魔九影剑\": {\"translation\": \"Blood Demon Nine Shadows Sword\", \"last_chapter\": 1}
-        }
-    }
-}
----
-
-### Key Notes:
-1. **Content**: The `content` array must include the full textual content of the chapter, formatted exactly as given, with line breaks preserved. DO NOT summarize or alter the content.
-2. **Chapter**: The chapter number, as an integer. Provide a good guess based on the initial translation.
-3. **Summary**: Provide a concise summary of no more than 75 words for the chapter.
-4. **Entities**: The `entities` section should include all relevant `characters`, `places`, `organizations`, `abilities`, `titles`, and `equipment`. Each entry must:
-    - Each entity key inside each category is untranslated text. IMPORTANT: NEVER PLACE AN ENGLISH ENTITY KEY. KEYS ARE UNTRANSLATED.
-    - Equipment can include things like weapons, tools, potions, and special resources. It's not limited to things that have to be carried.
-    - Use the untranslated name as the key.
-    - Include:
-        - \"translation\": The accurate and consistent translated name or term.
-        - \"gender\": CHARACTER exclusive attribute. female, male, or neither. Used to keep pronouns consistent since Chinese doesn't have gendered pronouns
-        - \"last_chapter\": You only see entities if they are in this chapter, so this will always be THIS CHAPTER for you.
-        - \"incorrect_translation\": this field only exists if I have corrected your translation of this entity in the past. this is the incorrect translation you made. pay some attention to how your translation was corrected, if you can.
-5. **Translation Formatting** In general, do not split sentences with whitespaces. For example: 'Yet deep down, Chen Shaojun felt that this\nwas really important' is wrong. That should be on one line.
-6. **Titles** Titles in the entity list should include both obvious titles as well as cultivation ranks or levels.
-7. **Ensure Consistency**: Check for existing entities in the pre-translated entities list above. Only add new entities or update existing ones if necessary.
-8. **Formatting**: The output must strictly adhere to JSON formatting standards to ensure proper parsing.
-"""
         return prompt
     
     def combine_json_chunks(self, chunk1_data, chunk2_data, current_chapter):
