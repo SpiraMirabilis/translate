@@ -4,460 +4,383 @@ This is a utility designed to translate web novels to english. Mostly it is desi
 It is capable of importing chapters of untranslated novels as a batch, either from all files in a directory if you scraped it yourself
 or out of an epub file, in the format that WebToEpub Chrome extension outputs (https://github.com/dteviot/WebToEpub || https://chromewebstore.google.com/detail/webtoepub/akiljllkbielkidmammnifcnibaigelm)
 
-## Table of Contents
+# AI-Powered Translation Tool
 
-1. [Installation](#installation)
-2. [Basic Usage](#basic-usage)
-3. [Input Options](#input-options)
-4. [Output Formats](#output-formats)
-5. [EPUB Processing](#epub-processing)
-6. [Translation Queue](#translation-queue)
-7. [Entity Management](#entity-management)
-8. [Common Workflows](#common-workflows)
-9. [Troubleshooting](#troubleshooting)
-10. [Advanced Features](#advanced-features)
+An advanced translation system that uses AI to translate texts while maintaining consistency of entities (characters, places, etc.) across chapters and books. Specifically optimized for Chinese to English translations of novels and web fiction.
 
-## Installation
+## Getting Started
 
 ### Prerequisites
 
 - Python 3.8 or higher
-- OpenAI API key or DeepSeek API key (for translation)
-- pip (Python package manager)
+- OpenAI API key or DeepSeek API key
+- Required Python packages: openai, ebooklib, bs4, questionary, rich
 
-### Step 1: Download the Translator
+### Installation
 
-Clone or download the Translator from the repository:
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/translator.git
+   cd translator
+   ```
 
-```bash
-git clone https://github.com/SpiraMirabilis/translate
-cd translator
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+3. Create a `.env` file with your API keys:
+   ```
+   OPENAI_KEY=your_openai_api_key
+   DEEPSEEK_KEY=your_deepseek_api_key
+   TRANSLATION_MODEL=oai:gpt-4-turbo
+   ADVICE_MODEL=oai:gpt-3.5-turbo
+   DEBUG=False
+   MAX_CHARS=5000
+   ```
+
+### Quick Start: Translate a Single Chapter
+
+1. Run the translator with text from clipboard:
+   ```
+   python translator.py --clipboard
+   ```
+
+2. Or translate a text file:
+   ```
+   python translator.py --file chapter1.txt
+   ```
+
+### Quick Start: Translate a Book
+
+1. Create a book in the database:
+   ```
+   python translator.py --create-book "My Novel" --book-author "Author Name"
+   ```
+   Note the book ID that is returned (e.g., "Book created: 'My Novel' (ID: 1)")
+
+2. Process EPUB file and add chapters to queue:
+   ```
+   python translator.py --epub novel.epub --book-id 1
+   ```
+
+3. Start sequential translation of all queued chapters:
+   ```
+   python translator.py --resume
+   ```
+
+## Command Line Options
+
+### Input Options
+
+| Option | Description |
+|--------|-------------|
+| `--clipboard` | Process input from the clipboard |
+| `--file FILE` | Process input from the specified file |
+| `--resume` | Take input from the queue and translate sequentially |
+| `--epub FILE` | Process an EPUB file and add chapters to the queue |
+| `--create-book-from-epub` | Create a new book from EPUB metadata when processing an EPUB file |
+| `--dir DIRECTORY` | Process all text files in a directory and add to queue |
+| `--sort {auto,name,modified,none}` | Sorting strategy for directory files (default: auto) |
+| `--pattern PATTERN` | File pattern for directory processing (default: *.txt) |
+| `--no-stream` | Disable streaming translation (progress tracking is enabled by default) |
+
+### Book Management
+
+| Option | Description |
+|--------|-------------|
+| `--create-book TITLE` | Create a new book with the specified title |
+| `--book-author AUTHOR` | Specify author when creating a book |
+| `--book-language LANG` | Specify language code when creating a book (default: en) |
+| `--book-description DESC` | Specify description when creating a book |
+| `--list-books` | List all books in the database |
+| `--book-info ID` | Get detailed information about a book by ID |
+| `--edit-book ID` | Edit book information by ID |
+| `--delete-book ID` | Delete a book and all its chapters by ID |
+
+### Chapter Management
+
+| Option | Description |
+|--------|-------------|
+| `--book-id ID` | Specify book ID for translation or chapter operations |
+| `--chapter-number NUM` | Specify chapter number for translation or retrieval |
+| `--list-chapters ID` | List all chapters for a book by ID |
+| `--get-chapter` | Get a specific chapter (requires --book-id and --chapter-number) |
+| `--delete-chapter` | Delete a specific chapter (requires --book-id and --chapter-number) |
+| `--export-book ID` | Export all chapters of a book to specified format |
+| `--retranslate` | Retranslate a chapter (requires --book-id and --chapter-number) |
+
+### Queue Management
+
+| Option | Description |
+|--------|-------------|
+| `--queue` | Add translated content to the queue for later processing |
+| `--list-queue` | List all items in the translation queue |
+| `--clear-queue` | Clear the translation queue |
+
+### Output Options
+
+| Option | Description |
+|--------|-------------|
+| `--format {text,html,markdown,epub}` | Output format for translation results (default: text) |
+| `--epub-title TITLE` | Book title for EPUB output |
+| `--epub-author AUTHOR` | Book author for EPUB output |
+| `--epub-language LANG` | Book language code for EPUB output (default: en) |
+| `--edit-epub-info` | Edit book information for EPUB output |
+
+### Model Options
+
+| Option | Description |
+|--------|-------------|
+| `--model MODEL` | Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or deepseek:deepseek-chat) |
+| `--advice-model MODEL` | Specify model for entity translation advice |
+| `--key KEY` | Specify API key (for the provider specified in --model) |
+
+### Entity Management
+
+| Option | Description |
+|--------|-------------|
+| `--export-json FILE` | Export SQLite database to JSON file |
+| `--import-json FILE` | Import entities from JSON file to SQLite database |
+| `--check-duplicates` | Check for duplicate entities in the database |
+
+### Prompt Template Management
+
+| Option | Description |
+|--------|-------------|
+| `--show-prompt-template ID` | Show the current prompt template for a book (by ID) |
+| `--set-prompt-template ID` | Set a custom prompt template for a book (by ID) |
+| `--prompt-file FILE` | Load prompt template from a file |
+| `--export-default-prompt FILE` | Export the default prompt template to a file |
+| `--edit-prompt ID` | Edit the prompt template for a book using your system editor |
+
+## Detailed Usage Examples
+
+### Input Methods
+
+From clipboard (text must be copied first):
 ```
-
-### Step 2: Install Dependencies
-
-Install all required dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-This will install:
-- openai
-- python-dotenv
-- questionary
-- rich
-- pyperclip
-- ebooklib
-- beautifulsoup4
-- html2text
-
-### Step 3: Configure API Keys
-
-Create a `.env` file in the translator directory with your API keys:
-
-```
-OPENAI_KEY=your_openai_api_key_here
-DEEPSEEK_KEY=your_deepseek_api_key_here
-TRANSLATION_MODEL=o3-mini
-ADVICE_MODEL=o3-mini
-DEBUG=False
-MAX_CHARS=10000
-```
-
-Replace `your_openai_api_key_here` with your actual OpenAI API key, and optionally configure the model names.
-
-### Step 4: Test the Installation
-
-Run a simple test to verify the installation:
-
-```bash
-python translator.py --help
-```
-
-You should see a list of available commands and options.
-
-## Basic Usage
-
-### Translating a File
-
-To translate a text file:
-
-```bash
-python translator.py --file path/to/your/file.txt
-```
-
-The translated text will be saved in the default format (text) and copied to your clipboard.
-
-### Translating from Clipboard
-
-To translate text from your clipboard:
-
-```bash
 python translator.py --clipboard
 ```
 
-Copy the text you want to translate before running this command.
+From a file:
+```
+python translator.py --file path/to/chapter.txt
+```
 
-### Manual Text Entry
-
-To enter text manually:
-
-```bash
+Manual input (will prompt for text):
+```
 python translator.py
 ```
 
-Enter or paste your content, then type `ENDEND` on a new line or press Ctrl+D to start translating.
-
-## Input Options
-
-### File Input
-
-```bash
-python translator.py --file path/to/your/file.txt
+Process all text files in a directory:
+```
+python translator.py --dir path/to/chapters --sort auto --pattern "*.txt"
 ```
 
-### Clipboard Input
-
-```bash
-python translator.py --clipboard
+Process EPUB and create a book automatically:
+```
+python translator.py --epub path/to/book.epub --create-book-from-epub
 ```
 
-### EPUB Input
+### Book Management
 
-```bash
-python translator.py --epub path/to/your/book.epub
+Create a new book:
+```
+python translator.py --create-book "Book Title" --book-author "Author Name" --book-language "en" --book-description "A fantasy novel"
 ```
 
-This will extract chapters from the EPUB and add them to the translation queue.
-
-### Directory Input
-
-```bash
-python translator.py --dir path/to/directory
+List all books:
+```
+python translator.py --list-books
 ```
 
-This will process all text files in the directory and add them to the translation queue.
-
-#### Directory Sorting Options
-
-Control how files are ordered:
-
-```bash
-# Sort by detected chapter numbers, then by name (default)
-python translator.py --dir path/to/directory --sort auto
-
-# Sort alphabetically by filename
-python translator.py --dir path/to/directory --sort name
-
-# Sort by modification time (oldest first)
-python translator.py --dir path/to/directory --sort modified
-
-# Keep original order
-python translator.py --dir path/to/directory --sort none
+View detailed book information:
+```
+python translator.py --book-info 1
 ```
 
-#### File Pattern Filtering
+Edit a book:
+```
+python translator.py --edit-book 1
+```
 
-Specify which files to process:
+Delete a book:
+```
+python translator.py --delete-book 1
+```
 
-```bash
-# Process only .md files
-python translator.py --dir path/to/directory --pattern "*.md"
+### Chapter Management
 
-# Process only files with specific naming
-python translator.py --dir path/to/directory --pattern "chapter_*.txt"
+List chapters in a book:
+```
+python translator.py --list-chapters 1
+```
+
+Get a specific chapter:
+```
+python translator.py --get-chapter --book-id 1 --chapter-number 5 --format html
+```
+
+Delete a chapter:
+```
+python translator.py --delete-chapter --book-id 1 --chapter-number 5
+```
+
+Export a book to different formats:
+```
+python translator.py --export-book 1 --format epub
+python translator.py --export-book 1 --format html
+python translator.py --export-book 1 --format markdown
+```
+
+Retranslate a specific chapter:
+```
+python translator.py --retranslate --book-id 1 --chapter-number 5
+```
+
+### Queue Management
+
+Add a file to the translation queue:
+```
+python translator.py --file chapter.txt --queue
+```
+
+Process all files in a directory and add to queue:
+```
+python translator.py --dir chapters/ --queue
+```
+
+List the current queue:
+```
+python translator.py --list-queue
+```
+
+Clear the queue:
+```
+python translator.py --clear-queue
+```
+
+Process the queue sequentially:
+```
+python translator.py --resume
+```
+
+### Model Selection and API Keys
+
+Use OpenAI GPT-4:
+```
+python translator.py --model oai:gpt-4-turbo --file chapter.txt
+```
+
+Use DeepSeek model:
+```
+python translator.py --model deepseek:deepseek-chat --file chapter.txt
+```
+
+Specify a different API key for this run:
+```
+python translator.py --model oai:gpt-4-turbo --key your_api_key_here --file chapter.txt
+```
+
+Use different models for translation and entity advice:
+```
+python translator.py --model oai:gpt-4-turbo --advice-model oai:gpt-3.5-turbo --file chapter.txt
+```
+
+### Entity Management
+
+Check for duplicate entities:
+```
+python translator.py --check-duplicates
+```
+
+Export entities to JSON:
+```
+python translator.py --export-json entities_backup.json
+```
+
+Import entities from JSON:
+```
+python translator.py --import-json entities_backup.json
+```
+
+### Custom Prompt Templates
+
+Show the current prompt template for a book:
+```
+python translator.py --show-prompt-template 1
+```
+
+Export the default prompt template:
+```
+python translator.py --export-default-prompt custom_prompt.txt
+```
+
+Set a custom prompt template for a book:
+```
+python translator.py --set-prompt-template 1 --prompt-file custom_prompt.txt
+```
+
+Edit a book's prompt template in your system editor:
+```
+python translator.py --edit-prompt 1
 ```
 
 ## Output Formats
 
-The translator supports multiple output formats:
+Control the output format of translations:
 
-### Text Format (Default)
-
-```bash
-python translator.py --file input.txt --format text
+Plain text (default):
+```
+python translator.py --file chapter.txt --format text
 ```
 
-Output is saved as a plain text file.
-
-### HTML Format
-
-```bash
-python translator.py --file input.txt --format html
+HTML:
+```
+python translator.py --file chapter.txt --format html
 ```
 
-Output is saved as an HTML file with basic styling.
-
-### Markdown Format
-
-```bash
-python translator.py --file input.txt --format markdown
+Markdown:
+```
+python translator.py --file chapter.txt --format markdown
 ```
 
-Output is saved as a Markdown file.
-
-### EPUB Format
-
-```bash
-python translator.py --file input.txt --format epub
+EPUB:
+```
+python translator.py --file chapter.txt --format epub --epub-title "Book Title" --epub-author "Author"
 ```
 
-Output is saved as an EPUB file, which can be read on e-readers.
-
-## EPUB Processing
-
-### Reading from EPUB
-
-To process an EPUB book and add its chapters to the translation queue:
-
-```bash
-python translator.py --epub path/to/your/book.epub
+Edit EPUB metadata:
+```
+python translator.py --edit-epub-info
 ```
 
-This will:
-1. Extract all chapters from the EPUB
-2. Add each chapter to the translation queue
-3. Preserve chapter titles and numbers
+## Technical Details
 
-### Writing to EPUB
+### Environment Variables
 
-To output translations as an EPUB book:
+The program can be configured through environment variables in a `.env` file:
 
-```bash
-python translator.py --format epub
-```
+- `OPENAI_KEY`: Your OpenAI API key
+- `DEEPSEEK_KEY`: Your DeepSeek API key
+- `TRANSLATION_MODEL`: Default model to use (format: [provider:]model)
+- `ADVICE_MODEL`: Model for entity translation advice
+- `MAX_CHARS`: Maximum characters per API call (default: 5000)
+- `DEBUG`: Enable debug mode (True/False)
 
-#### EPUB Book Information
+### Database Structure
 
-You can set book information for EPUB output:
+- SQLite database (`entities.db`) stores entities and book/chapter information
+- Entity categories: characters, places, organizations, abilities, titles, equipment
+- Books table: stores book metadata
+- Chapters table: stores chapter content and translation metadata
 
-```bash
-python translator.py --format epub --book-title "My Novel" --book-author "Author Name"
-```
+### Files and Directories
 
-Or edit book information interactively:
+- `output/`: Generated translations are saved here
+- `entities.db`: SQLite database for entities and book/chapter data
+- `queue.json`: Translation queue
+- `system_prompt.txt`: System prompt template (can be customized)
+- `token_ratios.json`: Stats used for progress estimation
 
-```bash
-python translator.py --edit-book-info
-```
-
-### Building a Complete EPUB Book
-
-To translate an entire book and save it as EPUB:
-
-1. First, process the EPUB to add chapters to the queue:
-   ```bash
-   python translator.py --epub input.epub
-   ```
-
-2. Edit book information for output:
-   ```bash
-   python translator.py --edit-book-info
-   ```
-
-3. Process all chapters in the queue with EPUB output:
-   ```bash
-   python translator.py --resume --format epub
-   ```
-
-This will process all chapters in the queue sequentially and create a single EPUB file with all translations.
-
-## Translation Queue
-
-### Adding to Queue
-
-Add the current input to the queue without translating:
-
-```bash
-python translator.py --file chapter.txt --queue
-```
-
-### Processing Queue
-
-Process items from the queue one by one:
-
-```bash
-python translator.py --resume
-```
-
-### Listing Queue
-
-View all items in the translation queue:
-
-```bash
-python translator.py --list-queue
-```
-
-### Clearing Queue
-
-Clear all items from the queue:
-
-```bash
-python translator.py --clear-queue
-```
-
-## Entity Management
-
-The translator maintains a database of entities (characters, places, etc.) to ensure consistent translations.
-
-### Checking for Duplicates
-
-Check for duplicate entities in the database:
-
-```bash
-python translator.py --check-duplicates
-```
-
-This will show any entities that appear in multiple categories or have duplicate translations.
-
-### Fixing Duplicates
-
-Automatically fix duplicated entities:
-
-```bash
-python translator.py --fix-duplicates
-```
-
-This will keep the most recently used instance of each duplicated entity.
-
-### Exporting Entities
-
-Export the entity database to JSON:
-
-```bash
-python translator.py --export-json entities_backup.json
-```
-
-### Importing Entities
-
-Import entities from a JSON file:
-
-```bash
-python translator.py --import-json entities_backup.json
-```
-
-## Common Workflows
-
-### Translating a Single Document
-
-```bash
-python translator.py --file document.txt --format html
-```
-
-### Translating a Complete Book from EPUB
-
-```bash
-# Add book to queue
-python translator.py --epub input.epub
-
-# Set book information
-python translator.py --edit-book-info
-
-# Process all chapters in the queue
-python translator.py --resume --format epub
-```
-
-This will automatically process all items in the queue sequentially until complete.
-
-### Translating a Complete Book from Directory
-
-```bash
-# Add all text files to queue
-python translator.py --dir path/to/chapters --sort auto
-
-# Set book information
-python translator.py --edit-book-info
-
-# Process all chapters in the queue
-python translator.py --resume --format epub
-```
-
-This will process all text files in the directory and create an EPUB book.
-
-### Batch Processing with Different Options
-
-If you want to process different chapters with different settings, you can create a script:
-
-```bash
-#!/bin/bash
-# First set of chapters with one format
-python translator.py --resume --format html
-
-# Then process additional chapters with a different format
-python translator.py --resume --format epub
-```
-
-Save this as `process_queue.sh`, make it executable with `chmod +x process_queue.sh`, and run it with `./process_queue.sh`.
-
-## Troubleshooting
-
-### API Errors
-
-If you see API errors:
-- Check that your API keys are correctly set in the `.env` file
-- Verify you have sufficient credits/quota on your API account
-- Try using a different model (e.g., `--model oai:gpt-3.5-turbo or --model deepseek:deepseek-chat`)
-
-### EPUB Issues
-
-If EPUB processing fails:
-- Check that the EPUB file is valid and not DRM-protected
-- Try converting the EPUB to a different format and back using Calibre
-- Use `--epub-no-images` option if the EPUB contains many images
-
-### Output Formatting Issues
-
-If the output format is incorrect:
-- Check that you have the required dependencies installed
-- Ensure the output directory is writable
-- Try a different output format as a test
-
-### Entity Duplication Issues
-
-If you notice inconsistent translations:
-- Run `--check-duplicates` to identify duplicate entities
-- Use `--fix-duplicates` to automatically resolve duplications
-- Edit the entities manually through the review process
-
-## Advanced Features
-
-### Using Different Translation Models
-
-Specify a different model for translation:
-
-```bash
-python translator.py --file input.txt --model oai:gpt-4-turbo
-```
-
-### Using a Different API Key
-
-Use a different API key for a single translation:
-
-```bash
-python translator.py --file input.txt --key your_alternative_api_key
-```
-
-### Debug Mode
-
-Enable debug mode for more detailed logging:
-
-```bash
-DEBUG=True python translator.py --file input.txt
-```
-
-Or set `DEBUG=True` in your `.env` file.
-
-### Custom Output Directory
-
-If you want to change where output files are saved, you can modify the OutputFormatter class to use a different directory.
-
----
-
-## Additional Resources
-
-- [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
-- [DeepSeek API Documentation](https://platform.deepseek.com/docs)
-- [EPUB Specification](https://www.w3.org/publishing/epub3/epub-spec.html)
-
-For further assistance, please open an issue on the GitHub repository.
