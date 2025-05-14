@@ -103,7 +103,7 @@ or out of an epub file, in the format that WebToEpub Chrome extension outputs (h
 | `--list-chapters ID` | List all chapters for a book by ID |
 | `--get-chapter` | Get a specific chapter (requires --book-id and --chapter-number) |
 | `--delete-chapter` | Delete a specific chapter (requires --book-id and --chapter-number) |
-| `--export-book ID` | Export all chapters of a book to specified format |
+| `--export-book ID` | Export all chapters of a book to specified format. e.g. ```python translator.py --export-book 1 --format epub``` |
 | `--retranslate` | Retranslate a chapter (requires --book-id and --chapter-number) |
 
 ### Queue Management
