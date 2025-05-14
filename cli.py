@@ -250,6 +250,9 @@ class CommandLineInterface(UserInterface):
         if args.model:
             self.translator.config.translation_model = args.model
             self.translator.client, self.translator.model_name = self.translator.config.get_client(args.model)
+        else:
+            self.translator.config.translation_model = "oai:gpt-4.1"
+            self.translator.client, self.translator.model_name = self.translator.config.get_client(args.model)
 
         # Handle advice model override
         if args.advice_model:
