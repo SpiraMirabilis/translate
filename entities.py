@@ -900,8 +900,8 @@ class EntityManager:
         combined_text = self._normalize_text(combined_text)
         # Query all entities from the database if all_entities is empty
         if not all_entities:
-            self.logger.error("all_entities is empty, querying database... but not implemented yet")
-            exit(1)
+            self.logger.error("all_entities is empty, querying database... we will just return a blank dict for now")
+            return {}
         else:
             all_entities_dict = {}
             for key, value in all_entities.items():
