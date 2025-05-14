@@ -96,6 +96,152 @@ class OutputFormatter:
             self.logger.warning(f"Unknown format '{format}', defaulting to text")
             return self._save_text(content, title, final_output_path)
         
+    def save_book_as_epub(self, all_chapters, book_info):
+        """
+        Save multiple chapters as a single EPUB file.
+        
+        Args:
+            all_chapters: List of chapter data dictionaries
+            book_info: Dictionary with book metadata
+            
+        Returns:
+            str: Path to the saved EPUB file
+        """
+        # Extract book metadata
+        book_title = book_info.get('title', 'Translated Book')
+        book_author = book_info.get('author', 'Translator')
+        book_language = book_info.get('language', 'en')
+        book_description = book_info.get('description', '')
+        
+        # Create a clean filename for the book
+        book_filename = self._clean_filename(book_title)
+        output_path = os.path.join(self.output_dir, f"{book_filename}.epub")
+        
+        try:
+            # Create a new EPUB book
+            book = epub.EpubBook()
+            book.set_title(book_title)
+            book.set_language(book_language)
+            book.add_author(book_author)
+            if book_description:
+                book.add_metadata('DC', 'description', book_description)
+            
+            # Add default CSS
+            default_css = epub.EpubItem(
+                uid="style_default",
+                file_name="style/default.css",
+                media_type="text/css",
+                content='''
+                    body { font-family: serif; }
+                    h1 { text-align: center; margin-bottom: 1em; }
+                    p { text-indent: 1.5em; margin-top: 0.5em; margin-bottom: 0.5em; }
+                '''
+            )
+            book.add_item(default_css)
+            
+            # Create intro/title page
+            intro = epub.EpubHtml(title='Introduction', file_name='intro.xhtml', lang=book_language)
+            intro.content = f'''
+                <html>
+                <head>
+                    <title>Introduction</title>
+                    <link rel="stylesheet" href="style/default.css" type="text/css" />
+                </head>
+                <body>
+                    <h1>{book_title}</h1>
+                    <p>Author: {book_author}</p>
+                    <p>Translation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
+                    <p>{book_description}</p>
+                </body>
+                </html>
+            '''
+            book.add_item(intro)
+            
+            # Add to spine and TOC
+            book.spine = ['nav', intro]
+            book.toc = [epub.Link('intro.xhtml', 'Introduction', 'intro')]
+            
+            # Add each chapter
+            for chapter_data in sorted(all_chapters, key=lambda x: x.get('chapter', 0)):
+                chapter_number = chapter_data.get('chapter', 0)
+                chapter_title = chapter_data.get('title', f'Chapter {chapter_number}')
+                
+                # Handle both 'content' and legacy 'translated_content' keys
+                if 'content' in chapter_data:
+                    content = chapter_data['content']
+                elif 'translated_content' in chapter_data:
+                    content = chapter_data['translated_content']
+                else:
+                    content = []
+                
+                # Convert list of content lines to HTML
+
+                html_content = ""
+                current_paragraph = []
+
+                for line in content:
+                    if line.strip() == "":
+                        # If we have content in the current paragraph, wrap it and add it
+                        if current_paragraph:
+                            paragraph_text = " ".join(current_paragraph)
+                            paragraph_text = paragraph_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            html_content += f"<p>{paragraph_text}</p>\n"
+                            current_paragraph = []
+                    else:
+                        # Add this line to the current paragraph
+                        current_paragraph.append(line)
+
+                # Add any remaining paragraph content
+                if current_paragraph:
+                    paragraph_text = " ".join(current_paragraph)
+                    paragraph_text = paragraph_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    html_content += f"<p>{paragraph_text}</p>\n"
+
+
+
+
+                # Create chapter
+                chapter_id = f"chapter_{chapter_number}"
+                chapter_filename = f"chapter_{chapter_number:03d}.xhtml"
+                
+                # Create EPUB chapter
+                epub_chapter = epub.EpubHtml(title=chapter_title, file_name=chapter_filename, lang=book_language)
+                epub_chapter.content = f'''
+                    <html>
+                    <head>
+                        <title>{chapter_title}</title>
+                        <link rel="stylesheet" href="style/default.css" type="text/css" />
+                    </head>
+                    <body>
+                        <h1>{chapter_title}</h1>
+                        {html_content}
+                    </body>
+                    </html>
+                '''
+                book.add_item(epub_chapter)
+                
+                # Add chapter to table of contents and spine
+                book.spine.append(epub_chapter)
+                book.toc.append(epub.Link(chapter_filename, chapter_title, chapter_id))
+            
+            # Add navigation files
+            book.add_item(epub.EpubNcx())
+            book.add_item(epub.EpubNav())
+            
+            # Create output directory if it doesn't exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Write the EPUB file
+            epub.write_epub(output_path, book, {})
+            
+            self.logger.info(f"Saved all chapters as EPUB to {output_path}")
+            return output_path
+        except Exception as e:
+            self.logger.error(f"Error saving book as EPUB: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return ""
+
     def _clean_filename(self, title: str) -> str:
         """
         Generate a clean filename from a title.
@@ -277,9 +423,20 @@ class OutputFormatter:
                     file_name="style/default.css",
                     media_type="text/css",
                     content='''
-                        body { font-family: serif; }
-                        h1 { text-align: center; margin-bottom: 1em; }
-                        p { text-indent: 1.5em; margin-top: 0.5em; margin-bottom: 0.5em; }
+                        body { 
+                            font-family: serif;
+                            line-height: 1.5;
+                        }
+                        h1 { 
+                            text-align: center;
+                            margin-bottom: 1.5em;
+                            margin-top: 1em;
+                        }
+                        p { 
+                            text-indent: 1.5em;
+                            margin-top: 0.5em;
+                            margin-bottom: 0.5em;
+                        }
                     '''
                 )
                 book.add_item(default_css)

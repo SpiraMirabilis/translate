@@ -1106,7 +1106,7 @@ class CommandLineInterface(UserInterface):
         self.output_format = format
         
         # Create book-specific output directory
-        book_dir = os.path.join(self.entity_manager.config.script_dir, "output", self._clean_filename(book['title']))
+        book_dir = os.path.join(self.entity_manager.config.script_dir, "output", self.output_formatter._clean_filename(book['title']))
         if not os.path.exists(book_dir):
             os.makedirs(book_dir)
         
@@ -1143,7 +1143,7 @@ class CommandLineInterface(UserInterface):
                     continue
                 
                 # Set chapter-specific output path
-                chapter_filename = f"chapter_{chapter_data['chapter']:03d}_{self._clean_filename(chapter_data['title'])}"
+                chapter_filename = f"chapter_{chapter_data['chapter']:03d}_{self.output_formatter._clean_filename(chapter_data['title'])}"
                 output_path = os.path.join(book_dir, f"{chapter_filename}.{format}")
                 
                 # Format and save
