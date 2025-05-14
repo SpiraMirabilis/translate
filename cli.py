@@ -78,7 +78,8 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--prompt-file", type=str, help="Load prompt template from a file")
         parser.add_argument("--export-default-prompt", type=str, help="Export the default prompt template to a file")
         parser.add_argument("--edit-prompt", type=int, help="Edit the prompt template for a book using your system editor")
-
+        parser.add_argument("--no-review", action="store_true",
+                            help="Disable the entity review process at end of each translated chapter" )
         
         # Chapter management
         chapter_group = parser.add_argument_group('Chapter Management')
@@ -128,6 +129,10 @@ class CommandLineInterface(UserInterface):
         
         args = parser.parse_args()
    
+        if args.no_review:
+            self.no_review = True
+        else:
+            self.no_veiw = False
         if args.no_stream:
             self.stream = False
         else:
@@ -1388,6 +1393,9 @@ class CommandLineInterface(UserInterface):
         Using questionary to display interactive prompts.
         Returns a dictionary of edited data.
         """
+        if self.no_review:
+            print("Review disabled, skipping entity review.")
+            return {}
         if not self.has_rich_ui:
             print("Rich UI components not available. Skipping entity review.")
             return {}
