@@ -132,7 +132,7 @@ class CommandLineInterface(UserInterface):
         if args.no_review:
             self.no_review = True
         else:
-            self.no_veiw = False
+            self.no_reveiw = False
         if args.no_stream:
             self.stream = False
         else:
