@@ -7,6 +7,7 @@ from logger import Logger
 from translation_engine import TranslationEngine
 from ui import UserInterface
 from output_formatter import OutputFormatter
+from providers import get_factory
 import json
 import sqlite3
 import re
@@ -117,12 +118,21 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--check-duplicates", action="store_true", help="Check for duplicate entities in the database")
         
         # Model arguments
-        parser.add_argument("--model", type=str, 
-                        help="Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or deepseek:deepseek-chat)")
-        parser.add_argument("--advice-model", type=str, 
-                    help="Specify model for entity translation advice (format: [provider:]model,e.g. oai:gpt-4 or deepseek:deepseek-chat)")
+        try:
+            factory = get_factory()
+            supported_providers = ', '.join(factory.get_supported_providers())
+            model_help = f"Specify model for translation (format: [provider:]model). Supported providers: {supported_providers}"
+            advice_help = f"Specify model for entity translation advice (format: [provider:]model). Supported providers: {supported_providers}"
+        except:
+            model_help = "Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or claude:claude-3-5-sonnet)"
+            advice_help = "Specify model for entity translation advice (format: [provider:]model)"
+        
+        parser.add_argument("--model", type=str, help=model_help)
+        parser.add_argument("--advice-model", type=str, help=advice_help)
         parser.add_argument("--key", type=str, 
                     help="Specify API key (for the provider specified in --model)")
+        parser.add_argument("--list-providers", action="store_true",
+                    help="List all supported model providers and their default models")
         
         parser.add_argument("--no-stream", action="store_true", 
                     help="Disable streaming API and progress tracking (slightly faster for very short texts)")
@@ -180,6 +190,11 @@ class CommandLineInterface(UserInterface):
             self._export_default_prompt(args.export_default_prompt)
             exit(0)
         
+        # List providers
+        if args.list_providers:
+            self._list_providers()
+            exit(0)
+        
         # Chapter management
         if args.list_chapters:
             self._list_chapters(args.list_chapters)
@@ -234,31 +249,32 @@ class CommandLineInterface(UserInterface):
 
         # CLI provided API keys
         if args.key:
-            # Determine which key to set based on the model provider
+            # Determine which provider this key is for using the factory
+            factory = get_factory()
+            
             if args.model:
-                provider, _ = self.translator.config.parse_model_spec(args.model)
-                if provider in ["deepseek", "ds"]:
-                    self.translator.config.deepseek_key = args.key
-                else:  # Default to OpenAI
-                    self.translator.config.openai_key = args.key
+                provider_name, _ = self.translator.config.parse_model_spec(args.model)
             else:
                 # If no model specified, use the provider from translation_model
-                provider, _ = self.translator.config.parse_model_spec(self.translator.config.translation_model)
-                if provider in ["deepseek", "ds"]:
-                    self.translator.config.deepseek_key = args.key
-                else:  # Default to OpenAI
-                    self.translator.config.openai_key = args.key
+                provider_name, _ = self.translator.config.parse_model_spec(self.translator.config.translation_model)
             
-            # Reinitialize client with new key
-            self.translator.client, self.translator.model_name = self.translator.config.get_client()
+            # Resolve provider name through aliases
+            resolved_name = factory._resolve_provider_name(provider_name)
+            
+            # Get the API key environment variable for this provider
+            if resolved_name in factory.config['providers']:
+                api_key_env = factory.config['providers'][resolved_name].get('api_key_env')
+                if api_key_env:
+                    os.environ[api_key_env] = args.key
+                    print(f"Set {api_key_env} for provider '{provider_name}'")
+                else:
+                    print(f"Warning: No API key environment variable configured for provider '{provider_name}'")
+            else:
+                print(f"Warning: Unknown provider '{provider_name}'. Available providers: {factory.get_supported_providers()}")
 
         # CLI provided model
         if args.model:
             self.translator.config.translation_model = args.model
-            self.translator.client, self.translator.model_name = self.translator.config.get_client(args.model)
-        else:
-            self.translator.config.translation_model = "oai:gpt-4.1"
-            self.translator.client, self.translator.model_name = self.translator.config.get_client(args.model)
 
         # Handle advice model override
         if args.advice_model:
@@ -301,14 +317,6 @@ class CommandLineInterface(UserInterface):
         else:
             self.book_info = None
 
-        # Handle API key override
-        if args.key:
-            self.translator.config.openai_key = args.key
-            self.translator.client = self.translator.config.get_client()
-        
-        # Handle model override
-        if args.model:
-            self.translator.config.translation_model = args.model
         
         # Handle SQLite database management commands
         if args.export_json:
@@ -1327,6 +1335,46 @@ class CommandLineInterface(UserInterface):
             print("You can modify this file and use it with --set-prompt-template")
         except Exception as e:
             print(f"Error exporting default prompt: {e}")
+    
+    def _list_providers(self):
+        """List all supported model providers and their configurations"""
+        try:
+            factory = get_factory()
+            
+            print("Supported Model Providers:")
+            print("=" * 50)
+            
+            for provider_name, config in factory.config['providers'].items():
+                print(f"\nProvider: {provider_name}")
+                print(f"  Class: {config.get('class', 'Unknown')}")
+                
+                if 'base_url' in config:
+                    print(f"  Base URL: {config['base_url']}")
+                
+                if 'api_key_env' in config:
+                    print(f"  API Key Env: {config['api_key_env']}")
+                
+                if 'default_model' in config:
+                    print(f"  Default Model: {config['default_model']}")
+                
+                if 'models' in config:
+                    print(f"  Available Models: {', '.join(config['models'])}")
+            
+            # Show aliases
+            if 'aliases' in factory.config and factory.config['aliases']:
+                print(f"\nAliases:")
+                for alias, target in factory.config['aliases'].items():
+                    print(f"  {alias} -> {target}")
+            
+            print(f"\nExample usage:")
+            print(f"  python translator.py --model openai:gpt-4-turbo --file chapter.txt")
+            print(f"  python translator.py --model claude:claude-3-5-sonnet-20241022 --file chapter.txt")
+            print(f"  python translator.py --model deepseek:deepseek-chat --file chapter.txt")
+            
+        except Exception as e:
+            print(f"Error listing providers: {e}")
+            import traceback
+            traceback.print_exc()
 
 
     def edit_text_with_system_editor(self, initial_text=""):

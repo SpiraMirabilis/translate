@@ -1,7 +1,7 @@
-from openai import OpenAI
 from dotenv import load_dotenv
 import json
 import os
+from providers import create_provider, get_factory
 
 class TranslationConfig:
     """Configuration class for translation settings"""
@@ -28,37 +28,41 @@ class TranslationConfig:
 
     def get_client(self, model_spec=None):
         """
-        Return an appropriate API client based on model specification.
+        Return an appropriate provider based on model specification.
         
         Args:
             model_spec: String in format "provider:model" or just "model"
                         If not provided, uses translation_model
         
         Returns:
-            tuple: (client, model_name)
+            tuple: (provider, model_name)
         """
         if model_spec is None:
             model_spec = self.translation_model
         
         # Parse provider and model
-        if ":" in model_spec:
-            provider, model_name = model_spec.split(":", 1)
-        else:
-            # Default to OpenAI if no provider specified
-            provider = "oai"
-            model_name = model_spec
+        provider, model_name = self.parse_model_spec(model_spec)
         
-        # Create appropriate client
-        if provider.lower() in ["deepseek", "ds"]:
-            if not self.deepseek_key:
-                raise ValueError("DeepSeek API key not configured. Set DEEPSEEK_KEY in .env file.")
-            client = OpenAI(api_key=self.deepseek_key, base_url="https://api.deepseek.com")
-        else:  # Default to OpenAI
-            if not self.openai_key:
-                raise ValueError("OpenAI API key not configured. Set OPENAI_KEY in .env file.")
-            client = OpenAI(api_key=self.openai_key)
+        # Create provider using factory
+        try:
+            provider_instance = create_provider(provider)
+            return provider_instance, model_name
+        except (ValueError, RuntimeError) as e:
+            # Fallback error message with more context
+            raise ValueError(f"Failed to create provider '{provider}' for model '{model_name}': {e}")
         
-        return client, model_name
+    def get_provider(self, model_spec=None):
+        """
+        Get provider instance for the specified model.
+        
+        Args:
+            model_spec: String in format "provider:model" or just "model"
+        
+        Returns:
+            ModelProvider instance
+        """
+        provider, _ = self.get_client(model_spec)
+        return provider
     
     def parse_model_spec(self, model_spec):
         """
@@ -78,4 +82,12 @@ class TranslationConfig:
             model_name = model_spec
             
         return provider.lower(), model_name
+    
+    def get_supported_providers(self):
+        """Get list of supported providers."""
+        return get_factory().get_supported_providers()
+    
+    def get_default_model(self, provider_name):
+        """Get default model for a provider."""
+        return get_factory().get_default_model(provider_name)
 

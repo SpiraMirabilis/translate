@@ -1,5 +1,4 @@
 from typing import Dict, List, Optional, Any, Union, Tuple
-from openai import OpenAI
 import json
 import sqlite3
 import math
@@ -14,7 +13,6 @@ class TranslationEngine:
         self.config = config
         self.logger = logger
         self.entity_manager = entity_manager
-        self.client = config.get_client()
     
     def find_substring_with_context(self, text_array, substring, padding=20):
         """
@@ -256,8 +254,7 @@ class TranslationEngine:
             self.logger.error(f"Error checking for duplicate translations: {e}")
         
         # Use the advice model for this
-
-        advice_client, advice_model_name = self.config.get_client(self.config.advice_model)
+        advice_provider, advice_model_name = self.config.get_client(self.config.advice_model)
         # Modify the prompt to include awareness of duplicates
         prompt = """Your task is to offer translation options. Below in the user text is a JSON node consisting of a translation you have performed previously, which may include "context" which is 20-50 characters before and after the untranslated text. The user did not like the translation and wants to change it, so please offer three alternatives, as well as a short message (less than 200 words) about the untranslated Chinese characters and why you chose to translate it this way. 
 
@@ -279,37 +276,26 @@ class TranslationEngine:
         dumped_node = json.dumps(node, indent=4, ensure_ascii=False)
         print(dumped_node)
         
-        response = advice_client.chat.completions.create(
-            model=advice_model_name,
+        response = advice_provider.chat_completion(
             messages=[
                 {
                     "role": "system",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
+                    "content": prompt
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": dumped_node
-                        }
-                    ]
+                    "content": dumped_node
                 }
             ],
+            model=advice_model_name,
             temperature=1,
             top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0,
             response_format={"type": "json_object"}
         )
         
         try:
-            parsed_response = json.loads(response.choices[0].message.content)
+            response_content = advice_provider.get_response_content(response)
+            parsed_response = json.loads(response_content)
             
             # If we found duplicates earlier, append a warning to the message
             if existing_duplicates:
@@ -321,7 +307,7 @@ class TranslationEngine:
                 parsed_response['message'] = parsed_response['message'] + duplicate_warning
         except json.JSONDecodeError as e:
             print("Failed to parse JSON. Payload:")
-            print(response.choices[0].message.content)
+            print(response_content)
             print(f"Error: {e}")
             return {'message': f'The translation failed: {e}', 'options': []}
         
@@ -346,9 +332,9 @@ class TranslationEngine:
         if book_id:
             book_prompt_template = self.entity_manager.get_book_prompt_template(book_id)
 
-        client, model_name = self.config.get_client(self.config.translation_model)
+        provider, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")
-        self.logger.debug(f"API client initialized: {self.client is not None}")
+        self.logger.debug(f"Provider initialized: {provider.provider_name}")
         self.logger.debug(f"translate_chapter called with text of {len(chapter_text)} lines")
 
         # Handle empty input
@@ -425,22 +411,20 @@ class TranslationEngine:
                     average_ratio = 1.0
                 expected_tokens = len(chunk_str) * average_ratio 
                 print(f"Based on {total_input_chars} input characters * {average_ratio:.2f} (our historic average ratio) we expect {expected_tokens:.0f} tokens.")
-                response_stream = self.client.chat.completions.create(
-                    model=model_name,
+                response_stream = provider.chat_completion(
                     messages=[
                         {
                             "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}]
+                            "content": system_prompt
                         },
                         {
                             "role": "user",
-                            "content": [{"type": "text", "text": user_text}]
+                            "content": user_text
                         }
                     ],
+                    model=model_name,
                     temperature=1,
                     top_p=1,
-                    frequency_penalty=0,
-                    presence_penalty=0,
                     max_tokens=8192,
                     response_format={"type": "json_object"},
                     stream=True
@@ -457,9 +441,9 @@ class TranslationEngine:
                 
                 # Process streaming response
                 for chunk in response_stream:
-                    if chunk.choices[0].delta.content:
-                        delta_text = chunk.choices[0].delta.content
-                        response_text += delta_text
+                    content = provider.get_streaming_content(chunk)
+                    if content:
+                        response_text += content
                         token_count += 1
                         
                         # Update progress display
@@ -469,6 +453,10 @@ class TranslationEngine:
                             completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
                             progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
                             print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
+                    
+                    # Check if stream is complete
+                    if provider.is_stream_complete(chunk):
+                        break
                 print("")
                 total_output_tokens += token_count
                 self.logger.info(f"Chunk {chunk_index}/{len(split_text)} - Input chars: {len(chunk_str)}, Output tokens: {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
@@ -487,40 +475,29 @@ class TranslationEngine:
                 chunk_str = "\n".join(chunk)
                 user_text = "Translate the following into English: \n" + chunk_str
                 self.logger.debug(f"About to call {self.config.translation_model} with chunk {chunk_index} of {len(split_text)}")
-                response = self.client.chat.completions.create(
-                    model=model_name,
+                response = provider.chat_completion(
                     messages=[
                         {
                             "role": "system",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": system_prompt
-                                }
-                            ]
+                            "content": system_prompt
                         },
                         {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": user_text
-                                }
-                            ]
+                            "role": "user", 
+                            "content": user_text
                         }
                     ],
+                    model=model_name,
                     temperature=1,
                     top_p=1,
-                    frequency_penalty=0,
-                    presence_penalty=0,
                     max_tokens=8192,
                     response_format={"type": "json_object"}
                 )
                 try:
-                    parsed_chunk = json.loads(response.choices[0].message.content)
+                    response_content = provider.get_response_content(response)
+                    parsed_chunk = json.loads(response_content)
                 except json.JSONDecodeError as e:
                     print("Failed to parse JSON. Payload:")
-                    print(response.choices[0].message.content)
+                    print(response_content)
                     print(f"Error: {e}")
                     exit(1)
             
