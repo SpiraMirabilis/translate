@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "translator"
+version = "1.0.0"
+description = "AI-powered Chinese web novel translation tool with entity management and multiple output formats"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "SpiraSpira", email = "michael.d.munson@gmail.com"}
+]
+keywords = ["translation", "chinese", "novel", "ai", "openai", "claude", "gemini"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Utilities",
+]
+requires-python = ">=3.8"
+dependencies = [
+    # Core dependencies
+    "openai>=1.0.0",
+    "anthropic>=0.3.0",
+    "google-generativeai>=0.8.0",
+    "python-dotenv>=0.19.0",
+    
+    # User interface
+    "questionary>=1.10.0",
+    "rich>=10.11.0",
+    "pyperclip>=1.8.2",
+    
+    # EPUB processing
+    "ebooklib>=0.17.1",
+    "beautifulsoup4>=4.10.0",
+    "html2text>=2020.1.16",
+    
+    # HTML parsing
+    "lxml>=4.6.3",
+]
+
+[project.optional-dependencies]
+pdf = ["weasyprint>=53.0"]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "isort>=5.0.0",
+    "flake8>=4.0.0",
+]
+
+[project.scripts]
+translator = "translator:main"
+
+[project.urls]
+Homepage = "https://github.com/SpiraMirabilis/translate"
+Repository = "https://github.com/SpiraMirabilis/translate"
+Issues = "https://github.com/SpiraMirabilis/translate/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["tests*", "output*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.txt", "*.md"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+line_length = 88
