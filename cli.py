@@ -2,7 +2,7 @@ import os
 from epub_processor import EPUBProcessor
 from typing import Dict, List, Optional, Any, Union, Tuple
 from abc import ABC, abstractmethod
-from entities import EntityManager
+from database import DatabaseManager
 from logger import Logger
 from translation_engine import TranslationEngine
 from ui import UserInterface
@@ -19,7 +19,7 @@ import platform
 class CommandLineInterface(UserInterface):
     """Command-line interface implementation"""
     
-    def __init__(self, translator: TranslationEngine, entity_manager: EntityManager, logger: Logger):
+    def __init__(self, translator: TranslationEngine, entity_manager: DatabaseManager, logger: Logger):
         super().__init__(translator, entity_manager, logger)
         self.import_optional_modules()
     

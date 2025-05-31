@@ -18,7 +18,7 @@ from output_formatter import OutputFormatter
 from directory_processor import DirectoryProcessor
 from config import TranslationConfig
 from logger import Logger
-from entities import EntityManager
+from database import DatabaseManager
 from translation_engine import TranslationEngine
 from ui import UserInterface
 from cli import CommandLineInterface
@@ -36,8 +36,8 @@ class TranslationApp:
         # Set up logger
         self.logger = Logger(self.config)
         
-        # Initialize entity manager with SQLite database
-        self.entity_manager = EntityManager(self.config, self.logger)
+        # Initialize database manager with SQLite database
+        self.entity_manager = DatabaseManager(self.config, self.logger)
         
         # Handle migration from JSON to SQLite if needed
         self._migrate_json_to_sqlite_if_needed()

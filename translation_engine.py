@@ -9,7 +9,7 @@ import time
 class TranslationEngine:
     """Core class for handling text translation logic"""
     
-    def __init__(self, config: 'TranslationConfig', logger: 'Logger', entity_manager: 'EntityManager'):
+    def __init__(self, config: 'TranslationConfig', logger: 'Logger', entity_manager: 'DatabaseManager'):
         self.config = config
         self.logger = logger
         self.entity_manager = entity_manager

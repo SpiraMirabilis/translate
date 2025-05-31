@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional, Any, Union, Tuple
 from abc import ABC, abstractmethod
-from entities import EntityManager
+from database import DatabaseManager
 from logger import Logger
 from translation_engine import TranslationEngine
 import datetime
@@ -11,7 +11,7 @@ import sqlite3
 class UserInterface(ABC):
     """Abstract base class for different user interfaces"""
     
-    def __init__(self, translator: TranslationEngine, entity_manager: EntityManager, logger: Logger):
+    def __init__(self, translator: TranslationEngine, entity_manager: DatabaseManager, logger: Logger):
         self.translator = translator
         self.entity_manager = entity_manager
         self.logger = logger
