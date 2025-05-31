@@ -150,3 +150,13 @@ class ModelProvider(ABC):
         - 'function_calling': Supports function/tool calling
         """
         pass
+    
+    @property
+    def max_chars(self) -> int:
+        """
+        Return the maximum character count for input chunks for this provider.
+        
+        Returns:
+            Maximum characters per chunk, defaults to 5000 if not configured
+        """
+        return self.config.get('max_chars', 5000)

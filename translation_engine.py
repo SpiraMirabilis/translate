@@ -360,7 +360,8 @@ class TranslationEngine:
         real_old_entities = old_entities
 
         # Calculate chunks count, ensuring at least 1 chunk
-        chunks_count = max(1, math.ceil(total_char_count / self.config.max_chars))
+        max_chars = self.config.get_max_chars(self.config.translation_model)
+        chunks_count = max(1, math.ceil(total_char_count / max_chars))
 
         # Generate the initial system prompt
         system_prompt = self.generate_system_prompt(chapter_text, old_entities, 
@@ -425,7 +426,6 @@ class TranslationEngine:
                     model=model_name,
                     temperature=1,
                     top_p=1,
-                    max_tokens=8192,
                     response_format={"type": "json_object"},
                     stream=True
                 )
@@ -489,7 +489,6 @@ class TranslationEngine:
                     model=model_name,
                     temperature=1,
                     top_p=1,
-                    max_tokens=8192,
                     response_format={"type": "json_object"}
                 )
                 try:

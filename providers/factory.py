@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional
 from .base import ModelProvider
 from .openai_provider import OpenAIProvider
 from .claude_provider import ClaudeProvider
+from .gemini_provider import GeminiProvider
 
 
 class ProviderFactory:
@@ -110,6 +111,7 @@ class ProviderFactory:
         classes = {
             'OpenAIProvider': OpenAIProvider,
             'ClaudeProvider': ClaudeProvider,
+            'GeminiProvider': GeminiProvider,
         }
         
         if class_name not in classes:

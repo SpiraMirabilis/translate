@@ -23,8 +23,9 @@ class TranslationConfig:
         # Paths
         self.script_dir = os.path.dirname(os.path.abspath(__file__)) + "/"
         
-        # Translation settings
-        self.max_chars = int(os.getenv("MAX_CHARS", "5000"))
+        # Translation settings (now per-provider via models.json)
+        # Legacy fallback for MAX_CHARS env var if needed
+        self._fallback_max_chars = int(os.getenv("MAX_CHARS", "5000"))
 
     def get_client(self, model_spec=None):
         """
@@ -90,4 +91,22 @@ class TranslationConfig:
     def get_default_model(self, provider_name):
         """Get default model for a provider."""
         return get_factory().get_default_model(provider_name)
+    
+    def get_max_chars(self, model_spec=None):
+        """
+        Get the maximum character count for input chunks for the specified model.
+        
+        Args:
+            model_spec: String in format "provider:model" or just "model"
+                        If not provided, uses translation_model
+        
+        Returns:
+            Maximum characters per chunk for the provider
+        """
+        try:
+            provider = self.get_provider(model_spec)
+            return provider.max_chars
+        except (ValueError, RuntimeError):
+            # Fallback to legacy MAX_CHARS environment variable
+            return self._fallback_max_chars
 

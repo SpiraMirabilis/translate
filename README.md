@@ -1,16 +1,23 @@
-# Translator User Guide
+# AI-Powered Web Novel Translator
 
-This is a utility designed to translate web novels to english. Mostly it is designed to translate Chinese web novels.
-It is capable of importing chapters of untranslated novels as a batch, either from all files in a directory if you scraped it yourself
-or out of an epub file, in the format that WebToEpub Chrome extension outputs (https://github.com/dteviot/WebToEpub || https://chromewebstore.google.com/detail/webtoepub/akiljllkbielkidmammnifcnibaigelm)
+A comprehensive utility designed to translate web novels (primarily Chinese) to English using multiple AI providers. Features intelligent entity management, book organization, queue-based processing, and support for multiple output formats.
+
+**Supported AI Providers:** OpenAI GPT, DeepSeek, Anthropic Claude, Google Gemini, OpenRouter
+
+The tool can import chapters from various sources: individual files, directories of files, EPUB files (including WebToEpub Chrome extension format), or clipboard content.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Python 3.8 or higher
-- OpenAI API key or DeepSeek API key
-- Required Python packages: openai, ebooklib, bs4, questionary, rich
+- At least one API key from supported providers:
+  - OpenAI API key
+  - DeepSeek API key  
+  - Anthropic Claude API key
+  - Google AI API key (for Gemini)
+  - OpenRouter API key
+- Required Python packages (installed automatically): openai, anthropic, google-generativeai, ebooklib, bs4, questionary, rich, pyperclip
 
 ### Installation
 
@@ -27,12 +34,20 @@ or out of an epub file, in the format that WebToEpub Chrome extension outputs (h
 
 3. Create a `.env` file with your API keys:
    ```
+   # API Keys (add the ones you have)
    OPENAI_KEY=your_openai_api_key
    DEEPSEEK_KEY=your_deepseek_api_key
+   ANTHROPIC_KEY=your_anthropic_api_key
+   GOOGLE_AI_KEY=your_google_ai_api_key
+   OPENROUTER_KEY=your_openrouter_api_key
+   
+   # Model Configuration
    TRANSLATION_MODEL=oai:gpt-4-turbo
    ADVICE_MODEL=oai:gpt-3.5-turbo
+   
+   # Optional Settings
    DEBUG=False
-   MAX_CHARS=5000
+   MAX_CHARS=5000  # Legacy fallback (now per-provider via models.json)
    ```
 
 ### Quick Start: Translate a Single Chapter
@@ -128,9 +143,10 @@ or out of an epub file, in the format that WebToEpub Chrome extension outputs (h
 
 | Option | Description |
 |--------|-------------|
-| `--model MODEL` | Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or deepseek:deepseek-chat) |
+| `--model MODEL` | Specify model for translation (format: [provider:]model, e.g., oai:gpt-4, deepseek:deepseek-chat, claude:claude-3-5-sonnet, gemini:gemini-2.5-flash, or:qwen/qwen3-235b-a22b) |
 | `--advice-model MODEL` | Specify model for entity translation advice |
 | `--key KEY` | Specify API key (for the provider specified in --model) |
+| `--list-providers` | List all available providers and models |
 
 ### Entity Management
 
@@ -274,14 +290,44 @@ Use DeepSeek model:
 python translator.py --model deepseek:deepseek-chat --file chapter.txt
 ```
 
+Use Claude model:
+```
+python translator.py --model claude:claude-3-5-sonnet-20241022 --file chapter.txt
+```
+
+Use Gemini model:
+```
+python translator.py --model gemini:gemini-2.5-flash-preview-05-20 --file chapter.txt
+```
+
+Use OpenRouter model:
+```
+python translator.py --model or:qwen/qwen3-235b-a22b --file chapter.txt
+```
+
+Use OpenRouter with full provider name:
+```
+python translator.py --model openrouter:anthropic/claude-3.5-sonnet --file chapter.txt
+```
+
+List all available providers and models:
+```
+python translator.py --list-providers
+```
+
 Specify a different API key for this run:
 ```
-python translator.py --model oai:gpt-4-turbo --key your_api_key_here --file chapter.txt
+python translator.py --model or:qwen/qwen3-235b-a22b --key your_openrouter_key_here --file chapter.txt
 ```
 
 Use different models for translation and entity advice:
 ```
-python translator.py --model oai:gpt-4-turbo --advice-model oai:gpt-3.5-turbo --file chapter.txt
+python translator.py --model claude:claude-3-5-sonnet --advice-model oai:gpt-3.5-turbo --file chapter.txt
+```
+
+Disable streaming mode (enabled by default):
+```
+python translator.py --model gemini:gemini-2.5-flash --file chapter.txt --no-stream
 ```
 
 ### Entity Management
@@ -358,12 +404,25 @@ python translator.py --edit-epub-info
 
 The program can be configured through environment variables in a `.env` file:
 
+**API Keys:**
 - `OPENAI_KEY`: Your OpenAI API key
 - `DEEPSEEK_KEY`: Your DeepSeek API key
+- `ANTHROPIC_KEY`: Your Anthropic Claude API key
+- `GOOGLE_AI_KEY`: Your Google AI API key (for Gemini)
+- `OPENROUTER_KEY`: Your OpenRouter API key
+
+**Model Configuration:**
 - `TRANSLATION_MODEL`: Default model to use (format: [provider:]model)
 - `ADVICE_MODEL`: Model for entity translation advice
-- `MAX_CHARS`: Maximum characters per API call (default: 5000)
+
+**Performance Settings:**
+- `MAX_CHARS`: Legacy fallback for chunk size (now per-provider via models.json)
 - `DEBUG`: Enable debug mode (True/False)
+
+**Per-Provider Chunk Sizes (configured in providers/models.json):**
+- OpenAI/DeepSeek/OpenRouter: 5000 characters
+- Claude: 8000 characters  
+- Gemini: 6000 characters
 
 ### Database Structure
 
@@ -372,11 +431,50 @@ The program can be configured through environment variables in a `.env` file:
 - Books table: stores book metadata
 - Chapters table: stores chapter content and translation metadata
 
+### AI Provider System
+
+The translator uses a modular provider system supporting multiple AI services:
+
+**Supported Providers:**
+- **OpenAI**: GPT-4, GPT-3.5-turbo, o1-mini, o1-preview
+- **DeepSeek**: deepseek-chat (via OpenAI-compatible API)
+- **Anthropic Claude**: Claude 3.5 Sonnet, Claude 3 Opus, Claude 3 Haiku
+- **Google Gemini**: Gemini 2.5 Flash/Pro, Gemini 1.5 Pro/Flash
+- **OpenRouter**: Access to 200+ models (Qwen, Claude, GPT-4, Llama, etc.)
+
+**Provider Features:**
+- Streaming support with real-time progress tracking
+- Structured JSON output for consistent entity extraction
+- Per-provider optimization (chunk sizes, safety settings)
+- Automatic fallback and error handling
+
+**Configuration:**
+Provider settings are managed in `providers/models.json` with per-provider configuration including API endpoints, model lists, and performance optimizations.
+
 ### Files and Directories
 
-- `output/`: Generated translations are saved here
+- `output/`: Generated translations are saved here, organized by book
 - `entities.db`: SQLite database for entities and book/chapter data
-- `queue.json`: Translation queue
-- `system_prompt.txt`: System prompt template (can be customized)
+- `queue.json`: Translation queue for batch processing
+- `system_prompt.txt`: System prompt template (can be customized per book)
 - `token_ratios.json`: Stats used for progress estimation
+- `providers/models.json`: Provider configuration and model definitions
+- `.env`: Environment variables and API keys
+
+## Recent Improvements (2025)
+
+### Performance Enhancements
+- **Per-provider chunk optimization**: Each AI model uses optimal input sizes
+- **Streaming support**: Real-time translation progress with token-by-token display
+- **Improved error handling**: Better safety filter and token limit management
+
+### Gemini Integration
+- **Full Google Gemini support**: Latest Gemini 2.5 models with structured output
+- **Comprehensive safety settings**: Minimized content blocking for fictional content
+- **No token limits**: Uses full model capacity (~64k tokens)
+
+### Architecture Improvements
+- **Modular provider system**: Easy to add new AI services
+- **Per-provider configuration**: Optimized settings for each model type
+- **Enhanced entity management**: Better duplicate detection and consistency
 

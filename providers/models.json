@@ -4,14 +4,16 @@
       "class": "OpenAIProvider",
       "base_url": "https://api.openai.com/v1/",
       "api_key_env": "OPENAI_KEY",
-      "default_model": "gpt-4.1"
+      "default_model": "gpt-4.1",
+      "max_chars": 5000
     },
     "deepseek": {
       "class": "OpenAIProvider",
       "base_url": "https://api.deepseek.com/v1/",
       "api_key_env": "DEEPSEEK_KEY",
       "default_model": "deepseek-chat",
-      "models": ["deepseek-chat"]
+      "models": ["deepseek-chat"],
+      "max_chars": 5000
     },
     "anthropic": {
       "class": "ClaudeProvider",
@@ -23,12 +25,41 @@
         "claude-3-opus-20240229",
         "claude-3-sonnet-20240229",
         "claude-3-haiku-20240307"
-      ]
+      ],
+      "max_chars": 8000
+    },
+    "google": {
+      "class": "GeminiProvider",
+      "api_key_env": "GOOGLE_AI_KEY",
+      "default_model": "gemini-2.5-flash-preview-05-20",
+      "models": [
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-pro-preview-05-06",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-001",
+        "gemini-1.5-pro-002",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-flash-002",
+        "gemini-1.0-pro",
+        "gemini-1.0-pro-001"
+      ],
+      "max_chars": 6000
+    },
+    "openrouter": {
+      "class": "OpenAIProvider",
+      "base_url": "https://openrouter.ai/api/v1/",
+      "api_key_env": "OPENROUTER_KEY",
+      "default_model": "qwen/qwen3-235b-a22b",
+      "models": [],
+      "max_chars": 5000
     }
   },
   "aliases": {
     "oai": "openai",
     "ds": "deepseek",
-    "claude": "anthropic"
+    "claude": "anthropic",
+    "gemini": "google",
+    "or": "openrouter"
   }
 }

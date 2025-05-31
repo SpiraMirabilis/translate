@@ -87,6 +87,7 @@ ENTITIES: {{ENTITIES_JSON}}
         }
     }
 }
+++++ Response Template End
 # DO NOT CHANGE THE SCHEMA ABOVE THIS LINE
 # Okay you can change things below this line
 
