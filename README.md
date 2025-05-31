@@ -422,7 +422,8 @@ The program can be configured through environment variables in a `.env` file:
 **Per-Provider Chunk Sizes (configured in providers/models.json):**
 - OpenAI/DeepSeek/OpenRouter: 5000 characters
 - Claude: 8000 characters  
-- Gemini: 6000 characters
+- Gemini: 12,000 characters
+- The above are based on each provider's maximum output tokens and can be changed if needed or desired.
 
 ### Database Structure
 

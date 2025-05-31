@@ -44,7 +44,7 @@
         "gemini-1.0-pro",
         "gemini-1.0-pro-001"
       ],
-      "max_chars": 6000
+      "max_chars": 12000
     },
     "openrouter": {
       "class": "OpenAIProvider",
