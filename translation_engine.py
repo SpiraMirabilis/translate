@@ -239,12 +239,15 @@ class TranslationEngine:
             conn = sqlite3.connect(self.entity_manager.db_path)
             cursor = conn.cursor()
             
-            # Get current translations that might be similar
+            # Get current translations that might be similar (same starting character)
+            current_untranslated = node['untranslated']
+            first_char = current_untranslated[0] if current_untranslated else ''
+            
             cursor.execute('''
             SELECT translation, category, untranslated 
             FROM entities 
-            WHERE untranslated != ? AND category != ?
-            ''', (node['untranslated'], node.get('category', '')))
+            WHERE untranslated != ? AND category != ? AND untranslated LIKE ?
+            ''', (node['untranslated'], node.get('category', ''), first_char + '%'))
             
             results = cursor.fetchall()
             conn.close()
