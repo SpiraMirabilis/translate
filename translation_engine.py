@@ -71,9 +71,12 @@ class TranslationEngine:
             self.logger.debug(f"Chunk {i+1}: indices {start_idx} to {end_idx}")
             yield sequence[start_idx:end_idx]
     
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
+        
+        Args:
+            provider: The model provider instance (used to detect Gemini and remove schema)
         """
         # Debug info
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
@@ -98,10 +101,10 @@ class TranslationEngine:
 
         entities_json = json.dumps(end_entities, ensure_ascii=False, indent=4)
         
-        # This large template string remains the same as your original implementation
+        # Load the appropriate template
         if book_prompt_template:
-            # Insert the entities JSON into the custom template
-            prompt = book_prompt_template.replace("{{ENTITIES_JSON}}", entities_json)
+            # Use the custom template for this book
+            prompt = book_prompt_template
         else:
             # Try to load prompt from file
             prompt_file_path = os.path.join(self.config.script_dir, "system_prompt.txt")
@@ -118,6 +121,17 @@ class TranslationEngine:
                 self.logger.error(f"Error loading system prompt from file: {e}")
                 self.logger.error(f"You're going to need to redownload the system_prompt.txt from the github or create your own")
                 exit(1)
+
+        # Insert the entities JSON into the template (both default and custom)
+        prompt = prompt.replace("{{ENTITIES_JSON}}", entities_json)
+
+        # For Gemini providers, remove the JSON schema example to avoid conflicts with responseSchema
+        if provider and hasattr(provider, 'provider_name') and 'Gemini' in provider.provider_name:
+            # Remove the section between ++++ Response Template Example and ++++ Response Template End
+            import re
+            pattern = r'\+\+\+\+ Response Template Example.*?\+\+\+\+ Response Template End'
+            prompt = re.sub(pattern, '', prompt, flags=re.DOTALL)
+            self.logger.debug("Removed JSON schema template for Gemini provider")
 
         return prompt
     
@@ -365,7 +379,7 @@ class TranslationEngine:
 
         # Generate the initial system prompt
         system_prompt = self.generate_system_prompt(chapter_text, old_entities, 
-                                               book_prompt_template=book_prompt_template)
+                                               book_prompt_template=book_prompt_template, provider=provider)
 
         # Split the text into chunks for the LLM if necessary due to output token limits
         split_text = list(self.split_by_n(chapter_text, chunks_count))
@@ -515,7 +529,7 @@ class TranslationEngine:
             old_entities = self.entity_manager.combine_json_entities(old_entities, end_object['entities'])
             
             # Regenerate the system prompt for the next chunk to maintain consistency
-            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False)
+            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False, provider=provider)
         
         self.logger.debug("Finished processing all chunks")
 

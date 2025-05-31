@@ -36,8 +36,10 @@ class OpenAIProvider(ModelProvider):
         if base_url:
             client_kwargs["base_url"] = base_url
         
-        # Add any additional kwargs
-        client_kwargs.update(kwargs)
+        # Filter out provider-specific config that shouldn't go to OpenAI client
+        openai_kwargs = {k: v for k, v in kwargs.items() 
+                        if k not in ['max_chars', 'default_model', 'models']}
+        client_kwargs.update(openai_kwargs)
         
         self.client = OpenAI(**client_kwargs)
     
@@ -55,13 +57,12 @@ class OpenAIProvider(ModelProvider):
         """
         Perform OpenAI chat completion.
         """
-        # Prepare request parameters
+        # Prepare request parameters - don't include max_tokens to use model defaults
         request_params = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": max_tokens,
             "stream": stream,
             **kwargs  # Allow additional parameters
         }
