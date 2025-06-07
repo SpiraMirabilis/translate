@@ -23,7 +23,7 @@ The tool can import chapters from various sources: individual files, directories
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/translator.git
+   git clone https://github.com/SpiraMirabilis/translate
    cd translator
    ```
 
