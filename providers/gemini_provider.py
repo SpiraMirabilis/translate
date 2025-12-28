@@ -31,19 +31,24 @@ class GeminiProvider(ModelProvider):
     def __init__(self, api_key: str, base_url: Optional[str] = None, **kwargs):
         """
         Initialize Gemini provider.
-        
+
         Args:
             api_key: Google AI API key
             base_url: Not used for Gemini, kept for interface compatibility
             **kwargs: Additional configuration
+                     Supports max_output_tokens for configuring output token limit
         """
         if not GEMINI_AVAILABLE:
             raise ImportError(
                 "google-generativeai package is required for Gemini provider. "
                 "Install with: pip install google-generativeai"
             )
-        
+
         super().__init__(api_key, base_url, **kwargs)
+
+        # Store provider-specific configuration
+        self.max_output_tokens = kwargs.get('max_output_tokens', None)
+
         genai.configure(api_key=api_key)
     
     def _convert_messages_to_gemini_format(self, messages: List[Dict[str, Any]]) -> tuple[Optional[str], List[Dict[str, Any]]]:
@@ -241,8 +246,11 @@ class GeminiProvider(ModelProvider):
         generation_config = {
             "temperature": temperature,
             "top_p": top_p,
-            # Remove max_tokens constraint to use model's default max (64k for Gemini)
         }
+
+        # Add max_output_tokens if configured (otherwise use model's default)
+        if self.max_output_tokens is not None:
+            generation_config["max_output_tokens"] = self.max_output_tokens
         
         # Handle JSON mode with response schema
         if response_format and response_format.get("type") == "json_object":

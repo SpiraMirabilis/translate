@@ -5,7 +5,8 @@
       "base_url": "https://api.openai.com/v1/",
       "api_key_env": "OPENAI_KEY",
       "default_model": "gpt-4.1",
-      "max_chars": 5000
+      "max_chars": 20000,
+      "max_output_tokens": 16384
     },
     "deepseek": {
       "class": "OpenAIProvider",
@@ -13,7 +14,8 @@
       "api_key_env": "DEEPSEEK_KEY",
       "default_model": "deepseek-chat",
       "models": ["deepseek-chat"],
-      "max_chars": 5000
+      "max_chars": 3500,
+      "max_output_tokens": 8192
     },
     "anthropic": {
       "class": "ClaudeProvider",
@@ -21,12 +23,13 @@
       "default_model": "claude-3-5-sonnet-20241022",
       "models": [
         "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-20241022", 
+        "claude-3-5-haiku-20241022",
         "claude-3-opus-20240229",
         "claude-3-sonnet-20240229",
         "claude-3-haiku-20240307"
       ],
-      "max_chars": 8000
+      "max_chars": 20000,
+      "max_output_tokens": 8192
     },
     "google": {
       "class": "GeminiProvider",
@@ -44,7 +47,8 @@
         "gemini-1.0-pro",
         "gemini-1.0-pro-001"
       ],
-      "max_chars": 12000
+      "max_chars": 12000,
+      "max_output_tokens": 8192
     },
     "openrouter": {
       "class": "OpenAIProvider",
@@ -52,7 +56,8 @@
       "api_key_env": "OPENROUTER_KEY",
       "default_model": "qwen/qwen3-235b-a22b",
       "models": [],
-      "max_chars": 5000
+      "max_chars": 5000,
+      "max_output_tokens": 8192
     }
   },
   "aliases": {

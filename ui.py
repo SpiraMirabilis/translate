@@ -133,7 +133,7 @@ class UserInterface(ABC):
                             }
                 
                 # Continue with regular entity review
-                if totally_new_entities != {'characters': {}, 'places': {}, 'organizations': {}, 'abilities': {}, 'titles': {}, 'equipment': {}}:
+                if totally_new_entities != {'characters': {}, 'places': {}, 'organizations': {}, 'abilities': {}, 'titles': {}, 'equipment': {}, 'creatures': {}}:
                     edited_entities = self.review_entities(totally_new_entities, chapter_text)
                 else:
                     edited_entities = {}
@@ -192,9 +192,9 @@ class UserInterface(ABC):
                 try:
                     conn = sqlite3.connect(self.entity_manager.db_path)
                     cursor = conn.cursor()
-                    
+
                     # Process each entity from end_object
-                    for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+                    for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
                         if category not in end_object['entities']:
                             continue
                             
@@ -269,9 +269,9 @@ class UserInterface(ABC):
                     
                     if chapter_id:
                         print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
-                        
+
                         # Also save book-specific entities
-                        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+                        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
                             if category not in end_object['entities']:
                                 continue
                                 
@@ -319,13 +319,21 @@ class UserInterface(ABC):
                         self.logger.debug(f"_current_queue is not a list: {type(self._current_queue)}")
                 
                 # If this was a queue item, update the queue after successful translation
-                if hasattr(self, '_current_queue') and self._current_queue:
-                    updated_queue = self._current_queue[1:]  # Remove the processed item
-                    self.entity_manager.save_json_file(f"{self.entity_manager.config.script_dir}/queue.json", updated_queue)
-                    self.logger.info(f"Updated queue - {len(updated_queue)} items remaining.")
-                    # Break the loop if queue is empty or if we're not in resume mode
-                    if not updated_queue:
-                        self.logger.debug(f"Breaking out after updating queue cause queue empty now")
+                if hasattr(self, '_current_queue_item') and self._current_queue_item:
+                    # Remove processed item from database queue
+                    queue_item_id = self._current_queue_item['id']
+                    success = self.entity_manager.remove_from_queue(queue_item_id)
+
+                    if success:
+                        remaining = self.entity_manager.get_queue_count()
+                        self.logger.info(f"Updated queue - {remaining} items remaining.")
+
+                        # Break the loop if queue is empty
+                        if remaining == 0:
+                            self.logger.debug(f"Breaking out after updating queue cause queue empty now")
+                            break
+                    else:
+                        self.logger.error("Failed to remove item from queue")
                         break
                 else:
                     # if not processing a queue, just do one translation

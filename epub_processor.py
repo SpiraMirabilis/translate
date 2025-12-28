@@ -16,16 +16,18 @@ class EPUBProcessor:
     A class to process EPUB files, extract chapters, and add them to the translation queue.
     """
     
-    def __init__(self, config, logger):
+    def __init__(self, config, logger, db_manager):
         """
         Initialize the EPUB processor.
-        
+
         Args:
             config: TranslationConfig object with script_dir and other settings
             logger: Logger object for logging messages
+            db_manager: DatabaseManager instance for queue operations
         """
         self.config = config
         self.logger = logger
+        self.db_manager = db_manager
         self.h2t = html2text.HTML2Text()
         self.h2t.ignore_links = True
         self.h2t.ignore_images = True
@@ -50,7 +52,47 @@ class EPUBProcessor:
         except Exception as e:
             self.logger.error(f"Failed to load EPUB {epub_path}: {e}")
             return None
-    
+
+    def get_epub_metadata(self, epub_path):
+        """
+        Extract metadata from an EPUB file.
+
+        Args:
+            epub_path: Path to the EPUB file
+
+        Returns:
+            dict: Dictionary containing title, author, and other metadata
+        """
+        try:
+            book = self.load_epub(epub_path)
+            if not book:
+                return {'title': None, 'author': None}
+
+            metadata = {}
+
+            # Extract title
+            title = book.get_metadata('DC', 'title')
+            metadata['title'] = title[0][0] if title else None
+
+            # Extract author
+            author = book.get_metadata('DC', 'creator')
+            metadata['author'] = author[0][0] if author else None
+
+            # Extract language
+            language = book.get_metadata('DC', 'language')
+            metadata['language'] = language[0][0] if language else None
+
+            # Extract publisher
+            publisher = book.get_metadata('DC', 'publisher')
+            metadata['publisher'] = publisher[0][0] if publisher else None
+
+            self.logger.info(f"Extracted metadata: title='{metadata['title']}', author='{metadata['author']}'")
+            return metadata
+
+        except Exception as e:
+            self.logger.error(f"Error extracting EPUB metadata: {e}")
+            return {'title': None, 'author': None}
+
     def extract_toc(self, book):
         """
         Extract table of contents from the book.
@@ -225,56 +267,40 @@ class EPUBProcessor:
     def add_chapters_to_queue(self, chapters, book_id=None, epub_path=None):
         """
         Add chapters to the translation queue.
-        
+
         Args:
             chapters: List of chapter dicts
-            book_id: Optional book ID to associate with the chapters
-            
+            book_id: Book ID (required)
+            epub_path: EPUB file path for source reference
+
         Returns:
             int: Number of chapters added to queue
         """
-        # Load existing queue
-        queue_path = os.path.join(self.config.script_dir, "queue.json")
-        if os.path.exists(queue_path):
-            try:
-                with open(queue_path, 'r', encoding='utf-8') as f:
-                    queue = json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                self.logger.error(f"Error loading queue: {e}")
-                queue = []
-        else:
-            queue = []
-        
-        # Add each chapter to the queue
+        if book_id is None:
+            self.logger.error("book_id is required for adding chapters to queue")
+            return 0
+
+        added_count = 0
         for chapter in chapters:
             content = chapter['content']
-            content_lines = content.split('\n')
-            
-            # Add metadata as comments at the top
-            metadata = [
-                f"# Title: {chapter['title']}",
-                f"# Chapter: {chapter['number']}",
-                f"# Source: {chapter.get('file_path', epub_path)}"
-            ]
-            
-            # Add book ID metadata if available
-            if book_id is not None:
-                metadata.append(f"# Book ID: {book_id}")
-            
-            metadata.append("# ---")
-            
-            chapter_with_metadata = metadata + content_lines
-            queue.append(chapter_with_metadata)
-        
-        # Save updated queue
-        try:
-            with open(queue_path, 'w', encoding='utf-8') as f:
-                json.dump(queue, f, ensure_ascii=False, indent=2)
-            self.logger.info(f"Added {len(chapters)} chapters to queue")
-            return len(chapters)
-        except IOError as e:
-            self.logger.error(f"Error saving queue: {e}")
-            return 0
+            content_lines = content.split('\n') if isinstance(content, str) else content
+
+            # Add to database queue
+            queue_item_id = self.db_manager.add_to_queue(
+                book_id=book_id,
+                content=content_lines,
+                title=chapter['title'],
+                chapter_number=chapter['number'],
+                source=chapter.get('file_path', epub_path)
+            )
+
+            if queue_item_id:
+                added_count += 1
+            else:
+                self.logger.error(f"Failed to add chapter {chapter['number']} to queue")
+
+        self.logger.info(f"Added {added_count} chapters to queue")
+        return added_count
     
     def process_epub(self, epub_path, book_id=None):
         """

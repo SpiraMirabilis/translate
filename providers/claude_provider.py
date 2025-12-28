@@ -31,19 +31,24 @@ class ClaudeProvider(ModelProvider):
     def __init__(self, api_key: str, base_url: Optional[str] = None, **kwargs):
         """
         Initialize Claude provider.
-        
+
         Args:
             api_key: Anthropic API key
             base_url: Not used for Claude, kept for interface compatibility
             **kwargs: Additional configuration
+                     Supports max_output_tokens for configuring output token limit
         """
         if not ANTHROPIC_AVAILABLE:
             raise ImportError(
                 "anthropic package is required for Claude provider. "
                 "Install with: pip install anthropic"
             )
-        
+
         super().__init__(api_key, base_url, **kwargs)
+
+        # Store provider-specific configuration
+        self.max_output_tokens = kwargs.get('max_output_tokens', 8192)
+
         self.client = anthropic.Anthropic(api_key=api_key)
     
     def chat_completion(
@@ -108,7 +113,7 @@ class ClaudeProvider(ModelProvider):
         request_params = {
             "model": model,
             "messages": claude_messages,
-            "max_tokens": max_tokens,
+            "max_tokens": self.max_output_tokens,  # Use configured max output tokens
             "temperature": temperature,
             "top_p": top_p,
             "stream": stream

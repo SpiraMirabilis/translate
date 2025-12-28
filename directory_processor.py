@@ -15,26 +15,29 @@ class DirectoryProcessor:
     A class to process directories containing text files and add them to the translation queue.
     """
     
-    def __init__(self, config, logger):
+    def __init__(self, config, logger, db_manager):
         """
         Initialize the directory processor.
-        
+
         Args:
             config: TranslationConfig object with script_dir and other settings
             logger: Logger object for logging messages
+            db_manager: DatabaseManager instance for queue operations
         """
         self.config = config
         self.logger = logger
+        self.db_manager = db_manager
     
-    def process_directory(self, directory_path, sort_strategy="auto", file_pattern="*.*"):
+    def process_directory(self, directory_path, book_id=None, sort_strategy="auto", file_pattern="*.*"):
         """
         Process text files in a directory and add them to the translation queue.
-        
+
         Args:
             directory_path: Path to the directory containing text files
+            book_id: Book ID (required for queue)
             sort_strategy: Strategy for ordering files ("auto", "name", "modified", "none")
             file_pattern: Pattern to filter files (e.g., "*.txt")
-            
+
         Returns:
             tuple: (success, num_files_added, message)
         """
@@ -84,7 +87,7 @@ class DirectoryProcessor:
         
         # Add to queue
         if chapters:
-            num_added = self._add_chapters_to_queue(chapters)
+            num_added = self._add_chapters_to_queue(chapters, book_id)
             return True, num_added, f"Successfully added {num_added} files to queue"
         else:
             return False, 0, "No files were successfully processed"
@@ -146,50 +149,39 @@ class DirectoryProcessor:
         
         return files_with_metadata
     
-    def _add_chapters_to_queue(self, chapters):
+    def _add_chapters_to_queue(self, chapters, book_id=None):
         """
         Add chapters to the translation queue.
-        
+
         Args:
             chapters: List of chapter dicts
-            
+            book_id: Book ID (required)
+
         Returns:
             int: Number of chapters added to queue
         """
-        # Load existing queue
-        queue_path = os.path.join(self.config.script_dir, "queue.json")
-        if os.path.exists(queue_path):
-            try:
-                with open(queue_path, 'r', encoding='utf-8') as f:
-                    queue = json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                self.logger.error(f"Error loading queue: {e}")
-                queue = []
-        else:
-            queue = []
-        
-        # Add each chapter to the queue
+        if book_id is None:
+            self.logger.error("book_id is required for adding chapters to queue")
+            return 0
+
+        added_count = 0
         for chapter in chapters:
             content = chapter['content']
-            content_lines = content.split('\n')
-            
-            # Add metadata as comments at the top
-            metadata = [
-                f"# Title: {chapter['title']}",
-                f"# Chapter: {chapter['number']}",
-                f"# Source: {chapter['file_path']}",
-                "# ---"
-            ]
-            
-            chapter_with_metadata = metadata + content_lines
-            queue.append(chapter_with_metadata)
-        
-        # Save updated queue
-        try:
-            with open(queue_path, 'w', encoding='utf-8') as f:
-                json.dump(queue, f, ensure_ascii=False, indent=2)
-            self.logger.info(f"Added {len(chapters)} chapters to queue")
-            return len(chapters)
-        except IOError as e:
-            self.logger.error(f"Error saving queue: {e}")
-            return 0
+            content_lines = content.split('\n') if isinstance(content, str) else content
+
+            # Add to database queue
+            queue_item_id = self.db_manager.add_to_queue(
+                book_id=book_id,
+                content=content_lines,
+                title=chapter['title'],
+                chapter_number=chapter['number'],
+                source=chapter['file_path']
+            )
+
+            if queue_item_id:
+                added_count += 1
+            else:
+                self.logger.error(f"Failed to add chapter {chapter['number']} to queue")
+
+        self.logger.info(f"Added {added_count} chapters to queue")
+        return added_count

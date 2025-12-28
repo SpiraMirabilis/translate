@@ -82,15 +82,15 @@ class TranslationEngine:
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
         if isinstance(pretext, list) and len(pretext) > 0:
             self.logger.debug(f"First line: {pretext[0][:50]}")
-    
+
         # Ensure all entity categories exist
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
             entities.setdefault(category, {})
-    
+
         end_entities = {}
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
             entities.setdefault(category, {})
-    
+
         end_entities = {}
         end_entities['characters'] = self.entity_manager.entities_inside_text(pretext, entities['characters'], "THIS CHAPTER", do_count)
         end_entities['places'] = self.entity_manager.entities_inside_text(pretext, entities['places'], "THIS CHAPTER", do_count)
@@ -98,6 +98,7 @@ class TranslationEngine:
         end_entities['abilities'] = self.entity_manager.entities_inside_text(pretext, entities['abilities'], "THIS CHAPTER", do_count)
         end_entities['titles'] = self.entity_manager.entities_inside_text(pretext, entities['titles'], "THIS CHAPTER", do_count)
         end_entities['equipment'] = self.entity_manager.entities_inside_text(pretext, entities['equipment'], "THIS CHAPTER", do_count)
+        end_entities['creatures'] = self.entity_manager.entities_inside_text(pretext, entities['creatures'], "THIS CHAPTER", do_count)
 
         entities_json = json.dumps(end_entities, ensure_ascii=False, indent=4)
         
@@ -323,8 +324,9 @@ class TranslationEngine:
                 
                 parsed_response['message'] = parsed_response['message'] + duplicate_warning
         except json.JSONDecodeError as e:
-            print("Failed to parse JSON. Payload:")
-            print(response_content)
+            print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+            with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                f.write(str(response_content))
             print(f"Error: {e}")
             return {'message': f'The translation failed: {e}', 'options': []}
         
@@ -371,7 +373,7 @@ class TranslationEngine:
 
         # Use entities from SQLite database
         old_entities = self.entity_manager.entities.copy()
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
             old_entities.setdefault(category, {})
 
         real_old_entities = old_entities
@@ -483,8 +485,9 @@ class TranslationEngine:
                 try:
                     parsed_chunk = json.loads(response_text)
                 except json.JSONDecodeError as e:
-                    print("Failed to parse JSON. Payload:")
-                    print(response_text[:500] + "..." if len(response_text) > 500 else response_text)
+                    print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+                    with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                        f.write(str(response_text))
                     print(f"Error: {e}")
                     exit(1)
             else:
@@ -512,8 +515,9 @@ class TranslationEngine:
                     response_content = provider.get_response_content(response)
                     parsed_chunk = json.loads(response_content)
                 except json.JSONDecodeError as e:
-                    print("Failed to parse JSON. Payload:")
-                    print(response_content)
+                    print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+                    with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                        f.write(str(response_content))
                     print(f"Error: {e}")
                     exit(1)
             
@@ -572,7 +576,8 @@ class TranslationEngine:
             "organizations": end_object.get('entities', {}).get('organizations', {}),
             "abilities": end_object.get('entities', {}).get('abilities', {}),
             "titles": end_object.get('entities', {}).get('titles', {}),
-            "equipment": end_object.get('entities', {}).get('equipment', {})
+            "equipment": end_object.get('entities', {}).get('equipment', {}),
+            "creatures": end_object.get('entities', {}).get('creatures', {})
         }
 
         return {

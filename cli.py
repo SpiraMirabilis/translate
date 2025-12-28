@@ -15,6 +15,8 @@ import curses
 import tempfile
 import subprocess
 import platform
+import threading
+import time
 
 class CommandLineInterface(UserInterface):
     """Command-line interface implementation"""
@@ -35,6 +37,46 @@ class CommandLineInterface(UserInterface):
             self.has_rich_ui = False
             print("Warning: Rich UI components (questionary/rich) not available. Using basic interface.")
     
+    def play_notification_sound(self):
+        """Play a notification sound to alert the user about new entities"""
+        def play_sound():
+            try:
+                system = platform.system()
+                if system == "Darwin":  # macOS
+                    # Use the Glass sound for new entities notification
+                    subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], 
+                                 check=True, capture_output=True)
+                elif system == "Linux":
+                    # Try to use paplay (PulseAudio) or aplay (ALSA)
+                    try:
+                        subprocess.run(["paplay", "/usr/share/sounds/alsa/Front_Right.wav"], 
+                                     check=True, capture_output=True)
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        try:
+                            subprocess.run(["aplay", "/usr/share/sounds/alsa/Front_Right.wav"], 
+                                         check=True, capture_output=True)
+                        except (subprocess.CalledProcessError, FileNotFoundError):
+                            # Fallback to system bell
+                            print("\a")  # ASCII bell character
+                elif system == "Windows":
+                    # Use winsound for Windows
+                    try:
+                        import winsound
+                        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                    except ImportError:
+                        print("\a")  # ASCII bell character fallback
+                else:
+                    # Unknown system, use ASCII bell
+                    print("\a")
+            except Exception as e:
+                # If all else fails, use the ASCII bell character
+                self.logger.debug(f"Error playing notification sound: {e}")
+                print("\a")
+        
+        # Play sound in a separate thread to avoid blocking the UI
+        sound_thread = threading.Thread(target=play_sound, daemon=True)
+        sound_thread.start()
+    
     def get_input(self) -> List[str]:
         """Get input text from CLI - clipboard, file, or manual entry"""
         import argparse
@@ -47,7 +89,7 @@ class CommandLineInterface(UserInterface):
         
         # Add arguments to the group
         group.add_argument("--clipboard", action="store_true", help="Process input from the clipboard")
-        group.add_argument("--resume", action="store_true", help="Take input from the queue, and translate sequentially")
+        group.add_argument("--resume", action="store_true", help="Take input from the queue and translate sequentially (optional: --book-id to process specific book)")
         group.add_argument("--file", type=str, help="Process input from a specified file")
         group.add_argument("--epub", type=str, help="Process an EPUB file and add chapters to the queue")
         parser.add_argument("--create-book-from-epub", action="store_true", 
@@ -81,6 +123,8 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--edit-prompt", type=int, help="Edit the prompt template for a book using your system editor")
         parser.add_argument("--no-review", action="store_true",
                             help="Disable the entity review process at end of each translated chapter" )
+        parser.add_argument("--silent-notifications", action="store_true",
+                            help="Disable audio notifications when new entities are found for review")
         
         # Chapter management
         chapter_group = parser.add_argument_group('Chapter Management')
@@ -93,9 +137,11 @@ class CommandLineInterface(UserInterface):
                                 help="Delete a specific chapter (requires --book-id and --chapter-number)")
         chapter_group.add_argument("--export-book", type=int, 
                                 help="Export all chapters of a book (book ID) to specified format")
-        chapter_group.add_argument("--retranslate", action="store_true", 
+        chapter_group.add_argument("--retranslate", action="store_true",
                     help="Retranslate a chapter (requires --book-id and --chapter-number)")
-        
+        chapter_group.add_argument("--edit-chapter-translation", action="store_true",
+                    help="Edit the translation of a chapter using your system editor (requires --book-id and --chapter-number)")
+
 
         # output options
         parser.add_argument("--format", type=str, choices=["text", "html", "markdown", "epub"], default="text",
@@ -106,16 +152,25 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--edit-epub-info", action="store_true", help="Edit book information for EPUB output")
         
         # Queue argument and manipulation
-        parser.add_argument("--queue", action="store_true", help="Add a chapter to the queue, for later sequential translation")
-        parser.add_argument("--list-queue", action="store_true", 
-                        help="List all items in the translation queue")
-        parser.add_argument("--clear-queue", action="store_true", 
-                        help="Clear the translation queue")
+        parser.add_argument("--queue", action="store_true", help="Add a chapter to the queue for later sequential translation (requires --book-id)")
+        parser.add_argument("--list-queue", action="store_true",
+                        help="List all items in the translation queue (optional: --book-id to filter)")
+        parser.add_argument("--clear-queue", action="store_true",
+                        help="Clear the translation queue (optional: --book-id to clear for specific book only)")
         
         # SQLite arguments
         parser.add_argument("--export-json", type=str, help="Export SQLite database to JSON file")
         parser.add_argument("--import-json", type=str, help="Import entities from JSON file to SQLite database")
         parser.add_argument("--check-duplicates", action="store_true", help="Check for duplicate entities in the database")
+
+        # Entity review
+        parser.add_argument("--review-entities", action="store_true",
+                            help="Review all entities in the database interactively")
+        parser.add_argument("--entity-book-id", type=int,
+                            help="Filter entities by book ID (use with --review-entities)")
+        parser.add_argument("--entity-category", type=str,
+                            choices=["characters", "places", "organizations", "abilities", "titles", "equipment", "creatures"],
+                            help="Filter entities by category (use with --review-entities)")
         
         # Model arguments
         try:
@@ -129,13 +184,16 @@ class CommandLineInterface(UserInterface):
         
         parser.add_argument("--model", type=str, help=model_help)
         parser.add_argument("--advice-model", type=str, help=advice_help)
-        parser.add_argument("--key", type=str, 
+        parser.add_argument("--cleaning-model", type=str, help="Specify model for entity cleaning/classification (format: [provider:]model). Uses --model if not specified.")
+        parser.add_argument("--key", type=str,
                     help="Specify API key (for the provider specified in --model)")
         parser.add_argument("--list-providers", action="store_true",
                     help="List all supported model providers and their default models")
-        
-        parser.add_argument("--no-stream", action="store_true", 
+
+        parser.add_argument("--no-stream", action="store_true",
                     help="Disable streaming API and progress tracking (slightly faster for very short texts)")
+        parser.add_argument("--no-clean", action="store_true",
+                    help="Disable automatic cleaning of generic nouns from new entities during post-translation review")
         
         args = parser.parse_args()
    
@@ -148,6 +206,19 @@ class CommandLineInterface(UserInterface):
             self.stream = False
         else:
             self.stream = True
+
+        if args.no_clean:
+            self.no_clean = True
+        else:
+            self.no_clean = False
+
+        # Store cleaning model spec (will be used by entity cleaning)
+        self.cleaning_model = args.cleaning_model
+
+        if args.silent_notifications:
+            self.silent_notifications = True
+        else:
+            self.silent_notifications = False
 
         # Book management
         if args.create_book:
@@ -213,7 +284,14 @@ class CommandLineInterface(UserInterface):
                 exit(1)
             self._delete_chapter(args.book_id, args.chapter_number)
             exit(0)
-            
+
+        if args.edit_chapter_translation:
+            if not args.book_id or not args.chapter_number:
+                print("Error: --edit-chapter-translation requires --book-id and --chapter-number")
+                exit(1)
+            self._edit_chapter_translation(args.book_id, args.chapter_number)
+            exit(0)
+
         if args.export_book:
             self._export_book(args.export_book, args.format or "text")
             exit(0)
@@ -282,7 +360,11 @@ class CommandLineInterface(UserInterface):
 
         # Process directory
         if args.dir:
-            self._process_directory(args.dir, args.sort, args.pattern)
+            if not args.book_id:
+                print("Error: --dir requires --book-id to associate chapters with a book")
+                print("Use --list-books to see available books or --create-book to create a new one")
+                exit(1)
+            self._process_directory(args.dir, args.book_id, args.sort, args.pattern)
             exit(0)  # Exit after processing directory
 
         # edit epub info from --edit-book-info
@@ -292,12 +374,12 @@ class CommandLineInterface(UserInterface):
 
         # List queue contents
         if args.list_queue:
-            self._list_queue_contents()
+            self._list_queue_contents(book_id=args.book_id)
             exit(0)
 
         # Clear queue
         if args.clear_queue:
-            self._clear_queue()
+            self._clear_queue(book_id=args.book_id)
             exit(0)
         
         # Store the format in a class variable
@@ -338,7 +420,25 @@ class CommandLineInterface(UserInterface):
         if args.check_duplicates:
             self.check_database_duplicates()
             exit(0)
-        
+
+        # Handle entity review
+        if args.review_entities:
+            if not self.has_rich_ui:
+                print("Error: Entity review requires questionary. Install: pip install questionary rich")
+                exit(1)
+
+            if args.entity_book_id:
+                book = self.entity_manager.get_book(book_id=args.entity_book_id)
+                if not book:
+                    print(f"Error: Book with ID {args.entity_book_id} not found")
+                    exit(1)
+
+            self._review_all_entities(
+                book_id=args.entity_book_id,
+                category_filter=args.entity_category
+            )
+            exit(0)
+
         # Get the input based on the arguments
         if args.clipboard:
             import pyperclip
@@ -348,70 +448,32 @@ class CommandLineInterface(UserInterface):
             self.logger.info(f"Processing input from the file: {args.file}")
             pretext = self.file_to_array(args.file)
         elif args.resume:
-            queue_json = self.entity_manager._load_json_file("queue.json")
-            if not queue_json or not isinstance(queue_json, list) or len(queue_json) == 0:
-                print("No items in queue to resume.")
-                exit(1)
-            
-            # Debug info
-            self.logger.info(f"Queue contains {len(queue_json)} items.")
-            self.logger.info(f"First item type: {type(queue_json[0])}")
-            
-            # Get the first item from the queue
-            first_item = queue_json[0]
+            # Get book_id filter if provided
+            filter_book_id = args.book_id if args.book_id else None
 
-            self._current_queue = queue_json 
-            
-            # Handle different possible formats in the queue
-            if isinstance(first_item, list):
-                # Already a list of strings
-                pretext = first_item
-                
-                # Look for book_id in metadata
-                for line in pretext[:10]:  # Check first few lines for metadata
-                    if isinstance(line, str) and line.startswith("# Book ID:"):
-                        try:
-                            book_id = int(line.replace("# Book ID:", "").strip())
-                            self.book_id = book_id
-                            
-                            # Get book info
-                            book = self.entity_manager.get_book(book_id=book_id)
-                            if book:
-                                self.book_title = book["title"]
-                                self.logger.info(f"Processing queue item for book '{book['title']}' (ID: {book_id})")
-                            else:
-                                self.logger.warning(f"Book ID {book_id} from queue item not found in database")
-                        except (ValueError, TypeError) as e:
-                            self.logger.warning(f"Invalid Book ID in queue item metadata: {e}")
-                        
-                        break
-            elif isinstance(first_item, str):
-                # Single string, split into lines
-                pretext = first_item.splitlines()
-                
-                # Check for book_id metadata
-                for line in pretext[:10]:
-                    if line.startswith("# Book ID:"):
-                        try:
-                            book_id = int(line.replace("# Book ID:", "").strip())
-                            self.book_id = book_id
-                            
-                            # Get book info
-                            book = self.entity_manager.get_book(book_id=book_id)
-                            if book:
-                                self.book_title = book["title"]
-                                self.logger.info(f"Processing queue item for book '{book['title']}' (ID: {book_id})")
-                            else:
-                                self.logger.warning(f"Book ID {book_id} from queue item not found in database")
-                        except (ValueError, TypeError) as e:
-                            self.logger.warning(f"Invalid Book ID in queue item metadata: {e}")
-                        
-                        break
-            else:
-                # Unknown format
-                self.logger.error(f"Unknown queue item format: {type(first_item)}")
-                print(f"Queue item has unexpected format: {type(first_item)}")
+            # Get next queue item from database
+            queue_item = self.entity_manager.get_next_queue_item(book_id=filter_book_id)
+
+            if not queue_item:
+                if filter_book_id:
+                    print(f"No items in queue for book ID {filter_book_id}.")
+                else:
+                    print("No items in queue to resume.")
                 exit(1)
+
+            # Store queue item for later removal (in ui.py)
+            self._current_queue_item = queue_item
+
+            # Set book context
+            self.book_id = queue_item['book_id']
+            self.book_title = queue_item['book_title']
+            self.chapter_number = queue_item.get('chapter_number')
+
+            self.logger.info(f"Processing queue item for book '{self.book_title}' (ID: {self.book_id})")
+            print(f"Processing: {queue_item['title']} from '{self.book_title}'")
+
+            # Get content (already deserialized from database method)
+            pretext = queue_item['content']
         elif args.epub:
             if not args.book_id and not args.create_book_from_epub:
                 print("When ingesting an --epub you MUST select either --book-id # or --create-book-from-epub to properly associate queued chapters with correct book")
@@ -438,11 +500,31 @@ class CommandLineInterface(UserInterface):
         
         # Handle queue option - this should happen for all input types
         if args.queue:
-            queue = self.entity_manager._load_json_file("queue.json") or []
-            self.logger.info(f"Appending to queue (len: {len(queue)}) ")
-            queue.append(pretext)
-            self.entity_manager.save_json_file(f"{self.entity_manager.config.script_dir}/queue.json", queue)
-            self.logger.info("queue.json written")
+            # Validate book_id is provided
+            if not args.book_id:
+                print("Error: --queue requires --book-id to associate chapters with a book")
+                print("Use --list-books to see available books or --create-book to create a new one")
+                exit(1)
+
+            # Verify book exists (book_id is already set in self.book_id from earlier validation)
+            # Add to queue using database
+            queue_item_id = self.entity_manager.add_to_queue(
+                book_id=self.book_id,
+                content=pretext,
+                title=self.book_title,
+                chapter_number=self.chapter_number,
+                source="CLI input"
+            )
+
+            if queue_item_id:
+                queue_count = self.entity_manager.get_queue_count()
+                self.logger.info(f"Added to queue (total: {queue_count} items)")
+                print(f"Added to queue for book '{self.book_title}' (ID: {self.book_id})")
+                print(f"Total queue size: {queue_count}")
+            else:
+                print("Error: Failed to add to queue")
+                exit(1)
+
             exit(0)  # Exit after queuing - don't continue to translation!
         
         return pretext
@@ -451,7 +533,7 @@ class CommandLineInterface(UserInterface):
         """Process an EPUB file and add chapters to the queue with book association."""
         try:
             # Initialize EPUB processor
-            processor = EPUBProcessor(self.entity_manager.config, self.logger)
+            processor = EPUBProcessor(self.entity_manager.config, self.logger, self.entity_manager)
             
             # Load basic EPUB metadata if needed for book creation
             if create_book:
@@ -1096,6 +1178,60 @@ class CommandLineInterface(UserInterface):
         else:
             print(f"Failed to delete chapter.")
 
+    def _edit_chapter_translation(self, book_id, chapter_number):
+        """Edit the translation of a chapter using the system editor"""
+        # Get the chapter
+        chapter = self.entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+
+        if not chapter:
+            print(f"Chapter {chapter_number} not found for book ID {book_id}.")
+            return
+
+        # Get the book info for display
+        book = self.entity_manager.get_book(book_id=book_id)
+
+        # Get translated content (stored as a list)
+        translated_content = chapter.get('content', [])
+
+        # Convert to string for editing
+        if isinstance(translated_content, list):
+            content_text = '\n'.join(translated_content)
+        else:
+            content_text = str(translated_content)
+
+        # Add header with instructions
+        content_with_instructions = (
+            f"# Editing translation for: {book['title']} - Chapter {chapter_number}: {chapter['title']}\n"
+            f"# Save and exit when done\n"
+            f"# Lines starting with '#' will be removed automatically\n\n"
+            + content_text
+        )
+
+        # Open editor
+        edited_content = self.edit_text_with_system_editor(content_with_instructions)
+
+        # Remove instruction comments
+        edited_lines = [
+            line for line in edited_content.split("\n")
+            if not line.strip().startswith("# ")
+        ]
+
+        # Save the edited translation back to the database
+        result = self.entity_manager.save_chapter(
+            book_id=book_id,
+            chapter_number=chapter_number,
+            title=chapter['title'],
+            untranslated_content=chapter['untranslated'],
+            translated_content=edited_lines,
+            summary=chapter.get('summary'),
+            translation_model=chapter.get('model')
+        )
+
+        if result:
+            print(f"Successfully updated translation for Chapter {chapter_number}: '{chapter['title']}'.")
+        else:
+            print("Failed to update chapter translation.")
+
     def _export_book(self, book_id, format="text"):
         """Export all chapters of a book to the specified format"""
         book = self.entity_manager.get_book(book_id=book_id)
@@ -1176,21 +1312,16 @@ class CommandLineInterface(UserInterface):
         """Retrieve and retranslate a specific chapter"""
         # Get the chapter from the database
         chapter = self.entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
-        
+
         if not chapter:
             print(f"Chapter {chapter_number} not found for book ID {book_id}")
             exit(1)
-        
-        # Delete the existing chapter
-        result = self.entity_manager.delete_chapter(book_id=book_id, chapter_number=chapter_number)
-        
-        if not result:
-            print(f"Failed to delete chapter {chapter_number}. Cannot retranslate.")
-            exit(1)
-        
-        print(f"Deleted chapter {chapter_number} for retranslation")
-        
+
+        print(f"Retranslating chapter {chapter_number}...")
+        print(f"Note: Original chapter will be replaced only if retranslation succeeds")
+
         # Get the untranslated content
+        # The chapter will be automatically updated by save_chapter() if translation succeeds
         if isinstance(chapter['untranslated'], list):
             return chapter['untranslated']
         else:
@@ -1437,20 +1568,191 @@ class CommandLineInterface(UserInterface):
         else:
             print(json.dumps(data, indent=4, ensure_ascii=False))
     
+    def _filter_existing_entities(self, data: Dict):
+        """
+        Filter out entities that already exist in the database for this book or as global entities.
+        This modifies the data dictionary in-place.
+
+        Args:
+            data: Dict of new entities by category (from translation)
+
+        Returns:
+            Number of entities filtered out
+        """
+        import sqlite3
+
+        # Collect all untranslated keys to check
+        all_untranslated = set()
+        for category, entities in data.items():
+            all_untranslated.update(entities.keys())
+
+        if not all_untranslated:
+            return 0
+
+        # Get current book_id (if available)
+        current_book_id = getattr(self, 'book_id', None)
+
+        # Query database to find which entities already exist for this book or globally
+        existing_entities = {}
+        try:
+            conn = sqlite3.connect(self.entity_manager.db_path)
+            cursor = conn.cursor()
+
+            for untranslated in all_untranslated:
+                # Check if entity exists with matching book_id OR book_id is NULL (global)
+                if current_book_id is not None:
+                    cursor.execute('''
+                    SELECT category, translation FROM entities
+                    WHERE untranslated = ? AND (book_id = ? OR book_id IS NULL)
+                    LIMIT 1
+                    ''', (untranslated, current_book_id))
+                else:
+                    # If no book_id, just check for global entities
+                    cursor.execute('''
+                    SELECT category, translation FROM entities
+                    WHERE untranslated = ? AND book_id IS NULL
+                    LIMIT 1
+                    ''', (untranslated,))
+
+                row = cursor.fetchone()
+                if row:
+                    existing_entities[untranslated] = {
+                        'category': row[0],
+                        'translation': row[1]
+                    }
+
+            conn.close()
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error checking existing entities: {e}")
+            return 0
+
+        if not existing_entities:
+            return 0
+
+        # Show what's being filtered out
+        print(f"\n📋 Filtering out {len(existing_entities)} entities that already exist in database:")
+        for i, (untranslated, info) in enumerate(sorted(existing_entities.items())[:10]):
+            print(f"  • {untranslated} → {info['translation']} (already in {info['category']})")
+        if len(existing_entities) > 10:
+            print(f"  ... and {len(existing_entities) - 10} more")
+
+        # Remove existing entities from data structure
+        filtered_count = 0
+        for category, entities in data.items():
+            for untranslated in list(entities.keys()):
+                if untranslated in existing_entities:
+                    del entities[untranslated]
+                    filtered_count += 1
+
+        print(f"✅ Filtered out {filtered_count} existing entities.\n")
+        return filtered_count
+
+    def _auto_clean_new_entities(self, data: Dict):
+        """
+        Automatically clean non-proper noun entities from new entity data before review.
+        This modifies the data dictionary in-place.
+
+        Args:
+            data: Dict of new entities by category (from translation)
+
+        Returns:
+            Number of entities deleted
+        """
+        # Build entity dict for classification
+        entity_dict = {}
+
+        for category, entities in data.items():
+            for untranslated, entity_data in entities.items():
+                translated = entity_data.get('translation', '')
+                entity_dict[untranslated] = translated
+
+        if not entity_dict:
+            return 0
+
+        # Count entities
+        initial_count = len(entity_dict)
+        print(f"\n🧹 Auto-cleaning {initial_count} new entities...")
+
+        # Classify proper nouns
+        proper_nouns = self._classify_proper_nouns(entity_dict)
+
+        if proper_nouns is None:
+            # Classification failed, skip cleanup
+            return 0
+
+        # Identify entities to delete
+        to_delete_keys = [k for k in entity_dict.keys() if k not in proper_nouns]
+
+        if not to_delete_keys:
+            print("✅ All new entities are proper nouns. No cleanup needed.")
+            return 0
+
+        print(f"\n📊 Classification Results:")
+        print(f"  ✅ Proper nouns: {len(proper_nouns)}")
+        print(f"  ❌ Generic terms to remove: {len(to_delete_keys)}")
+
+        # Show sample of what will be deleted
+        print(f"\n📋 Removing generic terms:")
+        for i, untranslated in enumerate(sorted(to_delete_keys)[:10]):
+            translated = entity_dict[untranslated]
+            print(f"  • {untranslated} → {translated}")
+        if len(to_delete_keys) > 10:
+            print(f"  ... and {len(to_delete_keys) - 10} more")
+
+        # Delete entities from data structure in-place
+        deleted_count = 0
+        for category, entities in data.items():
+            for untranslated in list(entities.keys()):  # Use list() to avoid modification during iteration
+                if untranslated in to_delete_keys:
+                    del entities[untranslated]
+                    deleted_count += 1
+
+        print(f"\n✅ Removed {deleted_count} generic terms from review.\n")
+        return deleted_count
+
     def review_entities(self, data, untranslated_text=[]):
         """
         Using questionary to display interactive prompts.
         Returns a dictionary of edited data.
         """
+        # Check if there are any entities to review
+        has_entities = any(data.get(category, {}) for category in data)
+
+        if has_entities and not self.no_review and not getattr(self, 'silent_notifications', False):
+            # Play notification sound when new entities are found (unless silenced or no_review mode)
+            self.play_notification_sound()
+
+        # First, filter out entities that already exist in the database
+        if has_entities:
+            filtered_count = self._filter_existing_entities(data)
+            if filtered_count > 0:
+                # Recheck if there are any entities left after filtering
+                has_entities = any(data.get(category, {}) for category in data)
+                if not has_entities:
+                    print("✅ All new entities already exist in database.")
+                    return {}
+
+        # Auto-clean non-proper nouns before review (unless disabled)
+        if has_entities and not getattr(self, 'no_clean', False):
+            cleaned_count = self._auto_clean_new_entities(data)
+            if cleaned_count > 0:
+                # Recheck if there are any entities left after cleaning
+                has_entities = any(data.get(category, {}) for category in data)
+                if not has_entities:
+                    print("✅ All new entities were generic terms and have been auto-cleaned.")
+                    return {}
+
+        # Now check if we should skip the interactive review
         if self.no_review:
             print("Review disabled, skipping entity review.")
             return {}
         if not self.has_rich_ui:
             print("Rich UI components not available. Skipping entity review.")
             return {}
-            
-        edited_data = {'characters': {}, 'places': {}, 'organizations': {}, 'abilities': {}, 'titles': {}, 'equipment': {}}
-        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']
+
+        edited_data = {'characters': {}, 'places': {}, 'organizations': {}, 'abilities': {}, 'titles': {}, 'equipment': {}, 'creatures': {}}
+        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
         
         while True:
             # 1. Display current data
@@ -1704,6 +2006,999 @@ class CommandLineInterface(UserInterface):
         
         return edited_data
 
+    def _classify_proper_nouns(self, entities: Dict[str, str], model_spec: str = None):
+        """
+        Send entities to AI model to classify which are proper nouns.
+
+        Args:
+            entities: Dictionary of untranslated:translated entities
+            model_spec: Optional model spec (provider:model). Uses TRANSLATION_MODEL if not specified.
+
+        Returns:
+            Set of untranslated entity keys that are proper nouns, or None if classification fails
+        """
+        from providers import create_provider
+        from config import TranslationConfig
+
+        # Load the cleaning prompt from file
+        config = TranslationConfig()
+        cleaning_prompt_path = os.path.join(config.script_dir, "cleaning_prompt.txt")
+
+        try:
+            if os.path.exists(cleaning_prompt_path):
+                with open(cleaning_prompt_path, 'r', encoding='utf-8') as file:
+                    system_prompt = file.read()
+            else:
+                print(f"Error: cleaning_prompt.txt not found at {cleaning_prompt_path}")
+                print("Please ensure cleaning_prompt.txt exists in the script directory.")
+                return None
+        except Exception as e:
+            print(f"Error loading cleaning prompt from file: {e}")
+            print("Please check that cleaning_prompt.txt is readable and properly formatted.")
+            return None
+
+        user_prompt = f"""Classify which of these entities are proper nouns. Return only a JSON array of the Chinese keys (untranslated text) for entries that are proper nouns:
+
+{json.dumps(entities, ensure_ascii=False, indent=2)}
+
+Return format: ["key1", "key2", ...]
+"""
+
+        try:
+            # Determine which model to use for cleaning
+            # Priority: 1. Passed model_spec, 2. self.cleaning_model, 3. Translation model
+            if model_spec is None:
+                if hasattr(self, 'cleaning_model') and self.cleaning_model:
+                    model_spec = self.cleaning_model
+                else:
+                    model_spec = config.translation_model
+
+            # Parse the model spec to get provider and model name
+            provider_name, model = config.parse_model_spec(model_spec)
+
+            # Create provider instance
+            provider = create_provider(provider_name)
+
+            print(f"\n🤖 Analyzing {len(entities)} entities with {model}...")
+
+            # Make API call
+            response = provider.chat_completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0  # Use deterministic output
+            )
+
+            # Extract response content
+            content = provider.get_response_content(response)
+
+            # Parse JSON response
+            content = content.strip()
+
+            # Handle markdown code blocks
+            if content.startswith("```"):
+                lines = content.split("\n")
+                content = "\n".join(lines[1:-1]) if len(lines) > 2 else content
+                if content.startswith("json"):
+                    content = content[4:].strip()
+
+            proper_nouns = json.loads(content)
+
+            if not isinstance(proper_nouns, list):
+                raise ValueError("Response is not a JSON array")
+
+            return set(proper_nouns)
+
+        except Exception as e:
+            print(f"\n⚠️  Error during AI classification: {e}")
+            print("Skipping automatic cleanup. You can manually review entities.")
+            return None
+
+    def _review_all_entities(self, book_id=None, category_filter=None):
+        """
+        Review all entities in the database interactively.
+
+        Args:
+            book_id: Optional book ID to filter entities
+            category_filter: Optional category to filter entities
+        """
+        # Load all entities from database
+        all_entities = self.entity_manager.get_all_entities_for_review(
+            book_id=book_id,
+            category=category_filter
+        )
+
+        # Count total entities
+        total_count = sum(len(entities) for entities in all_entities.values())
+
+        if total_count == 0:
+            print("No entities found in the database.")
+            if book_id:
+                print(f"(Filtered by book_id={book_id})")
+            if category_filter:
+                print(f"(Filtered by category={category_filter})")
+            return
+
+        # Display filter info
+        print(f"\n=== Entity Review ===")
+        print(f"Total entities: {total_count}")
+        if book_id:
+            book = self.entity_manager.get_book(book_id=book_id)
+            if book:
+                print(f"Filtered by book: {book.get('title', 'Unknown')} (ID: {book_id})")
+        if category_filter:
+            print(f"Filtered by category: {category_filter}")
+        print()
+
+        # Main menu loop
+        while True:
+            choice = self.questionary.select(
+                "What would you like to do?",
+                choices=[
+                    "Browse by Category",
+                    "Search Entities",
+                    "Add New Entity",
+                    "Exit"
+                ]
+            ).ask()
+
+            if choice == "Exit":
+                print("Exiting entity review.")
+                break
+
+            # Get selected entity
+            selected_entity = None
+            if choice == "Browse by Category":
+                selected_entity = self._browse_entities_by_category(all_entities)
+            elif choice == "Search Entities":
+                results = self._search_entities(all_entities)
+                if results:
+                    selected_entity = self._display_search_results(results)
+            elif choice == "Add New Entity":
+                self._add_new_entity(all_entities, book_id)
+
+            # If an entity was selected, show action menu
+            if selected_entity:
+                category, untranslated, entity_data = selected_entity
+                self._perform_entity_action(category, untranslated, entity_data, all_entities)
+
+    def _browse_entities_by_category(self, all_entities):
+        """
+        Browse entities by category.
+
+        Args:
+            all_entities: Dict of all entities by category
+
+        Returns:
+            Tuple of (category, untranslated, entity_data) or None
+        """
+        # Filter out empty categories
+        non_empty_categories = [
+            cat for cat in all_entities
+            if all_entities[cat]
+        ]
+
+        if not non_empty_categories:
+            print("No entities available.")
+            return None
+
+        # Select category
+        category_choices = non_empty_categories + ["Back"]
+        category = self.questionary.select(
+            "Select a category:",
+            choices=category_choices
+        ).ask()
+
+        if category == "Back":
+            return None
+
+        # Get entities in this category
+        entities = all_entities[category]
+        if not entities:
+            print(f"No entities in category '{category}'.")
+            return None
+
+        # Convert to list and sort alphabetically by translation
+        entity_list = []
+        for untranslated, entity_data in entities.items():
+            entity_list.append((category, untranslated, entity_data))
+
+        # Sort by translation (English first)
+        entity_list.sort(key=lambda x: x[2].get("translation", "").lower())
+
+        # Use pagination if there are many entities
+        if len(entity_list) > 20:
+            return self._paginate_entity_list(entity_list)
+        else:
+            # Display all entities in this category
+            choices = []
+            for category_item, untranslated, entity_data in entity_list:
+                translation = entity_data.get("translation", "")
+                book_id_display = entity_data.get("book_id", "Global")
+                display = f"{translation} ({untranslated}) - [{category_item}] (Book: {book_id_display})"
+                choices.append(self.questionary.Choice(
+                    title=display,
+                    value=(category_item, untranslated, entity_data)
+                ))
+
+            choices.append("Back")
+
+            selected = self.questionary.select(
+                f"Select an entity in '{category}':",
+                choices=choices
+            ).ask()
+
+            if selected == "Back":
+                return None
+
+            return selected
+
+    def _search_entities(self, all_entities):
+        """
+        Search entities by untranslated or translated text.
+        Supports wildcards (*) and regex patterns.
+
+        Args:
+            all_entities: Dict of all entities by category
+
+        Returns:
+            List of tuples: (category, untranslated, entity_data)
+        """
+        search_type = self.questionary.select(
+            "Search by:",
+            choices=["Untranslated text", "Translation", "Both", "Back"]
+        ).ask()
+
+        if search_type == "Back":
+            return []
+
+        search_term = self.questionary.text(
+            "Enter search term (supports * wildcards or regex, case-insensitive):"
+        ).ask()
+
+        if not search_term:
+            return []
+
+        # Convert glob pattern to regex if it contains wildcards
+        import re
+        if '*' in search_term:
+            # Convert glob wildcards to regex
+            regex_pattern = search_term.replace('*', '.*')
+            # Escape other special regex characters except .*
+            regex_pattern = re.escape(regex_pattern).replace(r'\.\*', '.*')
+        else:
+            # Try to use as regex, fall back to literal search
+            regex_pattern = search_term
+
+        try:
+            pattern = re.compile(regex_pattern, re.IGNORECASE)
+            use_regex = True
+        except re.error:
+            # If regex is invalid, fall back to simple substring search
+            use_regex = False
+            search_term_lower = search_term.lower()
+
+        results = []
+
+        for category, entities in all_entities.items():
+            for untranslated, entity_data in entities.items():
+                translation = entity_data.get("translation", "")
+
+                match = False
+                if use_regex:
+                    if search_type in ["Untranslated text", "Both"]:
+                        if pattern.search(untranslated):
+                            match = True
+                    if search_type in ["Translation", "Both"]:
+                        if pattern.search(translation):
+                            match = True
+                else:
+                    if search_type in ["Untranslated text", "Both"]:
+                        if search_term_lower in untranslated.lower():
+                            match = True
+                    if search_type in ["Translation", "Both"]:
+                        if search_term_lower in translation.lower():
+                            match = True
+
+                if match:
+                    results.append((category, untranslated, entity_data))
+
+        return results
+
+    def _display_search_results(self, results):
+        """
+        Display search results and let user select one.
+
+        Args:
+            results: List of (category, untranslated, entity_data) tuples
+
+        Returns:
+            Tuple of (category, untranslated, entity_data) or None
+        """
+        if not results:
+            print("No matching entities found.")
+            return None
+
+        print(f"\nFound {len(results)} matching entities:\n")
+
+        # Sort results alphabetically by translation
+        results_sorted = sorted(results, key=lambda x: x[2].get("translation", "").lower())
+
+        # Use pagination if there are many results
+        if len(results_sorted) > 20:
+            return self._paginate_entity_list(results_sorted)
+        else:
+            # Create choices for questionary
+            choices = []
+            for category, untranslated, entity_data in results_sorted:
+                translation = entity_data.get("translation", "")
+                book_id_display = entity_data.get("book_id", "Global")
+                display = f"{translation} ({untranslated}) - [{category}] (Book: {book_id_display})"
+                choices.append(self.questionary.Choice(
+                    title=display,
+                    value=(category, untranslated, entity_data)
+                ))
+
+            choices.append("Back")
+
+            selected = self.questionary.select(
+                "Select an entity to review:",
+                choices=choices
+            ).ask()
+
+            if selected == "Back":
+                return None
+
+            return selected
+
+    def _perform_entity_action(self, category, untranslated, entity_data, all_entities):
+        """
+        Show action menu for a selected entity and perform the chosen action.
+
+        Args:
+            category: Entity category
+            untranslated: Untranslated text
+            entity_data: Entity data dict
+            all_entities: All entities dict (for updates)
+        """
+        while True:
+            translation = entity_data.get("translation", "")
+            book_id_display = entity_data.get("book_id", "Global")
+
+            print(f"\n=== Entity Details ===")
+            print(f"Category: {category}")
+            print(f"Untranslated: {untranslated}")
+            print(f"Translation: {translation}")
+            print(f"Book: {book_id_display}")
+            print(f"Last Chapter: {entity_data.get('last_chapter', 'N/A')}")
+            if entity_data.get("gender"):
+                print(f"Gender: {entity_data.get('gender')}")
+            print()
+
+            # Build action choices dynamically based on entity's book status
+            action_choices = [
+                "Edit Translation",
+                "Delete Entity",
+                "Change Category",
+            ]
+
+            # Add book scope option
+            current_book_id = entity_data.get("book_id")
+            if current_book_id:
+                action_choices.append("Make Global (available for all books)")
+            else:
+                action_choices.append("Assign to Specific Book")
+
+            action_choices.extend([
+                "View Usage Context",
+                "Go Back"
+            ])
+
+            action = self.questionary.select(
+                f"What do you want to do with '{untranslated}'?",
+                choices=action_choices
+            ).ask()
+
+            if action == "Go Back":
+                break
+
+            if action == "Delete Entity":
+                confirm = self.questionary.confirm(
+                    f"Are you sure you want to delete '{untranslated}'?"
+                ).ask()
+
+                if confirm:
+                    self.entity_manager.delete_entity(category, untranslated)
+                    # Remove from in-memory dict
+                    if untranslated in all_entities[category]:
+                        del all_entities[category][untranslated]
+                    print(f"Entity '{untranslated}' deleted.")
+                    break
+
+            elif action == "Change Category":
+                categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+                new_category_choices = [cat for cat in categories if cat != category]
+
+                new_category = self.questionary.select(
+                    "Select the new category:",
+                    choices=new_category_choices + ["Cancel"]
+                ).ask()
+
+                if new_category != "Cancel":
+                    # Update in database
+                    self.entity_manager.change_entity_category(category, untranslated, new_category)
+
+                    # Update in-memory dict
+                    if untranslated in all_entities[category]:
+                        del all_entities[category][untranslated]
+                    all_entities.setdefault(new_category, {})
+                    entity_data['category'] = new_category
+                    all_entities[new_category][untranslated] = entity_data
+
+                    print(f"Moved '{untranslated}' from '{category}' to '{new_category}'.")
+                    category = new_category  # Update for next iteration
+
+            elif action == "Edit Translation":
+                # Ask if user wants LLM translation
+                wants_llm = self.questionary.confirm(
+                    f"Do you want to ask the LLM for translation options for '{untranslated}'?"
+                ).ask()
+
+                if wants_llm:
+                    node = entity_data.copy()
+                    node['category'] = category
+                    node['untranslated'] = untranslated
+                    advice = self.translator.get_translation_options(node, [])
+
+                    print("\nLLM says:")
+                    print(f"  \"{advice['message']}\"\n")
+
+                    if 'options' in advice:
+                        options_list = advice['options'] + ["Manual entry"]
+                        chosen = self.questionary.select(
+                            "Which translation do you want?",
+                            choices=options_list
+                        ).ask()
+
+                        if chosen == "Manual entry":
+                            new_translation = self.questionary.text(
+                                f"Enter new translation for '{untranslated}':"
+                            ).ask()
+                        else:
+                            new_translation = chosen
+                    else:
+                        new_translation = self.questionary.text(
+                            f"Enter new translation for '{untranslated}':"
+                        ).ask()
+                else:
+                    new_translation = self.questionary.text(
+                        f"Enter new translation for '{untranslated}' (current: {translation}):"
+                    ).ask()
+
+                if new_translation and new_translation != translation:
+                    # Store old translation as incorrect_translation
+                    old_translation = translation
+                    entity_data['translation'] = new_translation
+                    entity_data['incorrect_translation'] = old_translation
+
+                    # Update in database with both new translation and old translation
+                    self.entity_manager.update_entity(
+                        category,
+                        untranslated,
+                        translation=new_translation,
+                        incorrect_translation=old_translation
+                    )
+
+                    # Update in-memory dict
+                    all_entities[category][untranslated] = entity_data
+
+                    print(f"Translation updated: '{untranslated}' → '{new_translation}'")
+
+                    # Post-edit action workflow
+                    self._handle_post_translation_edit(
+                        category,
+                        untranslated,
+                        entity_data
+                    )
+
+            elif action == "Make Global (available for all books)":
+                confirm = self.questionary.confirm(
+                    f"Make '{untranslated}' global? It will be available for all books."
+                ).ask()
+
+                if confirm:
+                    # Update in database - set book_id to NULL
+                    self.entity_manager.update_entity(
+                        category,
+                        untranslated,
+                        book_id=None
+                    )
+
+                    # Update in-memory dict
+                    if "book_id" in entity_data:
+                        del entity_data["book_id"]
+                    all_entities[category][untranslated] = entity_data
+
+                    print(f"Entity '{untranslated}' is now global (available for all books).")
+
+            elif action == "Assign to Specific Book":
+                # Get list of available books
+                books = self.entity_manager.list_books()
+
+                if not books:
+                    print("No books available in the database.")
+                else:
+                    # Create book choices
+                    book_choices = []
+                    for book in books:
+                        book_id = book.get("id")
+                        book_title = book.get("title", "Untitled")
+                        book_choices.append(self.questionary.Choice(
+                            title=f"{book_title} (ID: {book_id})",
+                            value=book_id
+                        ))
+
+                    book_choices.append("Cancel")
+
+                    selected_book_id = self.questionary.select(
+                        "Select a book to assign this entity to:",
+                        choices=book_choices
+                    ).ask()
+
+                    if selected_book_id != "Cancel":
+                        # Update in database
+                        self.entity_manager.update_entity(
+                            category,
+                            untranslated,
+                            book_id=selected_book_id
+                        )
+
+                        # Update in-memory dict
+                        entity_data["book_id"] = selected_book_id
+                        all_entities[category][untranslated] = entity_data
+
+                        book_title = next(
+                            (b.get("title", "Unknown") for b in books if b.get("id") == selected_book_id),
+                            "Unknown"
+                        )
+                        print(f"Entity '{untranslated}' assigned to book: {book_title} (ID: {selected_book_id})")
+
+            elif action == "View Usage Context":
+                self._view_entity_usage(category, untranslated, entity_data)
+
+    def _add_new_entity(self, all_entities, book_id=None):
+        """
+        Add a new entity manually through interactive prompts.
+
+        Args:
+            all_entities: Dict of all entities by category
+            book_id: Optional book ID filter from parent context
+        """
+        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+
+        # Step 1: Select category
+        category = self.questionary.select(
+            "Select the category for the new entity:",
+            choices=categories + ["Cancel"]
+        ).ask()
+
+        if category == "Cancel":
+            return
+
+        # Step 2: Enter untranslated text
+        untranslated = self.questionary.text(
+            "Enter the untranslated text (Chinese):",
+        ).ask()
+
+        if not untranslated or not untranslated.strip():
+            print("Untranslated text cannot be empty. Operation cancelled.")
+            return
+
+        untranslated = untranslated.strip()
+
+        # Step 3: Check if entity already exists
+        existing_entity = all_entities.get(category, {}).get(untranslated)
+        if existing_entity:
+            print(f"Warning: Entity '{untranslated}' already exists in category '{category}'.")
+            print(f"Existing translation: {existing_entity.get('translation', 'N/A')}")
+            overwrite = self.questionary.confirm(
+                "Do you want to update the existing entity instead?"
+            ).ask()
+
+            if not overwrite:
+                return
+
+        # Step 4: Enter translation
+        translation = self.questionary.text(
+            "Enter the translation (English):",
+        ).ask()
+
+        if not translation or not translation.strip():
+            print("Translation cannot be empty. Operation cancelled.")
+            return
+
+        translation = translation.strip()
+
+        # Check if this translation is already used
+        existing = self.entity_manager.get_entity_by_translation(translation)
+        if existing and existing[1] != untranslated:
+            existing_category, existing_key, _ = existing
+            print(f"Warning: This translation is already used for '{existing_key}' in '{existing_category}'")
+            proceed = self.questionary.confirm(
+                "Do you want to proceed with this translation anyway?"
+            ).ask()
+
+            if not proceed:
+                return
+
+        # Step 5: Optional gender field (for characters only)
+        gender = None
+        if category == "characters":
+            has_gender = self.questionary.confirm(
+                "Do you want to specify a gender for this character?"
+            ).ask()
+
+            if has_gender:
+                gender = self.questionary.select(
+                    "Select gender:",
+                    choices=["male", "female", "other"]
+                ).ask()
+
+        # Step 6: Book assignment
+        assign_book_id = None
+        if book_id:
+            # If we're already filtering by a book, offer to assign to that book
+            use_filter_book = self.questionary.confirm(
+                f"Assign this entity to the current book filter (ID: {book_id})?"
+            ).ask()
+
+            if use_filter_book:
+                assign_book_id = book_id
+
+        if assign_book_id is None:
+            # Ask if the entity should be book-specific
+            is_book_specific = self.questionary.confirm(
+                "Should this entity be specific to a book? (No = Global for all books)"
+            ).ask()
+
+            if is_book_specific:
+                books = self.entity_manager.list_books()
+
+                if not books:
+                    print("No books available in the database. Entity will be created as global.")
+                else:
+                    # Create book choices
+                    book_choices = []
+                    for book in books:
+                        book_id_choice = book.get("id")
+                        book_title = book.get("title", "Untitled")
+                        book_choices.append(self.questionary.Choice(
+                            title=f"{book_title} (ID: {book_id_choice})",
+                            value=book_id_choice
+                        ))
+
+                    book_choices.append("Cancel (Make Global)")
+
+                    selected_book_id = self.questionary.select(
+                        "Select a book to assign this entity to:",
+                        choices=book_choices
+                    ).ask()
+
+                    if selected_book_id != "Cancel (Make Global)":
+                        assign_book_id = selected_book_id
+
+        # Step 7: Create the entity in the database
+        try:
+            self.entity_manager.add_entity(
+                category=category,
+                untranslated=untranslated,
+                translation=translation,
+                book_id=assign_book_id,
+                gender=gender
+            )
+
+            # Step 8: Update in-memory dict
+            entity_data = {
+                "translation": translation,
+                "last_chapter": "",
+            }
+
+            if assign_book_id:
+                entity_data["book_id"] = assign_book_id
+
+            if gender:
+                entity_data["gender"] = gender
+
+            all_entities.setdefault(category, {})
+            all_entities[category][untranslated] = entity_data
+
+            print(f"\nSuccessfully added entity:")
+            print(f"  Category: {category}")
+            print(f"  Untranslated: {untranslated}")
+            print(f"  Translation: {translation}")
+            if gender:
+                print(f"  Gender: {gender}")
+            if assign_book_id:
+                book_title = next(
+                    (b.get("title", "Unknown") for b in self.entity_manager.list_books() if b.get("id") == assign_book_id),
+                    "Unknown"
+                )
+                print(f"  Book: {book_title} (ID: {assign_book_id})")
+            else:
+                print(f"  Scope: Global (all books)")
+
+        except Exception as e:
+            print(f"Error adding entity: {e}")
+            self.logger.error(f"Error adding entity: {e}")
+
+    def _view_entity_usage(self, category, untranslated, entity_data):
+        """
+        Display which chapters use this entity.
+
+        Args:
+            category: Entity category
+            untranslated: Untranslated text
+            entity_data: Entity data dict
+        """
+        print(f"\nSearching for usage of '{untranslated}' ({entity_data.get('translation', '')})...\n")
+
+        # Get book_id from entity if available
+        entity_book_id = entity_data.get("book_id")
+
+        chapters = self.entity_manager.find_chapters_using_entity(
+            untranslated,
+            book_id=entity_book_id
+        )
+
+        if not chapters:
+            print(f"No chapters found using this entity.")
+            # Fallback to last_chapter field
+            last_chapter = entity_data.get("last_chapter")
+            if last_chapter:
+                print(f"(Note: This entity was last seen in chapter {last_chapter})")
+        else:
+            print(f"Found in {len(chapters)} chapter(s):\n")
+            for ch in chapters:
+                print(f"  - Book: {ch['book_title']}, Chapter {ch['chapter_number']}: {ch['chapter_title']}")
+
+        input("\nPress Enter to continue...")
+
+    def _handle_post_translation_edit(self, category, untranslated, entity_data):
+        """
+        Handle post-translation-edit actions: find affected chapters and offer actions.
+
+        Args:
+            category: Entity category (characters, places, etc.)
+            untranslated: The untranslated entity text
+            entity_data: Entity data dictionary with 'translation' and 'incorrect_translation'
+        """
+        # Find affected chapters
+        entity_book_id = entity_data.get("book_id")
+        chapters = self.entity_manager.find_chapters_using_entity(
+            untranslated,
+            book_id=entity_book_id
+        )
+
+        # If no chapters found, skip the prompt
+        if not chapters:
+            self.logger.debug(f"No chapters found using entity '{untranslated}', skipping post-edit actions")
+            return
+
+        # Display affected chapters
+        print(f"\nThis entity is used in {len(chapters)} chapter(s):")
+        for ch in chapters[:5]:  # Show first 5
+            print(f"  - {ch['book_title']}, Ch.{ch['chapter_number']}: {ch['chapter_title']}")
+        if len(chapters) > 5:
+            print(f"  ... and {len(chapters) - 5} more")
+
+        # Prompt for action
+        action = self.questionary.select(
+            "\nWhat would you like to do with the affected chapters?",
+            choices=[
+                "Find and substitute (replace old translation in existing translations)",
+                "Re-queue for re-translation (add to queue.json for full re-translation)",
+                "Do nothing (keep current translations as-is)"
+            ]
+        ).ask()
+
+        if action.startswith("Find and substitute"):
+            self._substitute_translation_in_chapters(category, untranslated, entity_data, chapters)
+        elif action.startswith("Re-queue"):
+            self._requeue_chapters_with_entity(category, untranslated, entity_data, chapters)
+        else:
+            print("No changes made to existing chapters.")
+
+    def _substitute_translation_in_chapters(self, category, untranslated, entity_data, chapters):
+        """
+        Find and substitute old translation with new translation in all affected chapters.
+
+        Args:
+            category: Entity category
+            untranslated: The untranslated entity text
+            entity_data: Entity data with 'translation' and 'incorrect_translation'
+            chapters: List of chapter metadata dicts from find_chapters_using_entity()
+        """
+        print(f"\nSubstituting translations in {len(chapters)} chapter(s)...")
+
+        updated_count = 0
+        failed_count = 0
+
+        for ch in chapters:
+            try:
+                # Load chapter data
+                chapter = self.entity_manager.get_chapter(chapter_id=ch['chapter_id'])
+                if not chapter:
+                    self.logger.warning(f"Could not load chapter {ch['chapter_number']} from book {ch['book_title']}")
+                    failed_count += 1
+                    continue
+
+                # Get translated content (list of lines)
+                translated_lines = chapter.get('content', [])
+                if not translated_lines or not isinstance(translated_lines, list):
+                    self.logger.warning(f"No translated content in chapter {ch['chapter_number']}")
+                    failed_count += 1
+                    continue
+
+                # Perform substitution using existing method
+                updated_lines = self.entity_manager.update_translated_text(
+                    translated_lines.copy(),  # Make copy to avoid mutation
+                    entity_data
+                )
+
+                # Save updated chapter
+                # Note: We intentionally do NOT update translation_date and translation_model
+                # because this is a correction, not a new translation
+                chapter_id = self.entity_manager.save_chapter(
+                    book_id=chapter['book_id'],
+                    chapter_number=chapter['chapter'],
+                    title=chapter['title'],
+                    untranslated_content=chapter['untranslated'],
+                    translated_content=updated_lines,
+                    summary=chapter.get('summary'),
+                    translation_model=chapter.get('model')  # Keep original model
+                )
+
+                if chapter_id:
+                    updated_count += 1
+                    print(f"  ✓ Updated: {ch['book_title']}, Ch.{ch['chapter_number']}")
+                else:
+                    failed_count += 1
+                    print(f"  ✗ Failed: {ch['book_title']}, Ch.{ch['chapter_number']}")
+
+            except Exception as e:
+                self.logger.error(f"Error updating chapter {ch['chapter_number']}: {e}")
+                failed_count += 1
+                print(f"  ✗ Error: {ch['book_title']}, Ch.{ch['chapter_number']} - {e}")
+
+        # Summary
+        print(f"\nSubstitution complete:")
+        print(f"  - Successfully updated: {updated_count} chapter(s)")
+        if failed_count > 0:
+            print(f"  - Failed: {failed_count} chapter(s)")
+
+        input("\nPress Enter to continue...")
+
+    def _requeue_chapters_with_entity(self, category, untranslated, entity_data, chapters):
+        """
+        Add affected chapters to queue.json for full re-translation.
+
+        Args:
+            category: Entity category
+            untranslated: The untranslated entity text
+            entity_data: Entity data
+            chapters: List of chapter metadata dicts from find_chapters_using_entity()
+        """
+        import os
+
+        print(f"\nAdding {len(chapters)} chapter(s) to queue for re-translation...")
+
+        added_count = 0
+        skipped_count = 0
+
+        for ch in chapters:
+            # Check for duplicate using database method
+            if self.entity_manager.check_duplicate_in_queue(ch['book_id'], ch['chapter_number']):
+                self.logger.info(f"Skipping duplicate: {ch['book_title']}, Ch.{ch['chapter_number']}")
+                skipped_count += 1
+                continue
+
+            try:
+                # Load chapter data
+                chapter = self.entity_manager.get_chapter(chapter_id=ch['chapter_id'])
+                if not chapter:
+                    self.logger.warning(f"Could not load chapter {ch['chapter_number']} from book {ch['book_title']}")
+                    continue
+
+                # Add to queue using database
+                queue_item_id = self.entity_manager.add_to_queue(
+                    book_id=chapter['book_id'],
+                    content=chapter.get('untranslated', []),
+                    title=chapter['title'],
+                    chapter_number=chapter['chapter'],
+                    source="(re-queued for entity update)"
+                )
+
+                if queue_item_id:
+                    added_count += 1
+                    print(f"  ✓ Queued: {ch['book_title']}, Ch.{ch['chapter_number']}")
+                else:
+                    print(f"  ✗ Error: Failed to queue {ch['book_title']}, Ch.{ch['chapter_number']}")
+
+            except Exception as e:
+                self.logger.error(f"Error queuing chapter {ch['chapter_number']}: {e}")
+                print(f"  ✗ Error: {ch['book_title']}, Ch.{ch['chapter_number']} - {e}")
+
+        # Print summary
+        if added_count > 0:
+            total_count = self.entity_manager.get_queue_count()
+            print(f"\nRe-queuing complete:")
+            print(f"  - Added to queue: {added_count} chapter(s)")
+            if skipped_count > 0:
+                print(f"  - Skipped (already queued): {skipped_count} chapter(s)")
+            print(f"  - Total queue size: {total_count}")
+        else:
+            print(f"\nNo chapters added to queue.")
+            if skipped_count > 0:
+                print(f"  - All {skipped_count} chapter(s) already in queue")
+
+        input("\nPress Enter to continue...")
+
+    def _paginate_entity_list(self, entity_list, page_size=20):
+        """
+        Display entities in pages to avoid overwhelming the user.
+
+        Args:
+            entity_list: List of (category, untranslated, entity_data) tuples
+            page_size: Number of entities per page
+
+        Returns:
+            Tuple of (category, untranslated, entity_data) or None
+        """
+        total = len(entity_list)
+        current_page = 0
+        max_page = (total - 1) // page_size
+
+        while True:
+            start = current_page * page_size
+            end = min(start + page_size, total)
+
+            page_entities = entity_list[start:end]
+
+            choices = []
+            for category, untranslated, entity_data in page_entities:
+                translation = entity_data.get("translation", "")
+                book_id_display = entity_data.get("book_id", "Global")
+                display = f"{translation} ({untranslated}) - [{category}] (Book: {book_id_display})"
+                choices.append(self.questionary.Choice(
+                    title=display,
+                    value=(category, untranslated, entity_data)
+                ))
+
+            # Add navigation
+            if current_page > 0:
+                choices.append(self.questionary.Choice("← Previous Page", value="prev"))
+            if current_page < max_page:
+                choices.append(self.questionary.Choice("Next Page →", value="next"))
+            choices.append("Back")
+
+            print(f"\nPage {current_page + 1} of {max_page + 1} ({total} total entities)")
+
+            selection = self.questionary.select(
+                "Select an entity:",
+                choices=choices
+            ).ask()
+
+            if selection == "prev":
+                current_page -= 1
+            elif selection == "next":
+                current_page += 1
+            elif selection == "Back":
+                return None
+            else:
+                return selection
+
     def display_results(self, end_object, book_info=None):
         """Display translation results to the user and save in the specified format"""
         # Get title with a default value if missing
@@ -1846,11 +3141,11 @@ class CommandLineInterface(UserInterface):
             elif action == "Edit manually":
                 # Allow detailed editing
                 print("\nManual Editing:")
-                
+
                 # Choose category
                 target_category = self.questionary.select(
                     "Which category should this entity be in?",
-                    choices=['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']
+                    choices=['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
                 ).ask()
                 
                 # Choose translation
@@ -1960,63 +3255,45 @@ class CommandLineInterface(UserInterface):
         
         return book_info
 
-    def _list_queue_contents(self, summary_only=False):
+    def _list_queue_contents(self, summary_only=False, book_id=None):
         """List all items in the translation queue."""
-        queue_path = os.path.join(self.entity_manager.config.script_dir, "queue.json")
-        
-        if not os.path.exists(queue_path):
-            print("Queue file not found.")
-            return
-        
-        try:
-            with open(queue_path, 'r', encoding='utf-8') as f:
-                queue = json.load(f)
-                
-            if not queue:
-                print("Queue is empty.")
-                return
-                
-            print(f"Queue contains {len(queue)} items:")
-            
-            if summary_only:
-                return
-                
-            for i, item in enumerate(queue, 1):
-                # Try to extract title from metadata
-                title = None
-                chapter = None
-                
-                if isinstance(item, list) and len(item) > 0:
-                    for line in item[:5]:  # Check first few lines for metadata
-                        if isinstance(line, str):
-                            if line.startswith("# Title:"):
-                                title = line[8:].strip()
-                            elif line.startswith("# Chapter:"):
-                                chapter = line[10:].strip()
-                
-                if title:
-                    if chapter:
-                        print(f"{i}. {title} (Chapter {chapter}) - {len(item)} lines")
-                    else:
-                        print(f"{i}. {title} - {len(item)} lines")
-                else:
-                    print(f"{i}. Item with {len(item)} lines")
-                    
-        except Exception as e:
-            print(f"Error reading queue: {e}")
+        queue_items = self.entity_manager.list_queue(book_id=book_id)
 
-    def _process_directory(self, directory_path, sort_strategy="auto", file_pattern="*.txt"):
+        if not queue_items:
+            if book_id:
+                print(f"Queue is empty for book ID {book_id}.")
+            else:
+                print("Queue is empty.")
+            return
+
+        if book_id:
+            print(f"Queue contains {len(queue_items)} items for book ID {book_id}:")
+        else:
+            print(f"Queue contains {len(queue_items)} items:")
+
+        if summary_only:
+            return
+
+        for i, item in enumerate(queue_items, 1):
+            chapter_info = f"Chapter {item['chapter_number']}" if item['chapter_number'] else "No chapter number"
+            content_lines = len(item['content']) if isinstance(item['content'], list) else 0
+
+            print(f"{i}. [{item['book_title']}] {item['title']} ({chapter_info}) - {content_lines} lines")
+            if item['source']:
+                print(f"   Source: {item['source']}")
+
+    def _process_directory(self, directory_path, book_id=None, sort_strategy="auto", file_pattern="*.txt"):
         """Process all text files in a directory and add them to the queue."""
         try:
             # Initialize directory processor
-            processor = DirectoryProcessor(self.entity_manager.config, self.logger)
-            
+            processor = DirectoryProcessor(self.entity_manager.config, self.logger, self.entity_manager)
+
             print(f"Processing directory: {directory_path}")
             print(f"Sort strategy: {sort_strategy}")
             print(f"File pattern: {file_pattern}")
-            
+
             success, num_files, message = processor.process_directory(
-                directory_path, sort_strategy, file_pattern)
+                directory_path, book_id, sort_strategy, file_pattern)
             
             if success:
                 print(f"Success! {message}")
@@ -2032,32 +3309,39 @@ class CommandLineInterface(UserInterface):
             import traceback
             traceback.print_exc()
             
-    def _clear_queue(self):
+    def _clear_queue(self, book_id=None):
         """Clear the translation queue."""
-        queue_path = os.path.join(self.entity_manager.config.script_dir, "queue.json")
-        
-        if not os.path.exists(queue_path):
-            print("Queue file not found.")
-            return
-        
-        try:
-            # Ask for confirmation
-            if self.has_rich_ui:
-                confirm = self.questionary.confirm("Are you sure you want to clear the entire queue?").ask()
-                if not confirm:
-                    print("Operation cancelled.")
-                    return
+        # Get count first
+        count = self.entity_manager.get_queue_count(book_id=book_id)
+
+        if count == 0:
+            if book_id:
+                print(f"Queue is already empty for book ID {book_id}.")
             else:
-                response = input("Are you sure you want to clear the entire queue? (y/n): ")
-                if response.lower() != 'y':
-                    print("Operation cancelled.")
-                    return
-            
-            # Clear the queue
-            with open(queue_path, 'w', encoding='utf-8') as f:
-                json.dump([], f)
-            
-            print("Queue has been cleared.")
-                
-        except Exception as e:
-            print(f"Error clearing queue: {e}")
+                print("Queue is already empty.")
+            return
+
+        # Ask for confirmation
+        if book_id:
+            message = f"Are you sure you want to clear {count} items from the queue for book ID {book_id}?"
+        else:
+            message = f"Are you sure you want to clear the entire queue ({count} items)?"
+
+        if self.has_rich_ui:
+            confirm = self.questionary.confirm(message).ask()
+            if not confirm:
+                print("Operation cancelled.")
+                return
+        else:
+            response = input(f"{message} (y/n): ")
+            if response.lower() != 'y':
+                print("Operation cancelled.")
+                return
+
+        # Clear the queue
+        removed = self.entity_manager.clear_queue(book_id=book_id)
+
+        if book_id:
+            print(f"Cleared {removed} items from queue for book ID {book_id}.")
+        else:
+            print(f"Cleared {removed} items from queue.")
