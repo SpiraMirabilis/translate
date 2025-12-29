@@ -1994,14 +1994,16 @@ class CommandLineInterface(UserInterface):
                 last_chapter = selected_item.get("last_chapter", "")
                 incorrect_translation = selected_item.get("incorrect_translation", None)
                 gender = selected_item.get("gender", None)
-                
+                book_id = selected_item.get("book_id", None)
+
                 self.entity_manager.update_entity(
-                    selected_category, 
-                    selected_item_key, 
-                    translation=translation, 
+                    selected_category,
+                    selected_item_key,
+                    translation=translation,
                     last_chapter=last_chapter,
                     incorrect_translation=incorrect_translation,
-                    gender=gender
+                    gender=gender,
+                    book_id=book_id
                 )
         
         return edited_data

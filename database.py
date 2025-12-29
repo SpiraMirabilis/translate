@@ -17,6 +17,7 @@ class DatabaseManager:
         self.entities = {}  # Cached entities
         self._initialize_database()
         self._load_entities()
+        self._check_legacy_queue()
     
     def _initialize_database(self):
         """Initialize the SQLite database with proper schema if it doesn't exist"""
@@ -82,8 +83,28 @@ class DatabaseManager:
             # Create indices for chapters table
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_chapters_book_id ON chapters(book_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_chapter_number ON chapters(chapter_number)')
-            
-            
+
+            # Create queue table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                chapter_number INTEGER,
+                title TEXT NOT NULL,
+                source TEXT,
+                content TEXT NOT NULL,
+                metadata TEXT,
+                position INTEGER NOT NULL,
+                created_date TEXT NOT NULL,
+                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+            )
+            ''')
+
+            # Create indices for queue table
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_queue_position ON queue(position)')
+            cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_position_unique ON queue(position)')
+
             conn.commit()
             conn.close()
             self.logger.info("Database initialized successfully")
@@ -689,18 +710,392 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Error deleting chapter: {e}")
             return False
-    
+
+    # Queue management section
+    def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None):
+        """
+        Add an item to the translation queue.
+
+        Args:
+            book_id: Book ID (required, NOT NULL)
+            content: List of content lines or string
+            title: Chapter title (optional)
+            chapter_number: Chapter number (optional)
+            source: Source file path or description (optional)
+            metadata: Additional metadata dict (optional)
+
+        Returns:
+            int: Queue item ID if successful, None otherwise
+        """
+        try:
+            # Verify book exists
+            book = self.get_book(book_id=book_id)
+            if not book:
+                self.logger.error(f"Book with ID {book_id} not found")
+                return None
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get max position and add 1 for FIFO ordering
+            cursor.execute('SELECT MAX(position) FROM queue')
+            max_pos = cursor.fetchone()[0]
+            next_position = (max_pos + 1) if max_pos is not None else 0
+
+            # Serialize content as JSON if list (like chapters table)
+            if isinstance(content, list):
+                content_json = json.dumps(content, ensure_ascii=False)
+            else:
+                content_json = content
+
+            # Serialize metadata if provided
+            metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+
+            # Get current timestamp
+            from datetime import datetime
+            created_date = datetime.now().isoformat()
+
+            # Insert queue item
+            cursor.execute('''
+            INSERT INTO queue (book_id, chapter_number, title, source, content, metadata, position, created_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (book_id, chapter_number, title or "Untitled", source, content_json, metadata_json, next_position, created_date))
+
+            queue_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+
+            self.logger.info(f"Added item to queue (ID: {queue_id}, position: {next_position}) for book '{book['title']}'")
+            return queue_id
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error adding to queue: {e}")
+            return None
+
+    def get_next_queue_item(self, book_id=None):
+        """
+        Get the next item from the queue (lowest position).
+
+        Args:
+            book_id: Optional book ID to filter by specific book
+
+        Returns:
+            dict: Queue item data or None if queue empty
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Build query with optional book_id filter
+            if book_id:
+                cursor.execute('''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
+                       q.metadata, q.position, q.created_date, b.title as book_title
+                FROM queue q
+                JOIN books b ON q.book_id = b.id
+                WHERE q.book_id = ?
+                ORDER BY q.position ASC
+                LIMIT 1
+                ''', (book_id,))
+            else:
+                cursor.execute('''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
+                       q.metadata, q.position, q.created_date, b.title as book_title
+                FROM queue q
+                JOIN books b ON q.book_id = b.id
+                ORDER BY q.position ASC
+                LIMIT 1
+                ''')
+
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row:
+                return None
+
+            # Deserialize content (like get_chapter)
+            content_json = row[5]
+            try:
+                content = json.loads(content_json)
+            except:
+                content = content_json  # Fallback to string if not valid JSON
+
+            # Deserialize metadata if present
+            metadata_json = row[6]
+            metadata = None
+            if metadata_json:
+                try:
+                    metadata = json.loads(metadata_json)
+                except:
+                    pass
+
+            return {
+                'id': row[0],
+                'book_id': row[1],
+                'chapter_number': row[2],
+                'title': row[3],
+                'source': row[4],
+                'content': content,
+                'metadata': metadata,
+                'position': row[7],
+                'created_date': row[8],
+                'book_title': row[9]
+            }
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error getting next queue item: {e}")
+            return None
+
+    def remove_from_queue(self, queue_id):
+        """
+        Remove an item from the queue and reorder remaining items.
+
+        Args:
+            queue_id: Queue item ID to remove
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get the position of the item being removed
+            cursor.execute('SELECT position FROM queue WHERE id = ?', (queue_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                self.logger.warning(f"Queue item {queue_id} not found")
+                conn.close()
+                return False
+
+            removed_position = row[0]
+
+            # Delete the item
+            cursor.execute('DELETE FROM queue WHERE id = ?', (queue_id,))
+
+            # Update positions of all items with position > removed_position (decrement by 1)
+            cursor.execute('UPDATE queue SET position = position - 1 WHERE position > ?', (removed_position,))
+
+            conn.commit()
+            conn.close()
+
+            self.logger.info(f"Removed queue item {queue_id} from position {removed_position}")
+            return True
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error removing from queue: {e}")
+            return False
+
+    def list_queue(self, book_id=None):
+        """
+        List all items in the queue.
+
+        Args:
+            book_id: Optional book ID to filter by specific book
+
+        Returns:
+            list: List of queue item dicts ordered by position
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Build query with optional book_id filter
+            if book_id:
+                cursor.execute('''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
+                       q.metadata, q.position, q.created_date, b.title as book_title
+                FROM queue q
+                JOIN books b ON q.book_id = b.id
+                WHERE q.book_id = ?
+                ORDER BY q.position ASC
+                ''', (book_id,))
+            else:
+                cursor.execute('''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
+                       q.metadata, q.position, q.created_date, b.title as book_title
+                FROM queue q
+                JOIN books b ON q.book_id = b.id
+                ORDER BY q.position ASC
+                ''')
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            result = []
+            for row in rows:
+                # Deserialize content
+                content_json = row[5]
+                try:
+                    content = json.loads(content_json)
+                except:
+                    content = content_json
+
+                # Deserialize metadata if present
+                metadata_json = row[6]
+                metadata = None
+                if metadata_json:
+                    try:
+                        metadata = json.loads(metadata_json)
+                    except:
+                        pass
+
+                result.append({
+                    'id': row[0],
+                    'book_id': row[1],
+                    'chapter_number': row[2],
+                    'title': row[3],
+                    'source': row[4],
+                    'content': content,
+                    'metadata': metadata,
+                    'position': row[7],
+                    'created_date': row[8],
+                    'book_title': row[9]
+                })
+
+            return result
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error listing queue: {e}")
+            return []
+
+    def clear_queue(self, book_id=None):
+        """
+        Clear the queue (all items or for specific book).
+
+        Args:
+            book_id: Optional book ID to clear queue for specific book only
+
+        Returns:
+            int: Number of items removed
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            if book_id:
+                # Clear queue for specific book
+                cursor.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+                count = cursor.rowcount
+
+                # Reorder positions after deletion
+                # Get all remaining items ordered by position
+                cursor.execute('SELECT id FROM queue ORDER BY position ASC')
+                items = cursor.fetchall()
+
+                # Update positions to be sequential
+                for i, (item_id,) in enumerate(items):
+                    cursor.execute('UPDATE queue SET position = ? WHERE id = ?', (i, item_id))
+            else:
+                # Clear entire queue
+                cursor.execute('DELETE FROM queue')
+                count = cursor.rowcount
+
+            conn.commit()
+            conn.close()
+
+            self.logger.info(f"Cleared {count} items from queue" + (f" for book_id {book_id}" if book_id else ""))
+            return count
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error clearing queue: {e}")
+            return 0
+
+    def get_queue_count(self, book_id=None):
+        """
+        Get count of items in queue.
+
+        Args:
+            book_id: Optional book ID to count for specific book
+
+        Returns:
+            int: Number of items in queue
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            if book_id:
+                cursor.execute('SELECT COUNT(*) FROM queue WHERE book_id = ?', (book_id,))
+            else:
+                cursor.execute('SELECT COUNT(*) FROM queue')
+
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            return count
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error getting queue count: {e}")
+            return 0
+
+    def check_duplicate_in_queue(self, book_id, chapter_number):
+        """
+        Check if a chapter is already in the queue.
+
+        Args:
+            book_id: Book ID
+            chapter_number: Chapter number
+
+        Returns:
+            bool: True if duplicate exists
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT id FROM queue WHERE book_id = ? AND chapter_number = ?',
+                          (book_id, chapter_number))
+
+            result = cursor.fetchone()
+            conn.close()
+
+            return result is not None
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error checking duplicate in queue: {e}")
+            return False
+
+    def _check_legacy_queue(self):
+        """Check for legacy queue.json and warn user"""
+        queue_path = os.path.join(self.config.script_dir, "queue.json")
+        if os.path.exists(queue_path):
+            try:
+                with open(queue_path, 'r', encoding='utf-8') as f:
+                    legacy_queue = json.load(f)
+
+                if legacy_queue and len(legacy_queue) > 0:
+                    self.logger.warning(f"Found legacy queue.json with {len(legacy_queue)} items")
+                    print("\n" + "="*60)
+                    print("WARNING: Legacy queue.json detected")
+                    print("="*60)
+                    print(f"Found {len(legacy_queue)} items in old queue.json.")
+                    print("The queue system now uses the database.")
+                    print("\nYour old queue.json will NOT be processed automatically.")
+                    print("\nOptions:")
+                    print("  1. Process old queue first:")
+                    print("     python translator.py --resume  (repeat until empty)")
+                    print("  2. Clear old queue:")
+                    print("     rm queue.json")
+                    print("  3. Ignore - items will not be processed")
+                    print("="*60 + "\n")
+            except Exception as e:
+                self.logger.debug(f"Error checking legacy queue: {e}")
+    # End Queue management section
+
     def _load_entities(self, book_id=None):
         """Load existing entities from database into memory cache"""
-        
+
         # Define default entity categories
         default_entities = {
-            "characters": {}, 
-            "places": {}, 
-            "organizations": {}, 
-            "abilities": {}, 
-            "titles": {}, 
-            "equipment": {}
+            "characters": {},
+            "places": {},
+            "organizations": {},
+            "abilities": {},
+            "titles": {},
+            "equipment": {},
+            "creatures": {}
         }
         
         try:
@@ -790,11 +1185,11 @@ class DatabaseManager:
         existing ones from 'old_entities' if they have the same keys.
         """
         # Create a copy of old_entities to avoid modifying the original
-        result = {category: old_entities.get(category, {}).copy() 
-                 for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']}
-        
+        result = {category: old_entities.get(category, {}).copy()
+                 for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']}
+
         # Update with new entities
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment']:
+        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
             new_category_dict = new_entities.get(category, {})
             result[category].update(new_category_dict)
         
@@ -1059,34 +1454,63 @@ class DatabaseManager:
     def update_entity(self, category, untranslated, **kwargs):
         """
         Update an existing entity with new values.
+
+        If book_id is provided along with other fields, it's used to identify which entity
+        to update (WHERE clause) while other fields are updated.
+        If book_id is the ONLY field being updated, it changes the entity's book assignment.
+
         Returns True if the entity was updated, False if it wasn't found.
         """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
+            # Check if book_id is the only field being updated (changing book assignment)
+            is_only_book_id = 'book_id' in kwargs and len(kwargs) == 1
+
             # Build the SET clause dynamically based on provided kwargs
             set_clause = []
             values = []
-            
+            where_book_id = None
+
             for key, value in kwargs.items():
                 if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender']:
                     set_clause.append(f"{key} = ?")
                     values.append(value)
-            
+                elif key == 'book_id':
+                    if is_only_book_id:
+                        # Changing book assignment - include in SET clause
+                        set_clause.append(f"{key} = ?")
+                        values.append(value)
+                    else:
+                        # Identifying which entity to update - use in WHERE clause
+                        where_book_id = value
+
             if not set_clause:
                 self.logger.warning("No valid fields to update")
                 conn.close()
                 return False
-            
-            # Complete the parameter list with category and untranslated
-            values.extend([category, untranslated])
-            
+
+            # Build WHERE clause
+            where_clause = "WHERE category = ? AND untranslated = ?"
+            where_values = [category, untranslated]
+
+            # Include book_id in WHERE clause only if we're not changing it
+            if not is_only_book_id:
+                if where_book_id is not None:
+                    where_clause += " AND book_id = ?"
+                    where_values.append(where_book_id)
+                else:
+                    where_clause += " AND book_id IS NULL"
+
+            # Complete the parameter list
+            values.extend(where_values)
+
             # Execute the update
             cursor.execute(f'''
-            UPDATE entities 
+            UPDATE entities
             SET {', '.join(set_clause)}
-            WHERE category = ? AND untranslated = ?
+            {where_clause}
             ''', values)
             
             if cursor.rowcount == 0:
@@ -1096,13 +1520,23 @@ class DatabaseManager:
             
             conn.commit()
             conn.close()
-            
+
             # Update the in-memory cache
             if category in self.entities and untranslated in self.entities[category]:
                 for key, value in kwargs.items():
                     if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender']:
                         self.entities[category][untranslated][key] = value
-            
+                    elif key == 'book_id':
+                        if is_only_book_id:
+                            # Changing book assignment
+                            if value is None:
+                                # Remove book_id from cache if setting to None (making global)
+                                if 'book_id' in self.entities[category][untranslated]:
+                                    del self.entities[category][untranslated]['book_id']
+                            else:
+                                self.entities[category][untranslated]['book_id'] = value
+                        # If not is_only_book_id, book_id was used for WHERE clause, don't update cache
+
             return True
             
         except sqlite3.Error as e:
@@ -1294,3 +1728,144 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error importing entities from JSON: {e}")
             return False
+
+    def get_all_entities_for_review(self, book_id=None, category=None):
+        """
+        Load all entities from database for review purposes.
+
+        Args:
+            book_id: Filter by book ID (None = all books, including global entities)
+            category: Filter by specific category (None = all categories)
+
+        Returns:
+            Dict mapping categories to dictionaries of {untranslated: entity_data}
+            Each entity_data contains: translation, last_chapter, incorrect_translation,
+            gender, book_id, category
+        """
+        # Define default entity categories
+        default_entities = {
+            "characters": {},
+            "places": {},
+            "organizations": {},
+            "abilities": {},
+            "titles": {},
+            "equipment": {},
+            "creatures": {}
+        }
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Build SQL query with filters
+            query = '''
+                SELECT category, untranslated, translation, last_chapter,
+                       incorrect_translation, gender, book_id
+                FROM entities
+                WHERE 1=1
+            '''
+            params = []
+
+            # Add book_id filter
+            if book_id is not None:
+                query += ' AND (book_id = ? OR book_id IS NULL)'
+                params.append(book_id)
+
+            # Add category filter
+            if category is not None:
+                query += ' AND category = ?'
+                params.append(category)
+
+            # Order for predictable listing
+            query += ' ORDER BY category, untranslated'
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+
+            # Process results
+            entities = default_entities.copy()
+            for row in rows:
+                cat, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id = row
+
+                # Initialize category if needed
+                entities.setdefault(cat, {})
+
+                # Create entity entry
+                entity_data = {
+                    "translation": translation,
+                    "last_chapter": last_chapter,
+                    "category": cat
+                }
+
+                # Add optional attributes if they exist
+                if incorrect_translation:
+                    entity_data["incorrect_translation"] = incorrect_translation
+                if gender:
+                    entity_data["gender"] = gender
+                if entity_book_id:
+                    entity_data["book_id"] = entity_book_id
+
+                # Add to our entities dictionary
+                entities[cat][untranslated] = entity_data
+
+            self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities for review")
+            return entities
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error loading entities for review: {e}")
+            return default_entities
+
+    def find_chapters_using_entity(self, untranslated_text, book_id=None):
+        """
+        Find all chapters that contain a specific entity.
+
+        Args:
+            untranslated_text: The untranslated entity text to search for
+            book_id: Optional book_id to limit search scope
+
+        Returns:
+            List of chapter metadata dicts containing: chapter_id, book_id,
+            chapter_number, title, book_title
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Search in both untranslated and translated content
+            if book_id is not None:
+                cursor.execute('''
+                SELECT c.id, c.book_id, c.chapter_number, c.title, b.title as book_title
+                FROM chapters c
+                JOIN books b ON c.book_id = b.id
+                WHERE c.book_id = ?
+                AND (c.untranslated_content LIKE ? OR c.translated_content LIKE ?)
+                ORDER BY c.chapter_number
+                ''', (book_id, f'%{untranslated_text}%', f'%{untranslated_text}%'))
+            else:
+                cursor.execute('''
+                SELECT c.id, c.book_id, c.chapter_number, c.title, b.title as book_title
+                FROM chapters c
+                JOIN books b ON c.book_id = b.id
+                WHERE c.untranslated_content LIKE ? OR c.translated_content LIKE ?
+                ORDER BY b.title, c.chapter_number
+                ''', (f'%{untranslated_text}%', f'%{untranslated_text}%'))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            results = []
+            for row in rows:
+                results.append({
+                    "chapter_id": row[0],
+                    "book_id": row[1],
+                    "chapter_number": row[2],
+                    "chapter_title": row[3],
+                    "book_title": row[4]
+                })
+
+            return results
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error finding chapters using entity: {e}")
+            return []

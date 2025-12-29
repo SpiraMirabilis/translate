@@ -162,12 +162,12 @@ class UserInterface(ABC):
                                     
                                     # Check if this entity already exists in another category
                                     result = self.entity_manager.add_entity(
-                                        category, 
-                                        key, 
-                                        translation, 
-                                        last_chapter, 
-                                        incorrect_translation, 
-                                        gender
+                                        category,
+                                        key,
+                                        translation,
+                                        last_chapter=last_chapter,
+                                        incorrect_translation=incorrect_translation,
+                                        gender=gender
                                     )
                                     
                                     if not result:
