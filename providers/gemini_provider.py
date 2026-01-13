@@ -212,6 +212,18 @@ class GeminiProvider(ModelProvider):
                                     }
                                 }
                             }
+                        },
+                        "creatures": {
+                            "type": "object",
+                            "properties": {
+                                "example_creature": {
+                                    "type": "object",
+                                    "properties": {
+                                        "translation": {"type": "string"},
+                                        "last_chapter": {"type": "integer"}
+                                    }
+                                }
+                            }
                         }
                     }
                 }

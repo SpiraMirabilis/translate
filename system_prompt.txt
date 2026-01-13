@@ -115,7 +115,7 @@ was really important' is wrong. That should be on one line.
 7. **Ensure Consistency**: Check for existing entities in the pre-translated entities list above. Only add new entities or update existing ones if necessary.
 8. **Formatting**: The output must strictly adhere to JSON formatting standards to ensure proper parsing.
 9. **Proper Nouns**: Entities are proper nouns. Only include a new entity if it follows the following guidelines:
-Proper nouns include:
+Entities include:
 - Personal names (人物名, 角色名)
 - Personal names that include titles like 骑士拉尔·施耐德, 邓布利多教授, 米兰达女士
 - Personal titles that reference a unique person like 霍格沃茨副校长
@@ -128,7 +128,7 @@ Proper nouns include:
 - Technique/skill names that are treated as proper nouns (功法名, 技能名)
 - Unique organisations or groups, like 课后辅导兴趣小组
 
-DO NOT classify as proper nouns:
+DO NOT classify as entities:
 - Generic terms (普通名词) like "sword", "person", "mountain"
 - Common descriptive phrases like "the old man", "a powerful technique"
 - General categories like "cultivator", "warrior", "city"
