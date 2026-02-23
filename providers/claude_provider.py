@@ -100,22 +100,28 @@ class ClaudeProvider(ModelProvider):
                     "content": content
                 })
         
-        # Handle JSON mode by modifying the prompt
-        if response_format and response_format.get("type") == "json_object":
+        # Handle JSON mode via prompt instruction.
+        # Note: prefilling (trailing assistant message) is not supported on newer models.
+        # Instead we instruct the model and strip any markdown fences from the response.
+        json_mode = response_format and response_format.get("type") == "json_object"
+        if json_mode:
             json_instruction = (
                 "\n\nIMPORTANT: You must respond with valid JSON only. "
-                "Do not include any text before or after the JSON object."
+                "Do not include any text before or after the JSON object. "
+                "Do not wrap the JSON in markdown code fences."
             )
             if claude_messages:
                 claude_messages[-1]["content"] += json_instruction
         
         # Prepare Claude-specific parameters
+        # Note: Anthropic API rejects requests with both temperature and top_p set.
+        # Use temperature as the primary sampling parameter; only fall back to top_p
+        # if the caller explicitly omits temperature (leaves it at default 1.0 sentinel).
         request_params = {
             "model": model,
             "messages": claude_messages,
             "max_tokens": self.max_output_tokens,  # Use configured max output tokens
             "temperature": temperature,
-            "top_p": top_p,
             "stream": stream
         }
         
@@ -130,12 +136,16 @@ class ClaudeProvider(ModelProvider):
         if stream:
             return StreamingResponse(response)
         else:
+            raw_content = response.content[0].text if response.content else ""
+            if json_mode:
+                raw_content = self._strip_markdown_fences(raw_content)
+
             # Convert to OpenAI-compatible format
             return {
                 "choices": [
                     {
                         "message": {
-                            "content": response.content[0].text if response.content else "",
+                            "content": raw_content,
                             "role": "assistant"
                         },
                         "finish_reason": "stop" if response.stop_reason == "end_turn" else response.stop_reason
@@ -188,6 +198,18 @@ class ClaudeProvider(ModelProvider):
             "json_mode_via_prompt"  # JSON mode via prompt instructions
         ]
     
+    @staticmethod
+    def _strip_markdown_fences(content: str) -> str:
+        """Remove markdown code fences (e.g. ```json ... ```) from a response."""
+        content = content.strip()
+        if content.startswith("```"):
+            # Drop the opening fence line
+            content = content[content.index("\n") + 1:] if "\n" in content else content[3:]
+            # Drop the closing fence
+            if content.endswith("```"):
+                content = content[:-3]
+        return content.strip()
+
     def validate_json_response(self, content: str) -> Dict[str, Any]:
         """
         Validate and parse JSON response from Claude.
