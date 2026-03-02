@@ -5,7 +5,7 @@
       "base_url": "https://api.openai.com/v1/",
       "api_key_env": "OPENAI_KEY",
       "default_model": "gpt-4.1",
-      "max_chars": 20000,
+      "max_chars": 8000,
       "max_output_tokens": 16384
     },
     "deepseek": {

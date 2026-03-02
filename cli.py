@@ -1700,16 +1700,130 @@ class CommandLineInterface(UserInterface):
         if len(to_delete_keys) > 10:
             print(f"  ... and {len(to_delete_keys) - 10} more")
 
-        # Delete entities from data structure in-place
+        # Delete entities from data structure in-place, recording removed translations
         deleted_count = 0
+        self._cleaned_translations = {}
         for category, entities in data.items():
             for untranslated in list(entities.keys()):  # Use list() to avoid modification during iteration
                 if untranslated in to_delete_keys:
+                    translation = entities[untranslated].get('translation', '')
+                    if translation:
+                        self._cleaned_translations[untranslated] = translation
                     del entities[untranslated]
                     deleted_count += 1
 
         print(f"\n✅ Removed {deleted_count} generic terms from review.\n")
         return deleted_count
+
+    def _decase_cleaned_entities(self, text: List[str]) -> List[str]:
+        """
+        Lowercase the English translations of entities that were removed by auto-clean.
+        Skips occurrences that appear at a sentence start (preceded by .!? or newline).
+        text is a list of paragraph strings, matching the shape of end_object['content'].
+        """
+        cleaned = getattr(self, '_cleaned_translations', {})
+        if not cleaned:
+            return text
+
+        def make_replacer(paragraph, lower):
+            def replacer(match):
+                preceding = paragraph[max(0, match.start() - 2):match.start()]
+                if re.search(r'[.!?\n]\s?$', preceding):
+                    return match.group(0)  # sentence start — leave capitalised
+                return lower
+            return replacer
+
+        for untranslated, translation in cleaned.items():
+            if not translation:
+                continue
+            lower = translation[0].lower() + translation[1:]
+            if lower == translation:
+                continue  # already lowercase, nothing to do
+
+            pattern = re.compile(r'\b' + re.escape(translation) + r'\b')
+            for i in range(len(text)):
+                text[i] = re.sub(pattern, make_replacer(text[i], lower), text[i])
+
+        return text
+
+    def _fix_partial_translations(self, content: List[str]) -> List[str]:
+        """
+        Detect lines containing untranslated CJK characters and fix them
+        using the cleaning model. Batches all affected lines into a single
+        API call, returning the content list with fixed lines spliced back in.
+        """
+        cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
+        affected_indices = [i for i, line in enumerate(content) if cjk_pattern.search(line)]
+
+        if not affected_indices:
+            return content
+
+        print(f"\n🔧 Found {len(affected_indices)} partially translated line(s) containing CJK characters:")
+        for i in affected_indices:
+            preview = content[i][:80] + ('...' if len(content[i]) > 80 else '')
+            print(f"  Line {i}: {preview}")
+
+        lines_to_fix = [content[i] for i in affected_indices]
+
+        system_prompt = (
+            "You are a translation repair assistant. "
+            "You will receive a JSON array of English sentences that each contain one or more "
+            "untranslated Chinese characters or words. For each sentence, translate the Chinese "
+            "fragments into English in context, preserving all surrounding English text exactly. "
+            "Return only a JSON array of the repaired sentences in the same order, with no "
+            "explanation or markdown."
+        )
+        user_prompt = json.dumps(lines_to_fix, ensure_ascii=False, indent=2)
+
+        try:
+            from providers import create_provider
+            from config import TranslationConfig
+            config = TranslationConfig()
+
+            if hasattr(self, 'cleaning_model') and self.cleaning_model:
+                model_spec = self.cleaning_model
+            else:
+                model_spec = config.translation_model
+
+            provider_name, model_name = config.parse_model_spec(model_spec)
+            provider = create_provider(provider_name)
+
+            print(f"🤖 Repairing with {model_name}...")
+
+            response = provider.chat_completion(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0
+            )
+
+            raw = provider.get_response_content(response).strip()
+
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                lines = raw.split("\n")
+                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+
+            fixed_lines = json.loads(raw)
+
+            if not isinstance(fixed_lines, list) or len(fixed_lines) != len(affected_indices):
+                raise ValueError(f"Expected {len(affected_indices)} fixed lines, got {len(fixed_lines) if isinstance(fixed_lines, list) else type(fixed_lines)}")
+
+            result = list(content)
+            for idx, fixed in zip(affected_indices, fixed_lines):
+                result[idx] = fixed
+
+            print(f"✅ Repaired {len(affected_indices)} partially translated line(s).")
+            return result
+
+        except Exception as e:
+            print(f"⚠️  Could not repair partial translations: {e}")
+            print("Continuing with partially translated content.")
+            return content
 
     def review_entities(self, data, untranslated_text=[]):
         """

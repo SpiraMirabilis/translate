@@ -138,6 +138,14 @@ class UserInterface(ABC):
                 else:
                     edited_entities = {}
                 
+                # Lowercase any capitalised generic terms that were auto-cleaned
+                if hasattr(self, '_decase_cleaned_entities'):
+                    end_object['content'] = self._decase_cleaned_entities(end_object['content'])
+
+                # Fix any lines where the model left Chinese characters untranslated
+                if hasattr(self, '_fix_partial_translations'):
+                    end_object['content'] = self._fix_partial_translations(end_object['content'])
+
                 # Apply entity edits to the translation
                 if edited_entities:
                     # Process edited entities
