@@ -4,7 +4,7 @@ import sqlite3
 import math
 import os
 import time
-
+import re
 
 class TranslationEngine:
     """Core class for handling text translation logic"""
@@ -136,6 +136,17 @@ class TranslationEngine:
 
         return prompt
     
+    def _detect_repetition(self, text: str) -> bool:
+        """Detect pathological token repetition loops in streamed output."""
+        tail = text[-200:]
+        # Non-whitespace single character repeated 10+ times: 框框框框框框框框框框
+        if re.search(r'([^\s])\1{9,}', tail):
+            return True
+        # CJK phrase of 2-10 chars repeated 4+ times: 改革开放改革开放改革开放改革开放
+        if re.search(r'([\u4e00-\u9fff\u3400-\u4dbf]{2,10})\1{3,}', tail):
+            return True
+        return False
+
     def combine_json_chunks(self, chunk1_data, chunk2_data, current_chapter):
         """
         Combine two JSON-like chapter data chunks into one by merging their
@@ -414,12 +425,9 @@ class TranslationEngine:
             total_input_chars += len(chunk_str)
             self.logger.debug(f"TransEng> Stream mode is {stream}")
             if stream:
-                # Streaming API call
                 print(f"\nTranslating chunk {chunk_index} of {len(split_text)}")
-                
-                response_text = ""
-                token_count = 0
-                start_time = time.time()
+
+                # Load token ratio for progress estimation (once, outside retry loop)
                 try:
                     ratio_file = os.path.join(self.config.script_dir, "token_ratios.json")
                     if os.path.exists(ratio_file):
@@ -429,26 +437,9 @@ class TranslationEngine:
                 except Exception as e:
                     self.logger.warning(f"Could not load token ratios: {e}")
                     average_ratio = 1.0
-                expected_tokens = len(chunk_str) * average_ratio 
+                expected_tokens = len(chunk_str) * average_ratio
                 print(f"Based on {total_input_chars} input characters * {average_ratio:.2f} (our historic average ratio) we expect {expected_tokens:.0f} tokens.")
-                response_stream = provider.chat_completion(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": system_prompt
-                        },
-                        {
-                            "role": "user",
-                            "content": user_text
-                        }
-                    ],
-                    model=model_name,
-                    temperature=1,
-                    top_p=1,
-                    response_format={"type": "json_object"},
-                    stream=True
-                )
-                
+
                 # Get progress bar width based on terminal size
                 terminal_width = 80
                 try:
@@ -457,39 +448,81 @@ class TranslationEngine:
                 except:
                     pass
                 progress_width = min(50, terminal_width - 30)
-                
-                # Process streaming response
-                for chunk in response_stream:
-                    content = provider.get_streaming_content(chunk)
-                    if content:
-                        response_text += content
-                        token_count += 1
-                        
-                        # Update progress display
-                        if token_count % 10 == 0:  # Update every 10 tokens
-                            elapsed = time.time() - start_time
-                            tokens_per_second = token_count / elapsed if elapsed > 0 else 0
-                            completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
-                            progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
-                            print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
-                    
-                    # Check if stream is complete
-                    if provider.is_stream_complete(chunk):
-                        break
-                print("")
-                total_output_tokens += token_count
-                self.logger.info(f"Chunk {chunk_index}/{len(split_text)} - Input chars: {len(chunk_str)}, Output tokens: {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
-                print("\rTranslation complete. Parsing response...                 ")
-                
-                # Parse the completed response
-                try:
-                    parsed_chunk = json.loads(response_text)
-                except json.JSONDecodeError as e:
-                    print("Failed to parse JSON. Writing response to json_fail_debug.txt")
-                    with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
-                        f.write(str(response_text))
-                    print(f"Error: {e}")
-                    exit(1)
+
+                MAX_STREAM_RETRIES = 2
+                parsed_chunk = None
+
+                for attempt in range(MAX_STREAM_RETRIES + 1):
+                    if attempt > 0:
+                        print(f"🔄 Retrying chunk {chunk_index} (attempt {attempt + 1}/{MAX_STREAM_RETRIES + 1})...")
+
+                    response_text = ""
+                    token_count = 0
+                    start_time = time.time()
+                    repetition_detected = False
+
+                    response_stream = provider.chat_completion(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": system_prompt
+                            },
+                            {
+                                "role": "user",
+                                "content": user_text
+                            }
+                        ],
+                        model=model_name,
+                        temperature=1,
+                        top_p=1,
+                        response_format={"type": "json_object"},
+                        stream=True
+                    )
+
+                    # Process streaming response
+                    for stream_chunk in response_stream:
+                        content = provider.get_streaming_content(stream_chunk)
+                        if content:
+                            response_text += content
+                            token_count += 1
+
+                            # Check for repetition loop every 20 tokens
+                            if token_count % 20 == 0 and self._detect_repetition(response_text):
+                                print(f"\n⚠️  Repetition loop detected at token {token_count}. Aborting stream...")
+                                repetition_detected = True
+                                break
+
+                            # Update progress display
+                            if token_count % 10 == 0:
+                                elapsed = time.time() - start_time
+                                tokens_per_second = token_count / elapsed if elapsed > 0 else 0
+                                completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
+                                progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
+                                print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
+
+                        # Check if stream is complete
+                        if provider.is_stream_complete(stream_chunk):
+                            break
+
+                    print("")
+                    total_output_tokens += token_count
+                    self.logger.info(f"Chunk {chunk_index}/{len(split_text)} attempt {attempt + 1} - Input chars: {len(chunk_str)}, Output tokens: {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
+
+                    if repetition_detected and attempt < MAX_STREAM_RETRIES:
+                        continue  # retry the chunk
+
+                    print("\rTranslation complete. Parsing response...                 ")
+
+                    # Parse the completed response
+                    try:
+                        parsed_chunk = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+                        with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                            f.write(str(response_text))
+                        print(f"Error: {e}")
+                        exit(1)
+                    break  # parsed successfully — exit attempt loop
             else:
                 self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
                 chunk_str = "\n".join(chunk)
