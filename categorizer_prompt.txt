@@ -1,0 +1,5 @@
+Classify which of these entities are proper nouns. Context is a Chinese novel, so include things like cultivation technique names, equipment, etc. Return only a JSON array of the Chinese keys (untranslated text) for entries that are proper nouns:
+
+{ENTITIES_JSON}
+
+Return format: ["key1", "key2", ...]

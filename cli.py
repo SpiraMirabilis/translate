@@ -1703,12 +1703,14 @@ class CommandLineInterface(UserInterface):
         # Delete entities from data structure in-place, recording removed translations
         deleted_count = 0
         self._cleaned_translations = {}
+        self._cleaned_entity_keys = {}  # {category: [untranslated, ...]} for removing from end_object
         for category, entities in data.items():
             for untranslated in list(entities.keys()):  # Use list() to avoid modification during iteration
                 if untranslated in to_delete_keys:
                     translation = entities[untranslated].get('translation', '')
                     if translation:
                         self._cleaned_translations[untranslated] = translation
+                    self._cleaned_entity_keys.setdefault(category, []).append(untranslated)
                     del entities[untranslated]
                     deleted_count += 1
 
@@ -1728,7 +1730,7 @@ class CommandLineInterface(UserInterface):
         def make_replacer(paragraph, lower):
             def replacer(match):
                 preceding = paragraph[max(0, match.start() - 2):match.start()]
-                if re.search(r'[.!?\n]\s?$', preceding):
+                if re.search(r'[.!?\n"\'"\u2018\u201C]\s?$', preceding):
                     return match.group(0)  # sentence start — leave capitalised
                 return lower
             return replacer
@@ -1765,20 +1767,25 @@ class CommandLineInterface(UserInterface):
 
         lines_to_fix = [content[i] for i in affected_indices]
 
-        system_prompt = (
-            "You are a translation repair assistant. "
-            "You will receive a JSON array of English sentences that each contain one or more "
-            "untranslated Chinese characters or words. For each sentence, translate the Chinese "
-            "fragments into English in context, preserving all surrounding English text exactly. "
-            "Return only a JSON array of the repaired sentences in the same order, with no "
-            "explanation or markdown."
-        )
         user_prompt = json.dumps(lines_to_fix, ensure_ascii=False, indent=2)
 
         try:
             from providers import create_provider
             from config import TranslationConfig
             config = TranslationConfig()
+
+            repair_prompt_path = os.path.join(config.script_dir, "translation_repair_prompt.txt")
+            try:
+                if os.path.exists(repair_prompt_path):
+                    with open(repair_prompt_path, 'r', encoding='utf-8') as file:
+                        system_prompt = file.read()
+                else:
+                    print(f"Error: translation_repair_prompt.txt not found at {repair_prompt_path}")
+                    print("Please ensure translation_repair_prompt.txt exists in the script directory.")
+                    return content
+            except Exception as e:
+                print(f"Error loading repair prompt from file: {e}")
+                return content
 
             if hasattr(self, 'cleaning_model') and self.cleaning_model:
                 model_spec = self.cleaning_model
@@ -2153,12 +2160,22 @@ class CommandLineInterface(UserInterface):
             print("Please check that cleaning_prompt.txt is readable and properly formatted.")
             return None
 
-        user_prompt = f"""Classify which of these entities are proper nouns. Return only a JSON array of the Chinese keys (untranslated text) for entries that are proper nouns:
+        # Load the categorizer user prompt from file
+        categorizer_prompt_path = os.path.join(config.script_dir, "categorizer_prompt.txt")
 
-{json.dumps(entities, ensure_ascii=False, indent=2)}
-
-Return format: ["key1", "key2", ...]
-"""
+        try:
+            if os.path.exists(categorizer_prompt_path):
+                with open(categorizer_prompt_path, 'r', encoding='utf-8') as file:
+                    categorizer_template = file.read()
+                user_prompt = categorizer_template.replace("{ENTITIES_JSON}", json.dumps(entities, ensure_ascii=False, indent=2))
+            else:
+                print(f"Error: categorizer_prompt.txt not found at {categorizer_prompt_path}")
+                print("Please ensure categorizer_prompt.txt exists in the script directory.")
+                return None
+        except Exception as e:
+            print(f"Error loading categorizer prompt from file: {e}")
+            print("Please check that categorizer_prompt.txt is readable and properly formatted.")
+            return None
 
         try:
             # Determine which model to use for cleaning
