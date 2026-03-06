@@ -410,7 +410,10 @@ class TranslationEngine:
 
         if len(split_text) > 1:
             self.logger.info(f"Input text is {total_char_count} characters. Splitting text into {len(split_text)} chunks.")
-        
+
+        # Load token ratio for progress estimation (once, before the chunk loop)
+        average_ratio = self.entity_manager.get_token_ratio(book_id)
+
         end_object = {}
 
         self.logger.debug("Initializing totally_new_entities")
@@ -427,16 +430,6 @@ class TranslationEngine:
             if stream:
                 print(f"\nTranslating chunk {chunk_index} of {len(split_text)}")
 
-                # Load token ratio for progress estimation (once, outside retry loop)
-                try:
-                    ratio_file = os.path.join(self.config.script_dir, "token_ratios.json")
-                    if os.path.exists(ratio_file):
-                        with open(ratio_file, 'r') as f:
-                            ratios = json.load(f)
-                            average_ratio = ratios.get("average", 1.0)
-                except Exception as e:
-                    self.logger.warning(f"Could not load token ratios: {e}")
-                    average_ratio = 1.0
                 expected_tokens = len(chunk_str) * average_ratio
                 print(f"Based on {total_input_chars} input characters * {average_ratio:.2f} (our historic average ratio) we expect {expected_tokens:.0f} tokens.")
 
@@ -461,48 +454,57 @@ class TranslationEngine:
                     start_time = time.time()
                     repetition_detected = False
 
-                    response_stream = provider.chat_completion(
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": system_prompt
-                            },
-                            {
-                                "role": "user",
-                                "content": user_text
-                            }
-                        ],
-                        model=model_name,
-                        temperature=1,
-                        top_p=1,
-                        response_format={"type": "json_object"},
-                        stream=True
-                    )
+                    try:
+                        response_stream = provider.chat_completion(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": system_prompt
+                                },
+                                {
+                                    "role": "user",
+                                    "content": user_text
+                                }
+                            ],
+                            model=model_name,
+                            temperature=1,
+                            top_p=1,
+                            response_format={"type": "json_object"},
+                            stream=True
+                        )
 
-                    # Process streaming response
-                    for stream_chunk in response_stream:
-                        content = provider.get_streaming_content(stream_chunk)
-                        if content:
-                            response_text += content
-                            token_count += 1
+                        # Process streaming response
+                        for stream_chunk in response_stream:
+                            content = provider.get_streaming_content(stream_chunk)
+                            if content:
+                                response_text += content
+                                token_count += 1
 
-                            # Check for repetition loop every 20 tokens
-                            if token_count % 20 == 0 and self._detect_repetition(response_text):
-                                print(f"\n⚠️  Repetition loop detected at token {token_count}. Aborting stream...")
-                                repetition_detected = True
+                                # Check for repetition loop every 20 tokens
+                                if token_count % 20 == 0 and self._detect_repetition(response_text):
+                                    print(f"\n⚠️  Repetition loop detected at token {token_count}. Aborting stream...")
+                                    repetition_detected = True
+                                    break
+
+                                # Update progress display
+                                if token_count % 10 == 0:
+                                    elapsed = time.time() - start_time
+                                    tokens_per_second = token_count / elapsed if elapsed > 0 else 0
+                                    completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
+                                    progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
+                                    print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
+
+                            # Check if stream is complete
+                            if provider.is_stream_complete(stream_chunk):
                                 break
 
-                            # Update progress display
-                            if token_count % 10 == 0:
-                                elapsed = time.time() - start_time
-                                tokens_per_second = token_count / elapsed if elapsed > 0 else 0
-                                completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
-                                progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
-                                print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
-
-                        # Check if stream is complete
-                        if provider.is_stream_complete(stream_chunk):
-                            break
+                    except Exception as e:
+                        print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
+                        self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
+                        if attempt < MAX_STREAM_RETRIES:
+                            continue
+                        else:
+                            raise
 
                     print("")
                     total_output_tokens += token_count
@@ -528,31 +530,44 @@ class TranslationEngine:
                 chunk_str = "\n".join(chunk)
                 user_text = "Translate the following into English: \n" + chunk_str
                 self.logger.debug(f"About to call {self.config.translation_model} with chunk {chunk_index} of {len(split_text)}")
-                response = provider.chat_completion(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": system_prompt
-                        },
-                        {
-                            "role": "user", 
-                            "content": user_text
-                        }
-                    ],
-                    model=model_name,
-                    temperature=1,
-                    top_p=1,
-                    response_format={"type": "json_object"}
-                )
-                try:
-                    response_content = provider.get_response_content(response)
-                    parsed_chunk = json.loads(response_content)
-                except json.JSONDecodeError as e:
-                    print("Failed to parse JSON. Writing response to json_fail_debug.txt")
-                    with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
-                        f.write(str(response_content))
-                    print(f"Error: {e}")
-                    exit(1)
+
+                MAX_RETRIES = 2
+                parsed_chunk = None
+                for attempt in range(MAX_RETRIES + 1):
+                    if attempt > 0:
+                        print(f"🔄 Retrying chunk {chunk_index} (attempt {attempt + 1}/{MAX_RETRIES + 1})...")
+                    try:
+                        response = provider.chat_completion(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": system_prompt
+                                },
+                                {
+                                    "role": "user",
+                                    "content": user_text
+                                }
+                            ],
+                            model=model_name,
+                            temperature=1,
+                            top_p=1,
+                            response_format={"type": "json_object"}
+                        )
+                        response_content = provider.get_response_content(response)
+                        parsed_chunk = json.loads(response_content)
+                        break
+                    except json.JSONDecodeError as e:
+                        print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+                        with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                            f.write(str(response_content))
+                        print(f"Error: {e}")
+                        exit(1)
+                    except Exception as e:
+                        self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
+                        if attempt < MAX_RETRIES:
+                            print(f"⚠️  Connection error: {e}. Retrying...")
+                        else:
+                            raise
             
             self.logger.info(f"Translation of chunk {chunk_index} complete.")
             self.logger.debug(f"API call completed for chunk {chunk_index}")
@@ -576,28 +591,7 @@ class TranslationEngine:
         if total_input_chars > 0:
             ratio = total_output_tokens / total_input_chars
             self.logger.info(f"Chapter completion - Total input chars: {total_input_chars}, Total output tokens: {total_output_tokens}, Overall ratio: {ratio:.2f}")
-            # Save this ratio for future reference
-            try:
-                # Create or update a JSON file with historical ratios
-                ratio_file = os.path.join(self.config.script_dir, "token_ratios.json")
-                if os.path.exists(ratio_file):
-                    with open(ratio_file, 'r') as f:
-                        ratios = json.load(f)
-                else:
-                    ratios = {"ratios": [], "average": 0.9}
-                    
-                # Add new ratio
-                ratios["ratios"].append(ratio)
-                ratios["average"] = sum(ratios["ratios"]) / len(ratios["ratios"])
-                ratios["samples"] = len(ratios["ratios"])
-                
-                # Save updated ratios
-                with open(ratio_file, 'w') as f:
-                    json.dump(ratios, f)
-                    
-                self.logger.info(f"Updated token ratio statistics - Current average: {ratios['average']:.2f} based on {ratios['samples']} samples")
-            except Exception as e:
-                self.logger.error(f"Failed to save token ratio statistics: {e}")
+            self.entity_manager.update_token_ratio(book_id, total_input_chars, total_output_tokens)
         
         # Check for duplicate entities based on translation value
         self._check_for_translation_duplicates(end_object['entities'])

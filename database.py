@@ -105,6 +105,16 @@ class DatabaseManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_queue_position ON queue(position)')
             cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_position_unique ON queue(position)')
 
+            # Create token_ratios table (one row per book, book_id=0 for global)
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS token_ratios (
+                book_id INTEGER PRIMARY KEY,
+                total_input_chars INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL DEFAULT 0
+            )
+            ''')
+
             conn.commit()
             conn.close()
             self.logger.info("Database initialized successfully")
@@ -1815,6 +1825,79 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Error loading entities for review: {e}")
             return default_entities
+
+    def get_token_ratio(self, book_id=None):
+        """Return the average output-tokens-per-input-char ratio for progress estimation.
+
+        Prefers book-specific data when book_id is provided; falls back to the
+        global aggregate (book_id=0).  Returns 1.0 when no data is available.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            if book_id:
+                cursor.execute(
+                    'SELECT total_input_chars, total_output_tokens FROM token_ratios WHERE book_id = ?',
+                    (book_id,)
+                )
+                row = cursor.fetchone()
+                if row and row[0] > 0:
+                    conn.close()
+                    return row[1] / row[0]
+
+            # Fall back to global row
+            cursor.execute(
+                'SELECT total_input_chars, total_output_tokens FROM token_ratios WHERE book_id = 0'
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            if row and row[0] > 0:
+                return row[1] / row[0]
+
+            return 1.2
+        except Exception as e:
+            self.logger.warning(f"Could not load token ratio: {e}")
+            return 1.2
+
+    def update_token_ratio(self, book_id, input_chars, output_tokens):
+        """Add a chapter's char/token counts to the running totals for book and global stats."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            upsert_sql = '''
+            INSERT INTO token_ratios (book_id, total_input_chars, total_output_tokens, sample_count)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(book_id) DO UPDATE SET
+                total_input_chars = total_input_chars + excluded.total_input_chars,
+                total_output_tokens = total_output_tokens + excluded.total_output_tokens,
+                sample_count = sample_count + 1
+            '''
+
+            if book_id:
+                cursor.execute(upsert_sql, (book_id, input_chars, output_tokens))
+
+            # Always update global aggregate
+            cursor.execute(upsert_sql, (0, input_chars, output_tokens))
+
+            conn.commit()
+
+            # Log updated stats
+            lookup_id = book_id if book_id else 0
+            cursor.execute(
+                'SELECT total_input_chars, total_output_tokens, sample_count FROM token_ratios WHERE book_id = ?',
+                (lookup_id,)
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            if row and row[0] > 0:
+                avg = row[1] / row[0]
+                self.logger.info(f"Updated token ratio - average: {avg:.2f} over {row[2]} chapter(s)")
+        except Exception as e:
+            self.logger.error(f"Failed to update token ratio: {e}")
 
     def find_chapters_using_entity(self, untranslated_text, book_id=None):
         """

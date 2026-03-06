@@ -138,6 +138,12 @@ class UserInterface(ABC):
                 else:
                     edited_entities = {}
                 
+                # Remove auto-cleaned generic entities from end_object so they are not saved to the database
+                if hasattr(self, '_cleaned_entity_keys'):
+                    for category, keys in self._cleaned_entity_keys.items():
+                        for key in keys:
+                            end_object['entities'].get(category, {}).pop(key, None)
+
                 # Lowercase any capitalised generic terms that were auto-cleaned
                 if hasattr(self, '_decase_cleaned_entities'):
                     end_object['content'] = self._decase_cleaned_entities(end_object['content'])
