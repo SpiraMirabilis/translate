@@ -74,9 +74,10 @@ class UserInterface(ABC):
                 stream = getattr(self,'stream', False)
                 self.logger.debug(f"Stream mode is {stream}")
                 translation_results = self.translator.translate_chapter(
-                    chapter_text, 
+                    chapter_text,
                     book_id=getattr(self, 'book_id', None),
-                    stream=getattr(self, 'stream', False)
+                    stream=getattr(self, 'stream', False),
+                    progress_callback=getattr(self, 'progress_callback', None)
                 )
 
                 if translation_results is None:
@@ -96,7 +97,11 @@ class UserInterface(ABC):
                 real_old_entities = translation_results["real_old_entities"]
                 current_chapter = translation_results["current_chapter"]
                 total_char_count = translation_results["total_char_count"]
-                
+
+                # Prefer user-provided chapter number over the LLM's guess
+                if hasattr(self, 'chapter_number') and self.chapter_number and isinstance(self.chapter_number, int) and self.chapter_number > 0:
+                    current_chapter = self.chapter_number
+
                 # Handle potential duplicate entities across categories if there are any
                 if hasattr(self.translator, 'potential_duplicates') and self.translator.potential_duplicates:
                     resolved_duplicates = self.resolve_duplicate_entities(self.translator.potential_duplicates, chapter_text)
@@ -145,12 +150,10 @@ class UserInterface(ABC):
                             end_object['entities'].get(category, {}).pop(key, None)
 
                 # Lowercase any capitalised generic terms that were auto-cleaned
-                if hasattr(self, '_decase_cleaned_entities'):
-                    end_object['content'] = self._decase_cleaned_entities(end_object['content'])
+                end_object['content'] = self._decase_cleaned_entities(end_object['content'])
 
                 # Fix any lines where the model left Chinese characters untranslated
-                if hasattr(self, '_fix_partial_translations'):
-                    end_object['content'] = self._fix_partial_translations(end_object['content'])
+                end_object['content'] = self._fix_partial_translations(end_object['content'])
 
                 # Apply entity edits to the translation
                 if edited_entities:
@@ -179,10 +182,20 @@ class UserInterface(ABC):
                                         category,
                                         key,
                                         translation,
+                                        book_id=getattr(self, 'book_id', None),
                                         last_chapter=last_chapter,
                                         incorrect_translation=incorrect_translation,
-                                        gender=gender
+                                        gender=gender,
+                                        origin_chapter=current_chapter
                                     )
+
+                                    # Update end_object so direct SQL save stays consistent
+                                    if category in end_object['entities'] and key in end_object['entities'][category]:
+                                        end_object['entities'][category][key]['translation'] = translation
+                                        if incorrect_translation:
+                                            end_object['entities'][category][key]['incorrect_translation'] = incorrect_translation
+                                        if gender:
+                                            end_object['entities'][category][key]['gender'] = gender
                                     
                                     if not result:
                                         self.logger.warning(f"Failed to add entity '{key}' to '{category}' - may already exist elsewhere")
@@ -235,12 +248,12 @@ class UserInterface(ABC):
                                 ''', (translation, last_chapter, incorrect_translation, gender, existing[0]))
                                 self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
                             else:
-                                # Insert new
+                                # Insert new — record origin_chapter
                                 cursor.execute('''
                                 INSERT INTO entities
-                                (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id))
+                                (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, origin_chapter)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id, current_chapter))
                                 self.logger.debug(f"Added entity {key} ({translation}) to category {category} with book_id={self.book_id}")
                     
                     conn.commit()
@@ -298,13 +311,14 @@ class UserInterface(ABC):
                                 
                                 # Add to database, with book_id
                                 self.entity_manager.add_entity(
-                                    category, 
-                                    key, 
-                                    translation, 
+                                    category,
+                                    key,
+                                    translation,
                                     book_id=self.book_id,
-                                    last_chapter=last_chapter, 
-                                    incorrect_translation=incorrect_translation, 
-                                    gender=gender
+                                    last_chapter=last_chapter,
+                                    incorrect_translation=incorrect_translation,
+                                    gender=gender,
+                                    origin_chapter=current_chapter
                                 )
                 
                 # In run_translation method, when calling display_results:
@@ -341,11 +355,9 @@ class UserInterface(ABC):
                     if success:
                         remaining = self.entity_manager.get_queue_count()
                         self.logger.info(f"Updated queue - {remaining} items remaining.")
-
-                        # Break the loop if queue is empty
-                        if remaining == 0:
-                            self.logger.debug(f"Breaking out after updating queue cause queue empty now")
-                            break
+                        # Always break after one item — callers (web or CLI) are responsible
+                        # for looping to process the next item.
+                        break
                     else:
                         self.logger.error("Failed to remove item from queue")
                         break
@@ -362,13 +374,354 @@ class UserInterface(ABC):
     def resolve_duplicate_entities(self, duplicates, untranslated_text):
         """
         Interactive method to resolve duplicate entities across categories.
-        
+
         Args:
             duplicates: List of potential duplicate entities to resolve
             untranslated_text: Original text for context
-            
+
         Returns:
             List of resolved entities with their decisions
         """
         # No implementation in base class
         return []
+
+    # ------------------------------------------------------------------
+    # Entity filtering and cleaning (shared by CLI and Web)
+    # ------------------------------------------------------------------
+
+    def _filter_existing_entities(self, data: Dict):
+        """
+        Filter out entities that already exist in the database for this book or as global entities.
+        Also deduplicates within the batch: if the same untranslated key appears in multiple
+        categories, only the first (by category order) is kept.
+        Modifies the data dictionary in-place.
+
+        Returns:
+            Number of entities filtered out
+        """
+        import sqlite3
+
+        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+
+        # --- Phase 1: remove intra-batch duplicates (same key in multiple categories) ---
+        seen_keys = {}  # untranslated -> first category
+        dedup_count = 0
+        for cat in categories:
+            entities = data.get(cat, {})
+            for untranslated in list(entities.keys()):
+                if untranslated in seen_keys:
+                    self.logger.info(
+                        f"Removing duplicate entity '{untranslated}' from '{cat}' "
+                        f"(already in '{seen_keys[untranslated]}')"
+                    )
+                    del entities[untranslated]
+                    dedup_count += 1
+                else:
+                    seen_keys[untranslated] = cat
+
+        # --- Phase 2: remove entities that already exist in the database ---
+        all_untranslated = set()
+        for cat in categories:
+            all_untranslated.update(data.get(cat, {}).keys())
+
+        if not all_untranslated and dedup_count == 0:
+            return 0
+
+        current_book_id = getattr(self, 'book_id', None)
+        existing_entities = {}
+
+        if all_untranslated:
+            try:
+                conn = sqlite3.connect(self.entity_manager.db_path)
+                cursor = conn.cursor()
+
+                for untranslated in all_untranslated:
+                    if current_book_id is not None:
+                        cursor.execute('''
+                        SELECT category, translation FROM entities
+                        WHERE untranslated = ? AND (book_id = ? OR book_id IS NULL)
+                        LIMIT 1
+                        ''', (untranslated, current_book_id))
+                    else:
+                        cursor.execute('''
+                        SELECT category, translation FROM entities
+                        WHERE untranslated = ? AND book_id IS NULL
+                        LIMIT 1
+                        ''', (untranslated,))
+
+                    row = cursor.fetchone()
+                    if row:
+                        existing_entities[untranslated] = {
+                            'category': row[0],
+                            'translation': row[1]
+                        }
+
+                conn.close()
+            except sqlite3.Error as e:
+                self.logger.error(f"Error checking existing entities: {e}")
+
+        db_count = 0
+        if existing_entities:
+            for cat in categories:
+                entities = data.get(cat, {})
+                for untranslated in list(entities.keys()):
+                    if untranslated in existing_entities:
+                        del entities[untranslated]
+                        db_count += 1
+
+        total = dedup_count + db_count
+        if total > 0:
+            self.logger.info(
+                f"Filtered {total} entities ({dedup_count} cross-category duplicates, "
+                f"{db_count} already in database)"
+            )
+        return total
+
+    def _auto_clean_new_entities(self, data: Dict):
+        """
+        Automatically clean non-proper noun entities from new entity data before review.
+        This modifies the data dictionary in-place.
+
+        Args:
+            data: Dict of new entities by category (from translation)
+
+        Returns:
+            Number of entities deleted
+        """
+        entity_dict = {}
+        for category, entities in data.items():
+            for untranslated, entity_data in entities.items():
+                translated = entity_data.get('translation', '')
+                entity_dict[untranslated] = translated
+
+        if not entity_dict:
+            return 0
+
+        initial_count = len(entity_dict)
+        self.logger.info(f"Auto-cleaning {initial_count} new entities...")
+
+        proper_nouns = self._classify_proper_nouns(entity_dict)
+
+        if proper_nouns is None:
+            return 0
+
+        to_delete_keys = [k for k in entity_dict.keys() if k not in proper_nouns]
+
+        if not to_delete_keys:
+            self.logger.info("All new entities are proper nouns. No cleanup needed.")
+            return 0
+
+        self.logger.info(f"Classification: {len(proper_nouns)} proper nouns, {len(to_delete_keys)} generic terms to remove")
+
+        deleted_count = 0
+        self._cleaned_translations = {}
+        self._cleaned_entity_keys = {}
+        for category, entities in data.items():
+            for untranslated in list(entities.keys()):
+                if untranslated in to_delete_keys:
+                    translation = entities[untranslated].get('translation', '')
+                    if translation:
+                        self._cleaned_translations[untranslated] = translation
+                    self._cleaned_entity_keys.setdefault(category, []).append(untranslated)
+                    del entities[untranslated]
+                    deleted_count += 1
+
+        self.logger.info(f"Removed {deleted_count} generic terms from review.")
+        return deleted_count
+
+    def _classify_proper_nouns(self, entities: Dict[str, str], model_spec: str = None):
+        """
+        Send entities to AI model to classify which are proper nouns.
+
+        Args:
+            entities: Dictionary of untranslated:translated entities
+            model_spec: Optional model spec (provider:model). Uses cleaning_model or translation_model if not specified.
+
+        Returns:
+            Set of untranslated entity keys that are proper nouns, or None if classification fails
+        """
+        import os
+        from providers import create_provider
+        from config import TranslationConfig
+
+        config = TranslationConfig()
+        cleaning_prompt_path = os.path.join(config.script_dir, "cleaning_prompt.txt")
+
+        try:
+            if os.path.exists(cleaning_prompt_path):
+                with open(cleaning_prompt_path, 'r', encoding='utf-8') as file:
+                    system_prompt = file.read()
+            else:
+                self.logger.error(f"cleaning_prompt.txt not found at {cleaning_prompt_path}")
+                return None
+        except Exception as e:
+            self.logger.error(f"Error loading cleaning prompt from file: {e}")
+            return None
+
+        categorizer_prompt_path = os.path.join(config.script_dir, "categorizer_prompt.txt")
+
+        try:
+            if os.path.exists(categorizer_prompt_path):
+                with open(categorizer_prompt_path, 'r', encoding='utf-8') as file:
+                    categorizer_template = file.read()
+                user_prompt = categorizer_template.replace("{ENTITIES_JSON}", json.dumps(entities, ensure_ascii=False, indent=2))
+            else:
+                self.logger.error(f"categorizer_prompt.txt not found at {categorizer_prompt_path}")
+                return None
+        except Exception as e:
+            self.logger.error(f"Error loading categorizer prompt from file: {e}")
+            return None
+
+        try:
+            if model_spec is None:
+                if hasattr(self, 'cleaning_model') and self.cleaning_model:
+                    model_spec = self.cleaning_model
+                else:
+                    model_spec = config.translation_model
+
+            provider_name, model = config.parse_model_spec(model_spec)
+            provider = create_provider(provider_name)
+
+            self.logger.info(f"Analyzing {len(entities)} entities with {model}...")
+
+            response = provider.chat_completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0
+            )
+
+            content = provider.get_response_content(response)
+            content = content.strip()
+
+            if content.startswith("```"):
+                lines = content.split("\n")
+                content = "\n".join(lines[1:-1]) if len(lines) > 2 else content
+                if content.startswith("json"):
+                    content = content[4:].strip()
+
+            proper_nouns = json.loads(content)
+
+            if not isinstance(proper_nouns, list):
+                raise ValueError("Response is not a JSON array")
+
+            return set(proper_nouns)
+
+        except Exception as e:
+            self.logger.error(f"Error during AI classification: {e}")
+            return None
+
+    def _decase_cleaned_entities(self, text: List[str]) -> List[str]:
+        """
+        Lowercase the English translations of entities that were removed by auto-clean.
+        Skips occurrences that appear at a sentence start (preceded by .!? or newline).
+        text is a list of paragraph strings, matching the shape of end_object['content'].
+        """
+        cleaned = getattr(self, '_cleaned_translations', {})
+        if not cleaned:
+            return text
+
+        def make_replacer(paragraph, lower):
+            def replacer(match):
+                preceding = paragraph[max(0, match.start() - 2):match.start()]
+                if re.search(r'[.!?\n"\'"\u2018\u201C]\s?$', preceding):
+                    return match.group(0)  # sentence start — leave capitalised
+                return lower
+            return replacer
+
+        for untranslated, translation in cleaned.items():
+            if not translation:
+                continue
+            lower = translation.lower()
+            if lower == translation:
+                continue
+
+            pattern = re.compile(r'\b' + re.escape(translation) + r'\b')
+            for i in range(len(text)):
+                text[i] = re.sub(pattern, make_replacer(text[i], lower), text[i])
+
+        return text
+
+    def _fix_partial_translations(self, content: List[str]) -> List[str]:
+        """
+        Detect lines containing untranslated CJK characters and fix them
+        using the cleaning model. Batches all affected lines into a single
+        API call, returning the content list with fixed lines spliced back in.
+        """
+        import os
+
+        cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
+        affected_indices = [i for i, line in enumerate(content) if cjk_pattern.search(line)]
+
+        if not affected_indices:
+            return content
+
+        self.logger.info(f"Found {len(affected_indices)} partially translated line(s) containing CJK characters")
+
+        lines_to_fix = [content[i] for i in affected_indices]
+        user_prompt = json.dumps(lines_to_fix, ensure_ascii=False, indent=2)
+
+        try:
+            from providers import create_provider
+            from config import TranslationConfig
+            config = TranslationConfig()
+
+            repair_prompt_path = os.path.join(config.script_dir, "translation_repair_prompt.txt")
+            try:
+                if os.path.exists(repair_prompt_path):
+                    with open(repair_prompt_path, 'r', encoding='utf-8') as file:
+                        system_prompt = file.read()
+                else:
+                    self.logger.error(f"translation_repair_prompt.txt not found at {repair_prompt_path}")
+                    return content
+            except Exception as e:
+                self.logger.error(f"Error loading repair prompt: {e}")
+                return content
+
+            if hasattr(self, 'cleaning_model') and self.cleaning_model:
+                model_spec = self.cleaning_model
+            else:
+                model_spec = config.translation_model
+
+            provider_name, model_name = config.parse_model_spec(model_spec)
+            provider = create_provider(provider_name)
+
+            self.logger.info(f"Repairing {len(affected_indices)} line(s) with {model_name}...")
+
+            response = provider.chat_completion(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0
+            )
+
+            raw = provider.get_response_content(response).strip()
+
+            if raw.startswith("```"):
+                lines = raw.split("\n")
+                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+
+            fixed_lines = json.loads(raw)
+
+            if not isinstance(fixed_lines, list) or len(fixed_lines) != len(affected_indices):
+                raise ValueError(
+                    f"Expected {len(affected_indices)} fixed lines, got "
+                    f"{len(fixed_lines) if isinstance(fixed_lines, list) else type(fixed_lines)}"
+                )
+
+            result = list(content)
+            for idx, fixed in zip(affected_indices, fixed_lines):
+                result[idx] = fixed
+
+            self.logger.info(f"Repaired {len(affected_indices)} partially translated line(s)")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Could not repair partial translations: {e}")
+            return content

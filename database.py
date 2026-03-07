@@ -115,6 +115,19 @@ class DatabaseManager:
             )
             ''')
 
+            # Migrations: add columns if missing
+            cursor.execute("PRAGMA table_info(entities)")
+            entity_cols = {row[1] for row in cursor.fetchall()}
+            if 'origin_chapter' not in entity_cols:
+                cursor.execute("ALTER TABLE entities ADD COLUMN origin_chapter INTEGER")
+                self.logger.info("Added origin_chapter column to entities table")
+
+            cursor.execute("PRAGMA table_info(chapters)")
+            chapter_cols = {row[1] for row in cursor.fetchall()}
+            if 'is_proofread' not in chapter_cols:
+                cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread INTEGER DEFAULT 0")
+                self.logger.info("Added is_proofread column to chapters table")
+
             conn.commit()
             conn.close()
             self.logger.info("Database initialized successfully")
@@ -550,18 +563,18 @@ class DatabaseManager:
             
             if chapter_id:
                 cursor.execute('''
-                SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content, 
+                SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content,
                     c.translated_content, c.summary, c.translation_date, c.translation_model,
-                    b.title as book_title
+                    b.title as book_title, c.is_proofread
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
                 WHERE c.id = ?
                 ''', (chapter_id,))
             else:
                 cursor.execute('''
-                SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content, 
+                SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content,
                     c.translated_content, c.summary, c.translation_date, c.translation_model,
-                    b.title as book_title
+                    b.title as book_title, c.is_proofread
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
                 WHERE c.book_id = ? AND c.chapter_number = ?
@@ -594,7 +607,8 @@ class DatabaseManager:
                 "summary": row[6],
                 "translation_date": row[7],
                 "model": row[8],
-                "book_title": row[9]
+                "book_title": row[9],
+                "is_proofread": bool(row[10]) if row[10] else False,
             }
             
             return chapter_data
@@ -624,24 +638,25 @@ class DatabaseManager:
             cursor = conn.cursor()
             
             cursor.execute('''
-            SELECT id, chapter_number, title, translation_date, translation_model
+            SELECT id, chapter_number, title, translation_date, translation_model, is_proofread
             FROM chapters
             WHERE book_id = ?
             ORDER BY chapter_number
             ''', (book_id,))
-            
+
             rows = cursor.fetchall()
             conn.close()
-            
+
             result = []
             for row in rows:
-                chapter_id, chapter_number, title, translation_date, model = row
+                chapter_id, chapter_number, title, translation_date, model, is_proofread = row
                 result.append({
                     "id": chapter_id,
                     "chapter": chapter_number,
                     "title": title,
                     "translation_date": translation_date,
-                    "model": model
+                    "model": model,
+                    "is_proofread": bool(is_proofread),
                 })
             
             return result
@@ -1363,9 +1378,13 @@ class DatabaseManager:
         """
         old_translation = entity.get('incorrect_translation', '')
         new_translation = entity['translation']
-        
+
+        if not old_translation or old_translation == new_translation:
+            self.logger.debug(f"Skipping substitution for '{new_translation}' — no incorrect_translation set")
+            return translated_text
+
         self.logger.info(f"We will update '{old_translation}' for '{new_translation}'...")
-        
+
         def match_case(match):
             matched_text = match.group()
             old_words = matched_text.split()
@@ -1396,7 +1415,7 @@ class DatabaseManager:
         """Normalize text for consistent comparison"""
         return unicodedata.normalize('NFC', text)
     
-    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None):
+    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None):
         """
         Add a new entity to the database.
         Returns True if successful, False if the entity already exists in a different category.
@@ -1432,12 +1451,34 @@ class DatabaseManager:
                 conn.close()
                 return False
             
-            # Add or update the entity
-            cursor.execute('''
-            INSERT OR REPLACE INTO entities 
-            (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender))
+            # Check if entity already exists in this category
+            if book_id is not None:
+                cursor.execute('''
+                SELECT id, origin_chapter FROM entities
+                WHERE category = ? AND untranslated = ? AND book_id = ?
+                ''', (category, untranslated, book_id))
+            else:
+                cursor.execute('''
+                SELECT id, origin_chapter FROM entities
+                WHERE category = ? AND untranslated = ? AND book_id IS NULL
+                ''', (category, untranslated))
+
+            same_cat = cursor.fetchone()
+            if same_cat:
+                # Update existing — preserve origin_chapter if not explicitly provided
+                effective_origin = origin_chapter if origin_chapter is not None else same_cat[1]
+                cursor.execute('''
+                UPDATE entities
+                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?
+                WHERE id = ?
+                ''', (translation, last_chapter, incorrect_translation, gender, effective_origin, same_cat[0]))
+            else:
+                # Insert new entity
+                cursor.execute('''
+                INSERT INTO entities
+                (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter))
             
             conn.commit()
             conn.close()

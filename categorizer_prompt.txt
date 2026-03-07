@@ -1,4 +1,23 @@
-Classify which of these entities are proper nouns. Context is a Chinese novel, so include things like cultivation technique names, equipment, etc. Return only a JSON array of the Chinese keys (untranslated text) for entries that are proper nouns:
+Classify which of the following entities are proper nouns. Context is a Chinese novel. Err on the side of inclusion if you are unsure.
+
+Proper nouns (INCLUDE):
+- Personal names (人物名, 角色名)
+- Names that include titles, like 骑士拉尔·施耐德, 邓布利多教授, 米兰达女士
+- Personal titles referencing a unique person, like 霍格沃茨副校长
+- Place names (地名)
+- Organization and group names (组织名), like 课后辅导兴趣小组
+- Unique item names (独特物品名称), like weapons, artifacts, potions, special resources
+- Non-unique items referenced possessively by a unique individual, like 洛丽丝夫人饼干
+- Titles functioning as proper nouns (称号作为专有名词时), including cultivation ranks and levels
+- Named techniques, skills, or spells (功法名, 技能名)
+- Unique names of subjects, schools, or locations, like 黑魔法防御课, 脱凡成衣店
+
+NOT proper nouns (EXCLUDE):
+- Generic nouns like "sword", "person", "mountain"
+- Descriptive phrases like "the old man", "a powerful technique"
+- General categories like "cultivator", "warrior", "city"
+
+Return only a JSON array of the Chinese keys (untranslated text) for entries that are proper nouns.
 
 {ENTITIES_JSON}
 

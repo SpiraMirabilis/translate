@@ -1,0 +1,428 @@
+import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useWs } from '../App'
+import { api } from '../services/api'
+import { useLocalStorage } from '../hooks/useLocalStorage'
+import {
+  Play, Trash2, Upload, FileText, Loader2, ListChecks, X, StopCircle, RefreshCw, Info
+} from 'lucide-react'
+import TranslationProgress from '../components/TranslationProgress'
+import ComboBox from '../components/ComboBox'
+
+export default function Queue() {
+  const { lastMessage } = useWs()
+  const navigate = useNavigate()
+  const [books, setBooks] = useState([])
+  const [queue, setQueue] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filterBook, setFilterBook] = useLocalStorage('queue.filterBook', '')
+  const [processing, setProcessing] = useState(false)
+  const [jobStatus, setJobStatus] = useState('idle')
+  const [showUpload, setShowUpload] = useState(false)
+  const [error, setError] = useState(null)
+  const [chunkProgress, setChunkProgress] = useState(null)
+  const [providers, setProviders] = useState([])
+  const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
+  const [adviceModel, setAdviceModel]             = useLocalStorage('queue.adviceModel', '')
+  const [cleaningModel, setCleaningModel]         = useLocalStorage('queue.cleaningModel', '')
+  const [noReview, setNoReview]                   = useLocalStorage('queue.noReview', false)
+  const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
+  const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
+  const [stopAfterNext, setStopAfterNext]         = useState(false)  // transient — not persisted
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const d = await api.listQueue(filterBook ? parseInt(filterBook) : undefined)
+      setQueue(d.items || [])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [filterBook])
+
+  useEffect(() => {
+    api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
+    api.getJobStatus().then(d => setJobStatus(d.status)).catch(() => {})
+    api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  // Watch for job completion to reload queue
+  useEffect(() => {
+    if (!lastMessage) return
+    if (lastMessage.type === 'progress') {
+      setChunkProgress(lastMessage)
+      setJobStatus('running')
+    }
+    if (lastMessage.type === 'translation_complete') {
+      setChunkProgress(null)
+      load().then(async () => {
+        // After reloading the queue, decide whether to auto-continue
+        setStopAfterNext(prev => {
+          if (autoProcess && !prev) {
+            // Kick off the next item after a short pause so the user can see completion
+            setTimeout(async () => {
+              const d = await api.listQueue(filterBook ? parseInt(filterBook) : undefined)
+              if ((d.count || 0) > 0) {
+                setProcessing(true)
+                setJobStatus('running')
+                try {
+                  await api.processNext({
+                    book_id: filterBook ? parseInt(filterBook) : null,
+                    translation_model: translationModel || null,
+                    advice_model: adviceModel || null,
+                    cleaning_model: cleaningModel || null,
+                    no_review: noReview,
+                    no_clean: noClean,
+                  })
+                } catch (e) {
+                  setError(e.message)
+                  setProcessing(false)
+                  setJobStatus('error')
+                }
+              } else {
+                setJobStatus('complete')
+                setProcessing(false)
+              }
+            }, 800)
+          } else {
+            setJobStatus('complete')
+            setProcessing(false)
+          }
+          return false  // always reset stopAfterNext after consuming it
+        })
+      })
+    }
+    if (lastMessage.type === 'error') {
+      setProcessing(false)
+      setJobStatus('error')
+      setChunkProgress(null)
+      setStopAfterNext(false)
+    }
+    if (lastMessage.type === 'entity_review_needed') {
+      setJobStatus('awaiting_review')
+      setStopAfterNext(false)  // review counts as a natural break point
+      navigate('/')
+    }
+  }, [lastMessage, load, autoProcess, filterBook, translationModel, adviceModel, cleaningModel, noReview, noClean])
+
+  const handleProcessNext = async () => {
+    setProcessing(true)
+    setError(null)
+    try {
+      await api.processNext({
+        book_id: filterBook ? parseInt(filterBook) : null,
+        translation_model: translationModel || null,
+        advice_model: adviceModel || null,
+        cleaning_model: cleaningModel || null,
+        no_review: noReview,
+        no_clean: noClean,
+      })
+      setJobStatus('running')
+    } catch (e) {
+      setError(e.message)
+      setProcessing(false)
+    }
+  }
+
+  const handleRemove = async (id) => {
+    await api.removeQueueItem(id)
+    load()
+  }
+
+  const handleClear = async () => {
+    if (!confirm('Clear the entire queue?')) return
+    await api.clearQueue(filterBook ? parseInt(filterBook) : undefined)
+    load()
+  }
+
+  const isJobRunning = processing || jobStatus === 'running' || jobStatus === 'awaiting_review'
+
+  const modelOptions = providers.flatMap(p =>
+    (p.models || []).map(m => `${p.name}:${m}`)
+  )
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center justify-between mb-5">
+        <h1 className="text-lg font-semibold text-slate-200">Queue</h1>
+        <div className="flex gap-2">
+          <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={() => setShowUpload(true)}>
+            <Upload size={13} /> Upload File
+          </button>
+          {queue.length > 0 && (
+            <button className="btn-danger flex items-center gap-1.5 text-xs" onClick={handleClear}>
+              <X size={13} /> Clear Queue
+            </button>
+          )}
+          {isJobRunning && autoProcess && !stopAfterNext ? (
+            <button
+              className="btn-danger flex items-center gap-1.5"
+              onClick={() => setStopAfterNext(true)}
+              title="Finish the current chapter then stop"
+            >
+              <StopCircle size={13} /> Stop after current
+            </button>
+          ) : isJobRunning && autoProcess && stopAfterNext ? (
+            <button className="btn-secondary flex items-center gap-1.5" disabled>
+              <Loader2 size={13} className="animate-spin" /> Stopping after current…
+            </button>
+          ) : (
+            <button
+              className="btn-primary flex items-center gap-1.5"
+              onClick={handleProcessNext}
+              disabled={isJobRunning || queue.length === 0}
+            >
+              {isJobRunning
+                ? <><Loader2 size={13} className="animate-spin" /> Processing…</>
+                : autoProcess
+                  ? <><RefreshCw size={13} /> Start Auto-process</>
+                  : <><Play size={13} /> Process Next</>}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Model settings */}
+      <div className="card p-4 mb-5">
+        <p className="text-xs font-medium text-slate-400 mb-3">Translation settings for next job</p>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="label">Translation model</label>
+            <ComboBox
+              value={translationModel}
+              onChange={setTranslationModel}
+              options={modelOptions}
+              placeholder="Default"
+            />
+          </div>
+          <div>
+            <label className="label">Advice model</label>
+            <ComboBox
+              value={adviceModel}
+              onChange={setAdviceModel}
+              options={modelOptions}
+              placeholder="Default"
+            />
+          </div>
+          <div>
+            <label className="label">Cleaning model</label>
+            <ComboBox
+              value={cleaningModel}
+              onChange={setCleaningModel}
+              options={modelOptions}
+              placeholder="Same as translation"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-6 mt-3">
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={noReview}
+              onChange={e => setNoReview(e.target.checked)}
+            />
+            Skip entity review
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={noClean}
+              onChange={e => setNoClean(e.target.checked)}
+            />
+            Skip entity cleaning
+            <span className="relative group">
+              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                A second pass using the cleaning model to ensure new entities are only proper nouns. Recommended when using DeepSeek or smaller parameter models, which tend to classify generic terms as entities. Uses very few output tokens, and cleaning model is recommended to be a mini-model like Claude Haiku or gpt-5-mini, or similar.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoProcess}
+              onChange={e => setAutoProcess(e.target.checked)}
+            />
+            Auto-process queue
+          </label>
+        </div>
+      </div>
+
+      {/* Job status banner */}
+      {isJobRunning && (
+        <div className="card p-4 mb-4 border-indigo-700 bg-indigo-950/40 space-y-3">
+          {jobStatus === 'awaiting_review' ? (
+            <div className="flex items-center gap-2">
+              <Loader2 size={14} className="text-amber-400" />
+              <span className="text-sm text-amber-300">
+                Waiting for entity review — go to the Translate tab
+              </span>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <TranslationProgress progress={chunkProgress} status={jobStatus} />
+              {autoProcess && (
+                <p className="text-xs text-slate-500">
+                  {stopAfterNext
+                    ? '⏹ Will stop after this chapter completes'
+                    : `Auto-processing — ${queue.length} chapter${queue.length !== 1 ? 's' : ''} remaining`}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Filter */}
+      <div className="mb-4">
+        <select className="input w-48" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
+          <option value="">All books</option>
+          {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+        </select>
+      </div>
+
+      {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-slate-400 text-sm"><Loader2 size={14} className="animate-spin" /> Loading…</div>
+      ) : queue.length === 0 ? (
+        <div className="card p-8 text-center text-slate-500">
+          <ListChecks size={32} className="mx-auto mb-3 opacity-40" />
+          <p>Queue is empty. Upload files to add chapters.</p>
+        </div>
+      ) : (
+        <div className="card divide-y divide-slate-700">
+          {queue.map((item, i) => (
+            <div key={item.id} className="flex items-center gap-3 px-4 py-3">
+              <span className="text-xs text-slate-600 w-5 text-right">{i + 1}</span>
+              <FileText size={14} className="text-slate-500 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-slate-200 truncate">{item.title || `Item ${item.id}`}</p>
+                <p className="text-xs text-slate-500">
+                  {item.book_title || `Book ${item.book_id}`}
+                  {item.chapter_number ? ` · Ch. ${item.chapter_number}` : ''}
+                </p>
+              </div>
+              <button
+                className="btn-ghost p-1.5 hover:text-rose-400 shrink-0"
+                onClick={() => handleRemove(item.id)}
+                disabled={isJobRunning}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showUpload && (
+        <UploadModal books={books} onClose={() => setShowUpload(false)} onDone={() => { setShowUpload(false); load() }} />
+      )}
+    </div>
+  )
+}
+
+
+function UploadModal({ books, onClose, onDone }) {
+  const [file, setFile] = useState(null)
+  const [bookId, setBookId] = useState('')
+  const [chapterNum, setChapterNum] = useState('')
+  const [isEpub, setIsEpub] = useState(false)
+  const [createBook, setCreateBook] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleFileChange = (e) => {
+    const f = e.target.files[0]
+    setFile(f)
+    setIsEpub(f?.name.toLowerCase().endsWith('.epub'))
+  }
+
+  const handleUpload = async () => {
+    if (!file) { setError('No file selected'); return }
+    if (!isEpub && !bookId) { setError('Select a book for .txt uploads'); return }
+    if (isEpub && !bookId && !createBook) { setError('Select a book or enable "Create from EPUB"'); return }
+
+    setUploading(true); setError(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      if (isEpub) {
+        if (bookId) fd.append('book_id', bookId)
+        fd.append('create_book', createBook ? 'true' : 'false')
+        await api.uploadEpub(fd)
+      } else {
+        fd.append('book_id', bookId)
+        if (chapterNum) fd.append('chapter_number', chapterNum)
+        await api.uploadToQueue(fd)
+      }
+      onDone()
+    } catch (e) {
+      setError(e.message); setUploading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-slate-200">Upload to Queue</h2>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="label">File (.txt or .epub)</label>
+            <input type="file" accept=".txt,.epub" className="input py-1 text-sm" onChange={handleFileChange} />
+          </div>
+
+          {isEpub ? (
+            <>
+              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                <input type="checkbox" checked={createBook} onChange={e => setCreateBook(e.target.checked)} />
+                Create new book from EPUB metadata
+              </label>
+              {!createBook && (
+                <div>
+                  <label className="label">Book</label>
+                  <select className="input" value={bookId} onChange={e => setBookId(e.target.value)}>
+                    <option value="">Select…</option>
+                    {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+                  </select>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="label">Book *</label>
+                <select className="input" value={bookId} onChange={e => setBookId(e.target.value)}>
+                  <option value="">Select…</option>
+                  {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Chapter # (optional)</label>
+                <input className="input" type="number" min="1" value={chapterNum} onChange={e => setChapterNum(e.target.value)} />
+              </div>
+            </>
+          )}
+        </div>
+
+        {error && <p className="text-rose-400 text-sm">{error}</p>}
+
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary flex items-center gap-1.5" onClick={handleUpload} disabled={uploading}>
+            {uploading ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+            Upload
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -343,7 +343,7 @@ class TranslationEngine:
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text, book_id=None, stream=True):
+    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None):
         """
         Translate a chapter of text using the configured LLM.
         
@@ -423,6 +423,8 @@ class TranslationEngine:
         self.logger.debug(f"About to process {len(split_text)} chunks")
         for chunk_index, chunk in enumerate(split_text, 1):
             self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
+            if progress_callback:
+                progress_callback({"chunk": chunk_index, "total": len(split_text), "phase": "start"})
             chunk_str = "\n".join(chunk)
             user_text = "Translate the following into English: \n" + chunk_str
             total_input_chars += len(chunk_str)
@@ -450,7 +452,7 @@ class TranslationEngine:
                         print(f"🔄 Retrying chunk {chunk_index} (attempt {attempt + 1}/{MAX_STREAM_RETRIES + 1})...")
 
                     response_text = ""
-                    token_count = 0
+                    chunk_count = 0
                     start_time = time.time()
                     repetition_detected = False
 
@@ -478,21 +480,35 @@ class TranslationEngine:
                             content = provider.get_streaming_content(stream_chunk)
                             if content:
                                 response_text += content
-                                token_count += 1
+                                chunk_count += 1
 
-                                # Check for repetition loop every 20 tokens
-                                if token_count % 20 == 0 and self._detect_repetition(response_text):
-                                    print(f"\n⚠️  Repetition loop detected at token {token_count}. Aborting stream...")
+                                # Estimate tokens from response length (~4 chars per token for English + JSON)
+                                token_count = len(response_text) // 4
+
+                                # Check for repetition loop every 20 chunks
+                                if chunk_count % 20 == 0 and self._detect_repetition(response_text):
+                                    print(f"\n⚠️  Repetition loop detected at ~{token_count} tokens. Aborting stream...")
                                     repetition_detected = True
                                     break
 
-                                # Update progress display
-                                if token_count % 10 == 0:
+                                # Update progress display every 10 chunks
+                                if chunk_count % 10 == 0:
                                     elapsed = time.time() - start_time
                                     tokens_per_second = token_count / elapsed if elapsed > 0 else 0
                                     completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
                                     progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
                                     print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
+                                    if progress_callback:
+                                        progress_callback({
+                                            "chunk": chunk_index,
+                                            "total": len(split_text),
+                                            "phase": "translating",
+                                            "token_count": token_count,
+                                            "expected_tokens": int(expected_tokens),
+                                            "percent": round(completion_percentage, 1),
+                                            "tokens_per_second": round(tokens_per_second, 1),
+                                            "elapsed": round(elapsed, 1),
+                                        })
 
                             # Check if stream is complete
                             if provider.is_stream_complete(stream_chunk):
@@ -507,8 +523,9 @@ class TranslationEngine:
                             raise
 
                     print("")
+                    token_count = len(response_text) // 4
                     total_output_tokens += token_count
-                    self.logger.info(f"Chunk {chunk_index}/{len(split_text)} attempt {attempt + 1} - Input chars: {len(chunk_str)}, Output tokens: {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
+                    self.logger.info(f"Chunk {chunk_index}/{len(split_text)} attempt {attempt + 1} - Input chars: {len(chunk_str)}, Output tokens (est): {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
 
                     if repetition_detected and attempt < MAX_STREAM_RETRIES:
                         continue  # retry the chunk
@@ -572,8 +589,10 @@ class TranslationEngine:
             self.logger.info(f"Translation of chunk {chunk_index} complete.")
             self.logger.debug(f"API call completed for chunk {chunk_index}")
             
-            current_chapter = parsed_chunk['chapter']
-            
+            # Only trust the model's chapter number from the first chunk
+            if chunk_index == 1:
+                current_chapter = parsed_chunk['chapter']
+
             end_object = self.combine_json_chunks(end_object, parsed_chunk, current_chapter)
             
             # Find new entities in this chunk and record them in totally_new_entities as a running total
