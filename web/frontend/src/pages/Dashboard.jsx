@@ -192,7 +192,15 @@ export default function Dashboard() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label">Advice model</label>
+                <label className="label flex items-center gap-1">
+                  Advice model
+                  <span className="relative group">
+                    <Info size={11} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                      Suggests translations for new entity names. A small, cheap model works well here — e.g. oai:gpt-5-mini or claude:claude-haiku-4-5.
+                    </span>
+                  </span>
+                </label>
                 <ComboBox
                   value={adviceModel}
                   onChange={setAdviceModel}
@@ -201,7 +209,15 @@ export default function Dashboard() {
                 />
               </div>
               <div>
-                <label className="label">Cleaning model</label>
+                <label className="label flex items-center gap-1">
+                  Cleaning model
+                  <span className="relative group">
+                    <Info size={11} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                      Filters out common words misidentified as entities. A small, cheap model works well — e.g. oai:gpt-5-mini or claude:claude-haiku-4-5.
+                    </span>
+                  </span>
+                </label>
                 <ComboBox
                   value={cleaningModel}
                   onChange={setCleaningModel}
