@@ -27,19 +27,50 @@ def init(entity_manager, translator=None):
     _ensure_dict_loaded()
 
 
+CEDICT_URL = "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz"
+
+
+def _download_cedict(cedict_path):
+    """Download CC-CEDICT if not present."""
+    import urllib.request
+    import gzip
+
+    gz_path = cedict_path + ".gz"
+    print(f"[dict] Downloading CC-CEDICT from {CEDICT_URL}...")
+    try:
+        urllib.request.urlretrieve(CEDICT_URL, gz_path)
+        with gzip.open(gz_path, 'rb') as gz_in:
+            with open(cedict_path, 'wb') as out:
+                out.write(gz_in.read())
+        os.unlink(gz_path)
+        print(f"[dict] Downloaded CC-CEDICT to {cedict_path}")
+        return True
+    except Exception as e:
+        print(f"[dict] Failed to download CC-CEDICT: {e}")
+        # Clean up partial files
+        for p in (gz_path, cedict_path):
+            if os.path.exists(p):
+                os.unlink(p)
+        return False
+
+
 def _ensure_dict_loaded():
     """Load CC-CEDICT into SQLite if not already done."""
     if os.path.exists(_dict_db_path):
         # Check if it has data
-        conn = sqlite3.connect(_dict_db_path)
-        count = conn.execute("SELECT COUNT(*) FROM cedict").fetchone()[0]
-        conn.close()
-        if count > 0:
-            return
+        try:
+            conn = sqlite3.connect(_dict_db_path)
+            count = conn.execute("SELECT COUNT(*) FROM cedict").fetchone()[0]
+            conn.close()
+            if count > 0:
+                return
+        except sqlite3.OperationalError:
+            pass  # table doesn't exist yet, continue to load
 
     cedict_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cedict_ts.u8')
     if not os.path.exists(cedict_path):
-        return
+        if not _download_cedict(cedict_path):
+            return
 
     conn = sqlite3.connect(_dict_db_path)
     conn.execute("""
