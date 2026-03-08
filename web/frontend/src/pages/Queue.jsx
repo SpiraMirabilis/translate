@@ -263,9 +263,7 @@ export default function Queue() {
               <TranslationProgress progress={chunkProgress} status={jobStatus} />
               {autoProcess && (
                 <p className="text-xs text-slate-500">
-                  {stopAfterNext
-                    ? '⏹ Will stop after this chapter completes'
-                    : `Auto-processing — ${queue.length} chapter${queue.length !== 1 ? 's' : ''} remaining`}
+                  Auto-processing — {queue.length} chapter{queue.length !== 1 ? 's' : ''} remaining
                 </p>
               )}
             </div>
