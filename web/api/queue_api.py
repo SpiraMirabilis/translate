@@ -56,6 +56,7 @@ class QueueAddRequest(BaseModel):
     book_id: int
     chapter_number: Optional[int] = None
     title: Optional[str] = None
+    priority: bool = False
 
 
 @router.post("/add")
@@ -71,6 +72,7 @@ async def add_to_queue(req: QueueAddRequest):
         title=req.title or book["title"],
         chapter_number=req.chapter_number,
         source="web",
+        priority=req.priority,
     )
     if not queue_id:
         raise HTTPException(status_code=500, detail="Failed to add to queue.")

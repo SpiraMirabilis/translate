@@ -331,7 +331,7 @@ class TranslationEngine:
         
         try:
             response_content = advice_provider.get_response_content(response)
-            parsed_response = json.loads(response_content)
+            parsed_response = advice_provider.validate_json_response(response_content)
             
             # If we found duplicates earlier, append a warning to the message
             if existing_duplicates:
@@ -546,7 +546,7 @@ class TranslationEngine:
 
                     # Parse the completed response
                     try:
-                        parsed_chunk = json.loads(response_text)
+                        parsed_chunk = provider.validate_json_response(response_text)
                     except json.JSONDecodeError as e:
                         print("Failed to parse JSON. Writing response to json_fail_debug.txt")
                         with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
@@ -583,7 +583,7 @@ class TranslationEngine:
                             response_format={"type": "json_object"}
                         )
                         response_content = provider.get_response_content(response)
-                        parsed_chunk = json.loads(response_content)
+                        parsed_chunk = provider.validate_json_response(response_content)
                         break
                     except json.JSONDecodeError as e:
                         print("Failed to parse JSON. Writing response to json_fail_debug.txt")

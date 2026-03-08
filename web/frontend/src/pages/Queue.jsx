@@ -29,7 +29,7 @@ export default function Queue() {
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
   const [noRepair, setNoRepair]                   = useLocalStorage('queue.noRepair', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
-  const [stopAfterNext, setStopAfterNext]         = useState(false)  // transient — not persisted
+  const [stopAfterNext, setStopAfterNext]         = useLocalStorage('queue.stopAfterNext', false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -60,43 +60,17 @@ export default function Queue() {
     }
     if (lastMessage.type === 'translation_complete') {
       setChunkProgress(null)
-      load().then(async () => {
-        // After reloading the queue, decide whether to auto-continue
-        setStopAfterNext(prev => {
-          if (autoProcess && !prev) {
-            // Kick off the next item after a short pause so the user can see completion
-            setTimeout(async () => {
-              const d = await api.listQueue(filterBook ? parseInt(filterBook) : undefined)
-              if ((d.count || 0) > 0) {
-                setProcessing(true)
-                setJobStatus('running')
-                try {
-                  await api.processNext({
-                    book_id: filterBook ? parseInt(filterBook) : null,
-                    translation_model: translationModel || null,
-                    advice_model: adviceModel || null,
-                    cleaning_model: cleaningModel || null,
-                    no_review: noReview,
-                    no_clean: noClean,
-                    no_repair: noRepair,
-                  })
-                } catch (e) {
-                  setError(e.message)
-                  setProcessing(false)
-                  setJobStatus('error')
-                }
-              } else {
-                setJobStatus('complete')
-                setProcessing(false)
-              }
-            }, 800)
-          } else {
-            setJobStatus('complete')
-            setProcessing(false)
-          }
-          return false  // always reset stopAfterNext after consuming it
-        })
-      })
+      load()
+      // If auto-process is on and not stopped, the app-level hook handles
+      // kicking off the next item. Here we just update the UI state.
+      if (autoProcess && !stopAfterNext) {
+        // Will transition back to 'running' once the hook starts the next job
+        setJobStatus('running')
+      } else {
+        setJobStatus('complete')
+        setProcessing(false)
+      }
+      setStopAfterNext(false)
     }
     if (lastMessage.type === 'error') {
       setProcessing(false)
@@ -106,10 +80,10 @@ export default function Queue() {
     }
     if (lastMessage.type === 'entity_review_needed') {
       setJobStatus('awaiting_review')
-      setStopAfterNext(false)  // review counts as a natural break point
+      setStopAfterNext(false)
       navigate('/')
     }
-  }, [lastMessage, load, autoProcess, filterBook, translationModel, adviceModel, cleaningModel, noReview, noClean, noRepair])
+  }, [lastMessage, load, autoProcess, stopAfterNext])
 
   const handleProcessNext = async () => {
     setProcessing(true)

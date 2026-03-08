@@ -109,27 +109,68 @@ class ModelProvider(ABC):
         """
         pass
     
+    @staticmethod
+    def _strip_markdown_fences(content: str) -> str:
+        """Remove markdown code fences (e.g. ```json ... ```) from a response."""
+        content = content.strip()
+        if content.startswith("```"):
+            # Drop the opening fence line
+            content = content[content.index("\n") + 1:] if "\n" in content else content[3:]
+            # Drop the closing fence
+            if content.endswith("```"):
+                content = content[:-3]
+        return content.strip()
+
     def validate_json_response(self, content: str) -> Dict[str, Any]:
         """
         Validate and parse JSON response content.
-        
+        Strips markdown fences and attempts to extract JSON from surrounding text.
+
         Args:
             content: The response content string
-            
+
         Returns:
             Parsed JSON as a dictionary
-            
+
         Raises:
             json.JSONDecodeError: If the content is not valid JSON
         """
+        # Try as-is first
         try:
             return json.loads(content)
-        except json.JSONDecodeError as e:
-            raise json.JSONDecodeError(
-                f"Failed to parse JSON response from {self.__class__.__name__}: {str(e)}",
-                content,
-                e.pos
-            )
+        except json.JSONDecodeError:
+            pass
+
+        # Strip markdown fences and retry
+        stripped = self._strip_markdown_fences(content)
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to find a JSON object within the response
+        start_idx = stripped.find('{')
+        if start_idx != -1:
+            brace_count = 0
+            end_idx = start_idx
+            for i, char in enumerate(stripped[start_idx:], start_idx):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i + 1
+                        break
+            try:
+                return json.loads(stripped[start_idx:end_idx])
+            except json.JSONDecodeError:
+                pass
+
+        raise json.JSONDecodeError(
+            f"Failed to parse JSON response from {self.__class__.__name__}: {content[:100]}...",
+            content,
+            0
+        )
     
     @property
     @abstractmethod

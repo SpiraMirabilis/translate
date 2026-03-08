@@ -7,8 +7,9 @@ cd "$(dirname "$0")"
 cleanup() {
     echo ""
     echo "Shutting down..."
-    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
-    wait $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    # Kill the process groups so child processes (uvicorn workers, vite) also die
+    kill -- -$BACKEND_PID -$FRONTEND_PID 2>/dev/null
+    wait 2>/dev/null
     exit 0
 }
 
@@ -37,16 +38,15 @@ echo ""
 echo "Press Ctrl+C to stop both servers."
 echo ""
 
-# Start backend
-python3 -m uvicorn web.app:app --host 127.0.0.1 --port 8000 --reload 2>&1 | sed 's/^/[backend]  /' &
+# Start backend in its own process group
+set -m
+python3 -m uvicorn web.app:app --host 127.0.0.1 --port 8000 --reload &
 BACKEND_PID=$!
 
-# Start frontend dev server
-(cd web/frontend && npm run dev -- --clearScreen false) 2>&1 | sed 's/^/[frontend] /' &
+# Start frontend dev server in its own process group
+(cd web/frontend && npx vite --clearScreen false) &
 FRONTEND_PID=$!
+set +m
 
-# Wait for either to exit
-wait -n $BACKEND_PID $FRONTEND_PID 2>/dev/null
-
-# If one died, kill the other
-cleanup
+# Wait forever — cleanup is triggered by the trap
+wait

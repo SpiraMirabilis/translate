@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
+import { useLocalStorage } from '../hooks/useLocalStorage'
+import ComboBox from '../components/ComboBox'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info
 } from 'lucide-react'
 
 export default function Books() {
@@ -15,6 +17,7 @@ export default function Books() {
   const [editingBook, setEditingBook] = useState(null)   // book obj or null
   const [editingChapter, setEditingChapter] = useState(null)
   const [editingPrompt, setEditingPrompt] = useState(null) // book obj or null
+  const [retranslating, setRetranslating] = useState(null) // { bookId, chapter, title } or null
   const [error, setError] = useState(null)
 
   const load = useCallback(async () => {
@@ -199,6 +202,13 @@ export default function Books() {
                             </td>
                             <td className="py-2">
                               <div className="flex gap-1 justify-end">
+                                <button
+                                  className="btn-ghost p-1"
+                                  title="Retranslate chapter"
+                                  onClick={() => setRetranslating({ bookId: book.id, chapter: ch.chapter, title: ch.title })}
+                                >
+                                  <Sparkles size={12} />
+                                </button>
                                 <Link
                                   to={`/books/${book.id}/chapters/${ch.chapter}/edit`}
                                   className="btn-ghost p-1"
@@ -208,6 +218,7 @@ export default function Books() {
                                 </Link>
                                 <button
                                   className="btn-ghost p-1 hover:text-rose-400"
+                                  title="Delete chapter"
                                   onClick={() => handleDeleteChapter(book.id, ch.chapter)}
                                 >
                                   <Trash2 size={12} />
@@ -240,6 +251,16 @@ export default function Books() {
         <PromptEditorModal
           book={editingPrompt}
           onClose={() => setEditingPrompt(null)}
+        />
+      )}
+
+      {/* Retranslate modal */}
+      {retranslating && (
+        <RetranslateModal
+          bookId={retranslating.bookId}
+          chapterNum={retranslating.chapter}
+          chapterTitle={retranslating.title}
+          onClose={() => setRetranslating(null)}
         />
       )}
     </div>
@@ -435,6 +456,143 @@ function PromptEditorModal({ book, onClose }) {
               </div>
             </div>
           </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
+  const [providers, setProviders] = useState([])
+  const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
+  const [adviceModel, setAdviceModel]           = useLocalStorage('shared.adviceModel', '')
+  const [cleaningModel, setCleaningModel]       = useLocalStorage('shared.cleaningModel', '')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+  const [done, setDone] = useState(false)
+
+  useEffect(() => {
+    api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
+  }, [])
+
+  const modelOptions = providers.flatMap(p =>
+    (p.models || []).map(m => `${p.name}:${m}`)
+  )
+
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      // Fetch the chapter's original Chinese text
+      const chapter = await api.getChapter(bookId, chapterNum)
+      const untranslated = chapter.untranslated || []
+      if (!untranslated.length) {
+        setError('No source text found for this chapter.')
+        setSubmitting(false)
+        return
+      }
+      // Add to queue
+      await api.addToQueue({
+        text: untranslated.join('\n'),
+        book_id: bookId,
+        chapter_number: chapterNum,
+        title: chapterTitle,
+        priority: true,
+      })
+      setDone(true)
+    } catch (e) {
+      setError(e.message)
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-slate-200">Retranslate Chapter</h2>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <p className="text-sm text-slate-400">
+          Queue <span className="text-slate-200">Ch. {chapterNum}</span>
+          {chapterTitle && <> — <span className="text-slate-300">{chapterTitle}</span></>}
+          {' '}for retranslation. The existing translation will be overwritten when the queue item is processed.
+        </p>
+
+        {!done ? (
+          <>
+            <div className="space-y-3">
+              <div>
+                <label className="label">Translation model</label>
+                <ComboBox
+                  value={translationModel}
+                  onChange={setTranslationModel}
+                  options={modelOptions}
+                  placeholder="Default"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label flex items-center gap-1">
+                    Advice model
+                    <span className="relative group">
+                      <Info size={11} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                        Suggests translations for new entity names. A small, cheap model works well here.
+                      </span>
+                    </span>
+                  </label>
+                  <ComboBox
+                    value={adviceModel}
+                    onChange={setAdviceModel}
+                    options={modelOptions}
+                    placeholder="Default"
+                  />
+                </div>
+                <div>
+                  <label className="label flex items-center gap-1">
+                    Cleaning model
+                    <span className="relative group">
+                      <Info size={11} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                        Filters out common words misidentified as entities. A small, cheap model works well.
+                      </span>
+                    </span>
+                  </label>
+                  <ComboBox
+                    value={cleaningModel}
+                    onChange={setCleaningModel}
+                    options={modelOptions}
+                    placeholder="Same as translation"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {error && <p className="text-rose-400 text-sm">{error}</p>}
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary flex items-center gap-1.5"
+                onClick={handleSubmit}
+                disabled={submitting}
+              >
+                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                Queue for Retranslation
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-emerald-400">
+              Chapter {chapterNum} has been added to the translation queue. Go to the Queue page to process it.
+            </p>
+            <div className="flex justify-end">
+              <button className="btn-primary" onClick={onClose}>Done</button>
+            </div>
+          </div>
         )}
       </div>
     </div>

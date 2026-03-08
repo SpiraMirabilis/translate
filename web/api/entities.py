@@ -264,6 +264,12 @@ async def resolve_duplicate(req: DuplicateResolveRequest):
             (req.untranslated, req.keep_category, req.book_id),
         )
 
+    elif req.action == "delete_all":
+        cursor.execute(
+            "DELETE FROM entities WHERE untranslated = ? AND book_id IS ?",
+            (req.untranslated, req.book_id),
+        )
+
     elif req.action == "rename":
         if not req.renames:
             conn.close()

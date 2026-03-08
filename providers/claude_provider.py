@@ -5,7 +5,6 @@ This provider supports Claude models (Claude 3.5 Sonnet, Claude 3 Opus, etc.)
 through the official Anthropic API.
 """
 from typing import Dict, List, Optional, Any, Union
-import json
 from .base import ModelProvider, StreamingResponse
 
 try:
@@ -198,59 +197,4 @@ class ClaudeProvider(ModelProvider):
             "json_mode_via_prompt"  # JSON mode via prompt instructions
         ]
     
-    @staticmethod
-    def _strip_markdown_fences(content: str) -> str:
-        """Remove markdown code fences (e.g. ```json ... ```) from a response."""
-        content = content.strip()
-        if content.startswith("```"):
-            # Drop the opening fence line
-            content = content[content.index("\n") + 1:] if "\n" in content else content[3:]
-            # Drop the closing fence
-            if content.endswith("```"):
-                content = content[:-3]
-        return content.strip()
-
-    def validate_json_response(self, content: str) -> Dict[str, Any]:
-        """
-        Validate and parse JSON response from Claude.
-        
-        Claude sometimes includes extra text, so we try to extract just the JSON.
-        """
-        # Try to parse as-is first
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            pass
-        
-        # Try to find JSON within the response
-        content = content.strip()
-        
-        # Look for JSON object boundaries
-        start_idx = content.find('{')
-        if start_idx != -1:
-            # Find the matching closing brace
-            brace_count = 0
-            end_idx = start_idx
-            
-            for i, char in enumerate(content[start_idx:], start_idx):
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        end_idx = i + 1
-                        break
-            
-            # Try to parse the extracted JSON
-            try:
-                json_str = content[start_idx:end_idx]
-                return json.loads(json_str)
-            except json.JSONDecodeError:
-                pass
-        
-        # If all else fails, raise the original error
-        raise json.JSONDecodeError(
-            f"Failed to parse JSON response from Claude: {content[:100]}...",
-            content,
-            0
-        )
+    # _strip_markdown_fences and validate_json_response are inherited from ModelProvider

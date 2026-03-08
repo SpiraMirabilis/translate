@@ -759,7 +759,18 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
     try {
       await api.resolveDuplicate({ untranslated: dup.untranslated, action: 'keep_one', keep_category: category, book_id: dup.book_id ?? null })
       setResolved(true)
-      // Brief delay so the user sees the success state before it disappears
+      setTimeout(() => onResolved(), 300)
+    } catch (e) {
+      alert(e.message)
+      setResolving(false)
+    }
+  }
+
+  const handleDeleteAll = async () => {
+    setResolving(true)
+    try {
+      await api.resolveDuplicate({ untranslated: dup.untranslated, action: 'delete_all', book_id: dup.book_id ?? null })
+      setResolved(true)
       setTimeout(() => onResolved(), 300)
     } catch (e) {
       alert(e.message)
@@ -777,7 +788,17 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
 
   return (
     <div ref={ref} className="card p-3">
-      <p className="text-sm font-mono text-slate-200 mb-2">{dup.untranslated}</p>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm font-mono text-slate-200">{dup.untranslated}</p>
+        <button
+          className="text-xs btn-ghost hover:text-rose-400 flex items-center gap-1"
+          onClick={handleDeleteAll}
+          disabled={resolving}
+          title="Delete all instances of this entity"
+        >
+          <Trash2 size={11} /> {dup.instances.length <= 2 ? 'Delete both' : 'Delete all'}
+        </button>
+      </div>
       <div className="space-y-1.5">
         {dup.instances.map(inst => (
           <div key={inst.id} className="flex items-center gap-2">

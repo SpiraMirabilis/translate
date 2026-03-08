@@ -163,11 +163,17 @@ class OpenAIProvider(ModelProvider):
         else:
             # Convert to dict format for consistency
             print(f"API Finish reason: {response.choices[0].finish_reason}, Usage: {response.usage}")
+            raw_content = response.choices[0].message.content
+            # Strip markdown fences from JSON responses — OpenRouter and
+            # non-legacy models may ignore response_format and wrap JSON
+            # in ```json ... ``` blocks.
+            if response_format and response_format.get("type") == "json_object" and raw_content:
+                raw_content = self._strip_markdown_fences(raw_content)
             return {
                 "choices": [
                     {
                         "message": {
-                            "content": response.choices[0].message.content,
+                            "content": raw_content,
                             "role": response.choices[0].message.role
                         },
                         "finish_reason": response.choices[0].finish_reason

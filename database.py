@@ -740,7 +740,7 @@ class DatabaseManager:
             return False
 
     # Queue management section
-    def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None):
+    def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None, priority=False):
         """
         Add an item to the translation queue.
 
@@ -751,6 +751,7 @@ class DatabaseManager:
             chapter_number: Chapter number (optional)
             source: Source file path or description (optional)
             metadata: Additional metadata dict (optional)
+            priority: If True, place at the front of the queue instead of the back
 
         Returns:
             int: Queue item ID if successful, None otherwise
@@ -765,10 +766,16 @@ class DatabaseManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # Get max position and add 1 for FIFO ordering
-            cursor.execute('SELECT MAX(position) FROM queue')
-            max_pos = cursor.fetchone()[0]
-            next_position = (max_pos + 1) if max_pos is not None else 0
+            if priority:
+                # Place at front: use min(position) - 1
+                cursor.execute('SELECT MIN(position) FROM queue')
+                min_pos = cursor.fetchone()[0]
+                next_position = (min_pos - 1) if min_pos is not None else 0
+            else:
+                # Place at back: use max(position) + 1
+                cursor.execute('SELECT MAX(position) FROM queue')
+                max_pos = cursor.fetchone()[0]
+                next_position = (max_pos + 1) if max_pos is not None else 0
 
             # Serialize content as JSON if list (like chapters table)
             if isinstance(content, list):
@@ -899,11 +906,8 @@ class DatabaseManager:
 
             removed_position = row[0]
 
-            # Delete the item
+            # Delete the item (no need to reorder — gaps in position are fine)
             cursor.execute('DELETE FROM queue WHERE id = ?', (queue_id,))
-
-            # Update positions of all items with position > removed_position (decrement by 1)
-            cursor.execute('UPDATE queue SET position = position - 1 WHERE position > ?', (removed_position,))
 
             conn.commit()
             conn.close()
