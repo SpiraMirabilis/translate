@@ -25,6 +25,8 @@ export default function Dashboard() {
   const [selectedBook, setSelectedBook] = useState('')
   const [chapterNum, setChapterNum] = useState('')
   const [modelOverride, setModelOverride] = useState('')
+  const [adviceModel, setAdviceModel]     = useLocalStorage('shared.adviceModel', '')
+  const [cleaningModel, setCleaningModel] = useLocalStorage('shared.cleaningModel', '')
   const [noReview, setNoReview] = useState(false)
   const [noClean, setNoClean] = useState(false)
 
@@ -101,6 +103,8 @@ export default function Dashboard() {
         book_id: selectedBook ? parseInt(selectedBook) : null,
         chapter_number: chapterNum ? parseInt(chapterNum) : null,
         model: modelOverride || null,
+        advice_model: adviceModel || null,
+        cleaning_model: cleaningModel || null,
         no_review: noReview,
         no_clean: noClean,
       })
@@ -176,15 +180,35 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Model override */}
+            {/* Model overrides */}
             <div>
-              <label className="label">Model override (optional)</label>
+              <label className="label">Translation model</label>
               <ComboBox
                 value={modelOverride}
                 onChange={setModelOverride}
                 options={modelOptions}
-                placeholder="Use default"
+                placeholder="Default"
               />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Advice model</label>
+                <ComboBox
+                  value={adviceModel}
+                  onChange={setAdviceModel}
+                  options={modelOptions}
+                  placeholder="Default"
+                />
+              </div>
+              <div>
+                <label className="label">Cleaning model</label>
+                <ComboBox
+                  value={cleaningModel}
+                  onChange={setCleaningModel}
+                  options={modelOptions}
+                  placeholder="Same as translation"
+                />
+              </div>
             </div>
 
             {/* Options */}

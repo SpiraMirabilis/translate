@@ -46,6 +46,8 @@ class TranslateRequest(BaseModel):
     book_id: Optional[int] = None
     chapter_number: Optional[int] = None
     model: Optional[str] = None
+    advice_model: Optional[str] = None
+    cleaning_model: Optional[str] = None
     no_review: bool = False
     no_clean: bool = False
 
@@ -78,9 +80,12 @@ async def start_translation(req: TranslateRequest):
     _job_manager.error = None
     _job_manager.last_result = None
 
-    # Override model if specified
+    # Override models if specified
     if req.model:
         _web_interface.translator.config.translation_model = req.model
+    if req.advice_model:
+        _web_interface.translator.config.advice_model = req.advice_model
+    _web_interface.cleaning_model = req.cleaning_model or None
 
     _web_interface.no_review = req.no_review
     _web_interface.no_clean = req.no_clean

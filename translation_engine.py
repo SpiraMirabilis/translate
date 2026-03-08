@@ -71,12 +71,13 @@ class TranslationEngine:
             self.logger.debug(f"Chunk {i+1}: indices {start_idx} to {end_idx}")
             yield sequence[start_idx:end_idx]
     
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
-        
+
         Args:
             provider: The model provider instance (used to detect Gemini and remove schema)
+            chapter_number: Known chapter number to inject into the prompt template
         """
         # Debug info
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
@@ -125,6 +126,12 @@ class TranslationEngine:
 
         # Insert the entities JSON into the template (both default and custom)
         prompt = prompt.replace("{{ENTITIES_JSON}}", entities_json)
+
+        # Insert the chapter number if known, otherwise remove the placeholder line
+        if chapter_number and isinstance(chapter_number, int) and chapter_number > 0:
+            prompt = prompt.replace("{{CHAPTER_NUMBER}}", str(chapter_number))
+        else:
+            prompt = prompt.replace("\nYou are translating chapter {{CHAPTER_NUMBER}}.\n", "\n")
 
         # For Gemini providers, remove the JSON schema example to avoid conflicts with responseSchema
         if provider and hasattr(provider, 'provider_name') and 'Gemini' in provider.provider_name:
@@ -343,13 +350,17 @@ class TranslationEngine:
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None):
+    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None):
         """
         Translate a chapter of text using the configured LLM.
-        
+
         Args:
             chapter_text (list of str): The chapter's text content split into lines.
-            
+            book_id (int, optional): Book ID for loading book-specific prompt templates.
+            stream (bool): Whether to use streaming output.
+            progress_callback (callable, optional): Callback for chunk progress updates.
+            chapter_number (int, optional): Known chapter number, injected into the system prompt.
+
         Returns:
             dict: A dictionary containing the translated chapter data.
         """
@@ -394,8 +405,9 @@ class TranslationEngine:
         chunks_count = max(1, math.ceil(total_char_count / max_chars))
 
         # Generate the initial system prompt
-        system_prompt = self.generate_system_prompt(chapter_text, old_entities, 
-                                               book_prompt_template=book_prompt_template, provider=provider)
+        system_prompt = self.generate_system_prompt(chapter_text, old_entities,
+                                               book_prompt_template=book_prompt_template, provider=provider,
+                                               chapter_number=chapter_number)
 
         # Split the text into chunks for the LLM if necessary due to output token limits
         split_text = list(self.split_by_n(chapter_text, chunks_count))
@@ -603,7 +615,8 @@ class TranslationEngine:
             old_entities = self.entity_manager.combine_json_entities(old_entities, end_object['entities'])
             
             # Regenerate the system prompt for the next chunk to maintain consistency
-            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False, provider=provider)
+            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False, provider=provider,
+                                                       chapter_number=chapter_number)
         
         self.logger.debug("Finished processing all chunks")
 

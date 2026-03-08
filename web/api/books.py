@@ -77,6 +77,35 @@ async def create_book(req: BookCreate):
     return {"id": book_id, "title": req.title}
 
 
+# ------------------------------------------------------------------
+# Prompt template (literal paths MUST come before /{book_id} routes)
+# ------------------------------------------------------------------
+
+@router.get("/default-prompt")
+async def get_default_prompt():
+    """Return the default system prompt template with {{ENTITIES_JSON}} and {{CHAPTER_NUMBER}} placeholders."""
+    import json
+
+    entities_json = {cat: {} for cat in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']}
+    default = _translator.generate_system_prompt([], entities_json, do_count=False)
+    # Replace the empty entities JSON with the placeholder
+    default = default.replace(
+        json.dumps(entities_json, ensure_ascii=False, indent=4),
+        "{{ENTITIES_JSON}}"
+    )
+    # Restore the chapter number placeholder (generate_system_prompt strips it when chapter_number is None)
+    if "{{CHAPTER_NUMBER}}" not in default:
+        default = default.replace(
+            "You are a Chinese-to-English literary translator.",
+            "You are a Chinese-to-English literary translator.\n\nYou are translating chapter {{CHAPTER_NUMBER}}.",
+        )
+    return {"template": default}
+
+
+# ------------------------------------------------------------------
+# Book CRUD (parameterized /{book_id} routes)
+# ------------------------------------------------------------------
+
 @router.get("/{book_id}")
 async def get_book(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
@@ -109,25 +138,8 @@ async def delete_book(book_id: int):
 
 
 # ------------------------------------------------------------------
-# Prompt template
+# Book-specific prompt templates
 # ------------------------------------------------------------------
-
-@router.get("/default-prompt")
-async def get_default_prompt():
-    """Return the default system prompt template with {{ENTITIES_JSON}} placeholder."""
-    import os, json
-    from config import TranslationConfig
-    config = TranslationConfig()
-
-    entities_json = {cat: {} for cat in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']}
-    default = _translator.generate_system_prompt([], entities_json, do_count=False)
-    # Replace the empty entities JSON with the placeholder
-    default = default.replace(
-        json.dumps(entities_json, ensure_ascii=False, indent=4),
-        "{{ENTITIES_JSON}}"
-    )
-    return {"template": default}
-
 
 @router.get("/{book_id}/prompt")
 async def get_prompt(book_id: int):
