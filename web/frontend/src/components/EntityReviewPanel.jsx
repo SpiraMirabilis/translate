@@ -6,7 +6,7 @@
  * On submit, sends edited entity data back to the API.
  */
 import { useState } from 'react'
-import { CheckCircle, Trash2, RefreshCw, ChevronDown, ChevronRight, BookOpen } from 'lucide-react'
+import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen } from 'lucide-react'
 import { api } from '../services/api'
 import { DictResult, useDictLookup } from './DictLookup'
 
@@ -259,11 +259,11 @@ function EntityRow({ row, onUpdate, onDelete, onAdvice }) {
         </button>
         <button
           className="btn-ghost p-1.5 shrink-0"
-          title="Get AI translation advice"
+          title="Ask AI for translation suggestions"
           onClick={() => { onAdvice(); setShowAdvice(true) }}
           disabled={row.adviceLoading}
         >
-          <RefreshCw size={14} className={row.adviceLoading ? 'animate-spin text-indigo-400' : 'text-slate-400'} />
+          <Sparkles size={14} className={row.adviceLoading ? 'animate-pulse text-indigo-400' : 'text-slate-400'} />
         </button>
         <button
           className="btn-ghost p-1.5 shrink-0 hover:text-rose-400"

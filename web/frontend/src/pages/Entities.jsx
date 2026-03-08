@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../services/api'
 import {
-  Search, Plus, Trash2, Edit2, RefreshCw, AlertTriangle, AlertCircle,
+  Search, Plus, Trash2, Edit2, Sparkles, AlertTriangle, AlertCircle,
   X, Check, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
   Replace, RotateCcw, BookOpen, Pin
 } from 'lucide-react'
@@ -459,11 +459,11 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
               <input className="input flex-1" value={form.translation} onChange={e => setForm(f => ({...f, translation: e.target.value}))} />
               <button
                 className="btn-ghost p-2 shrink-0"
-                title="Get AI translation advice"
+                title="Ask AI for translation suggestions"
                 onClick={handleAdvice}
                 disabled={adviceLoading || !form.untranslated.trim()}
               >
-                <RefreshCw size={14} className={adviceLoading ? 'animate-spin text-indigo-400' : 'text-slate-400'} />
+                <Sparkles size={14} className={adviceLoading ? 'animate-pulse text-indigo-400' : 'text-slate-400'} />
               </button>
             </div>
             {adviceData && (
