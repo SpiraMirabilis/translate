@@ -29,7 +29,6 @@ export default function Queue() {
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
   const [noRepair, setNoRepair]                   = useLocalStorage('queue.noRepair', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
-  const [stopAfterNext, setStopAfterNext]         = useLocalStorage('queue.stopAfterNext', false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -61,29 +60,23 @@ export default function Queue() {
     if (lastMessage.type === 'translation_complete') {
       setChunkProgress(null)
       load()
-      // If auto-process is on and not stopped, the app-level hook handles
-      // kicking off the next item. Here we just update the UI state.
-      if (autoProcess && !stopAfterNext) {
-        // Will transition back to 'running' once the hook starts the next job
+      if (autoProcess) {
         setJobStatus('running')
       } else {
         setJobStatus('complete')
         setProcessing(false)
       }
-      setStopAfterNext(false)
     }
     if (lastMessage.type === 'error') {
       setProcessing(false)
       setJobStatus('error')
       setChunkProgress(null)
-      setStopAfterNext(false)
     }
     if (lastMessage.type === 'entity_review_needed') {
       setJobStatus('awaiting_review')
-      setStopAfterNext(false)
       navigate('/')
     }
-  }, [lastMessage, load, autoProcess, stopAfterNext])
+  }, [lastMessage, load, autoProcess])
 
   const handleProcessNext = async () => {
     setProcessing(true)
@@ -135,17 +128,13 @@ export default function Queue() {
               <X size={13} /> Clear Queue
             </button>
           )}
-          {isJobRunning && autoProcess && !stopAfterNext ? (
+          {isJobRunning && autoProcess ? (
             <button
               className="btn-danger flex items-center gap-1.5"
-              onClick={() => setStopAfterNext(true)}
+              onClick={() => setAutoProcess(false)}
               title="Finish the current chapter then stop"
             >
               <StopCircle size={13} /> Stop after current
-            </button>
-          ) : isJobRunning && autoProcess && stopAfterNext ? (
-            <button className="btn-secondary flex items-center gap-1.5" disabled>
-              <Loader2 size={13} className="animate-spin" /> Stopping after current…
             </button>
           ) : (
             <button

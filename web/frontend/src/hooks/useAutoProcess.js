@@ -29,12 +29,7 @@ export function useAutoProcess() {
     lastHandled.current = msgId
 
     const autoProcess = ls('queue.autoProcess', false)
-    const stopAfterNext = ls('queue.stopAfterNext', false)
-
-    // Clear the transient stop flag after consuming it
-    try { localStorage.setItem('queue.stopAfterNext', 'false') } catch {}
-
-    if (!autoProcess || stopAfterNext) return
+    if (!autoProcess) return
 
     // Kick off the next item after a short pause
     setTimeout(async () => {
