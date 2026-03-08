@@ -7,6 +7,7 @@ import ChapterEditor from './pages/ChapterEditor'
 import Entities from './pages/Entities'
 import Queue from './pages/Queue'
 import Settings from './pages/Settings'
+import Help from './pages/Help'
 
 // ------------------------------------------------------------------
 // WebSocket context — single connection, all pages share it
@@ -66,6 +67,7 @@ export default function App() {
             <Route path="entities" element={<Entities />} />
             <Route path="queue" element={<Queue />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="help" element={<Help />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

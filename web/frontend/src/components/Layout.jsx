@@ -1,7 +1,7 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import { useWs } from '../App'
 import {
-  Languages, BookOpen, Database, ListChecks, Settings, Wifi, WifiOff
+  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff
 } from 'lucide-react'
 
 const nav = [
@@ -10,6 +10,7 @@ const nav = [
   { to: '/entities', icon: Database,     label: 'Entities'  },
   { to: '/queue',    icon: ListChecks,   label: 'Queue'     },
   { to: '/settings', icon: Settings,     label: 'Settings'  },
+  { to: '/help',     icon: HelpCircle,   label: 'Help'      },
 ]
 
 export default function Layout() {

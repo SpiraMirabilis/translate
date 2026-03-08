@@ -2144,6 +2144,8 @@ class CommandLineInterface(UserInterface):
             print(f"Last Chapter: {entity_data.get('last_chapter', 'N/A')}")
             if entity_data.get("gender"):
                 print(f"Gender: {entity_data.get('gender')}")
+            if entity_data.get("note"):
+                print(f"Note: {entity_data.get('note')}")
             print()
 
             # Build action choices dynamically based on entity's book status
@@ -2415,6 +2417,18 @@ class CommandLineInterface(UserInterface):
                     choices=["male", "female", "other"]
                 ).ask()
 
+        # Step 5b: Optional note field
+        note = None
+        has_note = self.questionary.confirm(
+            "Do you want to add a translation note for this entity?"
+        ).ask()
+        if has_note:
+            note = self.questionary.text(
+                "Note (translation guidance for AI):"
+            ).ask()
+            if note and not note.strip():
+                note = None
+
         # Step 6: Book assignment
         assign_book_id = None
         if book_id:
@@ -2465,7 +2479,8 @@ class CommandLineInterface(UserInterface):
                 untranslated=untranslated,
                 translation=translation,
                 book_id=assign_book_id,
-                gender=gender
+                gender=gender,
+                note=note
             )
 
             # Step 8: Update in-memory dict
@@ -2479,6 +2494,8 @@ class CommandLineInterface(UserInterface):
 
             if gender:
                 entity_data["gender"] = gender
+            if note:
+                entity_data["note"] = note
 
             all_entities.setdefault(category, {})
             all_entities[category][untranslated] = entity_data

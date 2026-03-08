@@ -32,6 +32,7 @@ class EntityCreate(BaseModel):
     book_id: Optional[int] = None
     gender: Optional[str] = None
     incorrect_translation: Optional[str] = None
+    note: Optional[str] = None
 
 
 class EntityUpdate(BaseModel):
@@ -39,6 +40,7 @@ class EntityUpdate(BaseModel):
     category: Optional[str] = None
     gender: Optional[str] = None
     incorrect_translation: Optional[str] = None
+    note: Optional[str] = None
 
 
 class DuplicateResolveRequest(BaseModel):
@@ -79,7 +81,7 @@ async def list_entities(
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    query = "SELECT id, category, untranslated, translation, last_chapter, gender, incorrect_translation, book_id, origin_chapter FROM entities WHERE 1=1"
+    query = "SELECT id, category, untranslated, translation, last_chapter, gender, incorrect_translation, book_id, origin_chapter, note FROM entities WHERE 1=1"
     params = []
 
     if global_only:
@@ -120,6 +122,7 @@ async def create_entity(req: EntityCreate):
         book_id=req.book_id,
         gender=req.gender,
         incorrect_translation=req.incorrect_translation,
+        note=req.note,
     )
     if not result:
         raise HTTPException(status_code=409, detail="Entity already exists or could not be created.")
@@ -149,6 +152,8 @@ async def update_entity(entity_id: int, req: EntityUpdate):
         updates["gender"] = req.gender
     if req.incorrect_translation is not None:
         updates["incorrect_translation"] = req.incorrect_translation
+    if req.note is not None:
+        updates["note"] = req.note
 
     if updates:
         set_clause = ", ".join(f"{k} = ?" for k in updates)

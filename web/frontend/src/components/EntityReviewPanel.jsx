@@ -38,6 +38,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
           translation: data.translation || '',
           originalTranslation: data.translation || '',
           gender: data.gender || '',
+          note: data.note || '',
           deleted: false,
           adviceLoading: false,
           adviceData: null,
@@ -85,6 +86,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
           const entry = {
             translation: row.translation,
             gender: row.gender || undefined,
+            note: row.note || undefined,
           }
           // If translation was changed, include the original so the backend
           // can find-and-replace it in the chapter text
@@ -237,6 +239,15 @@ function EntityRow({ row, onUpdate, onDelete, onAdvice }) {
             <option value="neutral">Neutral</option>
           </select>
         )}
+
+        {/* Note */}
+        <input
+          className="input text-sm w-48 shrink-0"
+          value={row.note}
+          onChange={e => onUpdate({ note: e.target.value })}
+          placeholder="Note…"
+          title="Translation guidance for AI"
+        />
 
         {/* Actions */}
         <button

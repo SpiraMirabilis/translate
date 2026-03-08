@@ -380,6 +380,7 @@ function EntityEditModal({ entity, onClose, onSaved }) {
     category: entity.category,
     translation: entity.translation,
     gender: entity.gender || '',
+    note: entity.note || '',
   })
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -399,6 +400,7 @@ function EntityEditModal({ entity, onClose, onSaved }) {
         category: form.category,
         translation: form.translation,
         gender: form.gender || null,
+        note: form.note || null,
       })
       onSaved()
     } catch (e) {
@@ -486,6 +488,18 @@ function EntityEditModal({ entity, onClose, onSaved }) {
               </select>
             </div>
           )}
+
+          {/* Note */}
+          <div>
+            <label className="text-xs text-slate-600 uppercase tracking-wider block mb-1">Note</label>
+            <input
+              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200
+                         focus:outline-none focus:border-indigo-500"
+              value={form.note}
+              onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
+              placeholder="Translation guidance for AI"
+            />
+          </div>
 
           {/* Book scope indicator */}
           <div className="text-xs text-slate-600">

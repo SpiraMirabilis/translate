@@ -121,6 +121,9 @@ class DatabaseManager:
             if 'origin_chapter' not in entity_cols:
                 cursor.execute("ALTER TABLE entities ADD COLUMN origin_chapter INTEGER")
                 self.logger.info("Added origin_chapter column to entities table")
+            if 'note' not in entity_cols:
+                cursor.execute("ALTER TABLE entities ADD COLUMN note TEXT")
+                self.logger.info("Added note column to entities table")
 
             cursor.execute("PRAGMA table_info(chapters)")
             chapter_cols = {row[1] for row in cursor.fetchall()}
@@ -1130,13 +1133,13 @@ class DatabaseManager:
             # Get all entities grouped by category
             if book_id is not None:
                 cursor.execute('''
-                SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id
+                SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note
                 FROM entities
                 WHERE book_id = ? OR book_id IS NULL
                 ''', (book_id,))
             else:
                 cursor.execute('''
-                SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id
+                SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note
                 FROM entities
                 ''')
                 
@@ -1145,14 +1148,14 @@ class DatabaseManager:
             # Process results
             entities = default_entities.copy()
             for row in rows:
-                category, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id = row
-                
+                category, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id, note = row
+
                 # Initialize category if needed (should be unnecessary with defaults)
                 entities.setdefault(category, {})
-                
+
                 # Create entity entry
                 entity_data = {"translation": translation, "last_chapter": last_chapter}
-                
+
                 # Add optional attributes if they exist
                 if incorrect_translation:
                     entity_data["incorrect_translation"] = incorrect_translation
@@ -1160,6 +1163,8 @@ class DatabaseManager:
                     entity_data["gender"] = gender
                 if entity_book_id:
                     entity_data["book_id"] = entity_book_id
+                if note:
+                    entity_data["note"] = note
                 
                 # Add to our entities dictionary
                 entities[category][untranslated] = entity_data
@@ -1237,6 +1242,7 @@ class DatabaseManager:
                     incorrect_translation = entity_data.get('incorrect_translation', None)
                     gender = entity_data.get('gender', None)
                     book_id = entity_data.get('book_id', None)  # Include book_id
+                    note = entity_data.get('note', None)
                     
                     # Create a unique key to track this entity
                     entity_key = (category, untranslated, book_id)
@@ -1266,17 +1272,17 @@ class DatabaseManager:
                         # Update existing entity
                         entity_id = existing[0]
                         cursor.execute('''
-                        UPDATE entities 
-                        SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?
+                        UPDATE entities
+                        SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, note = ?
                         WHERE id = ?
-                        ''', (translation, last_chapter, incorrect_translation, gender, entity_id))
+                        ''', (translation, last_chapter, incorrect_translation, gender, note, entity_id))
                     else:
                         # Insert new entity
                         cursor.execute('''
-                        INSERT INTO entities 
-                        (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id))
+                        INSERT INTO entities
+                        (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note))
             
             conn.commit()
             conn.close()
@@ -1345,6 +1351,8 @@ class DatabaseManager:
                             "translation": value["translation"],
                             "last_chapter": current_chapter
                         }
+                        if value.get("note"):
+                            found_entities[key]["note"] = value["note"]
                     
                     # Update global entities
                     all_entities[key]["last_chapter"] = current_chapter
@@ -1415,7 +1423,7 @@ class DatabaseManager:
         """Normalize text for consistent comparison"""
         return unicodedata.normalize('NFC', text)
     
-    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None):
+    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None, note=None):
         """
         Add a new entity to the database.
         Returns True if successful, False if the entity already exists in a different category.
@@ -1465,20 +1473,28 @@ class DatabaseManager:
 
             same_cat = cursor.fetchone()
             if same_cat:
-                # Update existing — preserve origin_chapter if not explicitly provided
+                # Update existing — preserve origin_chapter, gender, and note if not explicitly provided
+                existing_id = same_cat[0]
                 effective_origin = origin_chapter if origin_chapter is not None else same_cat[1]
+                if gender is None or note is None:
+                    cursor.execute('SELECT gender, note FROM entities WHERE id = ?', (existing_id,))
+                    existing = cursor.fetchone()
+                    if gender is None and existing:
+                        gender = existing[0]
+                    if note is None and existing:
+                        note = existing[1]
                 cursor.execute('''
                 UPDATE entities
-                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?
+                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?, note = ?
                 WHERE id = ?
-                ''', (translation, last_chapter, incorrect_translation, gender, effective_origin, same_cat[0]))
+                ''', (translation, last_chapter, incorrect_translation, gender, effective_origin, note, existing_id))
             else:
                 # Insert new entity
                 cursor.execute('''
                 INSERT INTO entities
-                (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter))
+                (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter, note))
             
             conn.commit()
             conn.close()
@@ -1494,6 +1510,8 @@ class DatabaseManager:
                 entity_data["gender"] = gender
             if book_id:
                 entity_data["book_id"] = book_id
+            if note:
+                entity_data["note"] = note
                     
             self.entities[category][untranslated] = entity_data
             return True
@@ -1525,7 +1543,7 @@ class DatabaseManager:
             where_book_id = None
 
             for key, value in kwargs.items():
-                if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender']:
+                if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
                     set_clause.append(f"{key} = ?")
                     values.append(value)
                 elif key == 'book_id':
@@ -1575,7 +1593,7 @@ class DatabaseManager:
             # Update the in-memory cache
             if category in self.entities and untranslated in self.entities[category]:
                 for key, value in kwargs.items():
-                    if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender']:
+                    if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
                         self.entities[category][untranslated][key] = value
                     elif key == 'book_id':
                         if is_only_book_id:
@@ -1811,7 +1829,7 @@ class DatabaseManager:
             # Build SQL query with filters
             query = '''
                 SELECT category, untranslated, translation, last_chapter,
-                       incorrect_translation, gender, book_id
+                       incorrect_translation, gender, book_id, note
                 FROM entities
                 WHERE 1=1
             '''
@@ -1837,7 +1855,7 @@ class DatabaseManager:
             # Process results
             entities = default_entities.copy()
             for row in rows:
-                cat, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id = row
+                cat, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id, note = row
 
                 # Initialize category if needed
                 entities.setdefault(cat, {})
@@ -1856,6 +1874,8 @@ class DatabaseManager:
                     entity_data["gender"] = gender
                 if entity_book_id:
                     entity_data["book_id"] = entity_book_id
+                if note:
+                    entity_data["note"] = note
 
                 # Add to our entities dictionary
                 entities[cat][untranslated] = entity_data

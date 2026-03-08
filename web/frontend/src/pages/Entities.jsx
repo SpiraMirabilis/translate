@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, RefreshCw, AlertTriangle, AlertCircle,
   X, Check, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
-  Replace, RotateCcw, BookOpen
+  Replace, RotateCcw, BookOpen, Pin
 } from 'lucide-react'
 import { DictResult, useDictLookup } from '../components/DictLookup'
+
+const TRUNCATE_LIMIT = 25
 
 const CATEGORIES = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
 
@@ -26,11 +28,22 @@ export default function Entities() {
   const [filterBook, setFilterBook] = useState(() => localStorage.getItem('entities_filterBook') || '')
   const [filterCat, setFilterCat] = useState(() => localStorage.getItem('entities_filterCat') || '')
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [editingEntity, setEditingEntity] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [duplicates, setDuplicates] = useState(null)
   const [error, setError] = useState(null)
+  const searchRef = useRef(null)
+
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  // Auto-focus search on mount
+  useEffect(() => { searchRef.current?.focus() }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -38,7 +51,7 @@ export default function Entities() {
       const params = {}
       if (filterBook) params.book_id = parseInt(filterBook)
       if (filterCat)  params.category = filterCat
-      if (search)     params.search = search
+      if (debouncedSearch) params.search = debouncedSearch
       const d = await api.listEntities(params)
       setEntities(d.entities || [])
     } catch (e) {
@@ -46,7 +59,7 @@ export default function Entities() {
     } finally {
       setLoading(false)
     }
-  }, [filterBook, filterCat, search])
+  }, [filterBook, filterCat, debouncedSearch])
 
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
@@ -76,6 +89,8 @@ export default function Entities() {
     return acc
   }, {})
 
+  const notedCount = useMemo(() => entities.filter(e => e.note).length, [entities])
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
@@ -96,6 +111,7 @@ export default function Entities() {
         <div className="relative flex-1 min-w-[200px]">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
+            ref={searchRef}
             className="input pl-8"
             placeholder="Search…"
             value={search}
@@ -117,6 +133,26 @@ export default function Entities() {
 
       {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
 
+      {/* Summary bar */}
+      {!loading && entities.length > 0 && (
+        <div className="flex items-center gap-3 mb-4 text-xs text-slate-500 flex-wrap">
+          <span>{entities.length} entities</span>
+          <span className="text-slate-700">|</span>
+          {Object.entries(grouped).map(([cat, ents]) => (
+            <span key={cat} className="flex items-center gap-1">
+              <span className={`badge ${CAT_COLORS[cat]} !text-[10px] !px-1.5 !py-0`}>{cat}</span>
+              {ents.length}
+            </span>
+          ))}
+          {notedCount > 0 && (
+            <>
+              <span className="text-slate-700">|</span>
+              <span className="text-amber-500/70">{notedCount} noted</span>
+            </>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center gap-2 text-slate-400 text-sm">
           <Loader2 size={14} className="animate-spin" /> Loading…
@@ -132,6 +168,7 @@ export default function Entities() {
               entities={catEntities}
               onEdit={setEditingEntity}
               onDelete={handleDelete}
+              defaultOpen={!!debouncedSearch || !!filterCat}
             />
           ))}
         </div>
@@ -174,14 +211,18 @@ function SortIcon({ col, sortCol, sortDir }) {
     : <ChevronDown size={11} className="text-indigo-400 ml-1 inline-block" />
 }
 
-function CategorySection({ category, entities, onEdit, onDelete }) {
-  const [open, setOpen] = useState(true)
+function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen)
+  const [showAll, setShowAll] = useState(false)
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
   const showGender = category === 'characters'
   const cols = showGender
     ? [BASE_SORT_COLS[0], BASE_SORT_COLS[1], GENDER_COL, BASE_SORT_COLS[2]]
     : BASE_SORT_COLS
+
+  // Reset open state when defaultOpen changes (e.g. search activates)
+  useEffect(() => { setOpen(defaultOpen) }, [defaultOpen])
 
   const handleSort = (col) => {
     if (sortCol === col) {
@@ -192,19 +233,32 @@ function CategorySection({ category, entities, onEdit, onDelete }) {
     }
   }
 
-  const sorted = [...entities].sort((a, b) => {
-    if (!sortCol) return 0
-    const av = a[sortCol] ?? ''
-    const bv = b[sortCol] ?? ''
-    // numeric sort for last_chapter
-    if (sortCol === 'last_chapter') {
-      const an = Number(av) || 0
-      const bn = Number(bv) || 0
-      return sortDir === 'asc' ? an - bn : bn - an
-    }
-    const cmp = String(av).localeCompare(String(bv), undefined, { sensitivity: 'base' })
-    return sortDir === 'asc' ? cmp : -cmp
-  })
+  // Sort with noted entities pinned to top
+  const sorted = useMemo(() => {
+    const arr = [...entities]
+    arr.sort((a, b) => {
+      // Noted entities always first
+      const aNoted = a.note ? 1 : 0
+      const bNoted = b.note ? 1 : 0
+      if (aNoted !== bNoted) return bNoted - aNoted
+
+      if (!sortCol) return 0
+      const av = a[sortCol] ?? ''
+      const bv = b[sortCol] ?? ''
+      if (sortCol === 'last_chapter') {
+        const an = Number(av) || 0
+        const bn = Number(bv) || 0
+        return sortDir === 'asc' ? an - bn : bn - an
+      }
+      const cmp = String(av).localeCompare(String(bv), undefined, { sensitivity: 'base' })
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+    return arr
+  }, [entities, sortCol, sortDir])
+
+  const isTruncated = !showAll && sorted.length > TRUNCATE_LIMIT
+  const visible = isTruncated ? sorted.slice(0, TRUNCATE_LIMIT) : sorted
+  const notedCount = entities.filter(e => e.note).length
 
   return (
     <div className="card overflow-hidden">
@@ -215,49 +269,68 @@ function CategorySection({ category, entities, onEdit, onDelete }) {
         <div className="flex items-center gap-2">
           <span className={`badge ${CAT_COLORS[category]}`}>{category}</span>
           <span className="text-xs text-slate-500">{entities.length} entries</span>
+          {notedCount > 0 && (
+            <span className="text-xs text-amber-500/60">{notedCount} noted</span>
+          )}
         </div>
         <ChevronDown size={14} className={`text-slate-500 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
 
       {open && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-xs text-slate-500 border-b border-slate-700">
-              {cols.map(({ key, label }) => (
-                <th key={key} className="text-left px-4 py-2 font-medium">
-                  <button
-                    className="flex items-center hover:text-slate-300 transition-colors"
-                    onClick={() => handleSort(key)}
-                  >
-                    {label}
-                    <SortIcon col={key} sortCol={sortCol} sortDir={sortDir} />
-                  </button>
-                </th>
-              ))}
-              <th className="px-4 py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(e => (
-              <tr key={e.id} className="border-b border-slate-800 last:border-0 hover:bg-slate-750/50">
-                <td className="px-4 py-2 font-mono text-slate-300">{e.untranslated}</td>
-                <td className="px-4 py-2 text-slate-200">{e.translation}</td>
-                {showGender && <td className="px-4 py-2 text-xs text-slate-500">{e.gender || '—'}</td>}
-                <td className="px-4 py-2 text-xs text-slate-500">{e.last_chapter || '—'}</td>
-                <td className="px-4 py-2">
-                  <div className="flex gap-1 justify-end">
-                    <button className="btn-ghost p-1" onClick={() => onEdit(e)}>
-                      <Edit2 size={12} />
+        <>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-500 border-b border-slate-700">
+                {cols.map(({ key, label }) => (
+                  <th key={key} className="text-left px-4 py-2 font-medium">
+                    <button
+                      className="flex items-center hover:text-slate-300 transition-colors"
+                      onClick={() => handleSort(key)}
+                    >
+                      {label}
+                      <SortIcon col={key} sortCol={sortCol} sortDir={sortDir} />
                     </button>
-                    <button className="btn-ghost p-1 hover:text-rose-400" onClick={() => onDelete(e.id)}>
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </td>
+                  </th>
+                ))}
+                <th className="px-4 py-2" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visible.map(e => (
+                <tr key={e.id} className={`border-b border-slate-800 last:border-0 hover:bg-slate-750/50${e.note ? ' bg-amber-950/10' : ''}`}>
+                  <td className="px-4 py-2 font-mono text-slate-300">
+                    {e.note && <Pin size={10} className="inline-block text-amber-500/50 mr-1.5 -mt-0.5" />}
+                    {e.untranslated}
+                  </td>
+                  <td className="px-4 py-2 text-slate-200">
+                    <span>{e.translation}</span>
+                    {e.note && <span className="ml-2 text-xs text-amber-500/50 italic">{e.note}</span>}
+                  </td>
+                  {showGender && <td className="px-4 py-2 text-xs text-slate-500">{e.gender || '—'}</td>}
+                  <td className="px-4 py-2 text-xs text-slate-500">{e.last_chapter || '—'}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex gap-1 justify-end">
+                      <button className="btn-ghost p-1" onClick={() => onEdit(e)}>
+                        <Edit2 size={12} />
+                      </button>
+                      <button className="btn-ghost p-1 hover:text-rose-400" onClick={() => onDelete(e.id)}>
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {isTruncated && (
+            <button
+              className="w-full py-2 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-750/50 transition-colors"
+              onClick={() => setShowAll(true)}
+            >
+              Show all {sorted.length} ({sorted.length - TRUNCATE_LIMIT} more)
+            </button>
+          )}
+        </>
       )}
     </div>
   )
@@ -269,6 +342,7 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
     untranslated: entity?.untranslated || '',
     translation: entity?.translation || '',
     gender: entity?.gender || '',
+    note: entity?.note || '',
     book_id: entity?.book_id ?? '',
   })
   const [saving, setSaving] = useState(false)
@@ -291,6 +365,7 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
         ...form,
         book_id: form.book_id !== '' ? parseInt(form.book_id) : null,
         gender: form.gender || null,
+        note: form.note || null,
       }
       if (entity) {
         await api.updateEntity(entity.id, body)
@@ -423,6 +498,9 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
               </select>
             </div>
           )}
+          <div><label className="label">Note <span className="text-slate-500 font-normal">(translation guidance for AI)</span></label>
+            <input className="input" value={form.note} onChange={e => setForm(f => ({...f, note: e.target.value}))} placeholder="e.g. Use female pronouns in narration" />
+          </div>
           <div><label className="label">Book (optional)</label>
             <select className="input" value={form.book_id} onChange={e => setForm(f => ({...f, book_id: e.target.value}))}>
               <option value="">Global (all books)</option>
