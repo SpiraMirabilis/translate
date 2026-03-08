@@ -26,7 +26,7 @@ T9 is an AI-powered tool for translating Chinese web novels into English. It use
 ### Installation
 
 ```bash
-git clone https://github.com/SpiraMirabilis/translate.git
+git clone https://github.com/SpiraMirabilis/translate
 cd translate
 
 # Python dependencies
