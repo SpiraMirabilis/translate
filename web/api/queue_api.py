@@ -111,6 +111,86 @@ async def upload_file_to_queue(
 
 
 # ------------------------------------------------------------------
+# Upload multiple text files to queue (directory-style batch upload)
+# ------------------------------------------------------------------
+
+@router.post("/upload-batch")
+async def upload_batch_to_queue(
+    files: list[UploadFile] = File(...),
+    book_id: int = Form(...),
+    start_chapter: Optional[int] = Form(None),
+    sort: str = Form("auto"),
+):
+    """Upload multiple text files at once, sorted and numbered like a directory import."""
+    import re
+
+    book = _entity_manager.get_book(book_id=book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found.")
+
+    if sort not in ("auto", "name", "none"):
+        raise HTTPException(status_code=400, detail="sort must be 'auto', 'name', or 'none'.")
+
+    # Read all files and extract metadata
+    file_entries = []
+    for f in files:
+        raw = await f.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")
+
+        filename = f.filename or "unknown.txt"
+        chapter_num = None
+        chapter_match = re.search(
+            r'(?:chapter|ch|第)[\s_-]*(\d+)|^(\d+)',
+            filename, re.IGNORECASE
+        )
+        if chapter_match:
+            chapter_num = int(next(g for g in chapter_match.groups() if g is not None))
+
+        file_entries.append({
+            "filename": filename,
+            "text": text,
+            "chapter_number": chapter_num,
+        })
+
+    # Sort
+    if sort == "auto":
+        has_numbers = any(e["chapter_number"] is not None for e in file_entries)
+        if has_numbers:
+            file_entries.sort(key=lambda e: e["chapter_number"] if e["chapter_number"] is not None else float('inf'))
+        else:
+            file_entries.sort(key=lambda e: e["filename"])
+    elif sort == "name":
+        file_entries.sort(key=lambda e: e["filename"])
+
+    # Add to queue with sequential chapter numbers
+    added = 0
+    base_chapter = start_chapter or 1
+    for i, entry in enumerate(file_entries):
+        chapter_num = entry["chapter_number"] if entry["chapter_number"] is not None else base_chapter + i
+        lines = entry["text"].splitlines()
+        title = os.path.splitext(entry["filename"])[0]
+        queue_id = _entity_manager.add_to_queue(
+            book_id=book_id,
+            content=lines,
+            title=title,
+            chapter_number=chapter_num,
+            source=f"upload:{entry['filename']}",
+        )
+        if queue_id:
+            added += 1
+
+    return {
+        "status": "ok",
+        "files_added": added,
+        "total_files": len(file_entries),
+        "count": _entity_manager.get_queue_count(),
+    }
+
+
+# ------------------------------------------------------------------
 # Upload EPUB to queue
 # ------------------------------------------------------------------
 

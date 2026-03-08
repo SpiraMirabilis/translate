@@ -81,6 +81,7 @@ export const api = {
   clearQueue:       (bookId)     => del(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
   addToQueue:       (body)       => post('/api/queue/add', body),
   uploadToQueue:    (formData)   => postForm('/api/queue/upload', formData),
+  uploadBatch:      (formData)   => postForm('/api/queue/upload-batch', formData),
   uploadEpub:       (formData)   => postForm('/api/queue/upload-epub', formData),
   processNext:      (body = {})  => post('/api/queue/process-next', body),
 

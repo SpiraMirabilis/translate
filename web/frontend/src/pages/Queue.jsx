@@ -328,34 +328,44 @@ export default function Queue() {
 
 
 function UploadModal({ books, onClose, onDone }) {
-  const [file, setFile] = useState(null)
+  const [files, setFiles] = useState([])
   const [bookId, setBookId] = useState('')
   const [chapterNum, setChapterNum] = useState('')
-  const [isEpub, setIsEpub] = useState(false)
   const [createBook, setCreateBook] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
 
+  const isEpub = files.length === 1 && files[0].name.toLowerCase().endsWith('.epub')
+  const isBatch = files.length > 1
+
   const handleFileChange = (e) => {
-    const f = e.target.files[0]
-    setFile(f)
-    setIsEpub(f?.name.toLowerCase().endsWith('.epub'))
+    const selected = Array.from(e.target.files || [])
+    setFiles(selected)
+    setCreateBook(false)
   }
 
   const handleUpload = async () => {
-    if (!file) { setError('No file selected'); return }
-    if (!isEpub && !bookId) { setError('Select a book for .txt uploads'); return }
-    if (isEpub && !bookId && !createBook) { setError('Select a book or enable "Create from EPUB"'); return }
+    if (files.length === 0) { setError('No file selected'); return }
+    if (!isEpub && !bookId) { setError('Select a book'); return }
+    if (isEpub && !bookId && !createBook) { setError('Select a book'); return }
 
     setUploading(true); setError(null)
     try {
-      const fd = new FormData()
-      fd.append('file', file)
       if (isEpub) {
+        const fd = new FormData()
+        fd.append('file', files[0])
         if (bookId) fd.append('book_id', bookId)
         fd.append('create_book', createBook ? 'true' : 'false')
         await api.uploadEpub(fd)
+      } else if (isBatch) {
+        const fd = new FormData()
+        for (const f of files) fd.append('files', f)
+        fd.append('book_id', bookId)
+        if (chapterNum) fd.append('start_chapter', chapterNum)
+        await api.uploadBatch(fd)
       } else {
+        const fd = new FormData()
+        fd.append('file', files[0])
         fd.append('book_id', bookId)
         if (chapterNum) fd.append('chapter_number', chapterNum)
         await api.uploadToQueue(fd)
@@ -376,40 +386,47 @@ function UploadModal({ books, onClose, onDone }) {
 
         <div className="space-y-3">
           <div>
-            <label className="label">File (.txt or .epub)</label>
-            <input type="file" accept=".txt,.epub" className="input py-1 text-sm" onChange={handleFileChange} />
+            <label className="label">Files (.txt or .epub)</label>
+            <input type="file" accept=".txt,.epub" multiple className="input py-1 text-sm" onChange={handleFileChange} />
+            {isBatch && (
+              <p className="text-xs text-slate-500 mt-1">
+                {files.length} text files selected — will be sorted by chapter number or filename
+              </p>
+            )}
           </div>
 
-          {isEpub ? (
-            <>
-              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={createBook} onChange={e => setCreateBook(e.target.checked)} />
-                Create new book from EPUB metadata
-              </label>
-              {!createBook && (
-                <div>
-                  <label className="label">Book</label>
-                  <select className="input" value={bookId} onChange={e => setBookId(e.target.value)}>
-                    <option value="">Select…</option>
-                    {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
-                  </select>
-                </div>
+          <div>
+            <label className="label">Book {isEpub ? '' : '*'}</label>
+            <select
+              className="input"
+              value={createBook ? '__create__' : bookId}
+              onChange={e => {
+                if (e.target.value === '__create__') {
+                  setCreateBook(true)
+                  setBookId('')
+                } else {
+                  setCreateBook(false)
+                  setBookId(e.target.value)
+                }
+              }}
+            >
+              <option value="">Select…</option>
+              {isEpub && <option value="__create__">Create book from this EPUB</option>}
+              {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+            </select>
+          </div>
+          {!isEpub && (
+            <div>
+              <label className="label">{isBatch ? 'Starting chapter # (optional)' : 'Chapter # (optional)'}</label>
+              <input className="input" type="number" min="1" value={chapterNum} onChange={e => setChapterNum(e.target.value)}
+                placeholder={isBatch ? 'Auto-detect from filenames' : ''}
+              />
+              {isBatch && (
+                <p className="text-xs text-slate-500 mt-1">
+                  Chapter numbers are extracted from filenames when possible (e.g. chapter_001.txt, 003.txt)
+                </p>
               )}
-            </>
-          ) : (
-            <>
-              <div>
-                <label className="label">Book *</label>
-                <select className="input" value={bookId} onChange={e => setBookId(e.target.value)}>
-                  <option value="">Select…</option>
-                  {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Chapter # (optional)</label>
-                <input className="input" type="number" min="1" value={chapterNum} onChange={e => setChapterNum(e.target.value)} />
-              </div>
-            </>
+            </div>
           )}
         </div>
 
@@ -419,7 +436,7 @@ function UploadModal({ books, onClose, onDone }) {
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn-primary flex items-center gap-1.5" onClick={handleUpload} disabled={uploading}>
             {uploading ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-            Upload
+            Upload{isBatch ? ` ${files.length} files` : ''}
           </button>
         </div>
       </div>
