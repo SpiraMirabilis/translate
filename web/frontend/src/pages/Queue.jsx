@@ -27,6 +27,7 @@ export default function Queue() {
   const [cleaningModel, setCleaningModel]         = useLocalStorage('shared.cleaningModel', '')
   const [noReview, setNoReview]                   = useLocalStorage('queue.noReview', false)
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
+  const [noRepair, setNoRepair]                   = useLocalStorage('queue.noRepair', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
   const [stopAfterNext, setStopAfterNext]         = useState(false)  // transient — not persisted
 
@@ -77,6 +78,7 @@ export default function Queue() {
                     cleaning_model: cleaningModel || null,
                     no_review: noReview,
                     no_clean: noClean,
+                    no_repair: noRepair,
                   })
                 } catch (e) {
                   setError(e.message)
@@ -107,7 +109,7 @@ export default function Queue() {
       setStopAfterNext(false)  // review counts as a natural break point
       navigate('/')
     }
-  }, [lastMessage, load, autoProcess, filterBook, translationModel, adviceModel, cleaningModel, noReview, noClean])
+  }, [lastMessage, load, autoProcess, filterBook, translationModel, adviceModel, cleaningModel, noReview, noClean, noRepair])
 
   const handleProcessNext = async () => {
     setProcessing(true)
@@ -120,6 +122,7 @@ export default function Queue() {
         cleaning_model: cleaningModel || null,
         no_review: noReview,
         no_clean: noClean,
+        no_repair: noRepair,
       })
       setJobStatus('running')
     } catch (e) {
@@ -254,6 +257,20 @@ export default function Queue() {
               <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
               <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
                 A second pass using the cleaning model to ensure new entities are only proper nouns. Recommended when using DeepSeek or smaller parameter models, which tend to classify generic terms as entities. Uses very few output tokens, and cleaning model is recommended to be a mini-model like Claude Haiku or gpt-5-mini, or similar.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={noRepair}
+              onChange={e => setNoRepair(e.target.checked)}
+            />
+            Skip partial repair
+            <span className="relative group">
+              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                After translation, lines still containing Chinese characters are automatically retranslated using the cleaning model. Disable this if you prefer to handle untranslated lines manually.
               </span>
             </span>
           </label>

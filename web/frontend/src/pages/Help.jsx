@@ -138,6 +138,7 @@ export default function Help() {
             <li><span className="text-slate-300">Cleaning model</span> — a lightweight model that double-checks whether newly found entities are actually proper nouns. Recommended for DeepSeek or smaller models which often misidentify common words as entities.</li>
             <li><span className="text-slate-300">Skip entity review</span> — automatically accept all new entities without pausing for review. Faster, but you lose the chance to fix mistakes before they propagate.</li>
             <li><span className="text-slate-300">Skip entity cleaning</span> — disable the cleaning pass. Saves a small amount of time/tokens if your translation model is already accurate at identifying entities.</li>
+            <li><span className="text-slate-300">Skip partial repair</span> — after translation, any lines that still contain Chinese characters are automatically retranslated using the cleaning model. This is most useful with Chinese-native models like DeepSeek, which occasionally leave fragments untranslated. No extra API calls or tokens are used unless untranslated characters are actually detected, so it's safe to leave enabled.</li>
           </ul>
         </div>
 
@@ -240,7 +241,7 @@ export default function Help() {
             <li><span className="text-slate-300">Filter by book</span> — only show and process queue items for a specific book.</li>
             <li><span className="text-slate-300">Auto-process</span> — after each chapter finishes, automatically start the next one. The queue pauses for entity review or when you click "Stop after current."</li>
             <li><span className="text-slate-300">Model selectors</span> — same as the Dashboard: translation, advice, and cleaning models. These persist in your browser.</li>
-            <li><span className="text-slate-300">Skip review / Skip cleaning</span> — same as the Dashboard options.</li>
+            <li><span className="text-slate-300">Skip review / Skip cleaning / Skip partial repair</span> — same as the Dashboard options. Partial repair auto-retranslates lines that still contain Chinese characters after translation — mainly useful with Chinese-native models like DeepSeek. It costs nothing unless untranslated characters are actually found, so it's safe to leave enabled.</li>
           </ul>
         </div>
 

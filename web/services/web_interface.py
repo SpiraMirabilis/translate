@@ -31,6 +31,7 @@ class WebInterface(UserInterface):
         self.stream = True            # Streaming enabled — progress_callback fires every 10 tokens
         self.no_review = False        # Entity review enabled
         self.no_clean = False         # Auto-clean generic nouns before review
+        self.no_repair = False        # Skip partial translation repair
         self.silent_notifications = True
         self.cleaning_model = None
         self.output_format = "text"

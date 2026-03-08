@@ -50,6 +50,7 @@ class TranslateRequest(BaseModel):
     cleaning_model: Optional[str] = None
     no_review: bool = False
     no_clean: bool = False
+    no_repair: bool = False
 
 
 class ReviewSubmitRequest(BaseModel):
@@ -89,6 +90,7 @@ async def start_translation(req: TranslateRequest):
 
     _web_interface.no_review = req.no_review
     _web_interface.no_clean = req.no_clean
+    _web_interface.no_repair = req.no_repair
 
     # Run translation in a background thread so the event loop stays free
     def run():

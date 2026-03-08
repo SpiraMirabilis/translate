@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, Sparkles, AlertTriangle, AlertCircle,
@@ -77,7 +77,10 @@ export default function Entities() {
   }
 
   const handleCheckDuplicates = async () => {
-    const d = await api.getDuplicates()
+    const params = {}
+    if (filterBook === 'global') params.scope = 'global'
+    else if (filterBook) params.book_id = filterBook
+    const d = await api.getDuplicates(Object.keys(params).length ? params : undefined)
     setDuplicates(d)
     setShowDuplicates(true)
   }
@@ -638,8 +641,12 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, untranslated
 }
 
 function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
-  const { duplicate_untranslated = [], duplicate_translations = [] } = duplicates
-  const total = duplicate_untranslated.length + duplicate_translations.length
+  const [dupUntranslated, setDupUntranslated] = useState(duplicates.duplicate_untranslated || [])
+  const [dupTranslations, setDupTranslations] = useState(duplicates.duplicate_translations || [])
+  const scrollRef = useRef(null)
+  const nextItemRef = useRef(null)
+
+  const total = dupUntranslated.length + dupTranslations.length
 
   const bookName = (bookId) => {
     if (bookId == null) return 'Global Entities'
@@ -647,7 +654,6 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
     return b ? `Book ${b.id}: ${b.title}` : `Book ${bookId}`
   }
 
-  // Group items by book_id
   const groupByBook = (items) => {
     const groups = {}
     for (const item of items) {
@@ -658,8 +664,20 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
     return Object.values(groups)
   }
 
-  const untranslatedByBook = groupByBook(duplicate_untranslated)
-  const translationsByBook = groupByBook(duplicate_translations)
+  const handleUntranslatedResolved = (untranslated, bookId) => {
+    // Find the index of the resolved item so we can scroll to the next one
+    const idx = dupUntranslated.findIndex(d => d.untranslated === untranslated && d.book_id === bookId)
+    setDupUntranslated(prev => prev.filter(d => !(d.untranslated === untranslated && d.book_id === bookId)))
+    onResolved()
+    // After state update, scroll to the next item
+    setTimeout(() => nextItemRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50)
+  }
+
+  const untranslatedByBook = groupByBook(dupUntranslated)
+  const translationsByBook = groupByBook(dupTranslations)
+
+  // Flatten untranslated items to assign nextItemRef to the one after a resolved item
+  const allUntranslatedItems = untranslatedByBook.flatMap(g => g.items)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -671,12 +689,12 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
           <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
         </div>
 
-        <div className="overflow-y-auto flex-1 p-5 space-y-6">
+        <div ref={scrollRef} className="overflow-y-auto flex-1 p-5 space-y-6">
           {total === 0 && (
             <p className="text-emerald-400 text-sm">No duplicates found. Database is clean.</p>
           )}
 
-          {duplicate_untranslated.length > 0 && (
+          {dupUntranslated.length > 0 && (
             <div>
               <h3 className="text-sm font-medium text-slate-300 mb-3">Same Chinese, different categories</h3>
               <div className="space-y-4">
@@ -684,8 +702,13 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
                   <div key={group.book_id ?? 'global'}>
                     <p className="text-xs font-medium text-indigo-400 mb-2">{bookName(group.book_id)}</p>
                     <div className="space-y-3">
-                      {group.items.map(dup => (
-                        <DupUntranslatedItem key={dup.untranslated} dup={dup} onResolved={onResolved} />
+                      {group.items.map((dup, i) => (
+                        <DupUntranslatedItem
+                          key={dup.untranslated}
+                          ref={i === 0 ? nextItemRef : undefined}
+                          dup={dup}
+                          onResolved={() => handleUntranslatedResolved(dup.untranslated, dup.book_id)}
+                        />
                       ))}
                     </div>
                   </div>
@@ -694,7 +717,7 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
             </div>
           )}
 
-          {duplicate_translations.length > 0 && (
+          {dupTranslations.length > 0 && (
             <div>
               <h3 className="text-sm font-medium text-slate-300 mb-3">Same English, different Chinese</h3>
               <div className="space-y-4">
@@ -727,23 +750,33 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
   )
 }
 
-function DupUntranslatedItem({ dup, onResolved }) {
+const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup, onResolved }, ref) {
   const [resolving, setResolving] = useState(false)
+  const [resolved, setResolved] = useState(false)
 
   const handleKeep = async (category) => {
     setResolving(true)
     try {
       await api.resolveDuplicate({ untranslated: dup.untranslated, action: 'keep_one', keep_category: category, book_id: dup.book_id ?? null })
-      onResolved()
+      setResolved(true)
+      // Brief delay so the user sees the success state before it disappears
+      setTimeout(() => onResolved(), 300)
     } catch (e) {
       alert(e.message)
-    } finally {
       setResolving(false)
     }
   }
 
+  if (resolved) {
+    return (
+      <div ref={ref} className="card p-3 opacity-40 transition-opacity duration-300">
+        <p className="text-sm text-emerald-400">Resolved: {dup.untranslated}</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="card p-3">
+    <div ref={ref} className="card p-3">
       <p className="text-sm font-mono text-slate-200 mb-2">{dup.untranslated}</p>
       <div className="space-y-1.5">
         {dup.instances.map(inst => (
@@ -762,4 +795,4 @@ function DupUntranslatedItem({ dup, onResolved }) {
       </div>
     </div>
   )
-}
+})

@@ -255,6 +255,7 @@ class ProcessNextRequest(BaseModel):
     cleaning_model: Optional[str] = None
     no_review: bool = False
     no_clean: bool = False
+    no_repair: bool = False
 
 
 @router.post("/process-next")
@@ -284,6 +285,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     _web_interface.cleaning_model = req.cleaning_model or None
     _web_interface.no_review = req.no_review
     _web_interface.no_clean = req.no_clean
+    _web_interface.no_repair = req.no_repair
 
     # Set queue item on the interface so ui.py removes it after completion
     _web_interface._current_queue_item = queue_item

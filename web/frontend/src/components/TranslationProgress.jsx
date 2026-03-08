@@ -38,7 +38,7 @@ export default function TranslationProgress({ progress, status }) {
           Chunk {chunk}/{total}
           {hasTokenData && (
             <span className="ml-2 text-slate-500">
-              {token_count.toLocaleString()} / {expected_tokens.toLocaleString()} tokens
+              {token_count.toLocaleString()} / {expected_tokens.toLocaleString()} tokens (estimated)
             </span>
           )}
         </span>

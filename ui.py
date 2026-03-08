@@ -154,7 +154,8 @@ class UserInterface(ABC):
                 end_object['content'] = self._decase_cleaned_entities(end_object['content'])
 
                 # Fix any lines where the model left Chinese characters untranslated
-                end_object['content'] = self._fix_partial_translations(end_object['content'])
+                if not getattr(self, 'no_repair', False):
+                    end_object['content'] = self._fix_partial_translations(end_object['content'])
 
                 # Apply entity edits to the translation
                 if edited_entities:

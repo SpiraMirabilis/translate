@@ -184,19 +184,29 @@ async def delete_entity(entity_id: int):
 # ------------------------------------------------------------------
 
 @router.get("/duplicates")
-async def get_duplicates():
+async def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[str] = Query(None)):
     conn = sqlite3.connect(_entity_manager.db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
+    # Build WHERE clause based on filters
+    # scope=global means book_id IS NULL; book_id=N means book_id = N; neither means all
+    where = ""
+    params = []
+    if scope == "global":
+        where = " WHERE book_id IS NULL"
+    elif book_id is not None:
+        where = " WHERE book_id = ?"
+        params = [book_id]
+
     # Duplicates by untranslated text within the same book (same Chinese, different categories)
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT untranslated, book_id, COUNT(*) as count
-        FROM entities
+        FROM entities{where}
         GROUP BY untranslated, book_id
         HAVING COUNT(*) > 1
         ORDER BY book_id, count DESC
-    """)
+    """, params)
     dup_untranslated = []
     for row in cursor.fetchall():
         cursor.execute(
@@ -212,13 +222,13 @@ async def get_duplicates():
         })
 
     # Duplicates by translation within the same book (same English, different Chinese)
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT translation, book_id, COUNT(*) as count
-        FROM entities
+        FROM entities{where}
         GROUP BY translation, book_id
         HAVING COUNT(*) > 1
         ORDER BY book_id, count DESC
-    """)
+    """, params)
     dup_translations = []
     for row in cursor.fetchall():
         cursor.execute(
