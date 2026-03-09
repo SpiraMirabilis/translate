@@ -39,11 +39,18 @@ export default function Dashboard() {
 
   const logRef = useRef(null)
 
-  // Load books + providers + activity log on mount
+  // Load books + providers + activity log + restore state on mount
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
     api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
     api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
+    // Restore job state (e.g. entity review panel if awaiting review)
+    api.getJobStatus().then(d => {
+      if (d.status && d.status !== 'idle') setJobStatus(d.status)
+      if (d.status === 'awaiting_review' && d.pending_review) {
+        setEntityReview(d.pending_review)
+      }
+    }).catch(() => {})
   }, [])
 
   // Handle WebSocket messages

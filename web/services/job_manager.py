@@ -39,6 +39,7 @@ class JobManager:
         # Entity review synchronisation
         self._review_event = threading.Event()
         self._review_result: Optional[dict] = None
+        self.pending_review: Optional[dict] = None  # {entities, context} for late-joining clients
 
     # ------------------------------------------------------------------
     # WebSocket helpers
@@ -97,11 +98,13 @@ class JobManager:
     def submit_review(self, result: dict):
         """Called from the API endpoint when user submits entity review."""
         self._review_result = result
+        self.pending_review = None
         self._review_event.set()
 
     def skip_review(self):
         """Skip entity review — accept AI translations as-is."""
         self._review_result = {}
+        self.pending_review = None
         self._review_event.set()
 
     # ------------------------------------------------------------------
@@ -109,16 +112,25 @@ class JobManager:
     # ------------------------------------------------------------------
 
     def log_activity(self, type, message, book_id=None, chapter=None, book_name=None, entities=None):
-        """Write an activity log entry to the DB and send it via WS."""
-        entry = None
+        """Write an activity log entry to the DB and send it via WS (from background threads)."""
+        entry = self._write_activity(type, message, book_id, chapter, book_name, entities)
+        if entry:
+            self.send_message_sync({"type": "activity_log", "entry": entry})
+
+    async def log_activity_async(self, type, message, book_id=None, chapter=None, book_name=None, entities=None):
+        """Write an activity log entry to the DB and send it via WS (from async endpoints)."""
+        entry = self._write_activity(type, message, book_id, chapter, book_name, entities)
+        if entry:
+            await self.send_message_async({"type": "activity_log", "entry": entry})
+
+    def _write_activity(self, type, message, book_id, chapter, book_name, entities):
         if self.db_manager:
-            entry = self.db_manager.add_activity_log(
+            return self.db_manager.add_activity_log(
                 type=type, message=message,
                 book_id=book_id, chapter=chapter,
                 book_name=book_name, entities=entities,
             )
-        if entry:
-            self.send_message_sync({"type": "activity_log", "entry": entry})
+        return None
 
 
 # Global singleton — single user, so one job at a time

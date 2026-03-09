@@ -300,7 +300,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
             book_name = book.get("title")
 
     ch = queue_item.get("chapter_number")
-    _job_manager.log_activity(
+    await _job_manager.log_activity_async(
         type='start',
         message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…',
         book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,

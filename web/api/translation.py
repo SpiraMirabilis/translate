@@ -99,7 +99,7 @@ async def start_translation(req: TranslateRequest):
         if book:
             book_name = book.get("title")
 
-    _job_manager.log_activity(
+    await _job_manager.log_activity_async(
         type='start',
         message=f'Translation started: {book_name or "No book"} — Chapter {req.chapter_number or "auto"}…',
         book_id=req.book_id, chapter=req.chapter_number, book_name=book_name,
@@ -142,21 +142,21 @@ async def submit_review(req: ReviewSubmitRequest):
                 accepted.append({'untranslated': untranslated, 'translation': data.get('translation', '')})
 
     if accepted:
-        _job_manager.log_activity(
+        await _job_manager.log_activity_async(
             type='entities_accepted', message='New entities:',
             entities=[{'name': e['untranslated'], 'label': f"{e['untranslated']} → {e['translation']}"} for e in accepted],
         )
     for e in edited:
-        _job_manager.log_activity(
+        await _job_manager.log_activity_async(
             type='entity_edited', message='Entity edited:',
             entities=[{'name': e['untranslated'], 'label': f'{e["untranslated"]} — "{e["from"]}" → "{e["to"]}"'}],
         )
     if deleted:
-        _job_manager.log_activity(
+        await _job_manager.log_activity_async(
             type='entity_deleted', message='Entities deleted:',
             entities=[{'name': n, 'label': n} for n in deleted],
         )
-    _job_manager.log_activity(type='info', message='Review submitted — resuming translation…')
+    await _job_manager.log_activity_async(type='info', message='Review submitted — resuming translation…')
 
     _job_manager.submit_review(req.entities)
     return {"status": "ok"}
@@ -166,18 +166,21 @@ async def submit_review(req: ReviewSubmitRequest):
 async def skip_review():
     if _job_manager.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Not waiting for entity review.")
-    _job_manager.log_activity(type='info', message='Entity review skipped — resuming translation…')
+    await _job_manager.log_activity_async(type='info', message='Entity review skipped — resuming translation…')
     _job_manager.skip_review()
     return {"status": "ok"}
 
 
 @router.get("/api/translate/status")
 async def get_status():
-    return {
+    result = {
         "status": _job_manager.status,
         "is_running": _job_manager.is_running,
         "error": _job_manager.error,
     }
+    if _job_manager.status == "awaiting_review" and _job_manager.pending_review:
+        result["pending_review"] = _job_manager.pending_review
+    return result
 
 
 @router.post("/api/translate/cancel")
@@ -190,5 +193,5 @@ async def cancel_translation():
         _job_manager.skip_review()
     _job_manager.is_running = False
     _job_manager.status = "idle"
-    _job_manager.log_activity(type='info', message='Translation cancelled.')
+    await _job_manager.log_activity_async(type='info', message='Translation cancelled.')
     return {"status": "cancelled"}

@@ -82,6 +82,9 @@ class WebInterface(UserInterface):
             message=f'{book_name or "Translation"} — Chapter {ch} complete.',
             book_id=self.job_manager.book_id, chapter=ch, book_name=book_name,
         )
+        summary = results.get("summary", "")
+        if summary:
+            self.job_manager.log_activity(type='info', message=f'Synopsis: {summary}')
         self.job_manager.last_result = results
 
     def review_entities(self, entities: Dict, untranslated_text) -> Dict:
@@ -119,6 +122,7 @@ class WebInterface(UserInterface):
         else:
             context = str(untranslated_text)[:2000]
 
+        self.job_manager.pending_review = {"entities": serializable, "context": context}
         self.job_manager.send_message_sync({
             "type": "entity_review_needed",
             "entities": serializable,
