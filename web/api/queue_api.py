@@ -292,12 +292,27 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     # Set queue item on the interface so ui.py removes it after completion
     _web_interface._current_queue_item = queue_item
 
+    # Resolve book name for the activity log
+    book_name = None
+    if queue_item.get("book_id"):
+        book = _entity_manager.get_book(queue_item["book_id"])
+        if book:
+            book_name = book.get("title")
+
+    ch = queue_item.get("chapter_number")
+    _job_manager.log_activity(
+        type='start',
+        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…',
+        book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,
+    )
+
     def run():
         try:
             _web_interface.run_translation()
         except Exception as e:
             _job_manager.status = "error"
             _job_manager.error = str(e)
+            _job_manager.log_activity(type='error', message=f'Error: {e}')
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             _job_manager.is_running = False

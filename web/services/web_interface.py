@@ -60,13 +60,28 @@ class WebInterface(UserInterface):
         if isinstance(content, str):
             content = content.splitlines()
 
+        # Resolve book name for activity log
+        book_name = None
+        if self.job_manager.book_id:
+            book = self.entity_manager.get_book(self.job_manager.book_id)
+            if book:
+                book_name = book.get("title")
+
+        ch = results.get("chapter", 1)
         self.job_manager.send_message_sync({
             "type": "translation_complete",
             "content": content,
             "title": results.get("title", ""),
-            "chapter": results.get("chapter", 1),
+            "chapter": ch,
             "summary": results.get("summary", ""),
+            "book_id": self.job_manager.book_id,
+            "book_name": book_name,
         })
+        self.job_manager.log_activity(
+            type='complete',
+            message=f'{book_name or "Translation"} — Chapter {ch} complete.',
+            book_id=self.job_manager.book_id, chapter=ch, book_name=book_name,
+        )
         self.job_manager.last_result = results
 
     def review_entities(self, entities: Dict, untranslated_text) -> Dict:
@@ -109,6 +124,12 @@ class WebInterface(UserInterface):
             "entities": serializable,
             "context": context,
         })
+
+        count = sum(len(v) for v in serializable.values())
+        self.job_manager.log_activity(
+            type='entity_review',
+            message=f'{count} new entit{"y" if count == 1 else "ies"} found — review required.',
+        )
 
         # Block until user submits (or timeout)
         result = self.job_manager.wait_for_review()

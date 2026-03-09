@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, Sparkles, AlertTriangle, AlertCircle,
@@ -22,12 +23,13 @@ const CAT_COLORS = {
 }
 
 export default function Entities() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [books, setBooks] = useState([])
   const [entities, setEntities] = useState([])
   const [loading, setLoading] = useState(true)
   const [filterBook, setFilterBook] = useState(() => localStorage.getItem('entities_filterBook') || '')
   const [filterCat, setFilterCat] = useState(() => localStorage.getItem('entities_filterCat') || '')
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(() => searchParams.get('search') || '')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [editingEntity, setEditingEntity] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)

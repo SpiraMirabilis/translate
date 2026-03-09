@@ -23,7 +23,7 @@ from translation_engine import TranslationEngine
 
 from web.services.job_manager import job_manager
 from web.services.web_interface import WebInterface
-from web.api import translation, books, entities, queue_api, settings_api, dictionary_api
+from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api
 
 # ------------------------------------------------------------------
 # Application setup
@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
     entity_manager = DatabaseManager(config, logger)
     translator = TranslationEngine(config, logger, entity_manager)
     web_interface = WebInterface(translator, entity_manager, logger, job_manager)
+    job_manager.db_manager = entity_manager
 
     # Wire up API modules
     translation.init(web_interface, job_manager)
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     settings_api.init(config)
     settings_api.init_db(entity_manager)
     dictionary_api.init(entity_manager, translator)
+    activity_log_api.init(entity_manager)
 
     app = FastAPI(title="T9 Translation GUI", version="1.0.0")
 
@@ -62,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(queue_api.router)
     app.include_router(settings_api.router)
     app.include_router(dictionary_api.router)
+    app.include_router(activity_log_api.router)
 
     # Serve built frontend (production)
     static_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")

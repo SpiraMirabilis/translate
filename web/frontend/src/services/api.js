@@ -93,6 +93,10 @@ export const api = {
   testProvider:     (name)       => post(`/api/settings/providers/${name}/test`, {}),
   exportDb:         ()           => get('/api/settings/db/export-json'),
 
+  // Activity log
+  getActivityLog:    ()  => get('/api/activity-log'),
+  clearActivityLog:  ()  => del('/api/activity-log'),
+
   // Dictionary
   dictLookup:       (q)          => get(`/api/dict/lookup?q=${encodeURIComponent(q)}`),
   retranslate:      (body)       => post('/api/dict/retranslate', body),

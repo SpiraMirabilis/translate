@@ -92,6 +92,19 @@ async def start_translation(req: TranslateRequest):
     _web_interface.no_clean = req.no_clean
     _web_interface.no_repair = req.no_repair
 
+    # Resolve book name for the activity log
+    book_name = None
+    if req.book_id:
+        book = _web_interface.entity_manager.get_book(req.book_id)
+        if book:
+            book_name = book.get("title")
+
+    _job_manager.log_activity(
+        type='start',
+        message=f'Translation started: {book_name or "No book"} — Chapter {req.chapter_number or "auto"}…',
+        book_id=req.book_id, chapter=req.chapter_number, book_name=book_name,
+    )
+
     # Run translation in a background thread so the event loop stays free
     def run():
         try:
@@ -99,10 +112,8 @@ async def start_translation(req: TranslateRequest):
         except Exception as e:
             _job_manager.status = "error"
             _job_manager.error = str(e)
-            _job_manager.send_message_sync({
-                "type": "error",
-                "message": str(e),
-            })
+            _job_manager.log_activity(type='error', message=f'Error: {e}')
+            _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             _job_manager.is_running = False
             if _job_manager.status not in ("error", "awaiting_review"):
@@ -118,6 +129,35 @@ async def start_translation(req: TranslateRequest):
 async def submit_review(req: ReviewSubmitRequest):
     if _job_manager.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Not waiting for entity review.")
+
+    # Log entity changes before unblocking the translation thread
+    accepted, edited, deleted = [], [], []
+    for cat, cat_entities in req.entities.items():
+        for untranslated, data in cat_entities.items():
+            if data.get('deleted'):
+                deleted.append(untranslated)
+            elif data.get('incorrect_translation'):
+                edited.append({'untranslated': untranslated, 'from': data['incorrect_translation'], 'to': data.get('translation', '')})
+            else:
+                accepted.append({'untranslated': untranslated, 'translation': data.get('translation', '')})
+
+    if accepted:
+        _job_manager.log_activity(
+            type='entities_accepted', message='New entities:',
+            entities=[{'name': e['untranslated'], 'label': f"{e['untranslated']} → {e['translation']}"} for e in accepted],
+        )
+    for e in edited:
+        _job_manager.log_activity(
+            type='entity_edited', message='Entity edited:',
+            entities=[{'name': e['untranslated'], 'label': f'{e["untranslated"]} — "{e["from"]}" → "{e["to"]}"'}],
+        )
+    if deleted:
+        _job_manager.log_activity(
+            type='entity_deleted', message='Entities deleted:',
+            entities=[{'name': n, 'label': n} for n in deleted],
+        )
+    _job_manager.log_activity(type='info', message='Review submitted — resuming translation…')
+
     _job_manager.submit_review(req.entities)
     return {"status": "ok"}
 
@@ -126,6 +166,7 @@ async def submit_review(req: ReviewSubmitRequest):
 async def skip_review():
     if _job_manager.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Not waiting for entity review.")
+    _job_manager.log_activity(type='info', message='Entity review skipped — resuming translation…')
     _job_manager.skip_review()
     return {"status": "ok"}
 
@@ -149,4 +190,5 @@ async def cancel_translation():
         _job_manager.skip_review()
     _job_manager.is_running = False
     _job_manager.status = "idle"
+    _job_manager.log_activity(type='info', message='Translation cancelled.')
     return {"status": "cancelled"}

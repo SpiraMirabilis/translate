@@ -115,6 +115,20 @@ class DatabaseManager:
             )
             ''')
 
+            # Create activity log table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                book_id INTEGER,
+                chapter INTEGER,
+                book_name TEXT,
+                entities_json TEXT,
+                created_at TEXT NOT NULL
+            )
+            ''')
+
             # Migrations: add columns if missing
             cursor.execute("PRAGMA table_info(entities)")
             entity_cols = {row[1] for row in cursor.fetchall()}
@@ -1088,6 +1102,66 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Error checking duplicate in queue: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Activity log
+    # ------------------------------------------------------------------
+
+    def add_activity_log(self, type, message, book_id=None, chapter=None, book_name=None, entities=None):
+        """Add an entry to the activity log. Returns the entry dict."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            created_at = datetime.datetime.now().isoformat()
+            entities_json = json.dumps(entities) if entities else None
+            cursor.execute(
+                'INSERT INTO activity_log (type, message, book_id, chapter, book_name, entities_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (type, message, book_id, chapter, book_name, entities_json, created_at),
+            )
+            entry_id = cursor.lastrowid
+            # Cap at 500 rows
+            cursor.execute('DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 500)')
+            conn.commit()
+            conn.close()
+            return {
+                'id': entry_id, 'type': type, 'message': message,
+                'book_id': book_id, 'chapter': chapter, 'book_name': book_name,
+                'entities': entities, 'created_at': created_at,
+            }
+        except sqlite3.Error as e:
+            self.logger.error(f"Error adding activity log: {e}")
+            return None
+
+    def get_activity_log(self, limit=200):
+        """Get recent activity log entries, oldest first."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, type, message, book_id, chapter, book_name, entities_json, created_at FROM activity_log ORDER BY id DESC LIMIT ?', (limit,))
+            rows = cursor.fetchall()
+            conn.close()
+            entries = []
+            for row in reversed(rows):  # reverse so oldest is first
+                entries.append({
+                    'id': row[0], 'type': row[1], 'message': row[2],
+                    'book_id': row[3], 'chapter': row[4], 'book_name': row[5],
+                    'entities': json.loads(row[6]) if row[6] else None,
+                    'created_at': row[7],
+                })
+            return entries
+        except sqlite3.Error as e:
+            self.logger.error(f"Error reading activity log: {e}")
+            return []
+
+    def clear_activity_log(self):
+        """Delete all activity log entries."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute('DELETE FROM activity_log')
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            self.logger.error(f"Error clearing activity log: {e}")
 
     def _check_legacy_queue(self):
         """Check for legacy queue.json and warn user"""

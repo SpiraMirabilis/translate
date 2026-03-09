@@ -18,6 +18,7 @@ class JobManager:
     """
 
     def __init__(self):
+        self.db_manager = None  # Set by app.py after DatabaseManager is created
         self.reset()
 
     def reset(self):
@@ -102,6 +103,22 @@ class JobManager:
         """Skip entity review — accept AI translations as-is."""
         self._review_result = {}
         self._review_event.set()
+
+    # ------------------------------------------------------------------
+    # Activity log — persist + broadcast
+    # ------------------------------------------------------------------
+
+    def log_activity(self, type, message, book_id=None, chapter=None, book_name=None, entities=None):
+        """Write an activity log entry to the DB and send it via WS."""
+        entry = None
+        if self.db_manager:
+            entry = self.db_manager.add_activity_log(
+                type=type, message=message,
+                book_id=book_id, chapter=chapter,
+                book_name=book_name, entities=entities,
+            )
+        if entry:
+            self.send_message_sync({"type": "activity_log", "entry": entry})
 
 
 # Global singleton — single user, so one job at a time

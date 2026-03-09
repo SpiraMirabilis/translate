@@ -2,10 +2,11 @@
  * Dashboard — main translation workspace.
  *
  * Left panel:  input, book/chapter selector, model override, translate button
- * Right panel: streaming output + status log
+ * Right panel: persistent activity log + progress
  * Bottom:      entity review panel (modal overlay when entities need review)
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { useWs } from '../App'
 import { api } from '../services/api'
 import EntityReviewPanel from '../components/EntityReviewPanel'
@@ -13,7 +14,7 @@ import TranslationProgress from '../components/TranslationProgress'
 import ComboBox from '../components/ComboBox'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
-  Play, Square, Copy, Loader2, Info
+  Play, Square, Info, Trash2
 } from 'lucide-react'
 
 export default function Dashboard() {
@@ -32,21 +33,17 @@ export default function Dashboard() {
   const [noRepair, setNoRepair] = useState(false)
 
   const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
-  const [log, setLog] = useState([])                    // progress messages
-  const [chunkProgress, setChunkProgress] = useState(null)  // latest progress payload
-  const [output, setOutput] = useLocalStorage('dashboard.output', [])
-  const [outputTitle, setOutputTitle] = useLocalStorage('dashboard.outputTitle', '')
+  const [chunkProgress, setChunkProgress] = useState(null)
+  const [activityLog, setActivityLog] = useState([])
   const [entityReview, setEntityReview] = useState(null) // { entities, context } or null
 
-  const outputRef = useRef(null)
-  const addLog = useCallback((msg, type = 'info') => {
-    setLog(prev => [...prev, { msg, type, ts: Date.now() }])
-  }, [])
+  const logRef = useRef(null)
 
-  // Load books + providers on mount
+  // Load books + providers + activity log on mount
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
     api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
+    api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
   }, [])
 
   // Handle WebSocket messages
@@ -57,47 +54,43 @@ export default function Dashboard() {
     if (type === 'progress') {
       setChunkProgress(lastMessage)
       setJobStatus('running')
-      if (lastMessage.phase === 'start') {
-        addLog(`Translating chunk ${lastMessage.chunk} of ${lastMessage.total}…`, 'progress')
-      }
     }
 
     if (type === 'entity_review_needed') {
-      addLog('New entities found — review required.', 'warning')
       setJobStatus('awaiting_review')
       setEntityReview({ entities: lastMessage.entities, context: lastMessage.context })
     }
 
     if (type === 'translation_complete') {
-      setOutput(lastMessage.content || [])
-      setOutputTitle(lastMessage.title || '')
       setJobStatus('complete')
       setChunkProgress(null)
-      addLog(`Translation complete: "${lastMessage.title}" (ch. ${lastMessage.chapter})`, 'success')
       setEntityReview(null)
     }
 
     if (type === 'error') {
       setJobStatus('error')
-      addLog(`Error: ${lastMessage.message}`, 'error')
       setEntityReview(null)
     }
-  }, [lastMessage, addLog])
 
-  // Auto-scroll output
+    // Append activity log entries from the backend
+    if (type === 'activity_log' && lastMessage.entry) {
+      setActivityLog(prev => {
+        if (prev.some(e => e.id === lastMessage.entry.id)) return prev
+        return [...prev, lastMessage.entry]
+      })
+    }
+  }, [lastMessage])
+
+  // Auto-scroll log
   useEffect(() => {
-    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
-  }, [output, log])
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [activityLog])
 
   const handleTranslate = async () => {
     if (!inputText.trim()) return
-    setLog([])
-    setOutput([])        // also clears localStorage via useLocalStorage
-    setOutputTitle('')
     setEntityReview(null)
     setChunkProgress(null)
     setJobStatus('running')
-    addLog('Starting translation…', 'info')
     try {
       await api.translate({
         text: inputText,
@@ -112,24 +105,22 @@ export default function Dashboard() {
       })
     } catch (e) {
       setJobStatus('error')
-      addLog(`Failed to start: ${e.message}`, 'error')
     }
   }
 
   const handleCancel = async () => {
     try { await api.cancelJob() } catch { /* ignore */ }
     setJobStatus('idle')
-    addLog('Cancelled.', 'info')
   }
 
   const handleReviewDone = () => {
     setEntityReview(null)
     setJobStatus('running')
-    addLog('Review submitted — resuming translation…', 'info')
   }
 
-  const copyOutput = () => {
-    navigator.clipboard.writeText(output.join('\n'))
+  const clearLog = async () => {
+    try { await api.clearActivityLog() } catch { /* ignore */ }
+    setActivityLog([])
   }
 
   // Build model list from providers
@@ -306,58 +297,39 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Right: output panel */}
+        {/* Right: activity log */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Output header */}
+          {/* Header */}
           <div className="flex items-center gap-3 px-4 py-2.5 border-b border-slate-800 shrink-0">
-            <span className="text-sm font-medium text-slate-300 flex-1 truncate">
-              {outputTitle || 'Translation output'}
-            </span>
-            {output.length > 0 && (
-              <button className="btn-ghost p-1.5" onClick={copyOutput} title="Copy to clipboard">
-                <Copy size={14} />
+            <span className="text-sm font-medium text-slate-300 flex-1">Activity Log</span>
+            {activityLog.length > 0 && (
+              <button className="btn-ghost p-1.5" onClick={clearLog} title="Clear log">
+                <Trash2 size={14} />
               </button>
             )}
           </div>
 
-          {/* Progress banner — visible while running regardless of output state */}
+          {/* Progress banner — visible while running */}
           {isRunning && (
             <div className="px-4 py-3 border-b border-indigo-900 bg-indigo-950/40 shrink-0">
               <TranslationProgress progress={chunkProgress} status={jobStatus} />
             </div>
           )}
 
-          {/* Output content */}
-          <div ref={outputRef} className="flex-1 overflow-y-auto p-4">
-            {output.length > 0 ? (
-              <pre className="text-sm text-slate-200 font-mono whitespace-pre-wrap leading-relaxed">
-                {output.join('\n')}
-              </pre>
+          {/* Log content */}
+          <div ref={logRef} className="flex-1 overflow-y-auto p-4">
+            {activityLog.length > 0 ? (
+              <div className="space-y-1.5">
+                {activityLog.map((entry, i) => (
+                  <ActivityEntry key={i} entry={entry} />
+                ))}
+              </div>
             ) : (
-              <div className="h-full flex flex-col gap-4">
-                {/* Log lines */}
-                <div className="space-y-1 flex-1">
-                  {log.map((entry, i) => (
-                    <LogLine key={i} entry={entry} />
-                  ))}
-                </div>
-                {log.length === 0 && !isRunning && (
-                  <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
-                    Translation output will appear here
-                  </div>
-                )}
+              <div className="h-full flex items-center justify-center text-slate-600 text-sm">
+                Translation activity will appear here
               </div>
             )}
           </div>
-
-          {/* Log strip at bottom when output is shown */}
-          {output.length > 0 && log.length > 0 && (
-            <div className="border-t border-slate-800 px-4 py-2 max-h-24 overflow-y-auto shrink-0">
-              {log.slice(-5).map((entry, i) => (
-                <LogLine key={i} entry={entry} compact />
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
@@ -373,6 +345,48 @@ export default function Dashboard() {
   )
 }
 
+function ActivityEntry({ entry }) {
+  const time = new Date(entry.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+  const styleMap = {
+    start:             'text-indigo-400',
+    complete:          'text-emerald-400',
+    error:             'text-rose-400',
+    info:              'text-slate-400',
+    entity_review:     'text-amber-400',
+    entities_accepted: 'text-slate-300',
+    entity_edited:     'text-amber-300',
+    entity_deleted:    'text-rose-300',
+  }
+
+  return (
+    <div className={`text-xs leading-relaxed ${styleMap[entry.type] || 'text-slate-400'}`}>
+      <span className="text-slate-600 mr-2">{time}</span>
+      <span>{entry.message}</span>
+      {entry.entities?.map((e, i) => (
+        <span key={i}>
+          {i > 0 && ', '}
+          {' '}
+          <Link
+            to={`/entities?search=${encodeURIComponent(e.name)}`}
+            className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
+          >
+            {e.label}
+          </Link>
+        </span>
+      ))}
+      {entry.type === 'complete' && entry.book_id && entry.chapter && (
+        <Link
+          to={`/books/${entry.book_id}/chapters/${entry.chapter}/edit`}
+          className="ml-2 text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
+        >
+          proofread
+        </Link>
+      )}
+    </div>
+  )
+}
+
 function StatusBadge({ status }) {
   const map = {
     idle:             { label: 'Idle',           cls: 'badge-slate'   },
@@ -383,19 +397,4 @@ function StatusBadge({ status }) {
   }
   const { label, cls } = map[status] || map.idle
   return <span className={cls}>{label}</span>
-}
-
-function LogLine({ entry, compact = false }) {
-  const colorMap = {
-    info:     'text-slate-400',
-    progress: 'text-indigo-400',
-    warning:  'text-amber-400',
-    success:  'text-emerald-400',
-    error:    'text-rose-400',
-  }
-  return (
-    <div className={`${colorMap[entry.type] || 'text-slate-400'} ${compact ? 'text-xs' : 'text-xs'} leading-relaxed`}>
-      {entry.msg}
-    </div>
-  )
 }
