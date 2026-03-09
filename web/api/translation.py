@@ -177,6 +177,7 @@ async def get_status():
         "status": _job_manager.status,
         "is_running": _job_manager.is_running,
         "error": _job_manager.error,
+        "auto_process": _job_manager.auto_process,
     }
     if _job_manager.status == "awaiting_review" and _job_manager.pending_review:
         result["pending_review"] = _job_manager.pending_review
@@ -189,6 +190,8 @@ async def cancel_translation():
     Best-effort cancel: unblock the review event so the thread can finish.
     Actual mid-chunk cancellation is not supported (would require provider changes).
     """
+    if _job_manager.auto_process:
+        _job_manager.stop_auto_process()
     if _job_manager.status == "awaiting_review":
         _job_manager.skip_review()
     _job_manager.is_running = False

@@ -1,6 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
-import { useAutoProcess } from './hooks/useAutoProcess'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Books from './pages/Books'
@@ -56,16 +55,10 @@ function WsProvider({ children }) {
 // ------------------------------------------------------------------
 // App
 // ------------------------------------------------------------------
-function AutoProcessListener() {
-  useAutoProcess()
-  return null
-}
-
 export default function App() {
   return (
     <BrowserRouter>
       <WsProvider>
-        <AutoProcessListener />
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Dashboard />} />

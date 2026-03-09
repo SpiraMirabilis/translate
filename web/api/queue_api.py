@@ -258,6 +258,44 @@ class ProcessNextRequest(BaseModel):
     no_review: bool = False
     no_clean: bool = False
     no_repair: bool = False
+    auto_process: bool = False
+
+
+def _setup_job(queue_item, settings):
+    """Configure job_manager and web_interface for a single queue item."""
+    _job_manager.pending_text = queue_item["content"]
+    _job_manager.book_id = queue_item["book_id"]
+    _job_manager.chapter_number = queue_item.get("chapter_number")
+    _job_manager.status = "running"
+    _job_manager.error = None
+    _job_manager.last_result = None
+
+    if settings["translation_model"]:
+        _web_interface.translator.config.translation_model = settings["translation_model"]
+    if settings["advice_model"]:
+        _web_interface.translator.config.advice_model = settings["advice_model"]
+    _web_interface.cleaning_model = settings["cleaning_model"] or None
+    _web_interface.no_review = settings["no_review"]
+    _web_interface.no_clean = settings["no_clean"]
+    _web_interface.no_repair = settings["no_repair"]
+    _web_interface._current_queue_item = queue_item
+
+
+def _translate_one(queue_item):
+    """Run a single translation. Logs start activity. Raises on error."""
+    book_name = None
+    if queue_item.get("book_id"):
+        book = _entity_manager.get_book(queue_item["book_id"])
+        if book:
+            book_name = book.get("title")
+
+    ch = queue_item.get("chapter_number")
+    _job_manager.log_activity(
+        type='start',
+        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…',
+        book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,
+    )
+    _web_interface.run_translation()
 
 
 @router.post("/process-next")
@@ -271,34 +309,28 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     if not queue_item:
         raise HTTPException(status_code=404, detail="No items in queue.")
 
-    _job_manager.pending_text = queue_item["content"]
-    _job_manager.book_id = queue_item["book_id"]
-    _job_manager.chapter_number = queue_item.get("chapter_number")
+    settings = {
+        "book_id": req.book_id,
+        "translation_model": req.translation_model,
+        "advice_model": req.advice_model,
+        "cleaning_model": req.cleaning_model,
+        "no_review": req.no_review,
+        "no_clean": req.no_clean,
+        "no_repair": req.no_repair,
+    }
+
     _job_manager.is_running = True
-    _job_manager.status = "running"
-    _job_manager.error = None
-    _job_manager.last_result = None
+    _setup_job(queue_item, settings)
 
-    # Apply model overrides
-    if req.translation_model:
-        _web_interface.translator.config.translation_model = req.translation_model
-    if req.advice_model:
-        _web_interface.translator.config.advice_model = req.advice_model
-    _web_interface.cleaning_model = req.cleaning_model or None
-    _web_interface.no_review = req.no_review
-    _web_interface.no_clean = req.no_clean
-    _web_interface.no_repair = req.no_repair
+    if req.auto_process:
+        _job_manager.start_auto_process()
 
-    # Set queue item on the interface so ui.py removes it after completion
-    _web_interface._current_queue_item = queue_item
-
-    # Resolve book name for the activity log
+    # Log the first item from the async context (thread not started yet)
     book_name = None
     if queue_item.get("book_id"):
         book = _entity_manager.get_book(queue_item["book_id"])
         if book:
             book_name = book.get("title")
-
     ch = queue_item.get("chapter_number")
     await _job_manager.log_activity_async(
         type='start',
@@ -308,7 +340,19 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
 
     def run():
         try:
+            # Translate the first item
             _web_interface.run_translation()
+
+            # Auto-process loop: keep going while enabled and queue has items
+            while _job_manager.should_continue_auto():
+                next_item = _entity_manager.get_next_queue_item(book_id=settings["book_id"])
+                if not next_item:
+                    _job_manager.send_message_sync({"type": "auto_process_done", "reason": "queue_empty"})
+                    _job_manager.log_activity(type='info', message='Auto-process complete — queue is empty.')
+                    break
+
+                _setup_job(next_item, settings)
+                _translate_one(next_item)
         except Exception as e:
             _job_manager.status = "error"
             _job_manager.error = str(e)
@@ -316,6 +360,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             _job_manager.is_running = False
+            _job_manager.auto_process = False
             if _job_manager.status not in ("error", "awaiting_review"):
                 _job_manager.status = "complete"
 
@@ -324,5 +369,16 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
 
     return {
         "status": "started",
+        "auto_process": req.auto_process,
         "item": {"title": queue_item.get("title"), "book_id": queue_item["book_id"]},
     }
+
+
+@router.post("/stop-auto")
+async def stop_auto_process():
+    if not _job_manager.auto_process:
+        return {"status": "not_running"}
+    _job_manager.stop_auto_process()
+    await _job_manager.log_activity_async(type='info', message='Auto-process will stop after current chapter.')
+    await _job_manager.send_message_async({"type": "auto_process_stopping"})
+    return {"status": "stopping"}

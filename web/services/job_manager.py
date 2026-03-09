@@ -41,6 +41,10 @@ class JobManager:
         self._review_result: Optional[dict] = None
         self.pending_review: Optional[dict] = None  # {entities, context} for late-joining clients
 
+        # Auto-process queue state
+        self.auto_process = False
+        self._stop_auto = threading.Event()
+
     # ------------------------------------------------------------------
     # WebSocket helpers
     # ------------------------------------------------------------------
@@ -106,6 +110,23 @@ class JobManager:
         self._review_result = {}
         self.pending_review = None
         self._review_event.set()
+
+    # ------------------------------------------------------------------
+    # Auto-process queue
+    # ------------------------------------------------------------------
+
+    def start_auto_process(self):
+        self.auto_process = True
+        self._stop_auto.clear()
+
+    def stop_auto_process(self):
+        """Signal the loop to stop after the current translation finishes."""
+        self.auto_process = False
+        self._stop_auto.set()
+
+    def should_continue_auto(self):
+        """Check whether the auto-process loop should continue."""
+        return self.auto_process and not self._stop_auto.is_set()
 
     # ------------------------------------------------------------------
     # Activity log — persist + broadcast

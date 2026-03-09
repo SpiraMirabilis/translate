@@ -84,6 +84,7 @@ export const api = {
   uploadBatch:      (formData)   => postForm('/api/queue/upload-batch', formData),
   uploadEpub:       (formData)   => postForm('/api/queue/upload-epub', formData),
   processNext:      (body = {})  => post('/api/queue/process-next', body),
+  stopAutoProcess:  ()           => post('/api/queue/stop-auto', {}),
 
   // Settings
   getSettings:      ()           => get('/api/settings'),

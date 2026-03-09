@@ -44,13 +44,17 @@ export default function Queue() {
 
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
-    api.getJobStatus().then(d => setJobStatus(d.status)).catch(() => {})
+    api.getJobStatus().then(d => {
+      setJobStatus(d.status)
+      if (d.is_running) setProcessing(true)
+      if (d.auto_process) setAutoProcess(true)
+    }).catch(() => {})
     api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
   }, [])
 
   useEffect(() => { load() }, [load])
 
-  // Watch for job completion to reload queue
+  // Watch for job events to update UI
   useEffect(() => {
     if (!lastMessage) return
     if (lastMessage.type === 'progress') {
@@ -60,17 +64,28 @@ export default function Queue() {
     if (lastMessage.type === 'translation_complete') {
       setChunkProgress(null)
       load()
-      if (autoProcess) {
-        setJobStatus('running')
-      } else {
+      // During auto-process the backend drives the loop, so stay in "running".
+      // For single-shot, mark complete.
+      if (!autoProcess) {
         setJobStatus('complete')
         setProcessing(false)
       }
+    }
+    if (lastMessage.type === 'auto_process_done') {
+      setChunkProgress(null)
+      setProcessing(false)
+      setJobStatus('complete')
+      setAutoProcess(false)
+      load()
+    }
+    if (lastMessage.type === 'auto_process_stopping') {
+      // Visual feedback — backend acknowledged, will stop after current chapter
     }
     if (lastMessage.type === 'error') {
       setProcessing(false)
       setJobStatus('error')
       setChunkProgress(null)
+      setAutoProcess(false)
     }
     if (lastMessage.type === 'entity_review_needed') {
       setJobStatus('awaiting_review')
@@ -90,6 +105,7 @@ export default function Queue() {
         no_review: noReview,
         no_clean: noClean,
         no_repair: noRepair,
+        auto_process: autoProcess,
       })
       setJobStatus('running')
     } catch (e) {
@@ -131,7 +147,10 @@ export default function Queue() {
           {isJobRunning && autoProcess ? (
             <button
               className="btn-danger flex items-center gap-1.5"
-              onClick={() => setAutoProcess(false)}
+              onClick={async () => {
+                try { await api.stopAutoProcess() } catch {}
+                setAutoProcess(false)
+              }}
               title="Finish the current chapter then stop"
             >
               <StopCircle size={13} /> Stop after current
@@ -241,7 +260,13 @@ export default function Queue() {
             <input
               type="checkbox"
               checked={autoProcess}
-              onChange={e => setAutoProcess(e.target.checked)}
+              onChange={e => {
+                const val = e.target.checked
+                setAutoProcess(val)
+                if (!val && processing) {
+                  api.stopAutoProcess().catch(() => {})
+                }
+              }}
             />
             Auto-process queue
           </label>

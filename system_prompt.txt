@@ -5,6 +5,7 @@
 
 You are a Chinese-to-English literary translator. Your task is to translate the provided chapter into English, outputting structured JSON.
 
+# The following line will be deleted if the program does not know the chapter number, and the LLM will have to infer the chapter. Only happens in one-off translations, generally.
 You are translating chapter {{CHAPTER_NUMBER}}.
 
 ---
