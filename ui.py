@@ -188,7 +188,6 @@ class UserInterface(ABC):
                                         last_chapter=last_chapter,
                                         incorrect_translation=incorrect_translation,
                                         gender=gender,
-                                        origin_chapter=current_chapter
                                     )
 
                                     # Update end_object so direct SQL save stays consistent
@@ -242,12 +241,13 @@ class UserInterface(ABC):
                             existing = cursor.fetchone()
                             
                             if existing:
-                                # Update existing
+                                # Update existing — set origin_chapter if not yet recorded
                                 cursor.execute('''
                                 UPDATE entities
-                                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?
+                                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
+                                    origin_chapter = COALESCE(origin_chapter, ?)
                                 WHERE id = ?
-                                ''', (translation, last_chapter, incorrect_translation, gender, existing[0]))
+                                ''', (translation, last_chapter, incorrect_translation, gender, current_chapter, existing[0]))
                                 self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
                             else:
                                 # Insert new — record origin_chapter
@@ -320,7 +320,6 @@ class UserInterface(ABC):
                                     last_chapter=last_chapter,
                                     incorrect_translation=incorrect_translation,
                                     gender=gender,
-                                    origin_chapter=current_chapter
                                 )
                 
                 # In run_translation method, when calling display_results:

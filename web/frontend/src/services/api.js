@@ -3,10 +3,16 @@ const BASE = ''  // same origin via Vite proxy
 async function request(method, path, body, isFormData = false) {
   const opts = {
     method,
+    credentials: 'same-origin',
     headers: isFormData ? {} : { 'Content-Type': 'application/json' },
     body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
   }
   const res = await fetch(BASE + path, opts)
+  if (res.status === 401 && !path.startsWith('/api/auth/')) {
+    // Session expired or invalid — reload to trigger auth check
+    window.location.reload()
+    return
+  }
   if (!res.ok) {
     let msg
     try { msg = (await res.json()).detail } catch { msg = res.statusText }
@@ -101,4 +107,9 @@ export const api = {
   // Dictionary
   dictLookup:       (q)          => get(`/api/dict/lookup?q=${encodeURIComponent(q)}`),
   retranslate:      (body)       => post('/api/dict/retranslate', body),
+
+  // Auth
+  authStatus:       ()           => get('/api/auth/status'),
+  login:            (body)       => post('/api/auth/login', body),
+  logout:           ()           => post('/api/auth/logout', {}),
 }

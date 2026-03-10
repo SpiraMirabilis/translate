@@ -124,10 +124,15 @@ t9/
 │   └── gemini_provider.py
 ├── web/                   # Web GUI
 │   ├── app.py             # FastAPI application
+│   ├── auth.py            # Session-based authentication
 │   ├── requirements_web.txt
 │   ├── api/               # REST + WebSocket endpoints
 │   ├── services/          # Job manager, web interface
 │   └── frontend/          # React + Vite + Tailwind CSS
+├── deploy/                # Deployment configs
+│   ├── t9.service         # systemd --user service
+│   ├── nginx-reverse-proxy.conf
+│   └── apache2-reverse-proxy.conf
 ├── requirements.txt       # Python dependencies (core + CLI)
 └── database.db            # SQLite database (created on first run)
 ```
@@ -135,6 +140,67 @@ t9/
 ## CLI
 
 T9 also has a full command-line interface that supports all operations — translation, book/chapter management, entity review, queue processing, and more. See **[CLIReadme.md](CLIReadme.md)** for complete documentation.
+
+## Authentication
+
+T9 includes built-in password authentication. **If you expose this app to the internet — on a VM, VPS, or through a tunnel — you must enable authentication.** Without it, anyone who finds your URL has full access to your API keys, translation data, and database.
+
+To enable it, add `T9_PASSWORD` to your `.env`:
+
+```env
+T9_PASSWORD=your-secure-password-here
+```
+
+When set, all API endpoints and WebSocket connections require a valid session. Users see a login page and must enter the password to access the app. Sessions last 30 days via a signed cookie, so you won't need to re-authenticate often.
+
+When `T9_PASSWORD` is not set, authentication is disabled entirely — appropriate for local-only use on `127.0.0.1`.
+
+If serving over HTTPS (which you should be, if network-exposed), also set `T9_SECURE_COOKIE=true` in `.env` so the session cookie is only sent over encrypted connections.
+
+Your `.env` file contains API keys and your app password. Lock down its permissions:
+
+```bash
+chmod 600 .env
+```
+
+## Deployment
+
+The `deploy/` directory contains ready-to-use configuration files for running T9 on a server.
+
+### systemd service
+
+A `systemd --user` service that manages the app, with a pre-flight check that refuses to start if `T9_PASSWORD` is not set in `.env`.
+
+```bash
+# Build the frontend for production (no Vite dev server needed)
+cd web/frontend && npm run build && cd ../..
+
+# Install the service
+mkdir -p ~/.config/systemd/user
+cp deploy/t9.service ~/.config/systemd/user/
+
+# Edit paths in the service file if your install location differs from ~/Documents/code/t9
+
+systemctl --user daemon-reload
+systemctl --user start t9
+systemctl --user status t9
+
+# Enable on boot (requires lingering so it runs without an active login session)
+loginctl enable-linger $USER
+systemctl --user enable t9
+
+# View logs
+journalctl --user -u t9 -f
+```
+
+### Reverse proxy
+
+Sample configurations for Apache2 and Nginx are in `deploy/`. Both include HTTPS redirection, WebSocket proxying (important for real-time translation progress and entity review), and appropriate timeouts for long-running WebSocket connections.
+
+- **`deploy/apache2-reverse-proxy.conf`** — requires `mod_proxy`, `mod_proxy_http`, `mod_proxy_wstunnel`, `mod_ssl`, `mod_rewrite`
+- **`deploy/nginx-reverse-proxy.conf`** — includes a 1-hour `proxy_read_timeout` on `/ws` so the connection survives long entity review waits
+
+Replace `t9.example.com` with your actual domain. Both examples assume Let's Encrypt certificates via certbot.
 
 ## Environment Variables
 
@@ -149,6 +215,8 @@ Set in `.env` or your shell environment:
 | `OPENROUTER_KEY` | OpenRouter API key |
 | `TRANSLATION_MODEL` | Default translation model (e.g. `claude:claude-sonnet-4-6`) |
 | `ADVICE_MODEL` | Default entity advice model |
+| `T9_PASSWORD` | Enable authentication (required if exposed to the internet) |
+| `T9_SECURE_COOKIE` | Set to `true` when serving over HTTPS |
 | `DEBUG` | Enable debug logging (`True`/`False`) |
 
 ## License

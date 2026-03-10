@@ -21,3 +21,6 @@ html2text>=2020.1.16
 
 # Optional for optimized HTML parsing
 lxml>=4.6.3
+
+# Web auth
+itsdangerous>=2.0.0

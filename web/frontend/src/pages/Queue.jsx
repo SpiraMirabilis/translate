@@ -133,9 +133,9 @@ export default function Queue() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
         <h1 className="text-lg font-semibold text-slate-200">Queue</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={() => setShowUpload(true)}>
             <Upload size={13} /> Upload File
           </button>
@@ -174,7 +174,7 @@ export default function Queue() {
       {/* Model settings */}
       <div className="card p-4 mb-5">
         <p className="text-xs font-medium text-slate-400 mb-3">Translation settings for next job</p>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label className="label">Translation model</label>
             <ComboBox
@@ -219,7 +219,7 @@ export default function Queue() {
             />
           </div>
         </div>
-        <div className="flex items-center gap-6 mt-3">
+        <div className="flex items-center gap-x-6 gap-y-2 mt-3 flex-wrap">
           <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
             <input
               type="checkbox"

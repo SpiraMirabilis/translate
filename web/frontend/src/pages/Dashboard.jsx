@@ -147,12 +147,12 @@ export default function Dashboard() {
       </div>
 
       {/* Main split */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* Left: input panel */}
-        <div className="w-[420px] shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/30">
+        <div className="w-full md:w-[420px] shrink-0 flex flex-col border-b md:border-b-0 md:border-r border-slate-800 bg-slate-900/30">
           {/* Controls */}
           <div className="p-4 space-y-3 border-b border-slate-800">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {/* Book selector */}
               <div>
                 <label className="label">Book</label>
@@ -191,7 +191,7 @@ export default function Dashboard() {
                 placeholder="Default"
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="label flex items-center gap-1">
                   Advice model
@@ -290,7 +290,7 @@ export default function Dashboard() {
           </div>
 
           {/* Text input */}
-          <div className="flex-1 flex flex-col p-4 gap-2">
+          <div className="flex-1 flex flex-col p-4 gap-2 min-h-0 max-h-[40vh] md:max-h-none">
             <label className="label">Chinese source text</label>
             <textarea
               className="input flex-1 resize-none font-mono text-xs leading-relaxed"

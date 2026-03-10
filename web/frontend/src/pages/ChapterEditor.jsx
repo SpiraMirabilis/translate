@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2 } from 'lucide-react'
 import ComboBox from '../components/ComboBox'
 
 const CATEGORIES = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
@@ -186,7 +186,7 @@ function DictModal({ query, data, loading, error, position, onClose }) {
 
   return (
     <div ref={ref} style={style}
-      className="w-[400px] max-h-[380px] overflow-y-auto bg-slate-900 border border-slate-700 rounded-lg shadow-2xl"
+      className="w-[400px] max-w-[90vw] max-h-[380px] overflow-y-auto bg-slate-900 border border-slate-700 rounded-lg shadow-2xl"
     >
       <div className="sticky top-0 bg-slate-900 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -677,7 +677,9 @@ export default function ChapterEditor() {
   const [providers, setProviders] = useState(null)
   const [entities, setEntities] = useState([])
   const [showEntities, setShowEntities] = useLocalStorage('editor.showEntities', true)
+  const [showSource, setShowSource] = useLocalStorage('editor.showSource', true)
   const [isProofread, setIsProofread] = useState(false)
+  const [chapterList, setChapterList] = useState([])
 
   // Dictionary state
   const [dictQuery, setDictQuery] = useState(null)
@@ -697,9 +699,11 @@ export default function ChapterEditor() {
 
   const textareaRef = useRef(null)
   const chineseRef = useRef(null)
+  const mirrorRef = useRef(null)
   const lineRefs = useRef([])
   const scrollSyncSource = useRef(null)
   const pendingSelection = useRef(null)
+  const [lineHeights, setLineHeights] = useState([])
 
   // Build matchers from entities
   const chineseMatcher = useMemo(
@@ -717,12 +721,14 @@ export default function ChapterEditor() {
       api.getBook(parseInt(bookId)),
       api.listProviders(),
       api.listEntities({ book_id: parseInt(bookId), include_global: true }),
+      api.listChapters(parseInt(bookId)),
     ])
-      .then(([ch, bk, prov, ents]) => {
+      .then(([ch, bk, prov, ents, chaps]) => {
         setChapter(ch)
         setBook(bk)
         setProviders(prov.providers || [])
         setEntities(ents.entities || [])
+        setChapterList((chaps.chapters || []).map(c => c.chapter).sort((a, b) => a - b))
         setIsProofread(!!ch.is_proofread)
         const content = Array.isArray(ch.content) ? ch.content : []
         setText(trimEmptyLines(content).join('\n'))
@@ -745,6 +751,32 @@ export default function ChapterEditor() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
+
+  // Measure wrapped line heights for the gutter
+  const measureLineHeights = useCallback(() => {
+    const mirror = mirrorRef.current
+    const ta = textareaRef.current
+    if (!mirror || !ta) return
+    // Match the textarea's content width
+    mirror.style.width = ta.clientWidth + 'px'
+    const lines = text.split('\n')
+    const heights = []
+    mirror.textContent = ''
+    for (const line of lines) {
+      const span = document.createElement('div')
+      span.textContent = line || '\u00A0'
+      mirror.appendChild(span)
+      heights.push(span.offsetHeight)
+      mirror.removeChild(span)
+    }
+    setLineHeights(heights)
+  }, [text])
+
+  useEffect(() => {
+    measureLineHeights()
+    window.addEventListener('resize', measureLineHeights)
+    return () => window.removeEventListener('resize', measureLineHeights)
+  }, [measureLineHeights])
 
   const handleChange = (e) => {
     setText(e.target.value)
@@ -945,6 +977,16 @@ export default function ChapterEditor() {
   const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0
   const entityCount = entities.length
 
+  // Prev / next chapter navigation
+  const chapterIdx = chapterList.indexOf(parseInt(chapterNum))
+  const prevChapter = chapterIdx > 0 ? chapterList[chapterIdx - 1] : null
+  const nextChapter = chapterIdx >= 0 && chapterIdx < chapterList.length - 1 ? chapterList[chapterIdx + 1] : null
+
+  const goToChapter = (num) => {
+    if (dirty && !confirm('You have unsaved changes. Leave anyway?')) return
+    navigate(`/books/${bookId}/chapters/${num}/edit`)
+  }
+
   // Entities first discovered in this chapter
   const chapterNum_int = parseInt(chapterNum)
   const newInChapter = useMemo(
@@ -977,7 +1019,7 @@ export default function ChapterEditor() {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-900/50 shrink-0">
+      <div className="flex items-center gap-2 md:gap-3 px-3 md:px-5 py-2 md:py-3 border-b border-slate-800 bg-slate-900/50 shrink-0 flex-wrap">
         <button
           className="btn-ghost p-1.5"
           onClick={() => {
@@ -986,6 +1028,23 @@ export default function ChapterEditor() {
           }}
         >
           <ArrowLeft size={16} />
+        </button>
+
+        <button
+          className="btn-ghost p-1.5"
+          onClick={() => goToChapter(prevChapter)}
+          disabled={prevChapter == null}
+          title={prevChapter != null ? `Chapter ${prevChapter}` : 'No previous chapter'}
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <button
+          className="btn-ghost p-1.5"
+          onClick={() => goToChapter(nextChapter)}
+          disabled={nextChapter == null}
+          title={nextChapter != null ? `Chapter ${nextChapter}` : 'No next chapter'}
+        >
+          <ChevronRight size={16} />
         </button>
 
         <div className="flex-1 min-w-0">
@@ -1013,6 +1072,22 @@ export default function ChapterEditor() {
           <span className="text-emerald-400 text-xs flex items-center gap-1">
             <Check size={12} /> Saved
           </span>
+        )}
+
+        {/* Source panel toggle */}
+        {hasSource && (
+          <button
+            className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
+              showSource
+                ? 'border-sky-500/50 bg-sky-500/10 text-sky-300'
+                : 'border-slate-700 text-slate-500 hover:text-slate-400'
+            }`}
+            onClick={() => setShowSource(!showSource)}
+            title={showSource ? 'Hide Chinese source' : 'Show Chinese source'}
+          >
+            <Languages size={12} />
+            {showSource ? 'Source' : 'Source off'}
+          </button>
         )}
 
         {/* Entity highlight toggle */}
@@ -1057,15 +1132,15 @@ export default function ChapterEditor() {
       </div>
 
       {/* Split-pane editor */}
-      <div className="flex-1 overflow-hidden flex relative">
+      <div className="flex-1 overflow-hidden flex flex-col md:flex-row relative">
         {/* Chinese source panel (left) */}
-        {hasSource && (
+        {hasSource && showSource && (
           <div
             ref={chineseRef}
             onScroll={handleChineseScroll}
             onMouseUp={handleChineseMouseUp}
             onDoubleClick={handleChineseDblClick}
-            className="w-1/2 overflow-y-auto bg-slate-950 border-r border-slate-800 select-text"
+            className="w-full md:w-1/2 h-1/2 md:h-auto overflow-y-auto bg-slate-950 border-b md:border-b-0 md:border-r border-slate-800 select-text"
           >
             <div className="p-4">
               <div className="text-xs text-slate-600 uppercase tracking-wider mb-3 font-medium">
@@ -1141,42 +1216,79 @@ export default function ChapterEditor() {
         )}
 
         {/* English translation panel (right) — with overlay for entity highlights */}
-        <div className={`${hasSource ? 'w-1/2' : 'flex-1'} flex flex-col overflow-hidden`}>
-          {hasSource && (
+        <div className={`${hasSource && showSource ? 'w-full md:w-1/2 h-1/2 md:h-auto' : 'flex-1'} flex flex-col overflow-hidden`}>
+          {hasSource && showSource && (
             <div className="px-4 pt-4 pb-1">
               <div className="text-xs text-slate-600 uppercase tracking-wider font-medium">
                 Translation (editable)
               </div>
+              {newInChapter.length > 0 && (
+                <div className="text-xs mb-3">&nbsp;</div>
+              )}
             </div>
           )}
-          <div className="flex-1 relative overflow-hidden bg-slate-950">
-            {/* Backdrop: renders entity highlights behind the textarea */}
-            {showEntities && englishMatcher.length > 0 && (
-              <EnglishBackdrop
-                text={text}
-                matcher={englishMatcher}
-                scrollTop={overlayScrollTop}
-                paddingClass={hasSource ? 'p-4 pt-3' : 'p-5'}
-              />
-            )}
-            <textarea
-              ref={textareaRef}
-              className={`absolute inset-0 w-full h-full text-slate-100 font-mono text-sm leading-relaxed
-                         resize-none outline-none border-0
-                         selection:bg-indigo-600/40 ${hasSource ? 'p-4 pt-3' : 'p-5'}`}
+          <div className="flex-1 relative overflow-hidden bg-slate-950 flex">
+            {/* Hidden mirror for measuring wrapped line heights */}
+            <div
+              ref={mirrorRef}
+              aria-hidden="true"
+              className="font-mono text-sm leading-relaxed whitespace-pre-wrap"
               style={{
-                background: showEntities && englishMatcher.length > 0 ? 'transparent' : undefined,
-                caretColor: '#e2e8f0',
+                position: 'absolute', visibility: 'hidden', height: 0, overflow: 'hidden',
+                overflowWrap: 'break-word', wordBreak: 'break-word',
               }}
-              value={text}
-              onChange={handleChange}
-              onKeyDown={handleKeyDown}
-              onKeyUp={updateActiveLine}
-              onClick={updateActiveLine}
-              onScroll={handleTextareaScroll}
-              spellCheck={false}
-              placeholder="No translation content yet."
             />
+            {/* Line number gutter */}
+            <div
+              className="shrink-0 select-none overflow-hidden text-right font-mono text-xs text-slate-700"
+              style={{
+                width: '2.5rem',
+                paddingTop: hasSource && showSource ? '0.75rem' : '1.25rem',
+                paddingRight: '0.5rem',
+              }}
+            >
+              <div style={{ transform: `translateY(-${overlayScrollTop}px)` }}>
+                {lineHeights.map((h, i) => (
+                  <div
+                    key={i}
+                    className={i === activeLine ? 'text-indigo-400' : ''}
+                    style={{ height: h + 'px', lineHeight: 'normal', paddingTop: '1px' }}
+                  >
+                    {i + 1}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Text area + overlay container */}
+            <div className="flex-1 relative overflow-hidden">
+              {/* Backdrop: renders entity highlights behind the textarea */}
+              {showEntities && englishMatcher.length > 0 && (
+                <EnglishBackdrop
+                  text={text}
+                  matcher={englishMatcher}
+                  scrollTop={overlayScrollTop}
+                  paddingClass={hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}
+                />
+              )}
+              <textarea
+                ref={textareaRef}
+                className={`absolute inset-0 w-full h-full text-slate-100 font-mono text-sm leading-relaxed
+                           resize-none outline-none border-0
+                           selection:bg-indigo-600/40 ${hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}`}
+                style={{
+                  background: showEntities && englishMatcher.length > 0 ? 'transparent' : undefined,
+                  caretColor: '#e2e8f0',
+                }}
+                value={text}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onKeyUp={updateActiveLine}
+                onClick={updateActiveLine}
+                onScroll={handleTextareaScroll}
+                spellCheck={false}
+                placeholder="No translation content yet."
+              />
+            </div>
           </div>
         </div>
 

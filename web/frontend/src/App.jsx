@@ -8,6 +8,8 @@ import Entities from './pages/Entities'
 import Queue from './pages/Queue'
 import Settings from './pages/Settings'
 import Help from './pages/Help'
+import Login from './pages/Login'
+import { api } from './services/api'
 
 // ------------------------------------------------------------------
 // WebSocket context — single connection, all pages share it
@@ -56,6 +58,29 @@ function WsProvider({ children }) {
 // App
 // ------------------------------------------------------------------
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false)
+  const [needsLogin, setNeedsLogin] = useState(false)
+
+  useEffect(() => {
+    api.authStatus()
+      .then(({ auth_required, authenticated }) => {
+        setNeedsLogin(auth_required && !authenticated)
+        setAuthChecked(true)
+      })
+      .catch(() => {
+        // If auth check fails, assume no auth needed (e.g. backend down)
+        setAuthChecked(true)
+      })
+  }, [])
+
+  if (!authChecked) {
+    return <div className="min-h-screen bg-slate-900" />
+  }
+
+  if (needsLogin) {
+    return <Login onSuccess={() => setNeedsLogin(false)} />
+  }
+
   return (
     <BrowserRouter>
       <WsProvider>

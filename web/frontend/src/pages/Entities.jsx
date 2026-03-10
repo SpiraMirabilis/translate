@@ -99,9 +99,9 @@ export default function Entities() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
         <h1 className="text-lg font-semibold text-slate-200">Entities</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={handleCheckDuplicates}>
             <AlertTriangle size={13} /> Check Duplicates
           </button>
@@ -113,7 +113,7 @@ export default function Entities() {
 
       {/* Filters */}
       <div className="flex gap-3 mb-5 flex-wrap">
-        <div className="relative flex-1 min-w-[200px]">
+        <div className="relative flex-1 min-w-0 w-full sm:min-w-[200px]">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
             ref={searchRef}
@@ -123,14 +123,14 @@ export default function Entities() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <select className="input w-52" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
+        <select className="input w-full sm:w-52" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
           <option value="">All Books</option>
           <option value="global">Global Entities</option>
           {books.map((b, i) => (
             <option key={b.id} value={b.id}>{i + 1}. {b.title}</option>
           ))}
         </select>
-        <select className="input w-44" value={filterCat} onChange={e => setFilterCat(e.target.value)}>
+        <select className="input w-full sm:w-44" value={filterCat} onChange={e => setFilterCat(e.target.value)}>
           <option value="">All categories</option>
           {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
@@ -266,7 +266,7 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
   const notedCount = entities.filter(e => e.note).length
 
   return (
-    <div className="card overflow-hidden">
+    <div className="card overflow-hidden overflow-x-auto">
       <button
         className="w-full flex items-center justify-between px-4 py-3 border-b border-slate-700 hover:bg-slate-750"
         onClick={() => setOpen(v => !v)}

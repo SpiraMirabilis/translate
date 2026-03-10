@@ -104,7 +104,7 @@ export default function Books() {
           {books.map(book => (
             <div key={book.id} className="card">
               {/* Book row */}
-              <div className="flex items-center gap-3 p-4">
+              <div className="flex items-center gap-3 p-3 md:p-4">
                 <button
                   className="text-slate-500 hover:text-slate-300"
                   onClick={() => toggleExpand(book.id)}
@@ -178,8 +178,8 @@ export default function Books() {
                         <tr className="text-xs text-slate-500 border-b border-slate-700">
                           <th className="text-left pb-2 font-medium">Ch.</th>
                           <th className="text-left pb-2 font-medium">Title</th>
-                          <th className="text-left pb-2 font-medium">Model</th>
-                          <th className="text-left pb-2 font-medium">Date</th>
+                          <th className="text-left pb-2 font-medium hidden sm:table-cell">Model</th>
+                          <th className="text-left pb-2 font-medium hidden sm:table-cell">Date</th>
                           <th className="pb-2" />
                         </tr>
                       </thead>
@@ -196,8 +196,8 @@ export default function Books() {
                               </span>
                             </td>
                             <td className="py-2 text-slate-300 truncate max-w-[240px]">{ch.title}</td>
-                            <td className="py-2 text-xs text-slate-500">{ch.model || '—'}</td>
-                            <td className="py-2 text-xs text-slate-500">
+                            <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">{ch.model || '—'}</td>
+                            <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">
                               {ch.translation_date ? new Date(ch.translation_date).toLocaleDateString() : '—'}
                             </td>
                             <td className="py-2">
@@ -397,7 +397,7 @@ function PromptEditorModal({ book, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="card w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl">
+      <div className="card w-full max-w-4xl max-w-[95vw] max-h-[90vh] flex flex-col shadow-2xl">
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
           <div>
             <h2 className="font-semibold text-slate-200">System Prompt — {book.title}</h2>

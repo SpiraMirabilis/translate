@@ -86,14 +86,14 @@ class JobManager:
     # Entity review pause/resume
     # ------------------------------------------------------------------
 
-    def wait_for_review(self, timeout: int = 600) -> dict:
+    def wait_for_review(self) -> dict:
         """
         Block the translation thread until the user submits entity review.
-        Returns the submitted entity data (or empty dict on timeout).
+        Waits indefinitely — use cancel to unblock if needed.
         """
         self.status = "awaiting_review"
         self._review_event.clear()
-        self._review_event.wait(timeout=timeout)
+        self._review_event.wait()
         self.status = "running"
         result = self._review_result or {}
         self._review_result = None

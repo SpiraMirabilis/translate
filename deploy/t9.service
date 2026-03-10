@@ -1,0 +1,53 @@
+# T9 Translation App — systemd user service
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/t9.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#
+# Usage:
+#   systemctl --user start t9
+#   systemctl --user stop t9
+#   systemctl --user status t9
+#   journalctl --user -u t9 -f        # follow logs
+#
+# Enable on boot (requires lingering):
+#   loginctl enable-linger $USER
+#   systemctl --user enable t9
+#
+# IMPORTANT: Before starting, make sure:
+#   1. T9_PASSWORD is set in your .env file
+#   2. The frontend is built:  cd web/frontend && npm run build
+#   3. Update WorkingDirectory and ExecStart paths below
+
+[Unit]
+Description=T9 Chinese Web Novel Translator
+After=network.target
+
+# Refuse to start if T9_PASSWORD is not configured
+AssertFileNotEmpty=%h/Documents/code/t9/.env
+ConditionPathExists=%h/Documents/code/t9/.env
+
+[Service]
+Type=exec
+WorkingDirectory=%h/Documents/code/t9
+
+# Pre-flight: abort if T9_PASSWORD is missing from .env
+ExecStartPre=/bin/bash -c 'grep -q "^T9_PASSWORD=." %h/Documents/code/t9/.env || { echo "FATAL: T9_PASSWORD is not set in .env — refusing to start. Set it before exposing T9 to the network."; exit 1; }'
+
+# Build frontend if dist/ is missing or stale
+ExecStartPre=/bin/bash -c 'if [ ! -f web/frontend/dist/index.html ]; then echo "Building frontend..."; cd web/frontend && npm run build; fi'
+
+ExecStart=/usr/bin/python3 -m uvicorn web.app:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+# Environment
+EnvironmentFile=%h/Documents/code/t9/.env
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

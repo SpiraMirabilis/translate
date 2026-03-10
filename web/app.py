@@ -24,6 +24,7 @@ from translation_engine import TranslationEngine
 from web.services.job_manager import job_manager
 from web.services.web_interface import WebInterface
 from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api
+from web.auth import configure_auth, AuthMiddleware, router as auth_router
 
 # ------------------------------------------------------------------
 # Application setup
@@ -56,6 +57,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Auth — must be added after CORS so CORS headers are still set on 401s
+    configure_auth()
+    app.add_middleware(AuthMiddleware)
+
+    # Auth routes (login/logout/status) — before other API routes
+    app.include_router(auth_router)
 
     # API routes
     app.include_router(translation.router)

@@ -26,6 +26,14 @@ def init(web_interface, job_manager):
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Auth check for WebSocket connections
+    from web.auth import auth_required, validate_cookie, COOKIE_NAME
+    if auth_required():
+        cookie = websocket.cookies.get(COOKIE_NAME)
+        if not cookie or not validate_cookie(cookie):
+            await websocket.close(code=4401, reason="Not authenticated")
+            return
+
     await websocket.accept()
     loop = asyncio.get_event_loop()
     _job_manager.set_websocket(websocket, loop)
