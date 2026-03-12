@@ -23,14 +23,20 @@ SESSION_PAYLOAD = "t9_authenticated"
 
 _password: str | None = None
 _serializer: URLSafeTimedSerializer | None = None
-_secure_cookie: bool = False
+_secure_cookie: bool | None = None  # None = auto-detect from request
 
 
 def configure_auth():
     """Read T9_PASSWORD from environment and set up the signer."""
     global _password, _serializer, _secure_cookie
     _password = os.getenv("T9_PASSWORD")
-    _secure_cookie = os.getenv("T9_SECURE_COOKIE", "").lower() in ("1", "true", "yes")
+    env_val = os.getenv("T9_SECURE_COOKIE", "").lower()
+    if env_val in ("1", "true", "yes"):
+        _secure_cookie = True
+    elif env_val in ("0", "false", "no"):
+        _secure_cookie = False
+    else:
+        _secure_cookie = None  # auto-detect from X-Forwarded-Proto
     if _password:
         # Derive a signing secret from the password so a weak password
         # doesn't directly weaken the HMAC. The salt is fixed per-app
@@ -43,6 +49,14 @@ def configure_auth():
 
 def auth_required() -> bool:
     return _password is not None
+
+
+def _is_secure(request: Request) -> bool:
+    """Determine whether the cookie Secure flag should be set."""
+    if _secure_cookie is not None:
+        return _secure_cookie
+    # Auto-detect: trust X-Forwarded-Proto set by reverse proxy
+    return request.headers.get("x-forwarded-proto", "").lower() == "https"
 
 
 def validate_cookie(cookie_value: str) -> bool:
@@ -101,20 +115,21 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/api/auth/login")
-async def login(req: LoginRequest, response: Response):
+async def login(req: LoginRequest, request: Request, response: Response):
     if not auth_required():
         return {"authenticated": True}
 
     if req.password != _password:
         raise HTTPException(status_code=403, detail="Wrong password")
 
+    secure = _is_secure(request)
     token = _serializer.dumps(SESSION_PAYLOAD)
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
-        secure=_secure_cookie,
+        secure=secure,
         samesite="lax",
         path="/",
     )
@@ -122,8 +137,8 @@ async def login(req: LoginRequest, response: Response):
 
 
 @router.post("/api/auth/logout")
-async def logout(response: Response):
-    response.delete_cookie(key=COOKIE_NAME, path="/")
+async def logout(request: Request, response: Response):
+    response.delete_cookie(key=COOKIE_NAME, path="/", secure=_is_secure(request))
     return {"authenticated": False}
 
 

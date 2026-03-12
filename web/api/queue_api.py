@@ -201,6 +201,7 @@ async def upload_epub(
     file: UploadFile = File(...),
     book_id: Optional[int] = Form(None),
     create_book: bool = Form(False),
+    genre: Optional[str] = Form(None),
 ):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from epub_processor import EPUBProcessor
@@ -222,15 +223,46 @@ async def upload_epub(
 
         if create_book:
             meta = processor.get_epub_metadata(tmp_path)
+
+            # Determine source language from genre if provided
+            source_lang = "zh"
+            genre_obj = None
+            if genre and genre != "custom":
+                from genres import get_genre as _get_genre
+                genre_obj = _get_genre(_entity_manager.config.script_dir, genre)
+                if genre_obj and genre_obj.get("source_language"):
+                    source_lang = genre_obj["source_language"]
+
             book_id = _entity_manager.create_book(
                 title=meta.get("title", file.filename),
                 author=meta.get("author", "Unknown"),
                 language="en",
-                source_language="zh",
+                source_language=source_lang,
                 description=f"Imported from {file.filename}",
             )
             if not book_id:
                 raise HTTPException(status_code=500, detail="Failed to create book from EPUB.")
+
+            # Apply genre preset: prompt template and categories (derived from prompt)
+            if genre_obj:
+                from genres import read_genre_prompt as _read_prompt, extract_categories_from_prompt as _extract_cats
+                prompt = _read_prompt(_entity_manager.config.script_dir, genre_obj)
+                if prompt:
+                    _entity_manager.set_book_prompt_template(book_id, prompt)
+                    cats = _extract_cats(prompt)
+                    if cats:
+                        _entity_manager.set_book_categories(book_id, cats)
+
+            # Extract cover image from EPUB
+            try:
+                epub_book = processor.load_epub(tmp_path)
+                if epub_book:
+                    cover_bytes, cover_ext = processor.extract_cover_image(epub_book)
+                    if cover_bytes:
+                        cover_rel = processor.save_cover_image(cover_bytes, cover_ext, book_id)
+                        _entity_manager.update_book(book_id, cover_image=cover_rel)
+            except Exception:
+                pass  # Non-fatal
 
         success, num_chapters, message = processor.process_epub(tmp_path, book_id)
         if not success:

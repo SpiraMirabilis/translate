@@ -39,7 +39,7 @@ export default function Help() {
       <div className="mb-6">
         <h1 className="text-lg font-semibold text-slate-200">Help & Guide</h1>
         <p className="text-sm text-slate-400 mt-1">
-          T9 is a Chinese-to-English web novel translation tool. It uses AI models to translate chapters
+          T9 is a web novel translation tool supporting multiple source languages (Chinese, Japanese, Korean, and more). It uses AI models to translate chapters
           while maintaining consistent terminology across an entire book via an entity management system.
         </p>
       </div>
@@ -124,7 +124,7 @@ export default function Help() {
       {/* ── Pages ── */}
       <Section title="Translate (Dashboard)">
         <p>
-          The main translation workspace for one-off translations. Paste Chinese text into the left panel,
+          The main translation workspace for one-off translations. Paste source text into the left panel,
           select a book and chapter number, then hit Translate.
         </p>
 
@@ -170,11 +170,21 @@ export default function Help() {
             <li><span className="text-slate-300">Delete</span> — removes a chapter from the book.</li>
           </ul>
         </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Global search</p>
+          <p className="text-slate-400">
+            Click the search icon next to "New Book" (or press <Kbd>Ctrl+F</Kbd> on the Books page) to open the
+            global search modal. Select a book, type a query, and results appear grouped by chapter with match counts.
+            Click a result to jump directly into the Chapter Editor with the search pre-loaded and positioned on the
+            first match, ready to navigate forward through the book.
+          </p>
+        </div>
       </Section>
 
       <Section title="Chapter Editor">
         <p>
-          A split-pane view for proofreading. The left panel shows the original Chinese (read-only),
+          A split-pane view for proofreading. The left panel shows the original source text (read-only),
           the right panel has the editable English translation.
         </p>
 
@@ -182,10 +192,28 @@ export default function Help() {
           <p className="font-medium text-slate-200">Tools</p>
           <ul className="list-disc list-inside space-y-1 text-slate-400">
             <li><span className="text-slate-300">Entity highlighting</span> — toggle to highlight known entities in both panels with category-specific colors. Click a highlighted entity to edit it inline.</li>
-            <li><span className="text-slate-300">Dictionary lookup</span> — double-click a Chinese word or select text and use the toolbar button to look it up in CC-CEDICT.</li>
-            <li><span className="text-slate-300">LLM retranslation</span> — select a Chinese passage and request an AI retranslation. The result appears as ruby text above the original, so you can compare.</li>
+            <li><span className="text-slate-300">Dictionary lookup</span> — double-click a word or select text and use the toolbar button to look it up in CC-CEDICT (Chinese) or other dictionaries.</li>
+            <li><span className="text-slate-300">LLM retranslation</span> — select a source passage and request an AI retranslation. The result appears as ruby text above the original, so you can compare.</li>
             <li><span className="text-slate-300">Proofread toggle</span> — mark the chapter as proofread when you're satisfied with the translation.</li>
           </ul>
+        </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Search & Replace</p>
+          <p className="text-slate-400">
+            Press <Kbd>Ctrl+F</Kbd> (or click the Find button in the toolbar) to open the search bar.
+            Press <Kbd>Ctrl+H</Kbd> to open it with the replace field focused.
+          </p>
+          <ul className="list-disc list-inside space-y-1 text-slate-400">
+            <li><span className="text-slate-300">Scope</span> — search in Translated text, Source text, or Both.</li>
+            <li><span className="text-slate-300">Regex</span> — click <span className="font-mono text-slate-300">.*</span> to toggle regular expression mode.</li>
+            <li><span className="text-slate-300">Book-wide search</span> — click the book icon to search across all chapters. Matches highlight in the current chapter and <Kbd>Enter</Kbd> / <Kbd>Shift+Enter</Kbd> navigate across chapter boundaries automatically.</li>
+            <li><span className="text-slate-300">Replace / Replace All</span> — only available when the scope includes translated text (source text is read-only). Replace All in book-wide mode modifies all chapters at once.</li>
+            <li><span className="text-slate-300">Undo</span> — after a book-wide Replace All, an undo toast appears for 15 seconds. Click it to revert all changes across every affected chapter.</li>
+          </ul>
+          <p className="text-slate-400">
+            Keyboard: <Kbd>Enter</Kbd> next match, <Kbd>Shift+Enter</Kbd> previous match, <Kbd>Escape</Kbd> close search.
+          </p>
         </div>
       </Section>
 
@@ -278,6 +306,123 @@ export default function Help() {
           <p className="text-slate-400">
             Export all entities as JSON for backup. Useful before making large changes to your entity database.
           </p>
+        </div>
+      </Section>
+
+      {/* ── WordPress ── */}
+      <Section title="WordPress / Fictioneer Publishing (Optional)">
+        <p>
+          T9 can publish translated books directly to a WordPress site running the{' '}
+          <Ref to="https://github.com/Tetrakern/fictioneer">Fictioneer</Ref> theme.
+          Stories and chapters are created via the WordPress REST API, with a small companion plugin
+          that handles Fictioneer-specific metadata (chapter linking, word counts, story ordering).
+        </p>
+        <p className="text-slate-400">
+          This is entirely optional — you can ignore this section if you only need EPUB export.
+        </p>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">What you need</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-400">
+            <li>WordPress 5.6+ with the <span className="text-slate-300">Fictioneer</span> theme active</li>
+            <li>A WordPress user account with <span className="text-slate-300">Editor</span> or <span className="text-slate-300">Administrator</span> role</li>
+            <li>HTTPS enabled on the WordPress site (required for Application Passwords)</li>
+          </ul>
+        </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Step 1 — Install the T9 plugin on WordPress</p>
+          <p className="text-slate-400">
+            T9 ships with a small WordPress plugin at <span className="font-mono text-slate-300">deploy/fictioneer-rest-meta.php</span>.
+            This plugin adds REST endpoints that let T9 set Fictioneer-specific metadata that the standard
+            WordPress API cannot handle (chapter-to-story linking, word counts, story status).
+          </p>
+
+          <p className="text-amber-400/80 text-xs mt-2">Same server (T9 and WordPress on the same machine)</p>
+          <pre className="bg-slate-900/70 rounded p-3 text-xs font-mono text-slate-300 overflow-x-auto whitespace-pre">
+{`cd /path/to/t9
+bash deploy/install-wp-plugin.sh /path/to/wordpress`}
+          </pre>
+          <p className="text-slate-500 text-xs">
+            The script copies the plugin, sets file ownership to <span className="font-mono">www-data</span>,
+            and activates it via WP-CLI if available. Defaults to <span className="font-mono">/srv/www/wordpress</span> if no path is given.
+          </p>
+
+          <p className="text-amber-400/80 text-xs mt-3">Different servers (T9 and WordPress on separate machines)</p>
+          <pre className="bg-slate-900/70 rounded p-3 text-xs font-mono text-slate-300 overflow-x-auto whitespace-pre">
+{`# Copy the plugin file to the WordPress server
+scp deploy/fictioneer-rest-meta.php user@wp-server:/tmp/
+
+# SSH in and run the install script
+ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
+          </pre>
+          <p className="text-slate-500 text-xs">
+            Alternatively, you can install manually: copy the plugin file
+            to <span className="font-mono">wp-content/plugins/fictioneer-rest-meta/fictioneer-rest-meta.php</span> on
+            the WordPress server, then activate it in <span className="text-slate-300">WP Admin &gt; Plugins</span>.
+          </p>
+          <p className="text-slate-500 text-xs">
+            A third option is to zip the plugin directory and upload it
+            via <span className="text-slate-300">WP Admin &gt; Plugins &gt; Add New &gt; Upload Plugin</span>.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Step 2 — Create a WordPress Application Password</p>
+          <p className="text-slate-400">
+            T9 authenticates with WordPress using Application Passwords (not your regular login password).
+          </p>
+          <ol className="list-decimal list-inside space-y-1 text-slate-400">
+            <li>Log in to WP Admin.</li>
+            <li>Go to <span className="text-slate-300">Users &gt; Profile</span>.</li>
+            <li>Scroll to <span className="text-slate-300">Application Passwords</span>.</li>
+            <li>Enter a name (e.g. "T9") and click <span className="text-slate-300">Add New Application Password</span>.</li>
+            <li>Copy the generated password — it is only shown once.</li>
+          </ol>
+          <p className="text-slate-500 text-xs mt-1">
+            For local/dev setups without HTTPS, add <span className="font-mono">define('WP_ENVIRONMENT_TYPE', 'local');</span> to
+            your <span className="font-mono">wp-config.php</span>.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Step 3 — Configure T9</p>
+          <p className="text-slate-400">
+            Go to <Ref to="/settings">Settings</Ref> and fill in the <span className="text-slate-300">WordPress / Fictioneer</span> section:
+          </p>
+          <ul className="list-disc list-inside space-y-1 text-slate-400">
+            <li><span className="text-slate-300">WordPress Site URL</span> — the full URL, e.g. <span className="font-mono text-slate-500">https://novels.example.com</span></li>
+            <li><span className="text-slate-300">Username</span> — your WordPress login username or email</li>
+            <li><span className="text-slate-300">Application Password</span> — the password from step 2</li>
+          </ul>
+          <p className="text-slate-400">
+            Click <span className="text-slate-300">Save</span>, then <span className="text-slate-300">Test Connection</span> to
+            verify everything works.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Step 4 — Publish</p>
+          <p className="text-slate-400">
+            Go to <Ref to="/books">Books</Ref> and click the globe icon on the book you want to publish.
+            Set the story status and rating, then click <span className="text-slate-300">Publish All</span>.
+            T9 creates (or updates) a Fictioneer story post, uploads the cover image, creates chapter posts,
+            links them to the story, and sets the chapter ordering.
+          </p>
+          <p className="text-slate-400">
+            Re-publishing is safe and incremental — unchanged chapters are skipped, modified chapters are
+            updated, and new chapters are created.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="font-medium text-slate-200">Troubleshooting</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-400">
+            <li><span className="text-slate-300">Test connection returns 401</span> — verify the Application Password is correct and HTTPS is enabled.</li>
+            <li><span className="text-slate-300">Chapters show 0 words</span> — this means the word-count step failed. Re-publish to fix, or use the recalculate endpoint on the WordPress server.</li>
+            <li><span className="text-slate-300">Duplicate stories</span> — if a publish fails midway, re-publishing may create a duplicate story. Delete the extra in WP Admin and clear the publish state: <span className="font-mono text-xs">sqlite3 database.db "DELETE FROM wp_publish_state WHERE book_id = X;"</span></li>
+            <li><span className="text-slate-300">Plugin not working after update</span> — re-run the install script or re-upload the plugin file. The plugin has no settings of its own.</li>
+          </ul>
         </div>
       </Section>
 

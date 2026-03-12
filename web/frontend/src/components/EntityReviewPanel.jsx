@@ -6,29 +6,21 @@
  * On submit, sends edited entity data back to the API.
  */
 import { useState } from 'react'
-import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen } from 'lucide-react'
+import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen, Copy } from 'lucide-react'
 import { api } from '../services/api'
 import { DictResult, useDictLookup } from './DictLookup'
-
-const CATEGORY_ORDER = [
-  'characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures'
-]
-
-const CATEGORY_COLORS = {
-  characters:    'badge-indigo',
-  places:        'badge-emerald',
-  organizations: 'badge-amber',
-  abilities:     'badge-rose',
-  titles:        'badge-slate',
-  equipment:     'badge-slate',
-  creatures:     'badge-indigo',
-}
+import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
 
 export default function EntityReviewPanel({ entities, context, onDone }) {
   // Flatten entities into editable rows
   const initialRows = () => {
     const rows = []
-    for (const cat of CATEGORY_ORDER) {
+    // Use DEFAULT_CATEGORIES order first, then any extra categories
+    const orderedCats = [...DEFAULT_CATEGORIES]
+    for (const cat of Object.keys(entities)) {
+      if (!orderedCats.includes(cat)) orderedCats.push(cat)
+    }
+    for (const cat of orderedCats) {
       const catEntities = entities[cat] || {}
       for (const [untranslated, data] of Object.entries(catEntities)) {
         rows.push({
@@ -115,6 +107,24 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
     }
   }
 
+  const handleCopyContext = (row) => {
+    if (!context) return
+    const idx = context.indexOf(row.untranslated)
+    let snippet
+    if (idx !== -1) {
+      const start = Math.max(0, idx - 100)
+      const end = Math.min(context.length, idx + row.untranslated.length + 100)
+      snippet = context.slice(start, end)
+    }
+    const lines = [
+      `Entity: ${row.untranslated} → ${row.translation}`,
+      `Category: ${row.category}`,
+      '',
+      snippet ? `Context:\n${snippet}` : '(entity not found in chapter text)',
+    ]
+    navigator.clipboard.writeText(lines.join('\n'))
+  }
+
   const activeRows = rows.filter(r => !r.deleted)
   const deletedRows = rows.filter(r => r.deleted)
 
@@ -167,6 +177,8 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
               onUpdate={patch => update(row.id, patch)}
               onDelete={() => update(row.id, { deleted: true })}
               onAdvice={() => handleAdvice(row)}
+              onCopyContext={() => handleCopyContext(row)}
+              hasContext={!!context}
             />
           ))}
 
@@ -175,7 +187,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
               <p className="text-xs text-slate-500 mb-2">Marked for deletion ({deletedRows.length})</p>
               {deletedRows.map(row => (
                 <div key={row.id} className="flex items-center gap-3 py-1.5 opacity-40">
-                  <span className={`badge ${CATEGORY_COLORS[row.category]}`}>{row.category}</span>
+                  <span className={`badge ${getCatColor(row.category)}`}>{row.category}</span>
                   <span className="text-sm font-mono line-through text-slate-400">{row.untranslated}</span>
                   <button
                     className="text-xs text-slate-500 hover:text-slate-300 ml-auto"
@@ -199,15 +211,16 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
   )
 }
 
-function EntityRow({ row, onUpdate, onDelete, onAdvice }) {
+function EntityRow({ row, onUpdate, onDelete, onAdvice, onCopyContext, hasContext }) {
   const [showAdvice, setShowAdvice] = useState(false)
+  const [copied, setCopied] = useState(false)
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
 
   return (
     <div className="card p-3 space-y-2">
       <div className="flex items-start gap-3">
         {/* Category badge */}
-        <span className={`badge ${CATEGORY_COLORS[row.category]} shrink-0 mt-0.5`}>
+        <span className={`badge ${getCatColor(row.category)} shrink-0 mt-0.5`}>
           {row.category}
         </span>
 
@@ -250,6 +263,19 @@ function EntityRow({ row, onUpdate, onDelete, onAdvice }) {
         />
 
         {/* Actions */}
+        {hasContext && (
+          <button
+            className="btn-ghost p-1.5 shrink-0"
+            title="Copy entity + context to clipboard"
+            onClick={() => {
+              onCopyContext()
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1500)
+            }}
+          >
+            <Copy size={14} className={copied ? 'text-emerald-400' : 'text-slate-400'} />
+          </button>
+        )}
         <button
           className="btn-ghost p-1.5 shrink-0"
           title="Dictionary lookup"

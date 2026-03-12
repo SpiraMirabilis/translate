@@ -2,10 +2,35 @@
 Settings and provider configuration endpoints.
 """
 import os
+import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
 from providers import get_factory
+
+
+def _persist_env(key: str, value: str):
+    """Write or update a key=value in the .env file so it survives restarts."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
+    env_path = os.path.normpath(env_path)
+
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+
+    pattern = re.compile(rf"^{re.escape(key)}=")
+    found = False
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}\n")
+
+    with open(env_path, "w") as f:
+        f.writelines(lines)
 
 router = APIRouter(prefix="/api/settings")
 
@@ -55,6 +80,7 @@ async def set_api_key(provider_name: str, req: ApiKeyRequest):
         raise HTTPException(status_code=400, detail="This provider has no API key variable.")
 
     os.environ[env_var] = req.api_key
+    _persist_env(env_var, req.api_key)
     return {"status": "ok", "env_var": env_var}
 
 

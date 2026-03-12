@@ -47,6 +47,13 @@ export const api = {
   updateBook:    (id, body)   => put(`/api/books/${id}`, body),
   deleteBook:    (id)         => del(`/api/books/${id}`),
   exportBook:    (id, format) => get(`/api/books/${id}/export?format=${format}`),
+  uploadCover:   (id, formData) => postForm(`/api/books/${id}/cover`, formData),
+  deleteCover:   (id)         => del(`/api/books/${id}/cover`),
+
+  // Search & Replace
+  searchBook:      (bookId, body) => post(`/api/books/${bookId}/search`, body),
+  replaceInBook:   (bookId, body) => post(`/api/books/${bookId}/replace`, body),
+  undoReplace:     (bookId)       => post(`/api/books/${bookId}/undo-replace`, {}),
 
   // Chapters
   listChapters:        (bookId)       => get(`/api/books/${bookId}/chapters`),
@@ -55,11 +62,20 @@ export const api = {
   deleteChapter:       (bookId, num)  => del(`/api/books/${bookId}/chapters/${num}`),
   setProofread:        (bookId, num, isProofread) => put(`/api/books/${bookId}/chapters/${num}/proofread`, { is_proofread: isProofread }),
 
+  // Genres
+  listGenres:    ()              => get('/api/books/genres'),
+
   // Prompt templates
   getDefaultPrompt: ()           => get('/api/books/default-prompt'),
   getPrompt:     (bookId)       => get(`/api/books/${bookId}/prompt`),
   setPrompt:     (bookId, body) => put(`/api/books/${bookId}/prompt`, body),
   resetPrompt:   (bookId)       => del(`/api/books/${bookId}/prompt`),
+
+  // Per-book categories
+  getBookCategories:   (bookId)       => get(`/api/books/${bookId}/categories`),
+  setBookCategories:   (bookId, body) => put(`/api/books/${bookId}/categories`, body),
+  resetBookCategories: (bookId)       => del(`/api/books/${bookId}/categories`),
+  getCategoryEntityCounts: (bookId)   => get(`/api/books/${bookId}/categories/entity-counts`),
 
   // Entities
   listEntities:   (params = {}) => {
@@ -78,8 +94,10 @@ export const api = {
   deleteEntity:     (id)         => del(`/api/entities/${id}`),
   getDuplicates:    (params)     => get('/api/entities/duplicates' + (params ? '?' + new URLSearchParams(params) : '')),
   resolveDuplicate: (body)       => post('/api/entities/resolve-duplicate', body),
+  getEntityContext: (id)         => get(`/api/entities/${id}/context`),
   getAdvice:        (body)       => post('/api/entities/advice', body),
   propagateChange:  (body)       => post('/api/entities/propagate', body),
+  batchEntities:    (body)       => post('/api/entities/batch', body),
 
   // Queue
   listQueue:        (bookId)     => get(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
@@ -107,6 +125,14 @@ export const api = {
   // Dictionary
   dictLookup:       (q)          => get(`/api/dict/lookup?q=${encodeURIComponent(q)}`),
   retranslate:      (body)       => post('/api/dict/retranslate', body),
+
+  // WordPress
+  wpGetSettings:    ()               => get('/api/wordpress/settings'),
+  wpUpdateSettings: (body)           => put('/api/wordpress/settings', body),
+  wpTestConnection: ()               => post('/api/wordpress/test', {}),
+  wpBookStatus:     (bookId)         => get(`/api/wordpress/books/${bookId}/status`),
+  wpPublish:        (bookId, body)   => post(`/api/wordpress/books/${bookId}/publish`, body),
+  wpCancelPublish:  (bookId)         => post(`/api/wordpress/books/${bookId}/cancel`, {}),
 
   // Auth
   authStatus:       ()           => get('/api/auth/status'),

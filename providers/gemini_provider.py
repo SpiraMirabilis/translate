@@ -109,7 +109,7 @@ class GeminiProvider(ModelProvider):
         """
         Create Gemini response schema from OpenAI-style response_format.
         
-        This matches the expected structure from the translation engine based on system_prompt.txt.
+        This matches the expected structure from the translation engine based on the system prompt.
         """
         if not response_format or response_format.get("type") != "json_object":
             return None

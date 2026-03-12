@@ -25,7 +25,8 @@ function WsProvider({ children }) {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
-    const ws = new WebSocket(`ws://${location.host}/ws`)
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${protocol}//${location.host}/ws`)
     wsRef.current = ws
 
     ws.onopen    = () => { setConnected(true); clearTimeout(reconnectTimer.current) }

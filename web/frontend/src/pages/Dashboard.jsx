@@ -54,6 +54,21 @@ export default function Dashboard() {
     }).catch(() => {})
   }, [])
 
+  // Poll job status as fallback for missed WebSocket messages (React 18 batching
+  // can drop messages when multiple arrive in the same frame).
+  useEffect(() => {
+    if (jobStatus !== 'running') return
+    const interval = setInterval(() => {
+      api.getJobStatus().then(d => {
+        if (d.status === 'awaiting_review' && d.pending_review) {
+          setJobStatus('awaiting_review')
+          setEntityReview(d.pending_review)
+        }
+      }).catch(() => {})
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [jobStatus])
+
   // Handle WebSocket messages
   useEffect(() => {
     if (!lastMessage) return

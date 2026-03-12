@@ -23,7 +23,7 @@ from translation_engine import TranslationEngine
 
 from web.services.job_manager import job_manager
 from web.services.web_interface import WebInterface
-from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api
+from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, wordpress_api
 from web.auth import configure_auth, AuthMiddleware, router as auth_router
 
 # ------------------------------------------------------------------
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     settings_api.init_db(entity_manager)
     dictionary_api.init(entity_manager, translator)
     activity_log_api.init(entity_manager)
+    wordpress_api.init(config, entity_manager, job_manager)
 
     app = FastAPI(title="T9 Translation GUI", version="1.0.0")
 
@@ -73,11 +74,26 @@ def create_app() -> FastAPI:
     app.include_router(settings_api.router)
     app.include_router(dictionary_api.router)
     app.include_router(activity_log_api.router)
+    app.include_router(wordpress_api.router)
 
     # Serve built frontend (production)
     static_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
     if os.path.isdir(static_dir):
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+        from fastapi.responses import FileResponse
+
+        index_html = os.path.join(static_dir, "index.html")
+
+        # Serve actual static assets (JS, CSS, images, etc.)
+        app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="static-assets")
+
+        # SPA catch-all: any non-API path serves index.html for client-side routing
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            # Serve real files (e.g. favicon.ico) if they exist
+            file_path = os.path.join(static_dir, full_path)
+            if full_path and os.path.isfile(file_path):
+                return FileResponse(file_path)
+            return FileResponse(index_html)
 
     return app
 
@@ -93,4 +109,6 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         app_dir=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1",
     )

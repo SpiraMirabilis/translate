@@ -110,6 +110,9 @@ export default function Settings() {
         </section>
       )}
 
+      {/* WordPress */}
+      <WordPressSection />
+
       {/* Database */}
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">Database</h2>
@@ -215,5 +218,125 @@ function ProviderCard({ provider }) {
 
       {error && <p className="text-rose-400 text-xs">{error}</p>}
     </div>
+  )
+}
+
+function WordPressSection() {
+  const [wp, setWp] = useState({ wp_url: '', wp_username: '', wp_app_password: '' })
+  const [showPw, setShowPw] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null)
+  const [error, setError] = useState(null)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    api.wpGetSettings()
+      .then(d => {
+        setWp({ wp_url: d.wp_url || '', wp_username: d.wp_username || '', wp_app_password: '' })
+        setLoaded(true)
+      })
+      .catch(e => setError(e.message))
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true); setError(null)
+    try {
+      const body = { wp_url: wp.wp_url, wp_username: wp.wp_username }
+      if (wp.wp_app_password) body.wp_app_password = wp.wp_app_password
+      await api.wpUpdateSettings(body)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTest = async () => {
+    setTesting(true); setTestResult(null); setError(null)
+    try {
+      const r = await api.wpTestConnection()
+      setTestResult({ ok: true, msg: `Connected to "${r.site_name}"` })
+    } catch (e) {
+      setTestResult({ ok: false, msg: e.message })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  if (!loaded) return null
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold text-slate-300 mb-3">WordPress / Fictioneer</h2>
+      <div className="card p-4 space-y-3">
+        <p className="text-xs text-slate-500">
+          Connect to a WordPress site with the Fictioneer theme to publish books and chapters.
+          Use an <a href="https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/" target="_blank" rel="noopener" className="text-blue-400 hover:underline">Application Password</a> for authentication.
+        </p>
+        <div>
+          <label className="label">WordPress Site URL</label>
+          <input
+            className="input text-sm"
+            value={wp.wp_url}
+            onChange={e => setWp(s => ({ ...s, wp_url: e.target.value }))}
+            placeholder="https://your-site.com"
+          />
+        </div>
+        <div>
+          <label className="label">Username</label>
+          <input
+            className="input text-sm"
+            value={wp.wp_username}
+            onChange={e => setWp(s => ({ ...s, wp_username: e.target.value }))}
+            placeholder="admin"
+          />
+        </div>
+        <div>
+          <label className="label">Application Password</label>
+          <div className="relative">
+            <input
+              type={showPw ? 'text' : 'password'}
+              className="input pr-8 text-sm font-mono"
+              value={wp.wp_app_password}
+              onChange={e => setWp(s => ({ ...s, wp_app_password: e.target.value }))}
+              placeholder="xxxx xxxx xxxx xxxx xxxx xxxx"
+            />
+            <button
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+              onClick={() => setShowPw(v => !v)}
+            >
+              {showPw ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </div>
+        </div>
+
+        {testResult && (
+          <div className={`text-xs rounded px-2 py-1 ${testResult.ok ? 'bg-emerald-950 text-emerald-300' : 'bg-rose-950 text-rose-300'}`}>
+            {testResult.ok ? testResult.msg : `Failed: ${testResult.msg}`}
+          </div>
+        )}
+
+        {error && <p className="text-rose-400 text-xs">{error}</p>}
+
+        <div className="flex items-center gap-2">
+          <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving}>
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+            {saved ? 'Saved!' : 'Save'}
+          </button>
+          <button
+            className="btn-secondary flex items-center gap-1"
+            onClick={handleTest}
+            disabled={testing}
+          >
+            {testing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            Test Connection
+          </button>
+        </div>
+      </div>
+    </section>
   )
 }

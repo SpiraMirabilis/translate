@@ -264,6 +264,80 @@ class EPUBProcessor:
         
         return None
     
+    def extract_cover_image(self, book):
+        """
+        Extract cover image from an EPUB book object.
+
+        Args:
+            book: epub.EpubBook object
+
+        Returns:
+            tuple: (image_bytes, extension) or (None, None)
+        """
+        ext_map = {
+            "image/jpeg": ".jpg", "image/png": ".png",
+            "image/gif": ".gif", "image/webp": ".webp",
+            "image/svg+xml": ".svg",
+        }
+
+        # Strategy 1: OPF cover metadata -> item by ID
+        cover_meta = book.get_metadata('OPF', 'cover')
+        if cover_meta:
+            cover_id = cover_meta[0][1].get('content', '') if len(cover_meta[0]) > 1 else cover_meta[0][0]
+            if cover_id:
+                for item in book.get_items():
+                    if item.get_id() == cover_id:
+                        mt = item.media_type or ''
+                        if mt.startswith('image/'):
+                            ext = ext_map.get(mt, '.jpg')
+                            self.logger.info(f"Found cover via OPF metadata: {item.file_name}")
+                            return item.get_content(), ext
+
+        # Strategy 2: item with properties="cover-image"
+        for item in book.get_items():
+            props = getattr(item, 'properties', None) or []
+            if isinstance(props, str):
+                props = props.split()
+            if 'cover-image' in props:
+                mt = item.media_type or ''
+                ext = ext_map.get(mt, '.jpg')
+                self.logger.info(f"Found cover via cover-image property: {item.file_name}")
+                return item.get_content(), ext
+
+        # Strategy 3: item with "cover" in ID and is an image
+        for item in book.get_items():
+            item_id = (item.get_id() or '').lower()
+            fname = (item.file_name or '').lower()
+            mt = item.media_type or ''
+            if mt.startswith('image/') and ('cover' in item_id or 'cover' in fname):
+                ext = ext_map.get(mt, '.jpg')
+                self.logger.info(f"Found cover by name heuristic: {item.file_name}")
+                return item.get_content(), ext
+
+        self.logger.info("No cover image found in EPUB")
+        return None, None
+
+    def save_cover_image(self, image_bytes, extension, book_id):
+        """
+        Save extracted cover image to covers/ directory.
+
+        Args:
+            image_bytes: Raw image bytes
+            extension: File extension (e.g. '.jpg')
+            book_id: Book ID for the filename
+
+        Returns:
+            str: Relative path like 'covers/42.jpg'
+        """
+        covers_dir = os.path.join(self.config.script_dir, "covers")
+        os.makedirs(covers_dir, exist_ok=True)
+        filename = f"{book_id}{extension}"
+        filepath = os.path.join(covers_dir, filename)
+        with open(filepath, "wb") as f:
+            f.write(image_bytes)
+        self.logger.info(f"Saved cover image to {filepath}")
+        return f"covers/{filename}"
+
     def add_chapters_to_queue(self, chapters, book_id=None, epub_path=None):
         """
         Add chapters to the translation queue.

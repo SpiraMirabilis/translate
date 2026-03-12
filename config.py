@@ -23,6 +23,11 @@ class TranslationConfig:
         # Paths
         self.script_dir = os.path.dirname(os.path.abspath(__file__)) + "/"
         
+        # WordPress / Fictioneer publishing
+        self.wp_url = os.getenv("WP_URL", "")
+        self.wp_username = os.getenv("WP_USERNAME", "")
+        self.wp_app_password = os.getenv("WP_APP_PASSWORD", "")
+
         # Translation settings (now per-provider via models.json)
         # Legacy fallback for MAX_CHARS env var if needed
         self._fallback_max_chars = int(os.getenv("MAX_CHARS", "5000"))

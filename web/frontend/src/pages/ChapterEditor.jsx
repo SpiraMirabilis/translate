@@ -7,10 +7,12 @@
  * Reached via /books/:bookId/chapters/:chapterNum/edit
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search } from 'lucide-react'
 import ComboBox from '../components/ComboBox'
+import { useSearch } from '../hooks/useSearch'
+import SearchBar from '../components/SearchBar'
 
 const CATEGORIES = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
 
@@ -569,8 +571,26 @@ function SelectionToolbar({ position, onLookup, onRetranslate }) {
 }
 
 
+// ── Apply search highlight marks to text ──────────────────────────────
+function applySearchHighlights(textContent, searchMatches, activeMatch) {
+  if (!searchMatches || searchMatches.length === 0) return [{ text: textContent }]
+  // Sort by col ascending
+  const sorted = [...searchMatches].sort((a, b) => a.col - b.col)
+  const parts = []
+  let pos = 0
+  for (const m of sorted) {
+    if (m.col > pos) parts.push({ text: textContent.slice(pos, m.col) })
+    const isActive = activeMatch && m.col === activeMatch.col && m.length === activeMatch.length && m.field === activeMatch.field
+    parts.push({ text: textContent.slice(m.col, m.col + m.length), search: true, active: isActive })
+    pos = m.col + m.length
+  }
+  if (pos < textContent.length) parts.push({ text: textContent.slice(pos) })
+  return parts
+}
+
+
 // ── Highlighted Chinese line component ───────────────────────────────
-function HighlightedChineseLine({ line, matcher, annotation, onEntityClick }) {
+function HighlightedChineseLine({ line, matcher, annotation, onEntityClick, searchMatches, activeMatch }) {
   const segments = useMemo(
     () => highlightSegments(line, matcher, false),
     [line, matcher]
@@ -600,6 +620,42 @@ function HighlightedChineseLine({ line, matcher, annotation, onEntityClick }) {
     return <span key={j}>{seg.text}</span>
   })
 
+  // Overlay search marks on the whole line (simpler, more reliable approach)
+  if (searchMatches && searchMatches.length > 0) {
+    const parts = applySearchHighlights(line, searchMatches, activeMatch)
+    const searchContent = parts.map((p, j) => {
+      if (p.search) {
+        return (
+          <mark
+            key={`s${j}`}
+            style={{
+              backgroundColor: p.active ? '#f59e0b' : '#fbbf24',
+              color: '#1e293b',
+              borderRadius: '1px',
+              padding: '0 1px',
+            }}
+          >
+            {p.text}
+          </mark>
+        )
+      }
+      // For non-search parts, render with entity highlighting
+      return <span key={`s${j}`}>{p.text}</span>
+    })
+
+    if (annotation) {
+      return (
+        <ruby className="ruby-annotation">
+          {searchContent}
+          <rt className="text-emerald-400/90 font-sans text-[0.65em] leading-tight tracking-normal">
+            {annotation}
+          </rt>
+        </ruby>
+      )
+    }
+    return <>{searchContent}</>
+  }
+
   if (annotation) {
     return (
       <ruby className="ruby-annotation">
@@ -615,7 +671,7 @@ function HighlightedChineseLine({ line, matcher, annotation, onEntityClick }) {
 
 
 // ── English overlay backdrop component ───────────────────────────────
-function EnglishBackdrop({ text, matcher, scrollTop, paddingClass }) {
+function EnglishBackdrop({ text, matcher, scrollTop, paddingClass, searchMatches, activeMatch }) {
   const ref = useRef(null)
   const segments = useMemo(
     () => highlightSegments(text, matcher, true),
@@ -627,6 +683,15 @@ function EnglishBackdrop({ text, matcher, scrollTop, paddingClass }) {
     if (ref.current) ref.current.scrollTop = scrollTop
   }, [scrollTop])
 
+  // Build search highlights per line
+  const searchByLine = useMemo(() => {
+    if (!searchMatches || Object.keys(searchMatches).length === 0) return null
+    return searchMatches
+  }, [searchMatches])
+
+  // If we have search matches, render line-by-line with search highlights
+  const hasSearchMatches = searchByLine && Object.keys(searchByLine).length > 0
+
   return (
     <div
       ref={ref}
@@ -635,25 +700,57 @@ function EnglishBackdrop({ text, matcher, scrollTop, paddingClass }) {
                  ${paddingClass}`}
       style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}
     >
-      {segments.map((seg, i) => {
-        if (seg.entity) {
-          const colors = CATEGORY_COLORS[seg.entity.category] || CATEGORY_COLORS.characters
-          return (
-            <span
-              key={i}
-              style={{
-                backgroundColor: colors.bg,
-                borderBottom: `1px dashed ${colors.border}`,
-                borderRadius: '2px',
-              }}
-            >
-              {/* Invisible text to take up the same space as the textarea text */}
-              <span style={{ color: 'transparent' }}>{seg.text}</span>
-            </span>
-          )
-        }
-        return <span key={i} style={{ color: 'transparent' }}>{seg.text}</span>
-      })}
+      {hasSearchMatches ? (
+        // Line-by-line rendering with search highlights
+        text.split('\n').map((line, lineIdx) => {
+          const lineMatches = searchByLine[lineIdx]
+          if (lineMatches && lineMatches.length > 0) {
+            const parts = applySearchHighlights(line, lineMatches, activeMatch)
+            return (
+              <span key={lineIdx}>
+                {parts.map((p, j) => {
+                  if (p.search) {
+                    return (
+                      <span
+                        key={j}
+                        style={{
+                          backgroundColor: p.active ? '#f59e0b' : '#fbbf24',
+                          borderRadius: '1px',
+                        }}
+                      >
+                        <span style={{ color: 'transparent' }}>{p.text}</span>
+                      </span>
+                    )
+                  }
+                  return <span key={j} style={{ color: 'transparent' }}>{p.text}</span>
+                })}
+                {lineIdx < text.split('\n').length - 1 ? '\n' : ''}
+              </span>
+            )
+          }
+          return <span key={lineIdx} style={{ color: 'transparent' }}>{line}{lineIdx < text.split('\n').length - 1 ? '\n' : ''}</span>
+        })
+      ) : (
+        // Original entity-only rendering
+        segments.map((seg, i) => {
+          if (seg.entity) {
+            const colors = CATEGORY_COLORS[seg.entity.category] || CATEGORY_COLORS.characters
+            return (
+              <span
+                key={i}
+                style={{
+                  backgroundColor: colors.bg,
+                  borderBottom: `1px dashed ${colors.border}`,
+                  borderRadius: '2px',
+                }}
+              >
+                <span style={{ color: 'transparent' }}>{seg.text}</span>
+              </span>
+            )
+          }
+          return <span key={i} style={{ color: 'transparent' }}>{seg.text}</span>
+        })
+      )}
     </div>
   )
 }
@@ -663,6 +760,7 @@ function EnglishBackdrop({ text, matcher, scrollTop, paddingClass }) {
 export default function ChapterEditor() {
   const { bookId, chapterNum } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [chapter, setChapter] = useState(null)
   const [book, setBook] = useState(null)
@@ -693,6 +791,13 @@ export default function ChapterEditor() {
   const [retranslateModal, setRetranslateModal] = useState(null)
   const [annotations, setAnnotations] = useState({})
   const [editingEntity, setEditingEntity] = useState(null)
+
+  // Search
+  const search = useSearch()
+
+  // Replace-all undo state
+  const [undoInfo, setUndoInfo] = useState(null) // { type: 'local'|'book', prevText?, count }
+  const undoTimerRef = useRef(null)
 
   // Overlay scroll sync
   const [overlayScrollTop, setOverlayScrollTop] = useState(0)
@@ -741,6 +846,26 @@ export default function ChapterEditor() {
       .finally(() => setLoading(false))
   }, [bookId, chapterNum])
 
+  // Open search bar from URL params (e.g. from global search modal)
+  var searchParamsApplied = useRef(false)
+  useEffect(function applyUrlSearch() {
+    if (loading || searchParamsApplied.current) return
+    var q = searchParams.get('search')
+    if (!q) return
+    searchParamsApplied.current = true
+    var sc = searchParams.get('searchScope') || 'translated'
+    var regex = searchParams.get('searchRegex') === '1'
+    var bookWide = searchParams.get('searchBook') === '1'
+    // Clear the URL params so they don't re-trigger
+    setSearchParams({}, { replace: true })
+    // Open search with the params
+    search.setQuery(q)
+    search.setScope(sc)
+    search.setIsRegex(regex)
+    search.setIsBookWide(bookWide)
+    search.open()
+  }, [loading])
+
   useEffect(() => {
     const handler = (e) => {
       if (dirty) {
@@ -751,6 +876,22 @@ export default function ChapterEditor() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
+
+  // Global keyboard shortcut for search (Ctrl+F / Ctrl+H)
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault()
+        search.open()
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'h') {
+        e.preventDefault()
+        search.open({ focusReplace: true })
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [search])
 
   // Measure wrapped line heights for the gutter
   const measureLineHeights = useCallback(() => {
@@ -777,6 +918,199 @@ export default function ChapterEditor() {
     window.addEventListener('resize', measureLineHeights)
     return () => window.removeEventListener('resize', measureLineHeights)
   }, [measureLineHeights])
+
+  // Recompute chapter-level search matches when inputs change
+  const searchDebounceRef = useRef(null)
+  const prevIsBookWide = useRef(search.isBookWide)
+
+  useEffect(() => {
+    if (!search.isOpen || !search.query) {
+      search.updateChapterMatches('', '', [], 'both', false)
+      return
+    }
+
+    // Always compute local chapter matches instantly
+    search.updateChapterMatches(search.query, text, untranslatedLines, search.scope, search.isRegex)
+
+    // Book-wide search: fire immediately when toggling on, debounce for query changes
+    if (search.isBookWide) {
+      const justToggledOn = !prevIsBookWide.current
+      clearTimeout(searchDebounceRef.current)
+      if (justToggledOn) {
+        // Immediate search when toggling book-wide on
+        search.searchBook(bookId, search.query, search.scope, search.isRegex)
+      } else {
+        searchDebounceRef.current = setTimeout(() => {
+          search.searchBook(bookId, search.query, search.scope, search.isRegex)
+        }, 300)
+      }
+    }
+
+    prevIsBookWide.current = search.isBookWide
+    return () => clearTimeout(searchDebounceRef.current)
+  }, [search.isOpen, search.query, search.scope, search.isRegex, search.isBookWide, text, untranslatedLines, bookId])
+
+  // After navigating to a new chapter in book-wide mode, sync the book index
+  useEffect(() => {
+    if (search.isOpen && search.isBookWide && search.bookMatchOrder.length > 0) {
+      search.syncBookIndexToChapter(parseInt(chapterNum))
+    }
+  }, [chapterNum, search.bookMatchOrder])
+
+  // Search handlers
+  const handleSearchNext = useCallback(() => {
+    const result = search.nextMatch(parseInt(chapterNum))
+    if (result?.navigateTo) goToChapter(result.navigateTo)
+  }, [search, chapterNum])
+
+  const handleSearchPrev = useCallback(() => {
+    const result = search.prevMatch(parseInt(chapterNum))
+    if (result?.navigateTo) goToChapter(result.navigateTo)
+  }, [search, chapterNum])
+
+  const handleSearchReplace = useCallback(() => {
+    const match = search.activeMatch
+    if (!match || match.field !== 'translated') return
+    const newText = search.replaceCurrentMatch(text, match)
+    setText(newText)
+    setDirty(true)
+    setSaved(false)
+    // Advance to next match
+    setTimeout(() => handleSearchNext(), 10)
+  }, [search, text, handleSearchNext])
+
+  const showUndoToast = useCallback(function showUndo(info) {
+    clearTimeout(undoTimerRef.current)
+    setUndoInfo(info)
+    undoTimerRef.current = setTimeout(function hideUndo() { setUndoInfo(null) }, 15000)
+  }, [])
+
+  const handleUndo = useCallback(async function doUndo() {
+    if (!undoInfo) return
+    clearTimeout(undoTimerRef.current)
+    if (undoInfo.type === 'local') {
+      // Restore local text
+      if (undoInfo.prevText != null) {
+        setText(undoInfo.prevText)
+        setDirty(true)
+        setSaved(false)
+      }
+    } else if (undoInfo.type === 'book') {
+      // Undo server-side replacements
+      try {
+        await api.undoReplace(parseInt(bookId))
+      } catch (err) {
+        setError(err.message)
+      }
+      // Also restore local text for the current chapter
+      if (undoInfo.prevText != null) {
+        setText(undoInfo.prevText)
+        setDirty(true)
+        setSaved(false)
+      }
+      search.searchBook(bookId, search.query, search.scope, search.isRegex)
+    }
+    setUndoInfo(null)
+  }, [undoInfo, bookId, search])
+
+  const handleSearchReplaceAll = useCallback(async function doReplaceAll() {
+    if (!search.query) return
+    var prevText = text
+    if (search.isBookWide) {
+      var totalBookMatches = search.bookMatchOrder.length
+      if (!confirm('Replace all ' + totalBookMatches + ' matches across the entire book?')) return
+      // Replace in current chapter locally
+      var newText = search.replaceAllInChapter(text)
+      if (newText !== text) {
+        setText(newText)
+        setDirty(true)
+        setSaved(false)
+      }
+      // Replace in other chapters via API
+      var otherChapters = (search.bookResults?.results || [])
+        .map(function getNum(r) { return r.chapter_number })
+        .filter(function notCurrent(n) { return n !== parseInt(chapterNum) })
+      if (otherChapters.length > 0) {
+        try {
+          await api.replaceInBook(parseInt(bookId), {
+            query: search.query,
+            replacement: search.replaceText,
+            chapter_numbers: otherChapters,
+            is_regex: search.isRegex,
+          })
+        } catch (err) {
+          setError(err.message)
+          return
+        }
+      }
+      search.searchBook(bookId, search.query, search.scope, search.isRegex)
+      showUndoToast({ type: 'book', prevText: prevText, count: totalBookMatches })
+    } else {
+      var replaced = search.replaceAllInChapter(text)
+      if (replaced !== text) {
+        setText(replaced)
+        setDirty(true)
+        setSaved(false)
+        var chCount = search.chapterMatches.filter(function onlyTrans(m) { return m.field === 'translated' }).length
+        showUndoToast({ type: 'local', prevText: prevText, count: chCount })
+      }
+    }
+  }, [search, text, bookId, chapterNum, showUndoToast])
+
+  const handleSearchClose = useCallback(() => {
+    search.close()
+  }, [search])
+
+  // In book-wide mode, activeMatch may point to a different chapter.
+  // Only use it for highlighting if it belongs to the current chapter.
+  const currentChapterActiveMatch = useMemo(() => {
+    const match = search.activeMatch
+    if (!match) return null
+    if (match.chapterNum != null && match.chapterNum !== parseInt(chapterNum)) return null
+    return match
+  }, [search.activeMatch, chapterNum])
+
+  // Scroll to active search match (only if it's in the current chapter)
+  useEffect(() => {
+    if (!currentChapterActiveMatch || !search.isOpen) return
+    const match = currentChapterActiveMatch
+
+    if (match.field === 'untranslated') {
+      const lineEl = lineRefs.current[match.line]
+      if (lineEl) lineEl.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    } else if (match.field === 'translated') {
+      const ta = textareaRef.current
+      if (!ta) return
+      const lines = text.split('\n')
+      const lineHeight = ta.scrollHeight / Math.max(lines.length, 1)
+      const targetScroll = match.line * lineHeight - ta.clientHeight / 2
+      ta.scrollTop = Math.max(0, targetScroll)
+      setOverlayScrollTop(ta.scrollTop)
+    }
+  }, [currentChapterActiveMatch, search.isOpen])
+
+  // Compute search matches for highlighting in the current chapter view
+  const chineseSearchMatches = useMemo(() => {
+    if (!search.isOpen || !search.query) return {}
+    const byLine = {}
+    for (const m of search.chapterMatches) {
+      if (m.field !== 'untranslated') continue
+      if (!byLine[m.line]) byLine[m.line] = []
+      byLine[m.line].push(m)
+    }
+    return byLine
+  }, [search.isOpen, search.query, search.chapterMatches])
+
+  const translatedSearchMatches = useMemo(() => {
+    if (!search.isOpen || !search.query) return {}
+    const byLine = {}
+    for (const m of search.chapterMatches) {
+      if (m.field !== 'translated') continue
+      if (!byLine[m.line]) byLine[m.line] = []
+      byLine[m.line].push(m)
+    }
+    return byLine
+  }, [search.isOpen, search.query, search.chapterMatches])
 
   const handleChange = (e) => {
     setText(e.target.value)
@@ -810,6 +1144,16 @@ export default function ChapterEditor() {
   }
 
   const handleKeyDown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault()
+      search.open()
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'h') {
+      e.preventDefault()
+      search.open({ focusReplace: true })
+      return
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault()
       handleSave()
@@ -1119,6 +1463,19 @@ export default function ChapterEditor() {
         </button>
 
         <button
+          className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
+            search.isOpen
+              ? 'border-indigo-500/50 bg-indigo-500/20 text-indigo-300'
+              : 'border-slate-700 text-slate-500 hover:text-slate-400'
+          }`}
+          onClick={() => search.isOpen ? search.close() : search.open()}
+          title="Search & Replace (Ctrl+F)"
+        >
+          <Search size={12} />
+          Find
+        </button>
+
+        <button
           className="btn-primary flex items-center gap-1.5"
           onClick={handleSave}
           disabled={saving || !dirty}
@@ -1130,6 +1487,16 @@ export default function ChapterEditor() {
           <span className="text-indigo-300 text-xs ml-0.5">&#8984;S</span>
         </button>
       </div>
+
+      {/* Search bar */}
+      <SearchBar
+        search={search}
+        onNext={handleSearchNext}
+        onPrev={handleSearchPrev}
+        onReplace={handleSearchReplace}
+        onReplaceAll={handleSearchReplaceAll}
+        onClose={handleSearchClose}
+      />
 
       {/* Split-pane editor */}
       <div className="flex-1 overflow-hidden flex flex-col md:flex-row relative">
@@ -1199,6 +1566,8 @@ export default function ChapterEditor() {
                       matcher={chineseMatcher}
                       annotation={annotations[i]}
                       onEntityClick={handleEntityClick}
+                      searchMatches={chineseSearchMatches[i]}
+                      activeMatch={currentChapterActiveMatch?.field === 'untranslated' && currentChapterActiveMatch?.line === i ? currentChapterActiveMatch : null}
                     />
                   </span>
                   <button
@@ -1262,12 +1631,14 @@ export default function ChapterEditor() {
             {/* Text area + overlay container */}
             <div className="flex-1 relative overflow-hidden">
               {/* Backdrop: renders entity highlights behind the textarea */}
-              {showEntities && englishMatcher.length > 0 && (
+              {((showEntities && englishMatcher.length > 0) || Object.keys(translatedSearchMatches).length > 0) && (
                 <EnglishBackdrop
                   text={text}
-                  matcher={englishMatcher}
+                  matcher={showEntities ? englishMatcher : []}
                   scrollTop={overlayScrollTop}
                   paddingClass={hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}
+                  searchMatches={translatedSearchMatches}
+                  activeMatch={currentChapterActiveMatch?.field === 'translated' ? currentChapterActiveMatch : null}
                 />
               )}
               <textarea
@@ -1331,6 +1702,31 @@ export default function ChapterEditor() {
           onClose={() => setEditingEntity(null)}
           onSaved={handleEntitySaved}
         />
+      )}
+
+      {/* Replace-all undo toast */}
+      {undoInfo && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50
+                        bg-slate-800 border border-slate-600 rounded-lg shadow-xl
+                        px-4 py-3 flex items-center gap-3 text-sm text-slate-200">
+          <span>
+            Replaced {undoInfo.count} match{undoInfo.count !== 1 ? 'es' : ''}
+            {undoInfo.type === 'book' ? ' across book' : ''}
+          </span>
+          <button
+            className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500
+                       text-white font-medium transition-colors"
+            onClick={handleUndo}
+          >
+            Undo
+          </button>
+          <button
+            className="text-slate-500 hover:text-slate-300 transition-colors"
+            onClick={() => { clearTimeout(undoTimerRef.current); setUndoInfo(null) }}
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
     </div>
   )

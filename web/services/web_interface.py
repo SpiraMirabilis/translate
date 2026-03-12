@@ -117,10 +117,15 @@ class WebInterface(UserInterface):
 
         serializable = _make_serializable(entities)
 
+        # Final guard: if no entities remain after all filtering, skip review
+        count = sum(len(v) for v in serializable.values() if isinstance(v, dict))
+        if count == 0:
+            return {}
+
         if isinstance(untranslated_text, list):
-            context = "\n".join(untranslated_text[:40])
+            context = "\n".join(untranslated_text)
         else:
-            context = str(untranslated_text)[:2000]
+            context = str(untranslated_text)
 
         self.job_manager.pending_review = {"entities": serializable, "context": context}
         self.job_manager.send_message_sync({
@@ -129,7 +134,6 @@ class WebInterface(UserInterface):
             "context": context,
         })
 
-        count = sum(len(v) for v in serializable.values())
         self.job_manager.log_activity(
             type='entity_review',
             message=f'{count} new entit{"y" if count == 1 else "ies"} found — review required.',

@@ -125,7 +125,17 @@ class OutputFormatter:
             book.add_author(book_author)
             if book_description:
                 book.add_metadata('DC', 'description', book_description)
-            
+
+            # Add cover image if available
+            cover_path = book_info.get('cover_image')
+            if cover_path and os.path.exists(cover_path):
+                import mimetypes
+                mime = mimetypes.guess_type(cover_path)[0] or 'image/jpeg'
+                with open(cover_path, 'rb') as cf:
+                    cover_data = cf.read()
+                ext = os.path.splitext(cover_path)[1] or '.jpg'
+                book.set_cover(f"cover{ext}", cover_data, create_page=True)
+
             # Add default CSS
             default_css = epub.EpubItem(
                 uid="style_default",

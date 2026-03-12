@@ -5,6 +5,7 @@ import math
 import os
 import time
 import re
+from database import DEFAULT_CATEGORIES
 
 class TranslationEngine:
     """Core class for handling text translation logic"""
@@ -71,58 +72,185 @@ class TranslationEngine:
             self.logger.debug(f"Chunk {i+1}: indices {start_idx} to {end_idx}")
             yield sequence[start_idx:end_idx]
     
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None):
+    def _parse_template_from_prompt(self, prompt_text):
+        """
+        Extract and parse the JSON response template from between the ++++ markers
+        in a system prompt.
+
+        Returns:
+            dict or None: The parsed template JSON, or None if not found/invalid
+        """
+        pattern = re.compile(
+            r'\+\+\+\+ Response Template Example\n(.*?)\+\+\+\+ Response Template End',
+            re.DOTALL,
+        )
+        match = pattern.search(prompt_text)
+        if not match:
+            return None
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"Failed to parse response template JSON from prompt: {e}")
+            return None
+
+    def _build_response_template(self, categories, entities, chapter_number=3, base_template=None, source_language='zh'):
+        """
+        Build the response template JSON dynamically from the book's active
+        categories, using real entities as examples where available.
+
+        If base_template is provided (parsed from the system prompt), its non-entity
+        fields (title, content, summary) are preserved so genre-specific prompts
+        keep their flavour.
+
+        Args:
+            categories: list of category names for this book
+            entities: dict {category: {chinese_key: {translation, ...}, ...}}
+            chapter_number: chapter number to use in the example (default 3)
+            base_template: dict parsed from the prompt's response template (optional)
+            source_language: source language code for placeholder entity keys
+        Returns:
+            str: A pretty-printed JSON string suitable for the response template
+        """
+        ch = chapter_number if isinstance(chapter_number, int) and chapter_number > 0 else 3
+
+        # Determine which fields the base template's entity entries carry (e.g. gender on characters)
+        base_entity_fields = {}
+        if base_template and "entities" in base_template:
+            for cat, cat_dict in base_template["entities"].items():
+                if cat_dict:
+                    first_entry = next(iter(cat_dict.values()))
+                    base_entity_fields[cat] = set(first_entry.keys()) - {"translation", "last_chapter"}
+
+        # Build the entities example section
+        entities_example = {}
+        for cat in categories:
+            cat_entities = entities.get(cat, {})
+            # Pick up to 2 real entities as examples
+            sample_keys = list(cat_entities.keys())[:2]
+            cat_example = {}
+            for key in sample_keys:
+                entry = cat_entities[key]
+                example_entry = {
+                    "translation": entry.get("translation", "Example Translation"),
+                    "last_chapter": ch,
+                }
+                # Carry over extra fields from the base template (e.g. gender for characters)
+                extra_fields = base_entity_fields.get(cat, set())
+                if "gender" in extra_fields or cat == "characters":
+                    example_entry["gender"] = entry.get("gender", "male")
+                for field in extra_fields - {"gender"}:
+                    if field in entry:
+                        example_entry[field] = entry[field]
+                cat_example[key] = example_entry
+
+            # If no real entities, fall back to the base template's examples or a placeholder
+            if not cat_example:
+                if base_template and "entities" in base_template and cat in base_template["entities"]:
+                    # Re-use the original prompt's example entities for this category
+                    for orig_key, orig_val in base_template["entities"][cat].items():
+                        patched = dict(orig_val)
+                        patched["last_chapter"] = ch
+                        cat_example[orig_key] = patched
+                else:
+                    # Generate a placeholder keyed in the source language
+                    placeholder_key = self._placeholder_entity_key(cat, source_language)
+                    singular = cat[:-1] if cat.endswith('s') and not cat.endswith('ss') else cat
+                    if singular.endswith('ie'):
+                        singular = singular[:-2] + 'y'
+                    placeholder = {"translation": f"Example {singular.title()}", "last_chapter": ch}
+                    if "gender" in base_entity_fields.get(cat, set()) or cat == "characters":
+                        placeholder["gender"] = "male"
+                    cat_example[placeholder_key] = placeholder
+
+            entities_example[cat] = cat_example
+
+        # Build the final template, preserving non-entity fields from the base if available
+        if base_template:
+            template = {
+                "title": base_template.get("title", f"Chapter {ch} - The Great Apocalyptic Battle"),
+                "chapter": ch,
+                "summary": base_template.get("summary", "A concise summary of no more than 75 words."),
+                "content": base_template.get("content", []),
+                "entities": entities_example,
+            }
+        else:
+            template = {
+                "title": f"Chapter {ch} - The Great Apocalyptic Battle",
+                "chapter": ch,
+                "summary": "A concise summary of no more than 75 words.",
+                "content": [
+                    "The warriors gathered at the base of the mountain, their weapons gleaming under the pale moonlight.",
+                    "",
+                    "\"We have no choice,\" Lin Feng said, gripping the hilt of his sword. \"If we don't act now, the Scarlet Flame Sect will destroy everything.\"",
+                    "",
+                    "A cold wind swept across the battlefield as the first clash of steel echoed through the valley."
+                ],
+                "entities": entities_example,
+            }
+
+        return json.dumps(template, ensure_ascii=False, indent=4)
+
+    @staticmethod
+    def _placeholder_entity_key(category, source_language='zh'):
+        """Return a placeholder entity key in the appropriate source language."""
+        placeholders = {
+            'zh': f"示例{category}",
+            'ja': f"例{category}",
+            'ko': f"예시{category}",
+        }
+        return placeholders.get(source_language, f"示例{category}")
+
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh'):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
 
         Args:
             provider: The model provider instance (used to detect Gemini and remove schema)
             chapter_number: Known chapter number to inject into the prompt template
+            source_language: Source language code for the book (default: zh)
         """
         # Debug info
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
         if isinstance(pretext, list) and len(pretext) > 0:
             self.logger.debug(f"First line: {pretext[0][:50]}")
 
-        # Ensure all entity categories exist
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
-            entities.setdefault(category, {})
-
+        # Ensure all entity categories exist (entities dict already has the right keys)
         end_entities = {}
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
-            entities.setdefault(category, {})
-
-        end_entities = {}
-        end_entities['characters'] = self.entity_manager.entities_inside_text(pretext, entities['characters'], "THIS CHAPTER", do_count)
-        end_entities['places'] = self.entity_manager.entities_inside_text(pretext, entities['places'], "THIS CHAPTER", do_count)
-        end_entities['organizations'] = self.entity_manager.entities_inside_text(pretext, entities['organizations'], "THIS CHAPTER", do_count)
-        end_entities['abilities'] = self.entity_manager.entities_inside_text(pretext, entities['abilities'], "THIS CHAPTER", do_count)
-        end_entities['titles'] = self.entity_manager.entities_inside_text(pretext, entities['titles'], "THIS CHAPTER", do_count)
-        end_entities['equipment'] = self.entity_manager.entities_inside_text(pretext, entities['equipment'], "THIS CHAPTER", do_count)
-        end_entities['creatures'] = self.entity_manager.entities_inside_text(pretext, entities['creatures'], "THIS CHAPTER", do_count)
+        for category in entities:
+            end_entities[category] = self.entity_manager.entities_inside_text(pretext, entities[category], "THIS CHAPTER", do_count)
 
         entities_json = json.dumps(end_entities, ensure_ascii=False, indent=4)
-        
+
         # Load the appropriate template
         if book_prompt_template:
             # Use the custom template for this book
             prompt = book_prompt_template
         else:
-            # Try to load prompt from file
-            prompt_file_path = os.path.join(self.config.script_dir, "system_prompt.txt")
-            
+            # Try to load prompt from file (check prompts/ directory first, then legacy location)
+            prompt_file_path = os.path.join(self.config.script_dir, "prompts", "chinese_xianxia.txt")
+            if not os.path.exists(prompt_file_path):
+                # Legacy fallback
+                prompt_file_path = os.path.join(self.config.script_dir, "system_prompt.txt")
+
             try:
                 if os.path.exists(prompt_file_path):
                     with open(prompt_file_path, 'r', encoding='utf-8') as file:
                         # Read lines and filter out comments
                         lines = [line for line in file.readlines() if not line.strip().startswith('#')]
                         prompt = ''.join(lines)
-                        
+
                     self.logger.info(f"Loaded system prompt from {prompt_file_path}")
+                else:
+                    self.logger.error(f"No system prompt found at {prompt_file_path}. Place a prompt file in prompts/ or create a book with a genre preset.")
+                    raise FileNotFoundError(f"System prompt not found: {prompt_file_path}")
+            except FileNotFoundError:
+                raise
             except Exception as e:
                 self.logger.error(f"Error loading system prompt from file: {e}")
-                self.logger.error(f"You're going to need to redownload the system_prompt.txt from the github or create your own")
-                exit(1)
+                raise
+
+        # Insert the entity categories list into the template
+        prompt = prompt.replace("{{ENTITY_CATEGORIES}}", ", ".join(entities.keys()))
 
         # Insert the entities JSON into the template (both default and custom)
         prompt = prompt.replace("{{ENTITIES_JSON}}", entities_json)
@@ -133,12 +261,26 @@ class TranslationEngine:
         else:
             prompt = prompt.replace("\nYou are translating chapter {{CHAPTER_NUMBER}}.\n", "\n")
 
+        # Parse the base template from the prompt before rebuilding it
+        base_template = self._parse_template_from_prompt(prompt)
+
+        # Rebuild the response template with the book's actual categories and real entity examples
+        template_pattern = re.compile(
+            r'(\+\+\+\+ Response Template Example\n).*?(\+\+\+\+ Response Template End)',
+            re.DOTALL,
+        )
+        match = template_pattern.search(prompt)
+        if match:
+            dynamic_template = self._build_response_template(
+                list(entities.keys()), entities, chapter_number or 3,
+                base_template=base_template, source_language=source_language
+            )
+            prompt = prompt[:match.start()] + match.group(1) + "\n" + dynamic_template + "\n" + match.group(2) + prompt[match.end():]
+            self.logger.debug(f"Rebuilt response template with categories: {list(entities.keys())}")
+
         # For Gemini providers, remove the JSON schema example to avoid conflicts with responseSchema
         if provider and hasattr(provider, 'provider_name') and 'Gemini' in provider.provider_name:
-            # Remove the section between ++++ Response Template Example and ++++ Response Template End
-            import re
-            pattern = r'\+\+\+\+ Response Template Example.*?\+\+\+\+ Response Template End'
-            prompt = re.sub(pattern, '', prompt, flags=re.DOTALL)
+            prompt = template_pattern.sub('', prompt)
             self.logger.debug("Removed JSON schema template for Gemini provider")
 
         return prompt
@@ -370,8 +512,12 @@ class TranslationEngine:
         total_output_tokens = 0
         average_ratio = 1.0
         book_prompt_template = None
+        source_language = 'zh'
         if book_id:
             book_prompt_template = self.entity_manager.get_book_prompt_template(book_id)
+            book_info = self.entity_manager.get_book(book_id)
+            if book_info:
+                source_language = book_info.get('source_language', 'zh') or 'zh'
 
         provider, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")
@@ -395,8 +541,13 @@ class TranslationEngine:
 
         # Use entities from SQLite database
         old_entities = self.entity_manager.entities.copy()
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
-            old_entities.setdefault(category, {})
+        # Ensure all categories for this book exist in the dict
+        if book_id:
+            for cat in self.entity_manager.get_book_categories(book_id):
+                old_entities.setdefault(cat, {})
+        else:
+            for cat in DEFAULT_CATEGORIES:
+                old_entities.setdefault(cat, {})
 
         real_old_entities = old_entities
 
@@ -407,7 +558,7 @@ class TranslationEngine:
         # Generate the initial system prompt
         system_prompt = self.generate_system_prompt(chapter_text, old_entities,
                                                book_prompt_template=book_prompt_template, provider=provider,
-                                               chapter_number=chapter_number)
+                                               chapter_number=chapter_number, source_language=source_language)
 
         # Split the text into chunks for the LLM if necessary due to output token limits
         split_text = list(self.split_by_n(chapter_text, chunks_count))
@@ -615,8 +766,9 @@ class TranslationEngine:
             old_entities = self.entity_manager.combine_json_entities(old_entities, end_object['entities'])
             
             # Regenerate the system prompt for the next chunk to maintain consistency
-            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False, provider=provider,
-                                                       chapter_number=chapter_number)
+            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False,
+                                                       book_prompt_template=book_prompt_template, provider=provider,
+                                                       chapter_number=chapter_number, source_language=source_language)
         
         self.logger.debug("Finished processing all chunks")
 
@@ -628,16 +780,14 @@ class TranslationEngine:
         # Check for duplicate entities based on translation value
         self._check_for_translation_duplicates(end_object['entities'])
         
-        # Ensure all entity categories exist
-        new_entities = {
-            "characters": end_object.get('entities', {}).get('characters', {}),
-            "places": end_object.get('entities', {}).get('places', {}),
-            "organizations": end_object.get('entities', {}).get('organizations', {}),
-            "abilities": end_object.get('entities', {}).get('abilities', {}),
-            "titles": end_object.get('entities', {}).get('titles', {}),
-            "equipment": end_object.get('entities', {}).get('equipment', {}),
-            "creatures": end_object.get('entities', {}).get('creatures', {})
-        }
+        # Build new_entities from the categories relevant to this book
+        categories = self.entity_manager.get_book_categories(book_id) if book_id else DEFAULT_CATEGORIES
+        ent_data = end_object.get('entities', {})
+        new_entities = {cat: ent_data.get(cat, {}) for cat in categories}
+        # Also include any extra categories the LLM may have returned
+        for cat in ent_data:
+            if cat not in new_entities:
+                new_entities[cat] = ent_data[cat]
 
         return {
             "end_object": end_object,

@@ -18,7 +18,8 @@ def init(entity_manager, translator):
     _translator = translator
 
 
-CATEGORIES = ["characters", "places", "organizations", "abilities", "titles", "equipment", "creatures"]
+from database import DEFAULT_CATEGORIES
+CATEGORIES = DEFAULT_CATEGORIES
 
 
 # ------------------------------------------------------------------
@@ -49,6 +50,17 @@ class DuplicateResolveRequest(BaseModel):
     keep_category: Optional[str] = None          # for keep_one
     renames: Optional[dict] = None               # for rename: {category: new_translation}
     book_id: Optional[int] = None                # scope resolution to a specific book
+
+
+class BatchRequest(BaseModel):
+    ids: List[int]
+    action: str  # "delete" | "move_category" | "change_book"
+    category: Optional[str] = None       # for move_category
+    book_id: Optional[int] = None        # for change_book (None = global)
+
+
+class ContextRadius(BaseModel):
+    radius: int = 100
 
 
 class AdviceRequest(BaseModel):
@@ -113,7 +125,8 @@ async def list_entities(
 
 @router.post("")
 async def create_entity(req: EntityCreate):
-    if req.category not in CATEGORIES:
+    valid_cats = _entity_manager.get_book_categories(req.book_id) if req.book_id else CATEGORIES
+    if req.category not in valid_cats:
         raise HTTPException(status_code=400, detail=f"Invalid category: {req.category}")
     result = _entity_manager.add_entity(
         req.category,
@@ -134,17 +147,20 @@ async def update_entity(entity_id: int, req: EntityUpdate):
     conn = sqlite3.connect(_entity_manager.db_path)
     cursor = conn.cursor()
 
-    # Check exists
-    cursor.execute("SELECT id FROM entities WHERE id = ?", (entity_id,))
-    if not cursor.fetchone():
+    # Check exists and get book_id for category validation
+    cursor.execute("SELECT id, book_id FROM entities WHERE id = ?", (entity_id,))
+    row = cursor.fetchone()
+    if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Entity not found.")
+    entity_book_id = row[1]
 
     updates = {}
     if req.translation is not None:
         updates["translation"] = req.translation
     if req.category is not None:
-        if req.category not in CATEGORIES:
+        valid_cats = _entity_manager.get_book_categories(entity_book_id) if entity_book_id else CATEGORIES
+        if req.category not in valid_cats:
             conn.close()
             raise HTTPException(status_code=400, detail=f"Invalid category: {req.category}")
         updates["category"] = req.category
@@ -177,6 +193,110 @@ async def delete_entity(entity_id: int):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+
+# ------------------------------------------------------------------
+# Batch operations
+# ------------------------------------------------------------------
+
+@router.post("/batch")
+async def batch_operation(req: BatchRequest):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No entity IDs provided.")
+
+    conn = sqlite3.connect(_entity_manager.db_path)
+    cursor = conn.cursor()
+
+    # Verify all IDs exist
+    placeholders = ",".join("?" for _ in req.ids)
+    cursor.execute(f"SELECT id FROM entities WHERE id IN ({placeholders})", req.ids)
+    found = {row[0] for row in cursor.fetchall()}
+    missing = set(req.ids) - found
+    if missing:
+        conn.close()
+        raise HTTPException(status_code=404, detail=f"Entity IDs not found: {sorted(missing)}")
+
+    if req.action == "delete":
+        cursor.execute(f"DELETE FROM entities WHERE id IN ({placeholders})", req.ids)
+        affected = cursor.rowcount
+
+    elif req.action == "move_category":
+        if not req.category:
+            conn.close()
+            raise HTTPException(status_code=400, detail="category is required for move_category action.")
+        cursor.execute(
+            f"UPDATE entities SET category = ? WHERE id IN ({placeholders})",
+            [req.category] + req.ids,
+        )
+        affected = cursor.rowcount
+
+    elif req.action == "change_book":
+        # book_id=None means move to global
+        cursor.execute(
+            f"UPDATE entities SET book_id = ? WHERE id IN ({placeholders})",
+            [req.book_id] + req.ids,
+        )
+        affected = cursor.rowcount
+
+    else:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
+
+    conn.commit()
+    conn.close()
+    _entity_manager._load_entities()
+    return {"status": "ok", "affected": affected}
+
+
+# ------------------------------------------------------------------
+# Entity context (surrounding text from origin chapter)
+# ------------------------------------------------------------------
+
+@router.get("/{entity_id}/context")
+async def get_entity_context(entity_id: int, radius: int = Query(100)):
+    """Get surrounding context for an entity from its origin chapter."""
+    import json
+
+    conn = sqlite3.connect(_entity_manager.db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT untranslated, book_id, origin_chapter FROM entities WHERE id = ?", (entity_id,))
+    entity = cursor.fetchone()
+    if not entity:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Entity not found.")
+
+    if not entity["book_id"] or not entity["origin_chapter"]:
+        conn.close()
+        return {"context": None, "message": "No origin chapter recorded for this entity."}
+
+    cursor.execute(
+        "SELECT untranslated_content FROM chapters WHERE book_id = ? AND chapter_number = ?",
+        (entity["book_id"], entity["origin_chapter"]),
+    )
+    chapter = cursor.fetchone()
+    conn.close()
+
+    if not chapter:
+        return {"context": None, "message": "Origin chapter not found in database."}
+
+    try:
+        content = json.loads(chapter["untranslated_content"])
+        full_text = "\n".join(content) if isinstance(content, list) else str(content)
+    except (json.JSONDecodeError, TypeError):
+        full_text = chapter["untranslated_content"] or ""
+
+    untranslated = entity["untranslated"]
+    idx = full_text.find(untranslated)
+    if idx == -1:
+        return {"context": None, "message": "Entity text not found in origin chapter."}
+
+    start = max(0, idx - radius)
+    end = min(len(full_text), idx + len(untranslated) + radius)
+    snippet = full_text[start:end]
+
+    return {"context": snippet, "untranslated": untranslated}
 
 
 # ------------------------------------------------------------------

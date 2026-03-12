@@ -55,6 +55,9 @@ class JobManager:
 
     def send_message_sync(self, message: dict):
         """Send a JSON message to the frontend from the background translation thread."""
+        if not self.loop or not self.websocket:
+            print(f"[JobManager] No WebSocket connected, dropping message: {message.get('type')}:{message.get('step', '')}")
+            return
         if self.loop and self.websocket:
             try:
                 future = asyncio.run_coroutine_threadsafe(

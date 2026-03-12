@@ -4,23 +4,12 @@ import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, Sparkles, AlertTriangle, AlertCircle,
   X, Check, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
-  Replace, RotateCcw, BookOpen, Pin
+  Replace, RotateCcw, BookOpen, Pin, Copy, CheckSquare, Square, FolderInput, ArrowRightLeft
 } from 'lucide-react'
 import { DictResult, useDictLookup } from '../components/DictLookup'
+import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
 
 const TRUNCATE_LIMIT = 25
-
-const CATEGORIES = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
-
-const CAT_COLORS = {
-  characters:    'badge-indigo',
-  places:        'badge-emerald',
-  organizations: 'badge-amber',
-  abilities:     'badge-rose',
-  titles:        'badge-slate',
-  equipment:     'badge-slate',
-  creatures:     'badge-indigo',
-}
 
 export default function Entities() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -36,7 +25,24 @@ export default function Entities() {
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [duplicates, setDuplicates] = useState(null)
   const [error, setError] = useState(null)
+  const [activeCategories, setActiveCategories] = useState(DEFAULT_CATEGORIES)
+  const [selected, setSelected] = useState(new Set())
+  const [batchAction, setBatchAction] = useState(null) // null | 'move_category' | 'change_book'
   const searchRef = useRef(null)
+
+  const toggleSelect = useCallback((id) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    setSelected(prev => prev.size === entities.length ? new Set() : new Set(entities.map(e => e.id)))
+  }, [entities])
+
+  const clearSelection = useCallback(() => setSelected(new Set()), [])
 
   // Debounce search input
   useEffect(() => {
@@ -67,15 +73,44 @@ export default function Entities() {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
   }, [])
 
+  // Fetch book-specific categories when filter changes
+  useEffect(() => {
+    if (filterBook && filterBook !== 'global') {
+      api.getBookCategories(parseInt(filterBook))
+        .then(d => setActiveCategories(d.categories || DEFAULT_CATEGORIES))
+        .catch(() => setActiveCategories(DEFAULT_CATEGORIES))
+    } else {
+      setActiveCategories(DEFAULT_CATEGORIES)
+    }
+  }, [filterBook])
+
   useEffect(() => { localStorage.setItem('entities_filterBook', filterBook) }, [filterBook])
   useEffect(() => { localStorage.setItem('entities_filterCat', filterCat) }, [filterCat])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); clearSelection() }, [load])
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this entity?')) return
     await api.deleteEntity(id)
     load()
+  }
+
+  const handleBatchDelete = async () => {
+    if (!confirm(`Delete ${selected.size} selected entities?`)) return
+    try {
+      await api.batchEntities({ ids: [...selected], action: 'delete' })
+      clearSelection()
+      load()
+    } catch (e) { setError(e.message) }
+  }
+
+  const handleBatchAction = async (action, params) => {
+    try {
+      await api.batchEntities({ ids: [...selected], action, ...params })
+      clearSelection()
+      setBatchAction(null)
+      load()
+    } catch (e) { setError(e.message) }
   }
 
   const handleCheckDuplicates = async () => {
@@ -87,12 +122,22 @@ export default function Entities() {
     setShowDuplicates(true)
   }
 
-  // Group entities by category for display
-  const grouped = CATEGORIES.reduce((acc, cat) => {
-    const catEntities = entities.filter(e => e.category === cat)
-    if (catEntities.length > 0) acc[cat] = catEntities
-    return acc
-  }, {})
+  // Group entities by category for display (known categories first, then extras)
+  const grouped = useMemo(() => {
+    const result = {}
+    for (const cat of activeCategories) {
+      const catEntities = entities.filter(e => e.category === cat)
+      if (catEntities.length > 0) result[cat] = catEntities
+    }
+    // Include any extra categories from entities not in activeCategories
+    for (const e of entities) {
+      if (!activeCategories.includes(e.category)) {
+        if (!result[e.category]) result[e.category] = []
+        result[e.category].push(e)
+      }
+    }
+    return result
+  }, [entities, activeCategories])
 
   const notedCount = useMemo(() => entities.filter(e => e.note).length, [entities])
 
@@ -132,7 +177,7 @@ export default function Entities() {
         </select>
         <select className="input w-full sm:w-44" value={filterCat} onChange={e => setFilterCat(e.target.value)}>
           <option value="">All categories</option>
-          {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          {activeCategories.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
 
@@ -145,7 +190,7 @@ export default function Entities() {
           <span className="text-slate-700">|</span>
           {Object.entries(grouped).map(([cat, ents]) => (
             <span key={cat} className="flex items-center gap-1">
-              <span className={`badge ${CAT_COLORS[cat]} !text-[10px] !px-1.5 !py-0`}>{cat}</span>
+              <span className={`badge ${getCatColor(cat)} !text-[10px] !px-1.5 !py-0`}>{cat}</span>
               {ents.length}
             </span>
           ))}
@@ -155,6 +200,25 @@ export default function Entities() {
               <span className="text-amber-500/70">{notedCount} noted</span>
             </>
           )}
+        </div>
+      )}
+
+      {/* Batch action bar */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 mb-4 px-4 py-2.5 rounded-lg bg-indigo-950/40 border border-indigo-800/50 flex-wrap">
+          <span className="text-xs text-indigo-300 font-medium">{selected.size} selected</span>
+          <div className="flex gap-2 flex-wrap">
+            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1" onClick={() => setBatchAction('move_category')}>
+              <ArrowRightLeft size={12} /> Move Category
+            </button>
+            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1" onClick={() => setBatchAction('change_book')}>
+              <FolderInput size={12} /> Change Book
+            </button>
+            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1 hover:!text-rose-400 hover:!border-rose-800" onClick={handleBatchDelete}>
+              <Trash2 size={12} /> Delete
+            </button>
+          </div>
+          <button className="ml-auto text-xs text-slate-500 hover:text-slate-300" onClick={clearSelection}>Clear</button>
         </div>
       )}
 
@@ -174,6 +238,9 @@ export default function Entities() {
               onEdit={setEditingEntity}
               onDelete={handleDelete}
               defaultOpen={!!debouncedSearch || !!filterCat}
+              selected={selected}
+              onToggleSelect={toggleSelect}
+              onSetSelected={setSelected}
             />
           ))}
         </div>
@@ -184,6 +251,7 @@ export default function Entities() {
         <EntityFormModal
           entity={editingEntity}
           books={books}
+          categories={activeCategories}
           onClose={() => { setShowAddForm(false); setEditingEntity(null) }}
           onSaved={() => { setShowAddForm(false); setEditingEntity(null); load() }}
         />
@@ -197,6 +265,24 @@ export default function Entities() {
           onResolved={load}
         />
       )}
+
+      {batchAction === 'move_category' && (
+        <BatchCategoryModal
+          count={selected.size}
+          categories={activeCategories}
+          onClose={() => setBatchAction(null)}
+          onConfirm={(category) => handleBatchAction('move_category', { category })}
+        />
+      )}
+
+      {batchAction === 'change_book' && (
+        <BatchBookModal
+          count={selected.size}
+          books={books}
+          onClose={() => setBatchAction(null)}
+          onConfirm={(book_id) => handleBatchAction('change_book', { book_id })}
+        />
+      )}
     </div>
   )
 }
@@ -204,6 +290,7 @@ export default function Entities() {
 const BASE_SORT_COLS = [
   { key: 'untranslated', label: 'Untranslated' },
   { key: 'translation',  label: 'Translation' },
+  { key: 'origin_chapter', label: 'Origin Ch.' },
   { key: 'last_chapter', label: 'Last Ch.' },
 ]
 
@@ -216,7 +303,7 @@ function SortIcon({ col, sortCol, sortDir }) {
     : <ChevronDown size={11} className="text-indigo-400 ml-1 inline-block" />
 }
 
-function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) {
+function CategorySection({ category, entities, onEdit, onDelete, defaultOpen, selected, onToggleSelect, onSetSelected }) {
   const [open, setOpen] = useState(defaultOpen)
   const [showAll, setShowAll] = useState(false)
   const [sortCol, setSortCol] = useState(null)
@@ -225,6 +312,21 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
   const cols = showGender
     ? [BASE_SORT_COLS[0], BASE_SORT_COLS[1], GENDER_COL, BASE_SORT_COLS[2]]
     : BASE_SORT_COLS
+
+  const catSelectedCount = entities.filter(e => selected.has(e.id)).length
+  const allCatSelected = catSelectedCount === entities.length && entities.length > 0
+  const toggleCategorySelect = () => {
+    const catIds = entities.map(e => e.id)
+    onSetSelected(prev => {
+      const next = new Set(prev)
+      if (allCatSelected) {
+        catIds.forEach(id => next.delete(id))
+      } else {
+        catIds.forEach(id => next.add(id))
+      }
+      return next
+    })
+  }
 
   // Reset open state when defaultOpen changes (e.g. search activates)
   useEffect(() => { setOpen(defaultOpen) }, [defaultOpen])
@@ -250,7 +352,7 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
       if (!sortCol) return 0
       const av = a[sortCol] ?? ''
       const bv = b[sortCol] ?? ''
-      if (sortCol === 'last_chapter') {
+      if (sortCol === 'last_chapter' || sortCol === 'origin_chapter') {
         const an = Number(av) || 0
         const bn = Number(bv) || 0
         return sortDir === 'asc' ? an - bn : bn - an
@@ -272,7 +374,7 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
         onClick={() => setOpen(v => !v)}
       >
         <div className="flex items-center gap-2">
-          <span className={`badge ${CAT_COLORS[category]}`}>{category}</span>
+          <span className={`badge ${getCatColor(category)}`}>{category}</span>
           <span className="text-xs text-slate-500">{entities.length} entries</span>
           {notedCount > 0 && (
             <span className="text-xs text-amber-500/60">{notedCount} noted</span>
@@ -286,6 +388,15 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-slate-500 border-b border-slate-700">
+                <th className="pl-4 pr-1 py-2 w-8">
+                  <button className="flex items-center hover:text-slate-300" onClick={toggleCategorySelect}>
+                    {allCatSelected
+                      ? <CheckSquare size={14} className="text-indigo-400" />
+                      : catSelectedCount > 0
+                        ? <CheckSquare size={14} className="text-indigo-400/40" />
+                        : <Square size={14} />}
+                  </button>
+                </th>
                 {cols.map(({ key, label }) => (
                   <th key={key} className="text-left px-4 py-2 font-medium">
                     <button
@@ -302,7 +413,14 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
             </thead>
             <tbody>
               {visible.map(e => (
-                <tr key={e.id} className={`border-b border-slate-800 last:border-0 hover:bg-slate-750/50${e.note ? ' bg-amber-950/10' : ''}`}>
+                <tr key={e.id} className={`border-b border-slate-800 last:border-0 hover:bg-slate-750/50${selected.has(e.id) ? ' !bg-indigo-950/30' : ''}${e.note ? ' bg-amber-950/10' : ''}`}>
+                  <td className="pl-4 pr-1 py-2 w-8">
+                    <button className="flex items-center" onClick={() => onToggleSelect(e.id)}>
+                      {selected.has(e.id)
+                        ? <CheckSquare size={14} className="text-indigo-400" />
+                        : <Square size={14} className="text-slate-600" />}
+                    </button>
+                  </td>
                   <td className="px-4 py-2 font-mono text-slate-300">
                     {e.note && <Pin size={10} className="inline-block text-amber-500/50 mr-1.5 -mt-0.5" />}
                     {e.untranslated}
@@ -312,6 +430,7 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
                     {e.note && <span className="ml-2 text-xs text-amber-500/50 italic">{e.note}</span>}
                   </td>
                   {showGender && <td className="px-4 py-2 text-xs text-slate-500">{e.gender || '—'}</td>}
+                  <td className="px-4 py-2 text-xs text-slate-500">{e.origin_chapter || '—'}</td>
                   <td className="px-4 py-2 text-xs text-slate-500">{e.last_chapter || '—'}</td>
                   <td className="px-4 py-2">
                     <div className="flex gap-1 justify-end">
@@ -341,7 +460,7 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen }) 
   )
 }
 
-function EntityFormModal({ entity, books, onClose, onSaved }) {
+function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT_CATEGORIES, onClose, onSaved }) {
   const [form, setForm] = useState({
     category: entity?.category || 'characters',
     untranslated: entity?.untranslated || '',
@@ -352,11 +471,52 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  // Fetch categories based on the entity/form's book_id, not the page filter
+  const [modalCategories, setModalCategories] = useState(parentCategories)
+  useEffect(() => {
+    const bookId = form.book_id !== '' ? parseInt(form.book_id) : null
+    if (bookId) {
+      api.getBookCategories(bookId)
+        .then(d => setModalCategories(d.categories || DEFAULT_CATEGORIES))
+        .catch(() => setModalCategories(DEFAULT_CATEGORIES))
+    } else {
+      setModalCategories(DEFAULT_CATEGORIES)
+    }
+  }, [form.book_id])
   // After saving an edit with a changed translation, show propagation options
   const [propagate, setPropagate] = useState(null) // { entityId, oldTranslation, newTranslation }
   // LLM advice
   const [adviceLoading, setAdviceLoading] = useState(false)
   const [adviceData, setAdviceData] = useState(null)
+  // Copy context
+  const [contextCopied, setContextCopied] = useState(false)
+  const [contextLoading, setContextLoading] = useState(false)
+
+  const handleCopyContext = async () => {
+    if (!entity?.id) return
+    setContextLoading(true)
+    try {
+      const res = await api.getEntityContext(entity.id)
+      const lines = [
+        `Entity: ${form.untranslated} → ${form.translation}`,
+        `Category: ${form.category}`,
+        '',
+      ]
+      if (res.context) {
+        lines.push(`Context:\n${res.context}`)
+      } else {
+        lines.push(res.message || 'No context available.')
+      }
+      await navigator.clipboard.writeText(lines.join('\n'))
+      setContextCopied(true)
+      setTimeout(() => setContextCopied(false), 1500)
+    } catch (e) {
+      setError(`Context failed: ${e.message}`)
+    } finally {
+      setContextLoading(false)
+    }
+  }
+
   // Dictionary lookup
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
 
@@ -436,13 +596,23 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
           <div>
             <label className="label">Category</label>
             <select className="input" value={form.category} onChange={e => setForm(f => ({...f, category: e.target.value}))}>
-              {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              {modalCategories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
             <label className="label">Untranslated (Chinese)</label>
             <div className="flex gap-2">
               <input className="input font-mono flex-1" value={form.untranslated} onChange={e => setForm(f => ({...f, untranslated: e.target.value}))} disabled={!!entity} />
+              {entity && (
+                <button
+                  className="btn-ghost p-2 shrink-0"
+                  title="Copy entity + context to clipboard"
+                  onClick={handleCopyContext}
+                  disabled={contextLoading}
+                >
+                  <Copy size={14} className={contextCopied ? 'text-emerald-400' : contextLoading ? 'animate-pulse text-indigo-400' : 'text-slate-400'} />
+                </button>
+              )}
               <button
                 className="btn-ghost p-2 shrink-0"
                 title="Dictionary lookup"
@@ -512,6 +682,11 @@ function EntityFormModal({ entity, books, onClose, onSaved }) {
               {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
             </select>
           </div>
+          {entity?.origin_chapter && (
+            <div><label className="label">Origin chapter</label>
+              <p className="text-sm text-slate-400 py-1.5">{entity.origin_chapter}</p>
+            </div>
+          )}
         </div>
 
         {error && <p className="text-rose-400 text-sm">{error}</p>}
@@ -642,6 +817,61 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, untranslated
   )
 }
 
+function BatchCategoryModal({ count, categories, onClose, onConfirm }) {
+  const [category, setCategory] = useState(categories[0] || '')
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-sm p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-slate-200">Move {count} entities to category</h2>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div>
+          <label className="label">Target category</label>
+          <select className="input" value={category} onChange={e => setCategory(e.target.value)}>
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary flex items-center gap-1.5" onClick={() => onConfirm(category)}>
+            <ArrowRightLeft size={13} /> Move
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BatchBookModal({ count, books, onClose, onConfirm }) {
+  const [bookId, setBookId] = useState('')
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-sm p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-slate-200">Move {count} entities to book</h2>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div>
+          <label className="label">Target book</label>
+          <select className="input" value={bookId} onChange={e => setBookId(e.target.value)}>
+            <option value="">Global (no book)</option>
+            {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+          </select>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary flex items-center gap-1.5" onClick={() => onConfirm(bookId ? parseInt(bookId) : null)}>
+            <FolderInput size={13} /> Move
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
   const [dupUntranslated, setDupUntranslated] = useState(duplicates.duplicate_untranslated || [])
   const [dupTranslations, setDupTranslations] = useState(duplicates.duplicate_translations || [])
@@ -733,7 +963,7 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
                           <div className="space-y-1">
                             {dup.instances.map(inst => (
                               <div key={inst.id} className="flex items-center gap-2 text-xs text-slate-400">
-                                <span className={`badge ${CAT_COLORS[inst.category]}`}>{inst.category}</span>
+                                <span className={`badge ${getCatColor(inst.category)}`}>{inst.category}</span>
                                 <span className="font-mono">{inst.untranslated}</span>
                               </div>
                             ))}
@@ -804,7 +1034,7 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
       <div className="space-y-1.5">
         {dup.instances.map(inst => (
           <div key={inst.id} className="flex items-center gap-2">
-            <span className={`badge ${CAT_COLORS[inst.category]}`}>{inst.category}</span>
+            <span className={`badge ${getCatColor(inst.category)}`}>{inst.category}</span>
             <span className="text-sm text-slate-300 flex-1">{inst.translation}</span>
             <button
               className="text-xs btn-secondary"

@@ -1,0 +1,16 @@
+# APT package equivalents for requirements_web.txt
+# For Debian/Ubuntu systems that restrict pip to virtual environments.
+#
+# Install with:
+#   sudo apt install $(grep -v '^#' requirements-web-apt.txt | grep -v '^$')
+#
+# Tested against: Ubuntu 24.04 LTS (Noble)
+#
+# All web dependencies are available via apt — no pip fallback needed.
+
+python3-fastapi
+python3-uvicorn
+python3-websockets
+python3-multipart
+python3-aiofiles
+python3-itsdangerous

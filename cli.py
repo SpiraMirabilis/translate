@@ -109,7 +109,9 @@ class CommandLineInterface(UserInterface):
         book_group.add_argument("--book-author", type=str, help="Specify author when creating a book")
         book_group.add_argument("--book-language", type=str, help="Specify language code when creating a book")
         book_group.add_argument("--book-description", type=str, help="Specify description when creating a book")
-        
+        book_group.add_argument("--genre", type=str, help="Genre preset to apply when creating a book (e.g. chinese_xianxia, japanese_light_novel)")
+        book_group.add_argument("--list-genres", action="store_true", help="List available genre presets")
+
         book_group.add_argument("--list-books", action="store_true", help="List all books in the database")
         book_group.add_argument("--book-info", type=int, help="Get detailed information about a book by ID")
         book_group.add_argument("--edit-book", type=int, help="Edit book information by ID")
@@ -221,10 +223,14 @@ class CommandLineInterface(UserInterface):
             self.silent_notifications = False
 
         # Book management
-        if args.create_book:
-            self._create_book(args.create_book, args.book_author, args.book_language, args.book_description)
+        if args.list_genres:
+            self._list_genres()
             exit(0)
-            
+
+        if args.create_book:
+            self._create_book(args.create_book, args.book_author, args.book_language, args.book_description, genre=args.genre)
+            exit(0)
+
         if args.list_books:
             self._list_books()
             exit(0)
@@ -929,17 +935,58 @@ class CommandLineInterface(UserInterface):
         conn.close()
 
     # Book private methods
-    def _create_book(self, title, author=None, language=None, description=None):
+    def _list_genres(self):
+        """List available genre presets"""
+        from genres import load_genres
+        genres = load_genres(self.entity_manager.config.script_dir)
+        if not genres:
+            print("No genres found.")
+            return
+        print(f"Available genre presets:\n")
+        for g in genres:
+            src = g.get('source_language') or '—'
+            print(f"  {g['id']:25s} {g['name']} (source: {src})")
+            if g.get('description'):
+                print(f"  {'':25s} {g['description']}")
+            print()
+
+    def _create_book(self, title, author=None, language=None, description=None, genre=None):
         """Create a new book in the database"""
+        source_language = 'zh'
+
+        # Look up genre preset
+        genre_obj = None
+        if genre and genre != 'custom':
+            from genres import get_genre, read_genre_prompt
+            genre_obj = get_genre(self.entity_manager.config.script_dir, genre)
+            if not genre_obj:
+                print(f"Unknown genre: '{genre}'. Use --list-genres to see options.")
+                return
+            if genre_obj.get('source_language'):
+                source_language = genre_obj['source_language']
+
         book_id = self.entity_manager.create_book(
-            title, 
+            title,
             author=author,
             language=language or 'en',
+            source_language=source_language,
             description=description
         )
-        
+
         if book_id:
+            # Apply genre preset: prompt template and categories (derived from prompt)
+            if genre_obj:
+                from genres import read_genre_prompt, extract_categories_from_prompt
+                prompt = read_genre_prompt(self.entity_manager.config.script_dir, genre_obj)
+                if prompt:
+                    self.entity_manager.set_book_prompt_template(book_id, prompt)
+                    cats = extract_categories_from_prompt(prompt)
+                    if cats:
+                        self.entity_manager.set_book_categories(book_id, cats)
+
             print(f"Book created: '{title}' (ID: {book_id})")
+            if genre_obj:
+                print(f"  Genre: {genre_obj['name']} (source: {source_language})")
             print(f"Use --book-id {book_id} when translating chapters for this book")
         else:
             print(f"Failed to create book: '{title}'")

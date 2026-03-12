@@ -1,12 +1,15 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
+import { useWs } from '../App'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import ComboBox from '../components/ComboBox'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search
 } from 'lucide-react'
+import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
+import GlobalSearchModal from '../components/GlobalSearchModal'
 
 export default function Books() {
   const [books, setBooks] = useState([])
@@ -18,6 +21,9 @@ export default function Books() {
   const [editingChapter, setEditingChapter] = useState(null)
   const [editingPrompt, setEditingPrompt] = useState(null) // book obj or null
   const [retranslating, setRetranslating] = useState(null) // { bookId, chapter, title } or null
+  const [publishingBook, setPublishingBook] = useState(null) // book obj or null
+  const [categoriesBook, setCategoriesBook] = useState(null) // book obj or null
+  const [showSearch, setShowSearch] = useState(false)
   const [error, setError] = useState(null)
 
   const load = useCallback(async () => {
@@ -33,6 +39,18 @@ export default function Books() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Ctrl+F opens global search
+  useEffect(() => {
+    function onKey(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault()
+        setShowSearch(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const loadChapters = async (bookId) => {
     if (chapters[bookId]) return
@@ -83,9 +101,18 @@ export default function Books() {
     <div className="p-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-lg font-semibold text-slate-200">Books</h1>
-        <button className="btn-primary flex items-center gap-1.5" onClick={() => { setEditingBook(null); setShowForm(true) }}>
-          <Plus size={14} /> New Book
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="btn-ghost p-2 text-slate-400 hover:text-slate-200"
+            onClick={() => setShowSearch(true)}
+            title="Search across books (Ctrl+F)"
+          >
+            <Search size={16} />
+          </button>
+          <button className="btn-primary flex items-center gap-1.5" onClick={() => { setEditingBook(null); setShowForm(true) }}>
+            <Plus size={14} /> New Book
+          </button>
+        </div>
       </div>
 
       {error && <div className="badge-rose mb-4 px-3 py-2 text-sm rounded">{error}</div>}
@@ -113,6 +140,13 @@ export default function Books() {
                     ? <ChevronDown size={16} />
                     : <ChevronRight size={16} />}
                 </button>
+                {book.cover_image && (
+                  <img
+                    src={`/api/books/${book.id}/cover`}
+                    alt=""
+                    className="w-8 h-11 object-cover rounded border border-slate-700 shrink-0"
+                  />
+                )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-slate-200 truncate">{book.title}</span>
@@ -143,6 +177,20 @@ export default function Books() {
                     </div>
                     </div>
                   </div>
+                  <button
+                    className="btn-ghost p-1.5"
+                    title="Publish to WordPress"
+                    onClick={() => setPublishingBook(book)}
+                  >
+                    <Globe size={14} />
+                  </button>
+                  <button
+                    className="btn-ghost p-1.5"
+                    title="Entity Categories"
+                    onClick={() => setCategoriesBook(book)}
+                  >
+                    <Tags size={14} />
+                  </button>
                   <button
                     className="btn-ghost p-1.5"
                     title="System Prompt"
@@ -263,6 +311,30 @@ export default function Books() {
           onClose={() => setRetranslating(null)}
         />
       )}
+
+      {/* WordPress publish modal */}
+      {publishingBook && (
+        <WordPressPublishModal
+          book={publishingBook}
+          onClose={() => setPublishingBook(null)}
+        />
+      )}
+
+      {/* Category manager modal */}
+      {categoriesBook && (
+        <CategoryManagerModal
+          book={categoriesBook}
+          onClose={() => setCategoriesBook(null)}
+        />
+      )}
+
+      {/* Global search modal */}
+      {showSearch && (
+        <GlobalSearchModal
+          books={books}
+          onClose={() => setShowSearch(false)}
+        />
+      )}
     </div>
   )
 }
@@ -272,17 +344,40 @@ function BookFormModal({ book, onClose, onSaved }) {
     title: book?.title || '',
     author: book?.author || '',
     language: book?.language || 'en',
+    source_language: book?.source_language || 'zh',
     description: book?.description || '',
+    genre: '',
   })
+  const [genres, setGenres] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const [coverPreview, setCoverPreview] = useState(book?.cover_image ? `/api/books/${book.id}/cover` : null)
+  const [uploadingCover, setUploadingCover] = useState(false)
+  const fileInputRef = useRef(null)
+
+  // Fetch genres on mount (new books only)
+  useEffect(() => {
+    if (!book) {
+      api.listGenres().then(d => setGenres(d.genres || [])).catch(() => {})
+    }
+  }, [book])
+
+  const handleGenreChange = (genreId) => {
+    setForm(f => ({ ...f, genre: genreId }))
+    const genre = genres.find(g => g.id === genreId)
+    if (genre && genre.source_language) {
+      setForm(f => ({ ...f, genre: genreId, source_language: genre.source_language }))
+    }
+  }
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError('Title is required'); return }
     setSaving(true); setError(null)
     try {
       if (book) {
-        await api.updateBook(book.id, form)
+        // Don't send genre or source_language on edit
+        const { genre, source_language, ...editForm } = form
+        await api.updateBook(book.id, editForm)
       } else {
         await api.createBook(form)
       }
@@ -290,6 +385,33 @@ function BookFormModal({ book, onClose, onSaved }) {
     } catch (e) {
       setError(e.message)
       setSaving(false)
+    }
+  }
+
+  const handleCoverUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file || !book) return
+    setUploadingCover(true); setError(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      await api.uploadCover(book.id, fd)
+      setCoverPreview(`/api/books/${book.id}/cover?t=${Date.now()}`)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setUploadingCover(false)
+    }
+  }
+
+  const handleCoverDelete = async () => {
+    if (!book) return
+    setError(null)
+    try {
+      await api.deleteCover(book.id)
+      setCoverPreview(null)
+    } catch (e) {
+      setError(e.message)
     }
   }
 
@@ -302,10 +424,75 @@ function BookFormModal({ book, onClose, onSaved }) {
         </div>
 
         <div className="space-y-3">
+          {/* Genre selector — new books only */}
+          {!book && genres.length > 0 && (
+            <div>
+              <label className="label">Genre Preset</label>
+              <select
+                className="input"
+                value={form.genre}
+                onChange={e => handleGenreChange(e.target.value)}
+              >
+                <option value="">— Select genre —</option>
+                {genres.map(g => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              {form.genre && genres.find(g => g.id === form.genre)?.description && (
+                <p className="text-xs text-slate-500 mt-1">{genres.find(g => g.id === form.genre).description}</p>
+              )}
+            </div>
+          )}
+
           <div><label className="label">Title *</label><input className="input" value={form.title} onChange={e => setForm(f => ({...f, title: e.target.value}))} /></div>
           <div><label className="label">Author</label><input className="input" value={form.author} onChange={e => setForm(f => ({...f, author: e.target.value}))} /></div>
-          <div><label className="label">Target Language</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="label">Source Language</label><input className="input" value={form.source_language} onChange={e => setForm(f => ({...f, source_language: e.target.value}))} placeholder="zh" /></div>
+            <div><label className="label">Target Language</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
+          </div>
           <div><label className="label">Description</label><textarea className="input h-20 resize-none" value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} /></div>
+
+          {/* Cover image */}
+          {book && (
+            <div>
+              <label className="label">Cover Image</label>
+              <div className="flex items-start gap-3">
+                {coverPreview ? (
+                  <div className="relative group">
+                    <img src={coverPreview} alt="Cover" className="w-20 h-28 object-cover rounded border border-slate-700" />
+                    <button
+                      className="absolute -top-1.5 -right-1.5 bg-rose-600 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={handleCoverDelete}
+                      title="Remove cover"
+                    >
+                      <X size={10} className="text-white" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="w-20 h-28 rounded border border-dashed border-slate-600 flex items-center justify-center text-slate-600 text-xs">
+                    No cover
+                  </div>
+                )}
+                <div className="flex flex-col gap-1.5">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleCoverUpload}
+                  />
+                  <button
+                    className="btn-secondary text-xs flex items-center gap-1"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingCover}
+                  >
+                    {uploadingCover ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+                    {coverPreview ? 'Replace' : 'Upload'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <p className="text-rose-400 text-sm">{error}</p>}
@@ -593,6 +780,362 @@ function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
               <button className="btn-primary" onClick={onClose}>Done</button>
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function WordPressPublishModal({ book, onClose }) {
+  const [loading, setLoading] = useState(true)
+  const [status, setStatus] = useState(null)
+  const [storyStatus, setStoryStatus] = useState('Ongoing')
+  const [storyRating, setStoryRating] = useState('Everyone')
+  const [chapterGroup, setChapterGroup] = useState('')
+  const [publishing, setPublishing] = useState(false)
+  const [progress, setProgress] = useState(null) // { current, total, title }
+  const [result, setResult] = useState(null) // { created, updated, skipped, errors }
+  const [error, setError] = useState(null)
+  const { lastMessage } = useWs()
+
+  useEffect(() => {
+    api.wpBookStatus(book.id)
+      .then(d => setStatus(d))
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [book.id])
+
+  // Listen to WebSocket for publish progress
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== 'wp_publish') return
+    const m = lastMessage
+    if (m.step === 'chapter') {
+      setProgress({ current: m.current, total: m.total, title: m.title })
+    } else if (m.step === 'done') {
+      setResult({ created: m.created, updated: m.updated, skipped: m.skipped, errors: m.errors })
+      setPublishing(false)
+    } else if (m.step === 'error') {
+      setError(m.error)
+      setPublishing(false)
+    } else if (m.step === 'cancelled') {
+      setPublishing(false)
+      setError('Publish cancelled.')
+    }
+  }, [lastMessage])
+
+  const handlePublish = async () => {
+    setPublishing(true)
+    setProgress(null)
+    setResult(null)
+    setError(null)
+    try {
+      await api.wpPublish(book.id, {
+        story_status: storyStatus,
+        story_rating: storyRating,
+        chapter_group: chapterGroup,
+      })
+    } catch (e) {
+      setError(e.message)
+      setPublishing(false)
+    }
+  }
+
+  const handleCancel = async () => {
+    try { await api.wpCancelPublish(book.id) } catch {}
+  }
+
+  const statusBadge = (s) => {
+    if (s === 'published') return <span className="badge-emerald text-xs">Published</span>
+    if (s === 'changed') return <span className="badge-amber text-xs">Changed</span>
+    return <span className="badge-slate text-xs">New</span>
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
+          <div>
+            <h2 className="font-semibold text-slate-200">Publish to WordPress</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{book.title}</p>
+          </div>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center p-12 text-slate-400 text-sm">
+            <Loader2 size={14} className="animate-spin mr-2" /> Loading status...
+          </div>
+        ) : (
+          <div className="flex-1 overflow-auto p-5 space-y-4">
+            {/* Story info */}
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+              <Globe size={14} />
+              {status?.story_published
+                ? <span>Story published (WP ID: {status.story_wp_post_id})</span>
+                : <span>Story not yet published</span>
+              }
+            </div>
+
+            {/* Options */}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="label">Story Status</label>
+                <select className="input text-sm" value={storyStatus} onChange={e => setStoryStatus(e.target.value)}>
+                  <option>Ongoing</option>
+                  <option>Completed</option>
+                  <option>Hiatus</option>
+                  <option>Canceled</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Rating</label>
+                <select className="input text-sm" value={storyRating} onChange={e => setStoryRating(e.target.value)}>
+                  <option>Everyone</option>
+                  <option>Teen</option>
+                  <option>Mature</option>
+                  <option>Adult</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Chapter Group</label>
+                <input
+                  className="input text-sm"
+                  value={chapterGroup}
+                  onChange={e => setChapterGroup(e.target.value)}
+                  placeholder="e.g. Volume 1"
+                />
+              </div>
+            </div>
+
+            {/* Progress — above chapter list so it's always visible */}
+            {publishing && progress && (
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs text-slate-400">
+                  <span>Publishing: {progress.title}</span>
+                  <span>{progress.current} / {progress.total}</span>
+                </div>
+                <div className="w-full bg-slate-700 rounded-full h-2">
+                  <div
+                    className="bg-blue-500 h-2 rounded-full transition-all"
+                    style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Result */}
+            {result && (
+              <div className="bg-emerald-950/50 border border-emerald-800 rounded px-3 py-2 text-sm text-emerald-300">
+                Done: {result.created} created, {result.updated} updated, {result.skipped} skipped
+                {result.errors > 0 && <span className="text-rose-400">, {result.errors} errors</span>}
+              </div>
+            )}
+
+            {error && <p className="text-rose-400 text-sm">{error}</p>}
+
+            {/* Chapters table */}
+            {status?.chapters?.length > 0 && (
+              <div className="border border-slate-700 rounded overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-500 bg-slate-800/50">
+                      <th className="text-left px-3 py-2 font-medium">Ch.</th>
+                      <th className="text-left px-3 py-2 font-medium">Title</th>
+                      <th className="text-left px-3 py-2 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {status.chapters.map(ch => (
+                      <tr key={ch.chapter_number} className="border-t border-slate-800">
+                        <td className="px-3 py-1.5 text-slate-400 font-mono">{ch.chapter_number}</td>
+                        <td className="px-3 py-1.5 text-slate-300 truncate max-w-[300px]">{ch.title}</td>
+                        <td className="px-3 py-1.5">{statusBadge(ch.status)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-700 shrink-0">
+          <button className="btn-secondary" onClick={onClose}>Close</button>
+          {publishing ? (
+            <button className="btn-danger flex items-center gap-1.5" onClick={handleCancel}>
+              <X size={13} /> Cancel
+            </button>
+          ) : (
+            <button
+              className="btn-primary flex items-center gap-1.5"
+              onClick={handlePublish}
+              disabled={loading || !status?.chapters?.length}
+            >
+              <Globe size={13} /> Publish All
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CategoryManagerModal({ book, onClose }) {
+  const [categories, setCategories] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [isDefault, setIsDefault] = useState(true)
+  const [newCat, setNewCat] = useState('')
+  const [entityCounts, setEntityCounts] = useState({})
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [successMsg, setSuccessMsg] = useState(null)
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      try {
+        const [catData, countData] = await Promise.all([
+          api.getBookCategories(book.id),
+          api.getCategoryEntityCounts(book.id),
+        ])
+        setCategories(catData.categories || DEFAULT_CATEGORIES)
+        setIsDefault(catData.is_default)
+        setEntityCounts(countData.counts || {})
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [book.id])
+
+  const handleSave = async (cats) => {
+    setSaving(true); setError(null); setSuccessMsg(null)
+    try {
+      const res = await api.setBookCategories(book.id, { categories: cats })
+      setCategories(res.categories)
+      setIsDefault(false)
+      setSuccessMsg('Categories saved.')
+      setTimeout(() => setSuccessMsg(null), 3000)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleAdd = () => {
+    const c = newCat.trim().toLowerCase()
+    if (!c) return
+    if (categories.includes(c)) { setError(`"${c}" already exists.`); return }
+    setError(null)
+    const updated = [...categories, c]
+    setCategories(updated)
+    setNewCat('')
+    handleSave(updated)
+  }
+
+  const handleRemove = (cat) => {
+    const count = entityCounts[cat] || 0
+    if (count > 0 && !confirm(`"${cat}" has ${count} entities. They won't be deleted but will be hidden from translation prompts and UI filters. Continue?`)) return
+    const updated = categories.filter(c => c !== cat)
+    if (updated.length === 0) { setError('At least one category is required.'); return }
+    setCategories(updated)
+    handleSave(updated)
+  }
+
+  const handleReset = async () => {
+    if (!confirm('Reset to default categories? Custom categories will be removed (entities are preserved).')) return
+    setSaving(true); setError(null); setSuccessMsg(null)
+    try {
+      await api.resetBookCategories(book.id)
+      setCategories([...DEFAULT_CATEGORIES])
+      setIsDefault(true)
+      setSuccessMsg('Reset to defaults.')
+      setTimeout(() => setSuccessMsg(null), 3000)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold text-slate-200">Entity Categories</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{book.title}</p>
+          </div>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-slate-400 text-sm">
+            <Loader2 size={14} className="animate-spin" /> Loading...
+          </div>
+        ) : (
+          <>
+            <div className="space-y-1.5">
+              {categories.map(cat => (
+                <div key={cat} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-slate-750/50">
+                  <div className="flex items-center gap-2">
+                    <span className={`badge ${getCatColor(cat)}`}>{cat}</span>
+                    {entityCounts[cat] > 0 && (
+                      <span className="text-xs text-slate-500">{entityCounts[cat]} entities</span>
+                    )}
+                  </div>
+                  <button
+                    className="btn-ghost p-1 hover:text-rose-400"
+                    title="Remove category"
+                    onClick={() => handleRemove(cat)}
+                    disabled={saving}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                className="input flex-1"
+                placeholder="New category name..."
+                value={newCat}
+                onChange={e => setNewCat(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              />
+              <button
+                className="btn-primary flex items-center gap-1"
+                onClick={handleAdd}
+                disabled={saving || !newCat.trim()}
+              >
+                <Plus size={13} /> Add
+              </button>
+            </div>
+
+            {(error || successMsg) && (
+              <div>
+                {error && <p className="text-rose-400 text-sm">{error}</p>}
+                {successMsg && <p className="text-emerald-400 text-sm">{successMsg}</p>}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                {isDefault ? 'Using defaults' : 'Custom categories'}
+              </div>
+              <div className="flex gap-2">
+                {!isDefault && (
+                  <button className="btn-secondary text-xs" onClick={handleReset} disabled={saving}>
+                    Reset to Defaults
+                  </button>
+                )}
+                <button className="btn-secondary" onClick={onClose}>Close</button>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

@@ -7,6 +7,11 @@ from typing import Dict, List, Optional, Any, Union, Tuple
 from itertools import zip_longest
 import re
 
+DEFAULT_CATEGORIES = [
+    'characters', 'places', 'organizations', 'abilities',
+    'titles', 'equipment', 'creatures'
+]
+
 class DatabaseManager:
     """Class to manage database operations including entities, books, and chapters using SQLite"""
     
@@ -145,6 +150,34 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread INTEGER DEFAULT 0")
                 self.logger.info("Added is_proofread column to chapters table")
 
+            cursor.execute("PRAGMA table_info(books)")
+            book_cols = {row[1] for row in cursor.fetchall()}
+            if 'cover_image' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN cover_image TEXT")
+                self.logger.info("Added cover_image column to books table")
+            if 'categories' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN categories TEXT")
+                self.logger.info("Added categories column to books table")
+
+            # Create covers directory
+            covers_dir = os.path.join(os.path.dirname(self.db_path), "covers")
+            os.makedirs(covers_dir, exist_ok=True)
+
+            # WordPress publish state tracking
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS wp_publish_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                chapter_number INTEGER,
+                wp_post_id INTEGER NOT NULL,
+                wp_post_type TEXT NOT NULL,
+                last_published TEXT,
+                content_hash TEXT,
+                UNIQUE(book_id, chapter_number),
+                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+            )
+            ''')
+
             conn.commit()
             conn.close()
             self.logger.info("Database initialized successfully")
@@ -248,6 +281,35 @@ class DatabaseManager:
             self.logger.error(f"Error setting book prompt template: {e}")
             return False
 
+    def get_book_categories(self, book_id):
+        """Get entity categories for a book. Returns DEFAULT_CATEGORIES if none set."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT categories FROM books WHERE id = ?", (book_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                return json.loads(row[0])
+            return list(DEFAULT_CATEGORIES)
+        except Exception as e:
+            self.logger.error(f"Error getting book categories: {e}")
+            return list(DEFAULT_CATEGORIES)
+
+    def set_book_categories(self, book_id, categories):
+        """Set entity categories for a book. Pass None to reset to defaults."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            value = json.dumps(categories) if categories is not None else None
+            cursor.execute("UPDATE books SET categories = ? WHERE id = ?", (value, book_id))
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Error setting book categories: {e}")
+            return False
+
     def get_book(self, book_id=None, title=None):
         """
         Get book information from the database.
@@ -269,25 +331,26 @@ class DatabaseManager:
             
             if book_id:
                 cursor.execute('''
-                SELECT id, title, author, language, description, created_date, modified_date, 
-                    source_language, target_language
+                SELECT id, title, author, language, description, created_date, modified_date,
+                    source_language, target_language, cover_image, categories
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
             else:
                 cursor.execute('''
-                SELECT id, title, author, language, description, created_date, modified_date, 
-                    source_language, target_language
+                SELECT id, title, author, language, description, created_date, modified_date,
+                    source_language, target_language, cover_image, categories
                 FROM books
                 WHERE title = ?
                 ''', (title,))
-            
+
             row = cursor.fetchone()
             conn.close()
-            
+
             if not row:
                 return None
-                
+
+            raw_cats = row[10] if len(row) > 10 else None
             book_info = {
                 "id": row[0],
                 "title": row[1],
@@ -297,7 +360,9 @@ class DatabaseManager:
                 "created_date": row[5],
                 "modified_date": row[6],
                 "source_language": row[7],
-                "target_language": row[8]
+                "target_language": row[8],
+                "cover_image": row[9] if len(row) > 9 else None,
+                "categories": json.loads(raw_cats) if raw_cats else None,
             }
             
             return book_info
@@ -336,8 +401,8 @@ class DatabaseManager:
             kwargs["modified_date"] = datetime.datetime.now().isoformat()
             
             for key, value in kwargs.items():
-                if key in ['title', 'author', 'language', 'description', 'source_language', 
-                        'target_language', 'modified_date']:
+                if key in ['title', 'author', 'language', 'description', 'source_language',
+                        'target_language', 'modified_date', 'cover_image']:
                     set_clause.append(f"{key} = ?")
                     values.append(value)
             
@@ -378,24 +443,26 @@ class DatabaseManager:
             cursor = conn.cursor()
             
             cursor.execute('''
-            SELECT id, title, author, language, created_date, 
+            SELECT id, title, author, language, created_date, cover_image, categories,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count
             FROM books
             ORDER BY title
             ''')
-            
+
             rows = cursor.fetchall()
             conn.close()
-            
+
             result = []
             for row in rows:
-                book_id, title, author, language, created_date, chapter_count = row
+                book_id, title, author, language, created_date, cover_image, raw_cats, chapter_count = row
                 result.append({
                     "id": book_id,
                     "title": title,
                     "author": author,
                     "language": language,
                     "created_date": created_date,
+                    "cover_image": cover_image,
+                    "categories": json.loads(raw_cats) if raw_cats else None,
                     "chapter_count": chapter_count
                 })
             
@@ -681,6 +748,234 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Error listing chapters: {e}")
             return []
+
+    def search_book_chapters(self, book_id, query, scope='both', is_regex=False):
+        """Search all chapters of a book for a query string.
+
+        Args:
+            book_id: Book ID
+            query: Search string or regex pattern
+            scope: 'translated', 'untranslated', or 'both'
+            is_regex: Whether query is a regex pattern
+
+        Returns:
+            list of dicts with chapter_number, title, match_count, matches
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT chapter_number, title, untranslated_content, translated_content
+                FROM chapters WHERE book_id = ? ORDER BY chapter_number
+            ''', (book_id,))
+            rows = cursor.fetchall()
+            conn.close()
+
+            if is_regex:
+                try:
+                    pattern = re.compile(query, re.IGNORECASE)
+                except re.error:
+                    return []
+            else:
+                query_lower = query.lower()
+
+            results = []
+            for chapter_number, title, raw_untrans, raw_trans in rows:
+                try:
+                    untrans_lines = json.loads(raw_untrans) if raw_untrans else []
+                except (json.JSONDecodeError, TypeError):
+                    untrans_lines = raw_untrans.split('\n') if raw_untrans else []
+                try:
+                    trans_lines = json.loads(raw_trans) if raw_trans else []
+                except (json.JSONDecodeError, TypeError):
+                    trans_lines = raw_trans.split('\n') if raw_trans else []
+
+                matches = []
+
+                # Search untranslated
+                if scope in ('untranslated', 'both'):
+                    for line_idx, line in enumerate(untrans_lines):
+                        if is_regex:
+                            for m in pattern.finditer(line):
+                                matches.append({
+                                    'line': line_idx, 'col': m.start(),
+                                    'length': m.end() - m.start(), 'field': 'untranslated'
+                                })
+                        else:
+                            line_lower = line.lower()
+                            start = 0
+                            while True:
+                                idx = line_lower.find(query_lower, start)
+                                if idx == -1:
+                                    break
+                                matches.append({
+                                    'line': line_idx, 'col': idx,
+                                    'length': len(query), 'field': 'untranslated'
+                                })
+                                start = idx + 1
+
+                # Search translated
+                if scope in ('translated', 'both'):
+                    for line_idx, line in enumerate(trans_lines):
+                        if is_regex:
+                            for m in pattern.finditer(line):
+                                matches.append({
+                                    'line': line_idx, 'col': m.start(),
+                                    'length': m.end() - m.start(), 'field': 'translated'
+                                })
+                        else:
+                            line_lower = line.lower()
+                            start = 0
+                            while True:
+                                idx = line_lower.find(query_lower, start)
+                                if idx == -1:
+                                    break
+                                matches.append({
+                                    'line': line_idx, 'col': idx,
+                                    'length': len(query), 'field': 'translated'
+                                })
+                                start = idx + 1
+
+                if matches:
+                    results.append({
+                        'chapter_number': chapter_number,
+                        'title': title or f'Chapter {chapter_number}',
+                        'match_count': len(matches),
+                        'matches': matches,
+                    })
+
+            return results
+        except sqlite3.Error as e:
+            self.logger.error(f"Error searching chapters: {e}")
+            return []
+
+    # In-memory undo snapshot: { book_id: { 'snapshots': [(ch_id, old_content), ...], 'query': str, 'replacement': str } }
+    _replace_undo = {}
+
+    def replace_in_chapters(self, book_id, query, replacement, chapter_numbers=None, is_regex=False):
+        """Replace text in translated content of chapters.
+
+        Saves a snapshot of affected chapters before modifying, enabling undo.
+
+        Returns:
+            dict with affected_chapters, total_replacements, and can_undo flag
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            sql = 'SELECT id, chapter_number, translated_content FROM chapters WHERE book_id = ?'
+            params = [book_id]
+            if chapter_numbers:
+                placeholders = ','.join('?' * len(chapter_numbers))
+                sql += f' AND chapter_number IN ({placeholders})'
+                params.extend(chapter_numbers)
+            sql += ' ORDER BY chapter_number'
+
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+            if is_regex:
+                try:
+                    pattern = re.compile(query, re.IGNORECASE)
+                except re.error:
+                    conn.close()
+                    return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
+
+            affected = 0
+            total = 0
+            snapshots = []
+
+            for ch_id, ch_num, raw_content in rows:
+                try:
+                    lines = json.loads(raw_content) if raw_content else []
+                except (json.JSONDecodeError, TypeError):
+                    lines = raw_content.split('\n') if raw_content else []
+
+                ch_replacements = 0
+                new_lines = []
+                for line in lines:
+                    if is_regex:
+                        new_line, count = pattern.subn(replacement, line)
+                    else:
+                        count = 0
+                        new_line = line
+                        lower_line = new_line.lower()
+                        query_lower = query.lower()
+                        pos = 0
+                        result_parts = []
+                        while True:
+                            idx = lower_line.find(query_lower, pos)
+                            if idx == -1:
+                                result_parts.append(new_line[pos:])
+                                break
+                            result_parts.append(new_line[pos:idx])
+                            result_parts.append(replacement)
+                            count += 1
+                            pos = idx + len(query)
+                        if count > 0:
+                            new_line = ''.join(result_parts)
+
+                    new_lines.append(new_line)
+                    ch_replacements += count
+
+                if ch_replacements > 0:
+                    # Snapshot the original content before overwriting
+                    snapshots.append((ch_id, raw_content))
+                    cursor.execute(
+                        'UPDATE chapters SET translated_content = ? WHERE id = ?',
+                        (json.dumps(new_lines, ensure_ascii=False), ch_id)
+                    )
+                    affected += 1
+                    total += ch_replacements
+
+            conn.commit()
+            conn.close()
+
+            # Store undo snapshot (one level, keyed by book)
+            if snapshots:
+                DatabaseManager._replace_undo[book_id] = {
+                    'snapshots': snapshots,
+                    'query': query,
+                    'replacement': replacement,
+                    'affected_chapters': affected,
+                    'total_replacements': total,
+                }
+
+            return {'affected_chapters': affected, 'total_replacements': total, 'can_undo': len(snapshots) > 0}
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Error replacing in chapters: {e}")
+            return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
+
+    def undo_replace(self, book_id):
+        """Undo the last replace_in_chapters operation for a book.
+
+        Returns:
+            dict with status and number of chapters restored, or None if nothing to undo
+        """
+        undo = DatabaseManager._replace_undo.pop(book_id, None)
+        if not undo:
+            return None
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            for ch_id, old_content in undo['snapshots']:
+                cursor.execute(
+                    'UPDATE chapters SET translated_content = ? WHERE id = ?',
+                    (old_content, ch_id)
+                )
+            conn.commit()
+            conn.close()
+            return {'restored_chapters': len(undo['snapshots'])}
+        except sqlite3.Error as e:
+            self.logger.error(f"Error undoing replace: {e}")
+            return None
+
+    def has_replace_undo(self, book_id):
+        """Check if an undo snapshot exists for a book."""
+        return book_id in DatabaseManager._replace_undo
 
     def delete_chapter(self, chapter_id=None, book_id=None, chapter_number=None):
         """
@@ -1193,21 +1488,17 @@ class DatabaseManager:
     def _load_entities(self, book_id=None):
         """Load existing entities from database into memory cache"""
 
-        # Define default entity categories
-        default_entities = {
-            "characters": {},
-            "places": {},
-            "organizations": {},
-            "abilities": {},
-            "titles": {},
-            "equipment": {},
-            "creatures": {}
-        }
-        
+        # Build default entity categories dict, using book-specific categories if available
+        if book_id is not None:
+            cats = self.get_book_categories(book_id)
+        else:
+            cats = DEFAULT_CATEGORIES
+        default_entities = {cat: {} for cat in cats}
+
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             # Get all entities grouped by category
             if book_id is not None:
                 cursor.execute('''
@@ -1220,9 +1511,9 @@ class DatabaseManager:
                 SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note
                 FROM entities
                 ''')
-                
+
             rows = cursor.fetchall()
-            
+
             # Process results
             entities = default_entities.copy()
             for row in rows:
@@ -1292,15 +1583,15 @@ class DatabaseManager:
         of untranslated-translated pairs. Entries from 'new_entities' will replace
         existing ones from 'old_entities' if they have the same keys.
         """
-        # Create a copy of old_entities to avoid modifying the original
-        result = {category: old_entities.get(category, {}).copy()
-                 for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']}
+        # Create a copy using union of keys from both dicts
+        all_categories = set(old_entities.keys()) | set(new_entities.keys())
+        result = {cat: old_entities.get(cat, {}).copy() for cat in all_categories}
 
         # Update with new entities
-        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
-            new_category_dict = new_entities.get(category, {})
-            result[category].update(new_category_dict)
-        
+        for cat in all_categories:
+            new_category_dict = new_entities.get(cat, {})
+            result.setdefault(cat, {}).update(new_category_dict)
+
         return result
     
     def save_entities(self):
@@ -1889,16 +2180,12 @@ class DatabaseManager:
             Each entity_data contains: translation, last_chapter, incorrect_translation,
             gender, book_id, category
         """
-        # Define default entity categories
-        default_entities = {
-            "characters": {},
-            "places": {},
-            "organizations": {},
-            "abilities": {},
-            "titles": {},
-            "equipment": {},
-            "creatures": {}
-        }
+        # Build default categories from book config or global defaults
+        if book_id is not None:
+            cats = self.get_book_categories(book_id)
+        else:
+            cats = DEFAULT_CATEGORIES
+        default_entities = {cat: {} for cat in cats}
 
         try:
             conn = sqlite3.connect(self.db_path)
@@ -2091,3 +2378,111 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Error finding chapters using entity: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # WordPress publish state
+    # ------------------------------------------------------------------
+
+    def get_wp_state(self, book_id, chapter_number=None):
+        """Get a single wp_publish_state record."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            if chapter_number is None:
+                cursor.execute(
+                    "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
+                    "FROM wp_publish_state WHERE book_id = ? AND chapter_number IS NULL",
+                    (book_id,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
+                    "FROM wp_publish_state WHERE book_id = ? AND chapter_number = ?",
+                    (book_id, chapter_number),
+                )
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            return {
+                "id": row[0], "book_id": row[1], "chapter_number": row[2],
+                "wp_post_id": row[3], "wp_post_type": row[4],
+                "last_published": row[5], "content_hash": row[6],
+            }
+        except sqlite3.Error as e:
+            self.logger.error(f"Error getting wp state: {e}")
+            return None
+
+    def save_wp_state(self, book_id, chapter_number, wp_post_id, wp_post_type, content_hash):
+        """Upsert a wp_publish_state record."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            now = datetime.datetime.utcnow().isoformat()
+            cursor.execute(
+                "INSERT INTO wp_publish_state (book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(book_id, chapter_number) DO UPDATE SET "
+                "wp_post_id=excluded.wp_post_id, wp_post_type=excluded.wp_post_type, "
+                "last_published=excluded.last_published, content_hash=excluded.content_hash",
+                (book_id, chapter_number, wp_post_id, wp_post_type, now, content_hash),
+            )
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            self.logger.error(f"Error saving wp state: {e}")
+
+    def get_all_wp_states(self, book_id):
+        """Get all wp_publish_state records for a book."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
+                "FROM wp_publish_state WHERE book_id = ?",
+                (book_id,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [
+                {
+                    "id": r[0], "book_id": r[1], "chapter_number": r[2],
+                    "wp_post_id": r[3], "wp_post_type": r[4],
+                    "last_published": r[5], "content_hash": r[6],
+                }
+                for r in rows
+            ]
+        except sqlite3.Error as e:
+            self.logger.error(f"Error getting all wp states: {e}")
+            return []
+
+    def delete_wp_states(self, book_id):
+        """Delete all wp_publish_state records for a book."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM wp_publish_state WHERE book_id = ?", (book_id,))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            self.logger.error(f"Error deleting wp states: {e}")
+
+    def delete_wp_state_single(self, book_id, chapter_number=None):
+        """Delete a single wp_publish_state record."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            if chapter_number is None:
+                cursor.execute(
+                    "DELETE FROM wp_publish_state WHERE book_id = ? AND chapter_number IS NULL",
+                    (book_id,),
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM wp_publish_state WHERE book_id = ? AND chapter_number = ?",
+                    (book_id, chapter_number),
+                )
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            self.logger.error(f"Error deleting wp state: {e}")
