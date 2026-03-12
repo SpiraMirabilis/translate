@@ -234,9 +234,9 @@ class UserInterface(ABC):
                             
                             # Check if entity exists with this book_id
                             cursor.execute('''
-                            SELECT id FROM entities 
-                            WHERE category = ? AND untranslated = ? AND book_id = ?
-                            ''', (category, key, self.book_id))
+                            SELECT id FROM entities
+                            WHERE untranslated = ? AND book_id = ?
+                            ''', (key, self.book_id))
                             
                             existing = cursor.fetchone()
                             
@@ -244,10 +244,10 @@ class UserInterface(ABC):
                                 # Update existing — set origin_chapter if not yet recorded
                                 cursor.execute('''
                                 UPDATE entities
-                                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
+                                SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
                                     origin_chapter = COALESCE(origin_chapter, ?)
                                 WHERE id = ?
-                                ''', (translation, last_chapter, incorrect_translation, gender, current_chapter, existing[0]))
+                                ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, existing[0]))
                                 self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
                             else:
                                 # Insert new — record origin_chapter

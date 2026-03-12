@@ -146,14 +146,20 @@ class OpenAIProvider(ModelProvider):
             if k not in ['frequency_penalty', 'presence_penalty'] or v != 0
         }
 
-        # Try to make the API call, with fallback for older SDK versions
+        # Try to make the API call
         try:
             response = self.client.chat.completions.create(**openai_params)
         except TypeError as e:
             # If max_completion_tokens is not supported (older SDK), fall back to max_tokens
             if 'max_completion_tokens' in str(e) and not uses_legacy:
-                # Replace max_completion_tokens with max_tokens for older SDK versions
                 openai_params['max_tokens'] = openai_params.pop('max_completion_tokens')
+                response = self.client.chat.completions.create(**openai_params)
+            else:
+                raise
+        except Exception as e:
+            # If the API rejects max_tokens for newer models, retry with max_completion_tokens
+            if 'max_tokens' in str(e) and 'max_completion_tokens' in str(e) and 'max_tokens' in openai_params:
+                openai_params['max_completion_tokens'] = openai_params.pop('max_tokens')
                 response = self.client.chat.completions.create(**openai_params)
             else:
                 raise

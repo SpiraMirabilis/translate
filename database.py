@@ -30,7 +30,7 @@ class DatabaseManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Create main entities table with a unique constraint on category+untranslated
+            # Create main entities table with a unique constraint on book_id+untranslated
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +41,7 @@ class DatabaseManager:
                 incorrect_translation TEXT,
                 gender TEXT,
                 book_id INTEGER,
-                UNIQUE(category, untranslated, book_id)
+                UNIQUE(book_id, untranslated)
             )
             ''')
         
@@ -1614,26 +1614,26 @@ class DatabaseManager:
                     note = entity_data.get('note', None)
                     
                     # Create a unique key to track this entity
-                    entity_key = (category, untranslated, book_id)
-                    
+                    entity_key = (untranslated, book_id)
+
                     # Skip if we've already processed this entity
                     if entity_key in processed_entities:
                         continue
-                    
+
                     # Add to processed set
                     processed_entities.add(entity_key)
-                    
+
                     # Look for existing entity to determine whether to insert or update
                     if book_id is not None:
                         cursor.execute('''
-                        SELECT id FROM entities 
-                        WHERE category = ? AND untranslated = ? AND book_id = ?
-                        ''', (category, untranslated, book_id))
+                        SELECT id FROM entities
+                        WHERE untranslated = ? AND book_id = ?
+                        ''', (untranslated, book_id))
                     else:
                         cursor.execute('''
-                        SELECT id FROM entities 
-                        WHERE category = ? AND untranslated = ? AND book_id IS NULL
-                        ''', (category, untranslated))
+                        SELECT id FROM entities
+                        WHERE untranslated = ? AND book_id IS NULL
+                        ''', (untranslated,))
                     
                     existing = cursor.fetchone()
                     
@@ -1642,9 +1642,9 @@ class DatabaseManager:
                         entity_id = existing[0]
                         cursor.execute('''
                         UPDATE entities
-                        SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, note = ?
+                        SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, note = ?
                         WHERE id = ?
-                        ''', (translation, last_chapter, incorrect_translation, gender, note, entity_id))
+                        ''', (category, translation, last_chapter, incorrect_translation, gender, note, entity_id))
                     else:
                         # Insert new entity
                         cursor.execute('''
@@ -1810,35 +1810,17 @@ class DatabaseManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # First check if this entity exists in any other category for this book
+            # Check if entity already exists for this book (regardless of category)
             if book_id is not None:
                 cursor.execute('''
-                SELECT category FROM entities 
-                WHERE untranslated = ? AND category != ? AND book_id = ?
-                ''', (untranslated, category, book_id))
+                SELECT id, origin_chapter, category FROM entities
+                WHERE untranslated = ? AND book_id = ?
+                ''', (untranslated, book_id))
             else:
                 cursor.execute('''
-                SELECT category FROM entities 
-                WHERE untranslated = ? AND category != ? AND book_id IS NULL
-                ''', (untranslated, category))
-            
-            existing = cursor.fetchone()
-            if existing:
-                self.logger.warning(f"Entity '{untranslated}' already exists in category '{existing[0]}' for the same book, not adding to '{category}'")
-                conn.close()
-                return False
-            
-            # Check if entity already exists in this category
-            if book_id is not None:
-                cursor.execute('''
-                SELECT id, origin_chapter FROM entities
-                WHERE category = ? AND untranslated = ? AND book_id = ?
-                ''', (category, untranslated, book_id))
-            else:
-                cursor.execute('''
-                SELECT id, origin_chapter FROM entities
-                WHERE category = ? AND untranslated = ? AND book_id IS NULL
-                ''', (category, untranslated))
+                SELECT id, origin_chapter, category FROM entities
+                WHERE untranslated = ? AND book_id IS NULL
+                ''', (untranslated,))
 
             same_cat = cursor.fetchone()
             if same_cat:
@@ -1854,9 +1836,9 @@ class DatabaseManager:
                         note = existing[1]
                 cursor.execute('''
                 UPDATE entities
-                SET translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?, note = ?
+                SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?, note = ?
                 WHERE id = ?
-                ''', (translation, last_chapter, incorrect_translation, gender, effective_origin, note, existing_id))
+                ''', (category, translation, last_chapter, incorrect_translation, gender, effective_origin, note, existing_id))
             else:
                 # Insert new entity
                 cursor.execute('''
@@ -1912,7 +1894,7 @@ class DatabaseManager:
             where_book_id = None
 
             for key, value in kwargs.items():
-                if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
+                if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note', 'category']:
                     set_clause.append(f"{key} = ?")
                     values.append(value)
                 elif key == 'book_id':
@@ -1961,6 +1943,7 @@ class DatabaseManager:
 
             # Update the in-memory cache
             if category in self.entities and untranslated in self.entities[category]:
+                new_category = kwargs.get('category')
                 for key, value in kwargs.items():
                     if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
                         self.entities[category][untranslated][key] = value
@@ -1968,12 +1951,14 @@ class DatabaseManager:
                         if is_only_book_id:
                             # Changing book assignment
                             if value is None:
-                                # Remove book_id from cache if setting to None (making global)
                                 if 'book_id' in self.entities[category][untranslated]:
                                     del self.entities[category][untranslated]['book_id']
                             else:
                                 self.entities[category][untranslated]['book_id'] = value
-                        # If not is_only_book_id, book_id was used for WHERE clause, don't update cache
+                # If category is changing, move the entity in the cache
+                if new_category and new_category != category:
+                    entity_data = self.entities[category].pop(untranslated)
+                    self.entities.setdefault(new_category, {})[untranslated] = entity_data
 
             return True
             
@@ -2149,9 +2134,14 @@ class DatabaseManager:
                     gender = entity_data.get('gender', None)
                     
                     cursor.execute('''
-                    INSERT OR REPLACE INTO entities 
-                    (category, untranslated, translation, last_chapter, incorrect_translation, gender)
+                    INSERT INTO entities (category, untranslated, translation, last_chapter, incorrect_translation, gender)
                     VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(book_id, untranslated) DO UPDATE SET
+                        category = excluded.category,
+                        translation = excluded.translation,
+                        last_chapter = excluded.last_chapter,
+                        incorrect_translation = excluded.incorrect_translation,
+                        gender = excluded.gender
                     ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender))
                     count += 1
             
