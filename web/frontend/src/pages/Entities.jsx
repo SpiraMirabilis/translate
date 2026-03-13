@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { DictResult, useDictLookup } from '../components/DictLookup'
 import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
+import { copyToClipboard } from '../utils/clipboard'
 
 const TRUNCATE_LIMIT = 25
 
@@ -507,7 +508,7 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
       } else {
         lines.push(res.message || 'No context available.')
       }
-      await navigator.clipboard.writeText(lines.join('\n'))
+      await copyToClipboard(lines.join('\n'))
       setContextCopied(true)
       setTimeout(() => setContextCopied(false), 1500)
     } catch (e) {

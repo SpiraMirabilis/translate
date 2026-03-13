@@ -8,6 +8,7 @@
 import { useState } from 'react'
 import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen, Copy } from 'lucide-react'
 import { api } from '../services/api'
+import { copyToClipboard } from '../utils/clipboard'
 import { DictResult, useDictLookup } from './DictLookup'
 import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
 
@@ -122,7 +123,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
       '',
       snippet ? `Context:\n${snippet}` : '(entity not found in chapter text)',
     ]
-    navigator.clipboard.writeText(lines.join('\n'))
+    copyToClipboard(lines.join('\n'))
   }
 
   const activeRows = rows.filter(r => !r.deleted)

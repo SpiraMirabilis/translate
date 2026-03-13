@@ -117,6 +117,12 @@ class CommandLineInterface(UserInterface):
         book_group.add_argument("--edit-book", type=int, help="Edit book information by ID")
         book_group.add_argument("--delete-book", type=int, help="Delete a book and all its chapters by ID")
 
+        # Category management (requires --book-id)
+        book_group.add_argument("--list-categories", action="store_true", help="List entity categories for a book (requires --book-id)")
+        book_group.add_argument("--add-category", type=str, help="Add a custom entity category to a book (requires --book-id)")
+        book_group.add_argument("--remove-category", type=str, help="Remove an entity category from a book (requires --book-id)")
+        book_group.add_argument("--reset-categories", action="store_true", help="Reset entity categories to defaults for a book (requires --book-id)")
+
         # book specific model group
         parser.add_argument("--show-prompt-template", type=int, help="Show the current prompt template for a book (by ID)")
         parser.add_argument("--set-prompt-template", type=int, help="Set a custom prompt template for a book (by ID)")
@@ -171,7 +177,6 @@ class CommandLineInterface(UserInterface):
         parser.add_argument("--entity-book-id", type=int,
                             help="Filter entities by book ID (use with --review-entities)")
         parser.add_argument("--entity-category", type=str,
-                            choices=["characters", "places", "organizations", "abilities", "titles", "equipment", "creatures"],
                             help="Filter entities by category (use with --review-entities)")
         
         # Model arguments
@@ -245,6 +250,35 @@ class CommandLineInterface(UserInterface):
             
         if args.delete_book:
             self._delete_book(args.delete_book)
+            exit(0)
+
+        # Category management (requires --book-id)
+        if args.list_categories:
+            if not args.book_id:
+                print("Error: --list-categories requires --book-id")
+                exit(1)
+            self._list_categories(args.book_id)
+            exit(0)
+
+        if args.add_category:
+            if not args.book_id:
+                print("Error: --add-category requires --book-id")
+                exit(1)
+            self._add_category(args.book_id, args.add_category)
+            exit(0)
+
+        if args.remove_category:
+            if not args.book_id:
+                print("Error: --remove-category requires --book-id")
+                exit(1)
+            self._remove_category(args.book_id, args.remove_category)
+            exit(0)
+
+        if args.reset_categories:
+            if not args.book_id:
+                print("Error: --reset-categories requires --book-id")
+                exit(1)
+            self._reset_categories(args.book_id)
             exit(0)
 
         # Book specific prompt section
@@ -934,6 +968,14 @@ class CommandLineInterface(UserInterface):
         
         conn.close()
 
+    def _get_categories_for_context(self, book_id=None):
+        """Get entity categories for the current context (book or defaults)."""
+        bid = book_id or getattr(self, 'book_id', None)
+        if bid:
+            return self.entity_manager.get_book_categories(bid)
+        from database import DEFAULT_CATEGORIES
+        return list(DEFAULT_CATEGORIES)
+
     # Book private methods
     def _list_genres(self):
         """List available genre presets"""
@@ -991,6 +1033,83 @@ class CommandLineInterface(UserInterface):
         else:
             print(f"Failed to create book: '{title}'")
 
+    def _list_categories(self, book_id):
+        """List entity categories for a book"""
+        from database import DEFAULT_CATEGORIES
+        book = self.entity_manager.get_book(book_id=book_id)
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        categories = self.entity_manager.get_book_categories(book_id)
+        is_default = categories == list(DEFAULT_CATEGORIES)
+        print(f"Categories for '{book['title']}' (ID: {book_id}){'  [defaults]' if is_default else '  [custom]'}:\n")
+        for cat in categories:
+            # Count entities in this category for the book
+            all_ents = self.entity_manager.get_all_entities_for_review(book_id=book_id, category=cat)
+            count = len(all_ents.get(cat, {}))
+            print(f"  {cat:25s} ({count} entities)")
+        print()
+
+    def _add_category(self, book_id, category):
+        """Add a custom entity category to a book"""
+        category = category.strip().lower()
+        if not category:
+            print("Error: category name cannot be empty.")
+            return
+        book = self.entity_manager.get_book(book_id=book_id)
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        categories = self.entity_manager.get_book_categories(book_id)
+        if category in categories:
+            print(f"Category '{category}' already exists for this book.")
+            return
+        categories.append(category)
+        self.entity_manager.set_book_categories(book_id, categories)
+        print(f"Added category '{category}' to '{book['title']}' (ID: {book_id}).")
+
+    def _remove_category(self, book_id, category):
+        """Remove an entity category from a book"""
+        category = category.strip().lower()
+        book = self.entity_manager.get_book(book_id=book_id)
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        categories = self.entity_manager.get_book_categories(book_id)
+        if category not in categories:
+            print(f"Category '{category}' not found. Current categories: {', '.join(categories)}")
+            return
+        # Warn if entities exist
+        all_ents = self.entity_manager.get_all_entities_for_review(book_id=book_id, category=category)
+        count = len(all_ents.get(category, {}))
+        if count > 0:
+            print(f"Warning: '{category}' has {count} entities. They will be hidden (not deleted).")
+            if self.has_rich_ui:
+                confirm = self.questionary.confirm("Proceed?").ask()
+                if not confirm:
+                    print("Cancelled.")
+                    return
+            else:
+                resp = input("Proceed? [y/N] ").strip().lower()
+                if resp != 'y':
+                    print("Cancelled.")
+                    return
+        categories.remove(category)
+        self.entity_manager.set_book_categories(book_id, categories)
+        print(f"Removed category '{category}' from '{book['title']}' (ID: {book_id}).")
+
+    def _reset_categories(self, book_id):
+        """Reset entity categories to defaults for a book"""
+        from database import DEFAULT_CATEGORIES
+        book = self.entity_manager.get_book(book_id=book_id)
+        if not book:
+            print(f"Book with ID {book_id} not found.")
+            return
+        self.entity_manager.set_book_categories(book_id, None)
+        print(f"Reset categories for '{book['title']}' (ID: {book_id}) to defaults:")
+        for cat in DEFAULT_CATEGORIES:
+            print(f"  {cat}")
+
     def _list_books(self):
         """List all books in the database"""
         books = self.entity_manager.list_books()
@@ -1028,7 +1147,17 @@ class CommandLineInterface(UserInterface):
         
         if book['description']:
             print(f"\nDescription: {book['description']}")
-        
+
+        # Show categories
+        from database import DEFAULT_CATEGORIES
+        categories = self.entity_manager.get_book_categories(book_id)
+        is_default = categories == list(DEFAULT_CATEGORIES)
+        print(f"\nCategories {'[defaults]' if is_default else '[custom]'}: {', '.join(categories)}")
+
+        # Show prompt template status
+        prompt = self.entity_manager.get_book_prompt_template(book_id)
+        print(f"Prompt Template: {'custom' if prompt else 'default'}")
+
         # Get chapters count
         chapters = self.entity_manager.list_chapters(book_id)
         print(f"\nChapters: {len(chapters)}")
@@ -1655,8 +1784,17 @@ class CommandLineInterface(UserInterface):
             print("Rich UI components not available. Skipping entity review.")
             return {}
 
-        edited_data = {'characters': {}, 'places': {}, 'organizations': {}, 'abilities': {}, 'titles': {}, 'equipment': {}, 'creatures': {}}
-        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+        # Use book-specific categories if available, otherwise derive from data keys
+        if getattr(self, 'book_id', None):
+            categories = self.entity_manager.get_book_categories(self.book_id)
+        else:
+            from database import DEFAULT_CATEGORIES
+            categories = list(DEFAULT_CATEGORIES)
+        # Include any extra categories from the data that aren't in the book's list
+        for cat in data:
+            if cat not in categories:
+                categories.append(cat)
+        edited_data = {cat: {} for cat in categories}
         
         while True:
             # 1. Display current data
@@ -2236,7 +2374,7 @@ class CommandLineInterface(UserInterface):
                     break
 
             elif action == "Change Category":
-                categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+                categories = self._get_categories_for_context(entity_data.get('book_id'))
                 new_category_choices = [cat for cat in categories if cat != category]
 
                 new_category = self.questionary.select(
@@ -2394,7 +2532,7 @@ class CommandLineInterface(UserInterface):
             all_entities: Dict of all entities by category
             book_id: Optional book ID filter from parent context
         """
-        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+        categories = self._get_categories_for_context(book_id)
 
         # Step 1: Select category
         category = self.questionary.select(
@@ -2978,7 +3116,7 @@ class CommandLineInterface(UserInterface):
                 # Choose category
                 target_category = self.questionary.select(
                     "Which category should this entity be in?",
-                    choices=['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+                    choices=self._get_categories_for_context()
                 ).ask()
                 
                 # Choose translation
