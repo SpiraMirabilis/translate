@@ -153,9 +153,15 @@ class UserInterface(ABC):
                 # Lowercase any capitalised generic terms that were auto-cleaned
                 end_object['content'] = self._decase_cleaned_entities(end_object['content'])
 
-                # Fix any lines where the model left Chinese characters untranslated
+                # Fix any lines where the model left source-language characters untranslated
                 if not getattr(self, 'no_repair', False):
-                    end_object['content'] = self._fix_partial_translations(end_object['content'])
+                    # Determine source language from the book
+                    _source_lang = 'zh'
+                    if hasattr(self, 'book_id') and self.book_id:
+                        _book_info = self.entity_manager.get_book(self.book_id)
+                        if _book_info:
+                            _source_lang = _book_info.get('source_language', 'zh') or 'zh'
+                    end_object['content'] = self._fix_partial_translations(end_object['content'], source_language=_source_lang)
 
                 # Apply entity edits to the translation
                 if edited_entities:
@@ -215,6 +221,20 @@ class UserInterface(ABC):
                 # Save updated entities
                 #self.entity_manager.save_entities()
 
+                # Build set of entities that are new or were edited during review.
+                # Only these should have their translation/category/gender overwritten;
+                # pre-existing entities just get last_chapter bumped so we don't
+                # clobber edits made via the /entities page while translation was running.
+                new_or_edited_keys = set()  # (category, untranslated) tuples
+                for cat, ents in totally_new_entities.items():
+                    for key in ents:
+                        new_or_edited_keys.add((cat, key))
+                if edited_entities:
+                    for cat, ents in edited_entities.items():
+                        for key, value in ents.items():
+                            if isinstance(value, dict) and not value.get("deleted", False):
+                                new_or_edited_keys.add((cat, key))
+
                 # Save entities directly to database to avoid duplication
                 self.logger.debug("--- Direct entity saving ---")
                 try:
@@ -225,30 +245,41 @@ class UserInterface(ABC):
                     for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
                         if category not in end_object['entities']:
                             continue
-                            
+
                         for key, entity_data in end_object['entities'][category].items():
                             translation = entity_data.get("translation", "")
                             last_chapter = entity_data.get("last_chapter", current_chapter)
                             incorrect_translation = entity_data.get("incorrect_translation", None)
                             gender = entity_data.get("gender", None)
-                            
+                            is_new_or_edited = (category, key) in new_or_edited_keys
+
                             # Check if entity exists with this book_id
                             cursor.execute('''
                             SELECT id FROM entities
                             WHERE untranslated = ? AND book_id = ?
                             ''', (key, self.book_id))
-                            
+
                             existing = cursor.fetchone()
-                            
+
                             if existing:
-                                # Update existing — set origin_chapter if not yet recorded
-                                cursor.execute('''
-                                UPDATE entities
-                                SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
-                                    origin_chapter = COALESCE(origin_chapter, ?)
-                                WHERE id = ?
-                                ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, existing[0]))
-                                self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
+                                if is_new_or_edited:
+                                    # New entity from LLM or edited during review — full update
+                                    cursor.execute('''
+                                    UPDATE entities
+                                    SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
+                                        origin_chapter = COALESCE(origin_chapter, ?)
+                                    WHERE id = ?
+                                    ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, existing[0]))
+                                    self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
+                                else:
+                                    # Pre-existing entity — only bump last_chapter to avoid
+                                    # overwriting edits made while translation was running
+                                    cursor.execute('''
+                                    UPDATE entities
+                                    SET last_chapter = ?
+                                    WHERE id = ?
+                                    ''', (last_chapter, existing[0]))
+                                    self.logger.debug(f"Bumped last_chapter for existing entity {key} in category {category}")
                             else:
                                 # Insert new — record origin_chapter
                                 cursor.execute('''
@@ -257,7 +288,7 @@ class UserInterface(ABC):
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                 ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id, current_chapter))
                                 self.logger.debug(f"Added entity {key} ({translation}) to category {category} with book_id={self.book_id}")
-                    
+
                     conn.commit()
                     conn.close()
                     self.logger.info("Entities saved to database successfully")
@@ -299,19 +330,21 @@ class UserInterface(ABC):
                     if chapter_id:
                         print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
 
-                        # Also save book-specific entities
+                        # Also save book-specific entities (only new/edited ones;
+                        # pre-existing entities were already handled above)
                         for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
                             if category not in end_object['entities']:
                                 continue
-                                
+
                             for key, entity_data in end_object['entities'][category].items():
-                                # Add to database with book_id
+                                if (category, key) not in new_or_edited_keys:
+                                    continue  # skip pre-existing — already bumped last_chapter above
+
                                 translation = entity_data.get("translation", "")
                                 last_chapter = entity_data.get("last_chapter", current_chapter)
                                 incorrect_translation = entity_data.get("incorrect_translation", None)
                                 gender = entity_data.get("gender", None)
-                                
-                                # Add to database, with book_id
+
                                 self.entity_manager.add_entity(
                                     category,
                                     key,
@@ -645,21 +678,43 @@ class UserInterface(ABC):
 
         return text
 
-    def _fix_partial_translations(self, content: List[str]) -> List[str]:
+    # Regex patterns for detecting untranslated source-language characters
+    _SOURCE_LANG_PATTERNS = {
+        'zh': re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]'),
+        # Japanese: CJK ideographs OR hiragana/katakana (to catch Japanese-specific text)
+        'ja': re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff]'),
+        # Korean: Hangul syllables and Jamo
+        'ko': re.compile(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]'),
+    }
+
+    _LANG_NAMES = {
+        'zh': 'Chinese',
+        'ja': 'Japanese',
+        'ko': 'Korean',
+    }
+
+    def _fix_partial_translations(self, content: List[str], source_language: str = 'zh') -> List[str]:
         """
-        Detect lines containing untranslated CJK characters and fix them
+        Detect lines containing untranslated source-language characters and fix them
         using the cleaning model. Batches all affected lines into a single
         API call, returning the content list with fixed lines spliced back in.
+
+        Only supported for zh, ja, ko. For other languages the content is returned as-is.
         """
         import os
 
-        cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
-        affected_indices = [i for i, line in enumerate(content) if cjk_pattern.search(line)]
+        pattern = self._SOURCE_LANG_PATTERNS.get(source_language)
+        if pattern is None:
+            self.logger.debug(f"Partial-translation repair not supported for source_language='{source_language}', skipping")
+            return content
+
+        affected_indices = [i for i, line in enumerate(content) if pattern.search(line)]
 
         if not affected_indices:
             return content
 
-        self.logger.info(f"Found {len(affected_indices)} partially translated line(s) containing CJK characters")
+        lang_name = self._LANG_NAMES.get(source_language, source_language)
+        self.logger.info(f"Found {len(affected_indices)} partially translated line(s) containing {lang_name} characters")
 
         lines_to_fix = [content[i] for i in affected_indices]
         user_prompt = json.dumps(lines_to_fix, ensure_ascii=False, indent=2)
@@ -669,6 +724,7 @@ class UserInterface(ABC):
             from config import TranslationConfig
             config = TranslationConfig()
 
+            # Build repair prompt — use the template file with language substituted
             repair_prompt_path = os.path.join(config.script_dir, "translation_repair_prompt.txt")
             try:
                 if os.path.exists(repair_prompt_path):
@@ -680,6 +736,9 @@ class UserInterface(ABC):
             except Exception as e:
                 self.logger.error(f"Error loading repair prompt: {e}")
                 return content
+
+            # Replace language placeholder so the prompt is language-aware
+            system_prompt = system_prompt.replace("{{LANGUAGE}}", lang_name)
 
             if hasattr(self, 'cleaning_model') and self.cleaning_model:
                 model_spec = self.cleaning_model
