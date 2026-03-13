@@ -7,7 +7,10 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
+from PIL import Image
 from database import DEFAULT_CATEGORIES
+
+THUMB_MAX_SIZE = (80, 112)  # 2x the display size (w-8 h-11 = 32x44) for retina
 
 router = APIRouter(prefix="/api/books")
 
@@ -49,6 +52,7 @@ class PromptUpdate(BaseModel):
 
 class ChapterContentUpdate(BaseModel):
     content: List[str]
+    title: Optional[str] = None
 
 
 class ChapterProofreadUpdate(BaseModel):
@@ -189,11 +193,8 @@ async def delete_book(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
-    # Clean up cover file if it exists
-    if book.get("cover_image"):
-        cover_path = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
-        if os.path.exists(cover_path):
-            os.remove(cover_path)
+    # Clean up cover + thumbnail files
+    _remove_cover_files(book, book_id)
     success = _entity_manager.delete_book(book_id)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete book.")
@@ -206,6 +207,31 @@ async def delete_book(book_id: int):
 
 def _covers_dir():
     return os.path.join(_entity_manager.config.script_dir, "covers")
+
+
+def _generate_thumbnail(source_path, book_id):
+    """Generate a small webp thumbnail for the books list page."""
+    covers = _covers_dir()
+    thumb_path = os.path.join(covers, f"{book_id}_thumb.webp")
+    try:
+        with Image.open(source_path) as img:
+            img.thumbnail(THUMB_MAX_SIZE, Image.LANCZOS)
+            img.save(thumb_path, "WEBP", quality=80)
+    except Exception:
+        # If thumbnail generation fails, it's non-critical
+        if os.path.exists(thumb_path):
+            os.remove(thumb_path)
+
+
+def _remove_cover_files(book, book_id):
+    """Remove full cover and thumbnail files for a book."""
+    if book.get("cover_image"):
+        full_path = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
+        if os.path.exists(full_path):
+            os.remove(full_path)
+    thumb_path = os.path.join(_covers_dir(), f"{book_id}_thumb.webp")
+    if os.path.exists(thumb_path):
+        os.remove(thumb_path)
 
 
 @router.post("/{book_id}/cover")
@@ -221,11 +247,8 @@ async def upload_cover(book_id: int, file: UploadFile = File(...)):
     ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
     ext = ext_map.get(ct, ".jpg")
 
-    # Remove old cover if exists
-    if book.get("cover_image"):
-        old_path = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
-        if os.path.exists(old_path):
-            os.remove(old_path)
+    # Remove old cover + thumbnail if exists
+    _remove_cover_files(book, book_id)
 
     covers = _covers_dir()
     os.makedirs(covers, exist_ok=True)
@@ -235,6 +258,8 @@ async def upload_cover(book_id: int, file: UploadFile = File(...)):
     data = await file.read()
     with open(filepath, "wb") as f:
         f.write(data)
+
+    _generate_thumbnail(filepath, book_id)
 
     rel_path = f"covers/{filename}"
     _entity_manager.update_book(book_id, cover_image=rel_path)
@@ -254,15 +279,33 @@ async def get_cover(book_id: int):
     return FileResponse(filepath)
 
 
+@router.get("/{book_id}/cover/thumb")
+async def get_cover_thumb(book_id: int):
+    """Serve a small webp thumbnail for the books list page."""
+    book = _entity_manager.get_book(book_id=book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found.")
+    if not book.get("cover_image"):
+        raise HTTPException(status_code=404, detail="No cover image.")
+    thumb_path = os.path.join(_covers_dir(), f"{book_id}_thumb.webp")
+    if not os.path.exists(thumb_path):
+        # Generate on the fly if missing (e.g. for pre-existing covers)
+        full_path = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
+        if not os.path.exists(full_path):
+            raise HTTPException(status_code=404, detail="Cover file missing.")
+        _generate_thumbnail(full_path, book_id)
+    if not os.path.exists(thumb_path):
+        # Thumbnail generation failed, fall back to full image
+        return FileResponse(os.path.join(_entity_manager.config.script_dir, book["cover_image"]))
+    return FileResponse(thumb_path, media_type="image/webp")
+
+
 @router.delete("/{book_id}/cover")
 async def delete_cover(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
-    if book.get("cover_image"):
-        filepath = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
-        if os.path.exists(filepath):
-            os.remove(filepath)
+    _remove_cover_files(book, book_id)
     _entity_manager.update_book(book_id, cover_image="")
     return {"status": "ok"}
 
@@ -433,7 +476,7 @@ async def update_chapter_translation(book_id: int, chapter_number: int, req: Cha
     chapter_id = _entity_manager.save_chapter(
         book_id=book_id,
         chapter_number=chapter_number,
-        title=chapter.get("title", f"Chapter {chapter_number}"),
+        title=req.title if req.title is not None else chapter.get("title", f"Chapter {chapter_number}"),
         untranslated_content=chapter.get("untranslated", []),
         translated_content=req.content,
         summary=chapter.get("summary"),

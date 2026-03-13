@@ -444,7 +444,8 @@ class DatabaseManager:
             
             cursor.execute('''
             SELECT id, title, author, language, created_date, cover_image, categories,
-                (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count
+                (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count,
+                description
             FROM books
             ORDER BY title
             ''')
@@ -454,7 +455,7 @@ class DatabaseManager:
 
             result = []
             for row in rows:
-                book_id, title, author, language, created_date, cover_image, raw_cats, chapter_count = row
+                book_id, title, author, language, created_date, cover_image, raw_cats, chapter_count, description = row
                 result.append({
                     "id": book_id,
                     "title": title,
@@ -463,7 +464,8 @@ class DatabaseManager:
                     "created_date": created_date,
                     "cover_image": cover_image,
                     "categories": json.loads(raw_cats) if raw_cats else None,
-                    "chapter_count": chapter_count
+                    "chapter_count": chapter_count,
+                    "description": description
                 })
             
             return result

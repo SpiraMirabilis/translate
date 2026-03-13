@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search, Pencil } from 'lucide-react'
 import ComboBox from '../components/ComboBox'
 import { useSearch } from '../hooks/useSearch'
 import SearchBar from '../components/SearchBar'
@@ -778,6 +778,8 @@ export default function ChapterEditor() {
   const [showSource, setShowSource] = useLocalStorage('editor.showSource', true)
   const [isProofread, setIsProofread] = useState(false)
   const [chapterList, setChapterList] = useState([])
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
 
   // Dictionary state
   const [dictQuery, setDictQuery] = useState(null)
@@ -1123,7 +1125,11 @@ export default function ChapterEditor() {
     setError(null)
     try {
       const lines = text.split('\n')
-      await api.updateChapter(parseInt(bookId), parseInt(chapterNum), { content: lines })
+      const payload = { content: lines }
+      if (chapter && chapter.title !== undefined) {
+        payload.title = chapter.title
+      }
+      await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
       setSaved(true)
       setDirty(false)
       setTimeout(() => setSaved(false), 3000)
@@ -1392,10 +1398,40 @@ export default function ChapterEditor() {
         </button>
 
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-slate-200 truncate">
+          <div className="text-sm font-medium text-slate-200 truncate flex items-center gap-1">
             {book?.title} — Chapter {chapterNum}
-            {chapter?.title && chapter.title !== `Chapter ${chapterNum}` && (
-              <span className="text-slate-500 ml-2">"{chapter.title}"</span>
+            {editingTitle ? (
+              <input
+                autoFocus
+                className="ml-2 px-1.5 py-0.5 bg-slate-800 border border-slate-600 rounded text-sm text-slate-200 outline-none focus:border-sky-500 w-56"
+                value={titleDraft}
+                onChange={e => setTitleDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    const newTitle = titleDraft.trim() || `Chapter ${chapterNum}`
+                    setChapter(prev => ({ ...prev, title: newTitle }))
+                    setEditingTitle(false)
+                    setDirty(true)
+                  } else if (e.key === 'Escape') {
+                    setEditingTitle(false)
+                  }
+                }}
+                onBlur={() => {
+                  const newTitle = titleDraft.trim() || `Chapter ${chapterNum}`
+                  setChapter(prev => ({ ...prev, title: newTitle }))
+                  setEditingTitle(false)
+                  setDirty(true)
+                }}
+              />
+            ) : (
+              <span
+                className="text-slate-500 ml-2 cursor-pointer hover:text-slate-300 inline-flex items-center gap-1 group"
+                onClick={() => { setTitleDraft(chapter?.title || ''); setEditingTitle(true) }}
+                title="Click to edit chapter title"
+              >
+                {chapter?.title && chapter.title !== `Chapter ${chapterNum}` ? `"${chapter.title}"` : <span className="text-slate-600 italic">No title</span>}
+                <Pencil size={11} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+              </span>
             )}
           </div>
           <div className="text-xs text-slate-500 mt-0.5">

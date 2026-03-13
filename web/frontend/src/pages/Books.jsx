@@ -142,7 +142,7 @@ export default function Books() {
                 </button>
                 {book.cover_image && (
                   <img
-                    src={`/api/books/${book.id}/cover`}
+                    src={`/api/books/${book.id}/cover/thumb`}
                     alt=""
                     className="w-8 h-11 object-cover rounded border border-slate-700 shrink-0"
                   />
