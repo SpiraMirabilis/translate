@@ -506,6 +506,10 @@ class TranslationEngine:
         Returns:
             dict: A dictionary containing the translated chapter data.
         """
+        # Strip common scraping artifacts from the last line
+        if chapter_text and chapter_text[-1].strip() == '(本章完)':
+            chapter_text = chapter_text[:-1]
+
         # Initialize current_chapter to a default value
         current_chapter = 0
         total_input_chars = 0

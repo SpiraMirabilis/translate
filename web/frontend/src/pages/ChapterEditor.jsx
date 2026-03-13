@@ -1398,12 +1398,14 @@ export default function ChapterEditor() {
         </button>
 
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-slate-200 truncate flex items-center gap-1">
+          <div className="text-sm font-medium text-slate-200 truncate">
             {book?.title} — Chapter {chapterNum}
+          </div>
+          <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
             {editingTitle ? (
               <input
                 autoFocus
-                className="ml-2 px-1.5 py-0.5 bg-slate-800 border border-slate-600 rounded text-sm text-slate-200 outline-none focus:border-sky-500 w-56"
+                className="px-1.5 py-0.5 bg-slate-800 border border-slate-600 rounded text-xs text-slate-200 outline-none focus:border-sky-500 w-56"
                 value={titleDraft}
                 onChange={e => setTitleDraft(e.target.value)}
                 onKeyDown={e => {
@@ -1425,7 +1427,7 @@ export default function ChapterEditor() {
               />
             ) : (
               <span
-                className="text-slate-500 ml-2 cursor-pointer hover:text-slate-300 inline-flex items-center gap-1 group"
+                className="cursor-pointer hover:text-slate-300 inline-flex items-center gap-1 group"
                 onClick={() => { setTitleDraft(chapter?.title || ''); setEditingTitle(true) }}
                 title="Click to edit chapter title"
               >
@@ -1433,8 +1435,7 @@ export default function ChapterEditor() {
                 <Pencil size={11} className="opacity-0 group-hover:opacity-100 transition-opacity" />
               </span>
             )}
-          </div>
-          <div className="text-xs text-slate-500 mt-0.5">
+            <span className="text-slate-600 mx-1">·</span>
             {lineCount.toLocaleString()} lines · {wordCount.toLocaleString()} words
             {chapter?.model && <span> · {chapter.model}</span>}
             {dirty && <span className="text-amber-500 ml-2">· Unsaved changes</span>}

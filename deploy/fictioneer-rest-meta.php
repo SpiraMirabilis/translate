@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Fictioneer REST Meta
  * Description: Custom REST endpoints for T9 to manage Fictioneer stories and chapters.
- * Version: 2.0.0
+ * Version: 2.1.0
  * Author: T9 Translation App
  */
 
@@ -11,6 +11,58 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 add_action( 'rest_api_init', 'fictioneer_rest_meta_register_routes' );
+
+/**
+ * Aggressively invalidate all Fictioneer caches for a story post.
+ *
+ * Fictioneer's own fictioneer_refresh_post_caches() is blocked during REST
+ * requests (fictioneer_multi_save_guard returns true when REST_REQUEST is
+ * defined), so we must call the cache-busting functions directly.
+ */
+function fictioneer_rest_meta_purge_story_caches( $story_id ) {
+    // 1. Clear Fictioneer's cached story data
+    delete_post_meta( $story_id, 'fictioneer_story_data_collection' );
+    delete_post_meta( $story_id, 'fictioneer_story_chapter_index_html' );
+
+    // 2. WordPress object cache
+    clean_post_cache( $story_id );
+
+    // 3. Fictioneer's HTML file cache
+    if ( function_exists( 'fictioneer_clear_cached_content' ) ) {
+        fictioneer_clear_cached_content( $story_id );
+    }
+
+    // 4. Purge shortcode transients (story listings, latest chapters, etc.)
+    if ( function_exists( 'fictioneer_delete_transients_like' ) ) {
+        fictioneer_delete_transients_like( 'fictioneer_shortcode' );
+    }
+
+    // 5. Clear stories total word count transient
+    delete_transient( 'fictioneer_stories_total_word_count' );
+
+    // 5b. Clear the chapter list HTML transient (cached for 24h by Fictioneer)
+    delete_transient( 'fictioneer_story_chapter_list_html' . $story_id );
+
+    // 6. Fictioneer's own post cache purge (handles WP Rocket, LiteSpeed, etc.)
+    if ( function_exists( 'fictioneer_purge_post_cache' ) ) {
+        fictioneer_purge_post_cache( $story_id );
+    }
+
+    // 7. Purge template caches (story/chapter list pages)
+    if ( function_exists( 'fictioneer_purge_template_caches' ) ) {
+        fictioneer_purge_template_caches( 'stories' );
+        fictioneer_purge_template_caches( 'chapters' );
+    }
+
+    // 8. Purge front page cache if set
+    $front_page_id = intval( get_option( 'page_on_front' ) ?: -1 );
+    if ( $front_page_id > 0 && $front_page_id != $story_id ) {
+        clean_post_cache( $front_page_id );
+        if ( function_exists( 'fictioneer_purge_post_cache' ) ) {
+            fictioneer_purge_post_cache( $front_page_id );
+        }
+    }
+}
 
 function fictioneer_rest_meta_register_routes() {
     // POST /wp-json/t9/v1/chapter/{id}/link-story — set chapter's parent story
@@ -116,10 +168,11 @@ function fictioneer_rest_meta_link_chapter( WP_REST_Request $request ) {
         if ( ! in_array( $chapter_id, $chapters ) ) {
             $chapters[] = $chapter_id;
             update_post_meta( $story_id, 'fictioneer_story_chapters', $chapters );
-            // Invalidate cached data
-            delete_post_meta( $story_id, 'fictioneer_story_data_collection' );
         }
     }
+
+    // Purge caches (REST_REQUEST blocks the normal Fictioneer hooks)
+    fictioneer_rest_meta_purge_story_caches( $story_id );
 
     return [ 'status' => 'ok', 'chapter_id' => $chapter_id, 'story_id' => $story_id ];
 }
@@ -139,12 +192,8 @@ function fictioneer_rest_meta_set_chapters( WP_REST_Request $request ) {
     update_post_meta( $story_id, 'fictioneer_story_chapters', $chapter_ids );
     update_post_meta( $story_id, 'fictioneer_chapters_modified', current_time( 'mysql' ) );
 
-    // Invalidate caches
-    delete_post_meta( $story_id, 'fictioneer_story_data_collection' );
-    delete_post_meta( $story_id, 'fictioneer_story_chapter_index_html' );
-
-    // Fire update to recalculate word counts etc.
-    wp_update_post( [ 'ID' => $story_id ] );
+    // Aggressively purge all Fictioneer caches (REST_REQUEST blocks the normal hooks)
+    fictioneer_rest_meta_purge_story_caches( $story_id );
 
     return [ 'status' => 'ok', 'chapter_count' => count( $chapter_ids ) ];
 }
@@ -178,8 +227,8 @@ function fictioneer_rest_meta_recalculate_words( WP_REST_Request $request ) {
         $updated++;
     }
 
-    // Invalidate story cache so it picks up new totals
-    delete_post_meta( $story_id, 'fictioneer_story_data_collection' );
+    // Purge caches (REST_REQUEST blocks the normal Fictioneer hooks)
+    fictioneer_rest_meta_purge_story_caches( $story_id );
 
     return [ 'status' => 'ok', 'updated' => $updated, 'total_words' => $total_words ];
 }
@@ -205,8 +254,8 @@ function fictioneer_rest_meta_set_story_meta( WP_REST_Request $request ) {
         update_post_meta( $story_id, 'fictioneer_story_short_description', sanitize_text_field( $request['short_description'] ) );
     }
 
-    // Invalidate cached data
-    delete_post_meta( $story_id, 'fictioneer_story_data_collection' );
+    // Purge caches (REST_REQUEST blocks the normal Fictioneer hooks)
+    fictioneer_rest_meta_purge_story_caches( $story_id );
 
     return [ 'status' => 'ok' ];
 }
