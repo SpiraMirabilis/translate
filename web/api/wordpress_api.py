@@ -141,7 +141,8 @@ async def get_book_publish_status(book_id: int):
         content_lines = (full_ch.get("content") or []) if full_ch else []
         if isinstance(content_lines, str):
             content_lines = content_lines.split("\n")
-        current_hash = compute_hash(content_lines)
+        ch_title = ch.get("title") or (full_ch.get("title") if full_ch else "") or f"Chapter {num}"
+        current_hash = compute_hash(content_lines, title=ch_title)
 
         if st is None:
             status = "new"
@@ -203,9 +204,9 @@ async def publish_single_chapter(book_id: int, chapter_number: int, req: Publish
     content_lines = (full_ch.get("content") or [])
     if isinstance(content_lines, str):
         content_lines = content_lines.split("\n")
-    current_hash = compute_hash(content_lines)
-    html = content_to_html(content_lines)
     title = full_ch.get("title") or f"Chapter {chapter_number}"
+    current_hash = compute_hash(content_lines, title=title)
+    html = content_to_html(content_lines)
 
     ch_state = _db.get_wp_state(book_id, chapter_number)
     action = None
@@ -324,12 +325,13 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
         # --- Story ---
         story_state = _db.get_wp_state(book_id, chapter_number=None)
         story_wp_id = None
+        existing_story = None
 
         if story_state:
             story_wp_id = story_state["wp_post_id"]
             # Check if story still exists on WP
-            existing = client.get_post("fcn_story", story_wp_id)
-            if existing is None:
+            existing_story = client.get_post("fcn_story", story_wp_id)
+            if existing_story is None:
                 _db.delete_wp_state_single(book_id, chapter_number=None)
                 story_state = None
 
@@ -354,20 +356,26 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
             )
             send({"type": "wp_publish", "step": "story", "action": "updated", "wp_post_id": story_wp_id})
 
-        # --- Cover image as featured image ---
+        # --- Cover image as featured image (skip if already set) ---
         cover_rel = book.get("cover_image")
         if cover_rel and story_wp_id:
-            cover_path = os.path.normpath(os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", cover_rel
-            ))
-            if os.path.exists(cover_path):
-                try:
-                    send({"type": "wp_publish", "step": "story", "action": "uploading cover"})
-                    media_id = client.upload_media(cover_path)
-                    client.set_featured_image("fcn_story", story_wp_id, media_id)
-                    print(f"[WP Publish] Cover uploaded as media {media_id}")
-                except Exception as e:
-                    print(f"[WP Publish] Warning: cover upload failed: {e}")
+            # Check if the story already has a featured image
+            has_cover = existing_story is not None and existing_story.get("featured_media", 0) > 0
+
+            if not has_cover:
+                cover_path = os.path.normpath(os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", cover_rel
+                ))
+                if os.path.exists(cover_path):
+                    try:
+                        send({"type": "wp_publish", "step": "story", "action": "uploading cover"})
+                        media_id = client.upload_media(cover_path)
+                        client.set_featured_image("fcn_story", story_wp_id, media_id)
+                        print(f"[WP Publish] Cover uploaded as media {media_id}")
+                    except Exception as e:
+                        print(f"[WP Publish] Warning: cover upload failed: {e}")
+            else:
+                print(f"[WP Publish] Cover already set, skipping upload")
 
         # --- Chapters ---
         print(f"[WP Publish] Processing {len(chapter_list)} chapters...")
@@ -383,7 +391,7 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
             content_lines = (full_ch.get("content") or []) if full_ch else []
             if isinstance(content_lines, str):
                 content_lines = content_lines.split("\n")
-            current_hash = compute_hash(content_lines)
+            current_hash = compute_hash(content_lines, title=title)
             html = content_to_html(content_lines)
 
             send({

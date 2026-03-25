@@ -16,9 +16,9 @@ def content_to_html(content_lines: list[str]) -> str:
     return "\n".join(parts)
 
 
-def compute_hash(content_lines: list[str]) -> str:
-    """SHA-256 hash of content lines for change detection."""
-    raw = "\n".join(content_lines)
+def compute_hash(content_lines: list[str], title: str = "") -> str:
+    """SHA-256 hash of content lines + title for change detection."""
+    raw = title + "\n" + "\n".join(content_lines)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
