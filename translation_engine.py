@@ -707,7 +707,7 @@ class TranslationEngine:
                         with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
                             f.write(str(response_text))
                         print(f"Error: {e}")
-                        exit(1)
+                        raise
                     break  # parsed successfully — exit attempt loop
             else:
                 self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
@@ -745,7 +745,7 @@ class TranslationEngine:
                         with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
                             f.write(str(response_content))
                         print(f"Error: {e}")
-                        exit(1)
+                        raise
                     except Exception as e:
                         self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
                         if attempt < MAX_RETRIES:

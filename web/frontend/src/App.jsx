@@ -22,6 +22,12 @@ function WsProvider({ children }) {
   const [connected, setConnected] = useState(false)
   const wsRef = useRef(null)
   const reconnectTimer = useRef(null)
+  const listenersRef = useRef(new Set())
+
+  const subscribe = useCallback((fn) => {
+    listenersRef.current.add(fn)
+    return () => listenersRef.current.delete(fn)
+  }, [])
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -36,7 +42,11 @@ function WsProvider({ children }) {
     }
     ws.onerror   = () => ws.close()
     ws.onmessage = (e) => {
-      try { setLastMessage(JSON.parse(e.data)) } catch { /* ignore */ }
+      try {
+        const msg = JSON.parse(e.data)
+        setLastMessage(msg)
+        listenersRef.current.forEach(fn => fn(msg))
+      } catch { /* ignore */ }
     }
   }, [])
 
@@ -49,7 +59,7 @@ function WsProvider({ children }) {
   }, [connect])
 
   return (
-    <WsContext.Provider value={{ lastMessage, connected }}>
+    <WsContext.Provider value={{ lastMessage, connected, subscribe }}>
       {children}
     </WsContext.Provider>
   )

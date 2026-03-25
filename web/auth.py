@@ -73,7 +73,7 @@ def validate_cookie(cookie_value: str) -> bool:
 # ── Middleware ───────────────────────────────────────────────────────
 
 # Paths that never require auth
-_PUBLIC_PREFIXES = ("/api/auth/",)
+_PUBLIC_PREFIXES = ("/api/auth/", "/api/health")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

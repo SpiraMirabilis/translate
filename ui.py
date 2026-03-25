@@ -139,7 +139,7 @@ class UserInterface(ABC):
                             }
                 
                 # Continue with regular entity review
-                if totally_new_entities != {'characters': {}, 'places': {}, 'organizations': {}, 'abilities': {}, 'titles': {}, 'equipment': {}, 'creatures': {}}:
+                if any(v for v in totally_new_entities.values()):
                     edited_entities = self.review_entities(totally_new_entities, chapter_text)
                 else:
                     edited_entities = {}
@@ -242,9 +242,7 @@ class UserInterface(ABC):
                     cursor = conn.cursor()
 
                     # Process each entity from end_object
-                    for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
-                        if category not in end_object['entities']:
-                            continue
+                    for category in end_object['entities']:
 
                         for key, entity_data in end_object['entities'][category].items():
                             translation = entity_data.get("translation", "")
@@ -435,7 +433,7 @@ class UserInterface(ABC):
         """
         import sqlite3
 
-        categories = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+        categories = list(data.keys())
 
         # --- Phase 1: remove intra-batch duplicates (same key in multiple categories) ---
         seen_keys = {}  # untranslated -> first category

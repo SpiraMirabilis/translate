@@ -29,6 +29,7 @@ export default function Queue() {
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
   const [noRepair, setNoRepair]                   = useLocalStorage('queue.noRepair', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
+  const [maxChapters, setMaxChapters]             = useLocalStorage('queue.maxChapters', '')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -106,6 +107,7 @@ export default function Queue() {
         no_clean: noClean,
         no_repair: noRepair,
         auto_process: autoProcess,
+        max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
       })
       setJobStatus('running')
     } catch (e) {
@@ -270,6 +272,17 @@ export default function Queue() {
             />
             Auto-process queue
           </label>
+          {autoProcess && (
+            <input
+              type="number"
+              min="1"
+              placeholder="All"
+              value={maxChapters}
+              onChange={e => setMaxChapters(e.target.value)}
+              className="input w-20 text-xs"
+              title="Max chapters to process (blank = all)"
+            />
+          )}
         </div>
       </div>
 
@@ -288,7 +301,7 @@ export default function Queue() {
               <TranslationProgress progress={chunkProgress} status={jobStatus} />
               {autoProcess && (
                 <p className="text-xs text-slate-500">
-                  Auto-processing — {queue.length} chapter{queue.length !== 1 ? 's' : ''} remaining
+                  Auto-processing{maxChapters ? ` (limit: ${maxChapters})` : ''} — {queue.length} chapter{queue.length !== 1 ? 's' : ''} remaining
                 </p>
               )}
             </div>

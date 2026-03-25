@@ -1,6 +1,8 @@
 """
 Entity management endpoints.
 """
+import json
+import re
 import sqlite3
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -179,6 +181,76 @@ async def update_entity(entity_id: int, req: EntityUpdate):
 
     conn.close()
     return {"status": "ok"}
+
+
+class DecaseRequest(BaseModel):
+    translation: str
+    book_id: int
+
+
+@router.post("/decase")
+async def decase_entity(req: DecaseRequest):
+    """
+    Lowercase all mid-sentence occurrences of a capitalised translation
+    in the translated content of every chapter in the given book.
+    Preserves capitalisation at sentence starts and after quotation marks / 【.
+    """
+    word = req.translation
+    if not word or word[0].islower():
+        return {"status": "ok", "chapters_changed": 0, "substitutions": 0}
+
+    lowered = word[0].lower() + word[1:]
+
+    conn = sqlite3.connect(_entity_manager.db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, translated_content FROM chapters WHERE book_id = ?",
+        (req.book_id,),
+    )
+    rows = cursor.fetchall()
+
+    total_subs = 0
+    chapters_changed = 0
+    pattern = re.compile(re.escape(word) + r'\b' if word[-1].isalpha() else re.escape(word))
+
+    for ch_id, raw_content in rows:
+        try:
+            lines = json.loads(raw_content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        changed = False
+        new_lines = []
+        for line in lines:
+            def replacer(m):
+                pos = m.start()
+                if line[:pos].strip() == '':
+                    return m.group(0)
+                if pos > 0 and line[pos - 1] in '"\u201c\u2018\'\u3010':
+                    return m.group(0)
+                i = pos - 1
+                while i >= 0 and line[i] == ' ':
+                    i -= 1
+                if i >= 0 and line[i] in '.!?':
+                    return m.group(0)
+                return lowered + m.group(0)[len(word):]
+
+            new_line = pattern.sub(replacer, line)
+            if new_line != line:
+                changed = True
+                total_subs += 1
+            new_lines.append(new_line)
+
+        if changed:
+            chapters_changed += 1
+            cursor.execute(
+                "UPDATE chapters SET translated_content = ? WHERE id = ?",
+                (json.dumps(new_lines, ensure_ascii=False), ch_id),
+            )
+
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "chapters_changed": chapters_changed, "substitutions": total_subs}
 
 
 @router.delete("/{entity_id}")

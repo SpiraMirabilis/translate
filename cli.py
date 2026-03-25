@@ -3135,12 +3135,12 @@ class CommandLineInterface(UserInterface):
                     )
                     print(f"Updated '{untranslated}' in '{target_category}' with translation '{custom_translation}'")
                 else:
-                    # Delete from old category and add to new
-                    self.entity_manager.delete_entity(existing_category, untranslated)
-                    self.entity_manager.add_entity(
-                        target_category,
+                    # Move to new category (preserves origin_chapter and other metadata)
+                    self.entity_manager.update_entity(
+                        existing_category,
                         untranslated,
-                        custom_translation
+                        category=target_category,
+                        translation=custom_translation
                     )
                     print(f"Moved '{untranslated}' from '{existing_category}' to '{target_category}' with translation '{custom_translation}'")
                 

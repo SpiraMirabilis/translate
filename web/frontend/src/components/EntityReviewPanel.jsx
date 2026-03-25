@@ -10,18 +10,22 @@ import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen, Cop
 import { api } from '../services/api'
 import { copyToClipboard } from '../utils/clipboard'
 import { DictResult, useDictLookup } from './DictLookup'
-import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
+import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps } from '../utils/categories'
 
 export default function EntityReviewPanel({ entities, context, onDone }) {
+  // Build the full list of categories available in this review
+  const allCategories = (() => {
+    const cats = [...DEFAULT_CATEGORIES]
+    for (const cat of Object.keys(entities)) {
+      if (!cats.includes(cat)) cats.push(cat)
+    }
+    return cats
+  })()
+
   // Flatten entities into editable rows
   const initialRows = () => {
     const rows = []
-    // Use DEFAULT_CATEGORIES order first, then any extra categories
-    const orderedCats = [...DEFAULT_CATEGORIES]
-    for (const cat of Object.keys(entities)) {
-      if (!orderedCats.includes(cat)) orderedCats.push(cat)
-    }
-    for (const cat of orderedCats) {
+    for (const cat of allCategories) {
       const catEntities = entities[cat] || {}
       for (const [untranslated, data] of Object.entries(catEntities)) {
         rows.push({
@@ -175,6 +179,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
             <EntityRow
               key={row.id}
               row={row}
+              categories={allCategories}
               onUpdate={patch => update(row.id, patch)}
               onDelete={() => update(row.id, { deleted: true })}
               onAdvice={() => handleAdvice(row)}
@@ -188,7 +193,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
               <p className="text-xs text-slate-500 mb-2">Marked for deletion ({deletedRows.length})</p>
               {deletedRows.map(row => (
                 <div key={row.id} className="flex items-center gap-3 py-1.5 opacity-40">
-                  <span className={`badge ${getCatColor(row.category)}`}>{row.category}</span>
+                  <span {...catBadgeProps(row.category)}>{row.category}</span>
                   <span className="text-sm font-mono line-through text-slate-400">{row.untranslated}</span>
                   <button
                     className="text-xs text-slate-500 hover:text-slate-300 ml-auto"
@@ -212,7 +217,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
   )
 }
 
-function EntityRow({ row, onUpdate, onDelete, onAdvice, onCopyContext, hasContext }) {
+function EntityRow({ row, categories, onUpdate, onDelete, onAdvice, onCopyContext, hasContext }) {
   const [showAdvice, setShowAdvice] = useState(false)
   const [copied, setCopied] = useState(false)
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
@@ -220,10 +225,17 @@ function EntityRow({ row, onUpdate, onDelete, onAdvice, onCopyContext, hasContex
   return (
     <div className="card p-3 space-y-2">
       <div className="flex items-start gap-3">
-        {/* Category badge */}
-        <span className={`badge ${getCatColor(row.category)} shrink-0 mt-0.5`}>
-          {row.category}
-        </span>
+        {/* Category selector */}
+        <select
+          {...catBadgeProps(row.category, 'shrink-0 mt-0.5 cursor-pointer appearance-none pr-5 bg-no-repeat bg-[length:12px] bg-[right_4px_center]')}
+          style={{ ...getCatBadge(row.category).style, backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")` }}
+          value={row.category}
+          onChange={e => onUpdate({ category: e.target.value })}
+        >
+          {categories.map(cat => (
+            <option key={cat} value={cat}>{cat}</option>
+          ))}
+        </select>
 
         {/* Untranslated */}
         <span className="font-mono text-sm text-slate-200 shrink-0 min-w-[120px]">
@@ -242,21 +254,32 @@ function EntityRow({ row, onUpdate, onDelete, onAdvice, onCopyContext, hasContex
 
         {/* Gender (for characters) */}
         {row.category === 'characters' && (
-          <select
-            className="input text-sm w-28 shrink-0"
-            value={row.gender}
-            onChange={e => onUpdate({ gender: e.target.value })}
-          >
-            <option value="">Gender?</option>
-            <option value="male">Male</option>
-            <option value="female">Female</option>
-            <option value="neutral">Neutral</option>
-          </select>
+          <div className="flex shrink-0 gap-0.5">
+            {[
+              { value: 'male', symbol: '♂', color: 'text-blue-400 bg-blue-900/60 border-blue-500' },
+              { value: 'female', symbol: '♀', color: 'text-pink-400 bg-pink-900/60 border-pink-500' },
+              { value: 'neutral', symbol: '⚲', color: 'text-slate-300 bg-slate-700/60 border-slate-400' },
+            ].map(g => (
+              <button
+                key={g.value}
+                type="button"
+                title={g.value}
+                className={`w-7 h-7 flex items-center justify-center rounded border text-sm leading-none transition-colors ${
+                  row.gender === g.value
+                    ? g.color
+                    : 'text-slate-500 bg-slate-800/40 border-slate-700 hover:border-slate-500'
+                }`}
+                onClick={() => onUpdate({ gender: row.gender === g.value ? '' : g.value })}
+              >
+                {g.symbol}
+              </button>
+            ))}
+          </div>
         )}
 
         {/* Note */}
         <input
-          className="input text-sm w-48 shrink-0"
+          className="input text-sm w-32 shrink-0"
           value={row.note}
           onChange={e => onUpdate({ note: e.target.value })}
           placeholder="Note…"

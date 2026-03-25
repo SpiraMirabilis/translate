@@ -140,6 +140,10 @@ class DatabaseManager:
             if 'origin_chapter' not in entity_cols:
                 cursor.execute("ALTER TABLE entities ADD COLUMN origin_chapter INTEGER")
                 self.logger.info("Added origin_chapter column to entities table")
+            # Backfill: set origin_chapter = last_chapter for entities missing it
+            cursor.execute("UPDATE entities SET origin_chapter = last_chapter WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL")
+            if cursor.rowcount > 0:
+                self.logger.info(f"Backfilled origin_chapter for {cursor.rowcount} entities")
             if 'note' not in entity_cols:
                 cursor.execute("ALTER TABLE entities ADD COLUMN note TEXT")
                 self.logger.info("Added note column to entities table")
@@ -1732,21 +1736,22 @@ class DatabaseManager:
     def find_new_entities(self, old_data, new_data):
         """
         Return a dictionary of all entities that are present in new_data
-        but do NOT exist in old_data at all.
+        but do NOT exist in old_data at all (in any category).
         """
+        # Build a set of all known untranslated keys across every category
+        all_old_keys = set()
+        for cat_entities in old_data.values():
+            all_old_keys.update(cat_entities.keys())
+
         newly_added = {}
-        
+
         for category, new_items in new_data.items():
-            if category not in old_data:
-                newly_added[category] = new_items
-                continue
-            
             for entity_name, entity_info in new_items.items():
-                if entity_name not in old_data[category]:
+                if entity_name not in all_old_keys:
                     if category not in newly_added:
                         newly_added[category] = {}
                     newly_added[category][entity_name] = entity_info
-        
+
         return newly_added
     
     def update_translated_text(self, translated_text, entity):
@@ -1828,7 +1833,7 @@ class DatabaseManager:
             if same_cat:
                 # Update existing — preserve origin_chapter, gender, and note if not explicitly provided
                 existing_id = same_cat[0]
-                effective_origin = origin_chapter if origin_chapter is not None else same_cat[1]
+                effective_origin = origin_chapter if origin_chapter is not None else (same_cat[1] if same_cat[1] is not None else last_chapter)
                 if gender is None or note is None:
                     cursor.execute('SELECT gender, note FROM entities WHERE id = ?', (existing_id,))
                     existing = cursor.fetchone()
@@ -1842,12 +1847,13 @@ class DatabaseManager:
                 WHERE id = ?
                 ''', (category, translation, last_chapter, incorrect_translation, gender, effective_origin, note, existing_id))
             else:
-                # Insert new entity
+                # Insert new entity — fall back to last_chapter if origin_chapter not specified
+                effective_origin = origin_chapter if origin_chapter is not None else last_chapter
                 cursor.execute('''
                 INSERT INTO entities
                 (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter, note)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter, note))
+                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, effective_origin, note))
             
             conn.commit()
             conn.close()

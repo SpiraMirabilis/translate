@@ -9,10 +9,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search, Pencil } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search, Pencil, Globe } from 'lucide-react'
 import ComboBox from '../components/ComboBox'
 import { useSearch } from '../hooks/useSearch'
 import SearchBar from '../components/SearchBar'
+import DeleteEntityModal from '../components/DeleteEntityModal'
 
 const CATEGORIES = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
 
@@ -386,6 +387,7 @@ function EntityEditModal({ entity, onClose, onSaved }) {
   })
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -410,10 +412,13 @@ function EntityEditModal({ entity, onClose, onSaved }) {
     }
   }
 
-  const handleDelete = async () => {
-    if (!confirm(`Delete entity "${entity.untranslated}" (${entity.translation})?`)) return
+  const handleDelete = async (decase) => {
+    setShowDeleteModal(false)
     setDeleting(true); setError(null)
     try {
+      if (decase && entity.book_id && entity.translation && /^[A-Z]/.test(entity.translation)) {
+        await api.decaseEntity({ translation: entity.translation, book_id: entity.book_id })
+      }
       await api.deleteEntity(entity.id)
       onSaved()
     } catch (e) {
@@ -513,7 +518,7 @@ function EntityEditModal({ entity, onClose, onSaved }) {
           <div className="flex items-center justify-between pt-1">
             <button
               className="text-xs text-rose-400/70 hover:text-rose-400 flex items-center gap-1"
-              onClick={handleDelete}
+              onClick={() => setShowDeleteModal(true)}
               disabled={deleting}
             >
               {deleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
@@ -532,6 +537,13 @@ function EntityEditModal({ entity, onClose, onSaved }) {
             </div>
           </div>
         </div>
+      {showDeleteModal && (
+        <DeleteEntityModal
+          entities={[entity]}
+          onConfirm={handleDelete}
+          onCancel={() => setShowDeleteModal(false)}
+        />
+      )}
       </div>
     </div>
   )
@@ -781,6 +793,11 @@ export default function ChapterEditor() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
 
+  // WordPress publish state
+  const [wpPublishing, setWpPublishing] = useState(false)
+  const [wpStatus, setWpStatus] = useState(null) // null | 'new' | 'published' | 'changed'
+  const [wpMessage, setWpMessage] = useState(null) // { type: 'success'|'error', text }
+
   // Dictionary state
   const [dictQuery, setDictQuery] = useState(null)
   const [dictData, setDictData] = useState(null)
@@ -846,6 +863,25 @@ export default function ChapterEditor() {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
+  }, [bookId, chapterNum])
+
+  // Fetch WP publish status for this chapter
+  const [wpConfigured, setWpConfigured] = useState(false)
+  const [wpStoryPublished, setWpStoryPublished] = useState(false)
+  useEffect(() => {
+    api.wpGetSettings()
+      .then(s => {
+        if (!s.wp_url || !s.wp_username || !s.has_password) return
+        setWpConfigured(true)
+        return api.wpBookStatus(parseInt(bookId))
+      })
+      .then(status => {
+        if (!status) return
+        setWpStoryPublished(!!status.story_published)
+        const ch = (status.chapters || []).find(c => c.chapter_number === parseInt(chapterNum))
+        setWpStatus(ch ? ch.status : (status.story_published ? 'new' : null))
+      })
+      .catch(() => {})
   }, [bookId, chapterNum])
 
   // Open search bar from URL params (e.g. from global search modal)
@@ -1146,6 +1182,27 @@ export default function ChapterEditor() {
       setIsProofread(res.is_proofread)
     } catch (e) {
       setError(e.message)
+    }
+  }
+
+  const handleWpPublish = async () => {
+    if (dirty) {
+      if (!confirm('You have unsaved changes. Save and publish?')) return
+      await handleSave()
+    }
+    setWpPublishing(true)
+    setWpMessage(null)
+    try {
+      const res = await api.wpPublishChapter(parseInt(bookId), parseInt(chapterNum))
+      const actionText = res.action === 'created' ? 'Published' : res.action === 'updated' ? 'Updated' : 'Already up to date'
+      setWpMessage({ type: 'success', text: actionText })
+      setWpStatus('published')
+      setTimeout(() => setWpMessage(null), 5000)
+    } catch (e) {
+      setWpMessage({ type: 'error', text: e.message })
+      setTimeout(() => setWpMessage(null), 8000)
+    } finally {
+      setWpPublishing(false)
     }
   }
 
@@ -1511,6 +1568,35 @@ export default function ChapterEditor() {
           <Search size={12} />
           Find
         </button>
+
+        {wpConfigured && (
+          <button
+            className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
+              !wpStoryPublished
+                ? 'border-slate-700 text-slate-600 cursor-not-allowed'
+                : wpStatus === 'published'
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                : wpStatus === 'changed'
+                ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+                : 'border-slate-700 text-slate-500 hover:text-slate-400'
+            }`}
+            onClick={wpStoryPublished ? handleWpPublish : undefined}
+            disabled={wpPublishing || !wpStoryPublished}
+            title={!wpStoryPublished ? 'Publish the book from the Books page first' : wpStatus === 'new' ? 'Publish this chapter to WordPress' : wpStatus === 'changed' ? 'Update this chapter on WordPress (content changed)' : 'Re-publish this chapter to WordPress'}
+          >
+            {wpPublishing
+              ? <Loader2 size={12} className="animate-spin" />
+              : <Globe size={12} />}
+            {!wpStoryPublished ? 'WP' : wpStatus === 'new' ? 'Publish' : wpStatus === 'changed' ? 'Update WP' : 'Published'}
+          </button>
+        )}
+
+        {wpMessage && (
+          <span className={`text-xs flex items-center gap-1 ${wpMessage.type === 'success' ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {wpMessage.type === 'success' ? <Check size={12} /> : <AlertCircle size={12} />}
+            {wpMessage.text}
+          </span>
+        )}
 
         <button
           className="btn-primary flex items-center gap-1.5"

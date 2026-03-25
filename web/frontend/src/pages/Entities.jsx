@@ -7,10 +7,29 @@ import {
   Replace, RotateCcw, BookOpen, Pin, Copy, CheckSquare, Square, FolderInput, ArrowRightLeft
 } from 'lucide-react'
 import { DictResult, useDictLookup } from '../components/DictLookup'
-import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
+import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
+import DeleteEntityModal from '../components/DeleteEntityModal'
 import { copyToClipboard } from '../utils/clipboard'
 
 const TRUNCATE_LIMIT = 25
+
+/**
+ * Parse special filter prefixes from a search string.
+ * Supported: origin_chapter:N or origin_chapter:N-M
+ * Returns { textSearch, originChapterRange: null | [min, max] }
+ */
+function parseSearchFilters(raw) {
+  let textSearch = raw
+  let originChapterRange = null
+  const m = raw.match(/\borigin_chapter:(\d+)(?:-(\d+))?\b/i)
+  if (m) {
+    const min = parseInt(m[1])
+    const max = m[2] ? parseInt(m[2]) : min
+    originChapterRange = [Math.min(min, max), Math.max(min, max)]
+    textSearch = raw.replace(m[0], '').trim()
+  }
+  return { textSearch, originChapterRange }
+}
 
 export default function Entities() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -29,6 +48,7 @@ export default function Entities() {
   const [activeCategories, setActiveCategories] = useState(DEFAULT_CATEGORIES)
   const [selected, setSelected] = useState(new Set())
   const [batchAction, setBatchAction] = useState(null) // null | 'move_category' | 'change_book'
+  const [pendingDelete, setPendingDelete] = useState(null) // null | { entities: [...], mode: 'single'|'batch' }
   const searchRef = useRef(null)
 
   const toggleSelect = useCallback((id) => {
@@ -54,21 +74,31 @@ export default function Entities() {
   // Auto-focus search on mount
   useEffect(() => { searchRef.current?.focus() }, [])
 
+  const { textSearch: apiSearch, originChapterRange } = useMemo(
+    () => parseSearchFilters(debouncedSearch),
+    [debouncedSearch]
+  )
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const params = {}
       if (filterBook) params.book_id = parseInt(filterBook)
       if (filterCat)  params.category = filterCat
-      if (debouncedSearch) params.search = debouncedSearch
+      if (apiSearch) params.search = apiSearch
       const d = await api.listEntities(params)
-      setEntities(d.entities || [])
+      let results = d.entities || []
+      if (originChapterRange) {
+        const [min, max] = originChapterRange
+        results = results.filter(e => e.origin_chapter != null && e.origin_chapter >= min && e.origin_chapter <= max)
+      }
+      setEntities(results)
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [filterBook, filterCat, debouncedSearch])
+  }, [filterBook, filterCat, apiSearch, originChapterRange])
 
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
@@ -90,17 +120,38 @@ export default function Entities() {
 
   useEffect(() => { load(); clearSelection() }, [load])
 
-  const handleDelete = async (id) => {
-    if (!confirm('Delete this entity?')) return
-    await api.deleteEntity(id)
-    load()
+  const handleDelete = (id) => {
+    const ent = entities.find(e => e.id === id)
+    if (ent) setPendingDelete({ entities: [ent], mode: 'single' })
   }
 
-  const handleBatchDelete = async () => {
-    if (!confirm(`Delete ${selected.size} selected entities?`)) return
+  const handleBatchDelete = () => {
+    const ents = entities.filter(e => selected.has(e.id))
+    if (ents.length) setPendingDelete({ entities: ents, mode: 'batch' })
+  }
+
+  const confirmDelete = async (decase) => {
+    if (!pendingDelete) return
+    const { entities: ents, mode } = pendingDelete
+    setPendingDelete(null)
     try {
-      await api.batchEntities({ ids: [...selected], action: 'delete' })
-      clearSelection()
+      if (decase) {
+        // Group by book_id and decase each unique translation per book
+        const seen = new Set()
+        for (const e of ents) {
+          if (!e.book_id || !e.translation || !/^[A-Z]/.test(e.translation)) continue
+          const key = `${e.book_id}::${e.translation}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          await api.decaseEntity({ translation: e.translation, book_id: e.book_id })
+        }
+      }
+      if (mode === 'single') {
+        await api.deleteEntity(ents[0].id)
+      } else {
+        await api.batchEntities({ ids: ents.map(e => e.id), action: 'delete' })
+        clearSelection()
+      }
       load()
     } catch (e) { setError(e.message) }
   }
@@ -164,7 +215,7 @@ export default function Entities() {
           <input
             ref={searchRef}
             className="input pl-8"
-            placeholder="Search…"
+            placeholder="Search… (origin_chapter:N-M)"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -191,7 +242,7 @@ export default function Entities() {
           <span className="text-slate-700">|</span>
           {Object.entries(grouped).map(([cat, ents]) => (
             <span key={cat} className="flex items-center gap-1">
-              <span className={`badge ${getCatColor(cat)} !text-[10px] !px-1.5 !py-0`}>{cat}</span>
+              <span {...catBadgeProps(cat, '!text-[10px] !px-1.5 !py-0')}>{cat}</span>
               {ents.length}
             </span>
           ))}
@@ -282,6 +333,14 @@ export default function Entities() {
           books={books}
           onClose={() => setBatchAction(null)}
           onConfirm={(book_id) => handleBatchAction('change_book', { book_id })}
+        />
+      )}
+
+      {pendingDelete && (
+        <DeleteEntityModal
+          entities={pendingDelete.entities}
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
         />
       )}
     </div>
@@ -375,7 +434,7 @@ function CategorySection({ category, entities, onEdit, onDelete, defaultOpen, se
         onClick={() => setOpen(v => !v)}
       >
         <div className="flex items-center gap-2">
-          <span className={`badge ${getCatColor(category)}`}>{category}</span>
+          <span {...catBadgeProps(category)}>{category}</span>
           <span className="text-xs text-slate-500">{entities.length} entries</span>
           {notedCount > 0 && (
             <span className="text-xs text-amber-500/60">{notedCount} noted</span>
@@ -489,33 +548,49 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
   // LLM advice
   const [adviceLoading, setAdviceLoading] = useState(false)
   const [adviceData, setAdviceData] = useState(null)
-  // Copy context
+  // Copy context — pre-fetch on modal open so the copy is synchronous (iOS requires user-gesture)
   const [contextCopied, setContextCopied] = useState(false)
-  const [contextLoading, setContextLoading] = useState(false)
+  const [contextLoading, setContextLoading] = useState(true)
+  const [contextText, setContextText] = useState(null)
 
-  const handleCopyContext = async () => {
-    if (!entity?.id) return
+  useEffect(() => {
+    if (!entity?.id) { setContextLoading(false); return }
     setContextLoading(true)
-    try {
-      const res = await api.getEntityContext(entity.id)
-      const lines = [
-        `Entity: ${form.untranslated} → ${form.translation}`,
-        `Category: ${form.category}`,
-        '',
-      ]
-      if (res.context) {
-        lines.push(`Context:\n${res.context}`)
-      } else {
-        lines.push(res.message || 'No context available.')
-      }
-      await copyToClipboard(lines.join('\n'))
-      setContextCopied(true)
-      setTimeout(() => setContextCopied(false), 1500)
-    } catch (e) {
-      setError(`Context failed: ${e.message}`)
-    } finally {
-      setContextLoading(false)
-    }
+    api.getEntityContext(entity.id)
+      .then(res => {
+        const lines = [
+          `Entity: ${entity.untranslated} → ${entity.translation}`,
+          `Category: ${entity.category}`,
+          '',
+        ]
+        if (res.context) {
+          lines.push(`Context:\n${res.context}`)
+        } else {
+          lines.push(res.message || 'No context available.')
+        }
+        setContextText(lines.join('\n'))
+      })
+      .catch(() => setContextText(null))
+      .finally(() => setContextLoading(false))
+  }, [entity])
+
+  const handleCopyContext = () => {
+    if (!contextText) return
+    // Build text with current form values (may have been edited)
+    const lines = [
+      `Entity: ${form.untranslated} → ${form.translation}`,
+      `Category: ${form.category}`,
+      '',
+    ]
+    // Append the pre-fetched context portion (everything after the header)
+    const ctxPart = contextText.split('\n').slice(3).join('\n')
+    lines.push(ctxPart)
+    copyToClipboard(lines.join('\n'))
+      .then(() => {
+        setContextCopied(true)
+        setTimeout(() => setContextCopied(false), 1500)
+      })
+      .catch(e => setError(`Copy failed: ${e.message}`))
   }
 
   // Dictionary lookup
@@ -609,9 +684,9 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
                   className="btn-ghost p-2 shrink-0"
                   title="Copy entity + context to clipboard"
                   onClick={handleCopyContext}
-                  disabled={contextLoading}
+                  disabled={contextLoading || !contextText}
                 >
-                  <Copy size={14} className={contextCopied ? 'text-emerald-400' : contextLoading ? 'animate-pulse text-indigo-400' : 'text-slate-400'} />
+                  <Copy size={14} className={contextCopied ? 'text-emerald-400' : contextLoading ? 'animate-pulse text-indigo-400' : !contextText ? 'text-slate-600' : 'text-slate-400'} />
                 </button>
               )}
               <button
@@ -666,12 +741,28 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
           </div>
           {form.category === 'characters' && (
             <div><label className="label">Gender</label>
-              <select className="input" value={form.gender} onChange={e => setForm(f => ({...f, gender: e.target.value}))}>
-                <option value="">Unknown</option>
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-                <option value="neutral">Neutral</option>
-              </select>
+              <div className="flex gap-1 mt-1">
+                {[
+                  { value: 'male', symbol: '♂', label: 'Male', color: 'text-blue-400 bg-blue-900/60 border-blue-500' },
+                  { value: 'female', symbol: '♀', label: 'Female', color: 'text-pink-400 bg-pink-900/60 border-pink-500' },
+                  { value: 'neutral', symbol: '⚲', label: 'Neutral', color: 'text-slate-300 bg-slate-700/60 border-slate-400' },
+                ].map(g => (
+                  <button
+                    key={g.value}
+                    type="button"
+                    title={g.label}
+                    className={`px-3 h-8 flex items-center justify-center gap-1.5 rounded border text-sm transition-colors ${
+                      form.gender === g.value
+                        ? g.color
+                        : 'text-slate-500 bg-slate-800/40 border-slate-700 hover:border-slate-500'
+                    }`}
+                    onClick={() => setForm(f => ({ ...f, gender: f.gender === g.value ? '' : g.value }))}
+                  >
+                    <span>{g.symbol}</span>
+                    <span className="text-xs">{g.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           <div><label className="label">Note <span className="text-slate-500 font-normal">(translation guidance for AI)</span></label>
@@ -964,7 +1055,7 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
                           <div className="space-y-1">
                             {dup.instances.map(inst => (
                               <div key={inst.id} className="flex items-center gap-2 text-xs text-slate-400">
-                                <span className={`badge ${getCatColor(inst.category)}`}>{inst.category}</span>
+                                <span {...catBadgeProps(inst.category)}>{inst.category}</span>
                                 <span className="font-mono">{inst.untranslated}</span>
                               </div>
                             ))}
@@ -986,6 +1077,7 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
 const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup, onResolved }, ref) {
   const [resolving, setResolving] = useState(false)
   const [resolved, setResolved] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
 
   const handleKeep = async (category) => {
     setResolving(true)
@@ -999,9 +1091,20 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
     }
   }
 
-  const handleDeleteAll = async () => {
+  const handleDeleteAll = async (decase) => {
+    setShowDeleteModal(false)
     setResolving(true)
     try {
+      if (decase) {
+        const seen = new Set()
+        for (const inst of dup.instances) {
+          if (!inst.book_id || !inst.translation || !/^[A-Z]/.test(inst.translation)) continue
+          const key = `${inst.book_id}::${inst.translation}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          await api.decaseEntity({ translation: inst.translation, book_id: inst.book_id })
+        }
+      }
       await api.resolveDuplicate({ untranslated: dup.untranslated, action: 'delete_all', book_id: dup.book_id ?? null })
       setResolved(true)
       setTimeout(() => onResolved(), 300)
@@ -1025,7 +1128,7 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
         <p className="text-sm font-mono text-slate-200">{dup.untranslated}</p>
         <button
           className="text-xs btn-ghost hover:text-rose-400 flex items-center gap-1"
-          onClick={handleDeleteAll}
+          onClick={() => setShowDeleteModal(true)}
           disabled={resolving}
           title="Delete all instances of this entity"
         >
@@ -1035,7 +1138,7 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
       <div className="space-y-1.5">
         {dup.instances.map(inst => (
           <div key={inst.id} className="flex items-center gap-2">
-            <span className={`badge ${getCatColor(inst.category)}`}>{inst.category}</span>
+            <span {...catBadgeProps(inst.category)}>{inst.category}</span>
             <span className="text-sm text-slate-300 flex-1">{inst.translation}</span>
             <button
               className="text-xs btn-secondary"
@@ -1047,6 +1150,13 @@ const DupUntranslatedItem = React.forwardRef(function DupUntranslatedItem({ dup,
           </div>
         ))}
       </div>
+      {showDeleteModal && (
+        <DeleteEntityModal
+          entities={dup.instances}
+          onConfirm={handleDeleteAll}
+          onCancel={() => setShowDeleteModal(false)}
+        />
+      )}
     </div>
   )
 })

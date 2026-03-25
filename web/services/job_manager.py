@@ -44,6 +44,8 @@ class JobManager:
         # Auto-process queue state
         self.auto_process = False
         self._stop_auto = threading.Event()
+        self._auto_max = None
+        self._auto_done = 0
 
     # ------------------------------------------------------------------
     # WebSocket helpers
@@ -118,9 +120,11 @@ class JobManager:
     # Auto-process queue
     # ------------------------------------------------------------------
 
-    def start_auto_process(self):
+    def start_auto_process(self, max_chapters=None):
         self.auto_process = True
         self._stop_auto.clear()
+        self._auto_max = max_chapters  # None = unlimited
+        self._auto_done = 1  # first chapter counts
 
     def stop_auto_process(self):
         """Signal the loop to stop after the current translation finishes."""
@@ -129,7 +133,12 @@ class JobManager:
 
     def should_continue_auto(self):
         """Check whether the auto-process loop should continue."""
-        return self.auto_process and not self._stop_auto.is_set()
+        if not self.auto_process or self._stop_auto.is_set():
+            return False
+        self._auto_done += 1
+        if self._auto_max and self._auto_done > self._auto_max:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Activity log — persist + broadcast

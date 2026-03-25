@@ -8,7 +8,7 @@ import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
   BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search
 } from 'lucide-react'
-import { DEFAULT_CATEGORIES, getCatColor } from '../utils/categories'
+import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
 
 export default function Books() {
@@ -24,6 +24,7 @@ export default function Books() {
   const [publishingBook, setPublishingBook] = useState(null) // book obj or null
   const [categoriesBook, setCategoriesBook] = useState(null) // book obj or null
   const [showSearch, setShowSearch] = useState(false)
+  const [exporting, setExporting] = useState(null) // 'bookId-format' or null
   const [error, setError] = useState(null)
 
   const load = useCallback(async () => {
@@ -83,6 +84,7 @@ export default function Books() {
   }
 
   const handleExport = async (bookId, format) => {
+    setExporting(`${bookId}-${format}`)
     try {
       const blob = await api.exportBook(bookId, format)
       const url = URL.createObjectURL(blob)
@@ -94,6 +96,8 @@ export default function Books() {
       URL.revokeObjectURL(url)
     } catch (e) {
       alert(`Export failed: ${e.message}`)
+    } finally {
+      setExporting(null)
     }
   }
 
@@ -161,16 +165,20 @@ export default function Books() {
                   {/* Export */}
                   <div className="relative group">
                     <button className="btn-ghost p-1.5" title="Export">
-                      <Download size={14} />
+                      {exporting?.startsWith(`${book.id}-`)
+                        ? <Loader2 size={14} className="animate-spin text-indigo-400" />
+                        : <Download size={14} />}
                     </button>
                     <div className="absolute right-0 top-full pt-1 hidden group-hover:flex flex-col z-10 min-w-[120px]">
                     <div className="bg-slate-800 border border-slate-700 rounded shadow-xl flex flex-col">
                       {['text', 'markdown', 'html', 'epub'].map(fmt => (
                         <button
                           key={fmt}
-                          className="text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300"
+                          className="text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-1.5 disabled:opacity-50"
                           onClick={() => handleExport(book.id, fmt)}
+                          disabled={!!exporting}
                         >
+                          {exporting === `${book.id}-${fmt}` && <Loader2 size={11} className="animate-spin" />}
                           {fmt.toUpperCase()}
                         </button>
                       ))}
@@ -796,7 +804,7 @@ function WordPressPublishModal({ book, onClose }) {
   const [progress, setProgress] = useState(null) // { current, total, title }
   const [result, setResult] = useState(null) // { created, updated, skipped, errors }
   const [error, setError] = useState(null)
-  const { lastMessage } = useWs()
+  const { subscribe } = useWs()
 
   useEffect(() => {
     api.wpBookStatus(book.id)
@@ -805,23 +813,25 @@ function WordPressPublishModal({ book, onClose }) {
       .finally(() => setLoading(false))
   }, [book.id])
 
-  // Listen to WebSocket for publish progress
+  // Listen to WebSocket for publish progress — use subscribe() to guarantee
+  // every message is processed, even when messages arrive faster than React renders.
   useEffect(() => {
-    if (!lastMessage || lastMessage.type !== 'wp_publish') return
-    const m = lastMessage
-    if (m.step === 'chapter') {
-      setProgress({ current: m.current, total: m.total, title: m.title })
-    } else if (m.step === 'done') {
-      setResult({ created: m.created, updated: m.updated, skipped: m.skipped, errors: m.errors })
-      setPublishing(false)
-    } else if (m.step === 'error') {
-      setError(m.error)
-      setPublishing(false)
-    } else if (m.step === 'cancelled') {
-      setPublishing(false)
-      setError('Publish cancelled.')
-    }
-  }, [lastMessage])
+    return subscribe((m) => {
+      if (m.type !== 'wp_publish') return
+      if (m.step === 'chapter') {
+        setProgress({ current: m.current, total: m.total, title: m.title })
+      } else if (m.step === 'done') {
+        setResult({ created: m.created, updated: m.updated, skipped: m.skipped, errors: m.errors })
+        setPublishing(false)
+      } else if (m.step === 'error') {
+        setError(m.error)
+        setPublishing(false)
+      } else if (m.step === 'cancelled') {
+        setPublishing(false)
+        setError('Publish cancelled.')
+      }
+    })
+  }, [subscribe])
 
   const handlePublish = async () => {
     setPublishing(true)
@@ -1081,7 +1091,7 @@ function CategoryManagerModal({ book, onClose }) {
               {categories.map(cat => (
                 <div key={cat} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-slate-750/50">
                   <div className="flex items-center gap-2">
-                    <span className={`badge ${getCatColor(cat)}`}>{cat}</span>
+                    <span {...catBadgeProps(cat)}>{cat}</span>
                     {entityCounts[cat] > 0 && (
                       <span className="text-xs text-slate-500">{entityCounts[cat]} entities</span>
                     )}

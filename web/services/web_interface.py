@@ -93,6 +93,10 @@ class WebInterface(UserInterface):
         Filters duplicates and existing entities, optionally auto-cleans generic
         (non-proper-noun) entities, then blocks until the user submits.
         """
+        # Skip review entirely when no_review is set (e.g. auto-process batch jobs)
+        if getattr(self, 'no_review', False):
+            return {}
+
         # Filter out entities already in the DB and cross-category duplicates
         has_entities = any(entities.get(cat, {}) for cat in entities)
         if has_entities:
@@ -142,6 +146,16 @@ class WebInterface(UserInterface):
         # Block until user submits (or timeout)
         result = self.job_manager.wait_for_review()
         return result
+
+    def _fix_partial_translations(self, content, source_language='zh'):
+        """Override to send a progress message before running repair."""
+        self.job_manager.send_message_sync({
+            "type": "progress",
+            "phase": "repairing",
+            "chunk": 0,
+            "total": 0,
+        })
+        return super()._fix_partial_translations(content, source_language)
 
 
 # ------------------------------------------------------------------

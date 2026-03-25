@@ -1,0 +1,39 @@
+{
+  "genres": [
+    {
+      "id": "chinese_xianxia",
+      "name": "Chinese Xianxia",
+      "source_language": "zh",
+      "prompt_file": "prompts/chinese_xianxia.txt",
+      "description": "Chinese cultivation/xianxia web novels"
+    },
+    {
+      "id": "chinese_general",
+      "name": "Chinese General",
+      "source_language": "zh",
+      "prompt_file": "prompts/chinese_xianxia.txt",
+      "description": "General Chinese web novels (modern, romance, sci-fi, etc.)"
+    },
+    {
+      "id": "japanese_light_novel",
+      "name": "Japanese Light Novel",
+      "source_language": "ja",
+      "prompt_file": "prompts/japanese_ln.txt",
+      "description": "Japanese light novels and web novels"
+    },
+    {
+      "id": "korean_web_novel",
+      "name": "Korean Web Novel",
+      "source_language": "ko",
+      "prompt_file": "prompts/korean_wn.txt",
+      "description": "Korean web novels"
+    },
+    {
+      "id": "custom",
+      "name": "Custom",
+      "source_language": null,
+      "prompt_file": null,
+      "description": "Manual configuration"
+    }
+  ]
+}

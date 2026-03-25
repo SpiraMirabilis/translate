@@ -27,6 +27,22 @@ export default function TranslationProgress({ progress, status }) {
   const { chunk, total, phase, token_count, expected_tokens, percent, tokens_per_second, elapsed } = progress
   const hasTokenData = token_count != null && expected_tokens != null
 
+  // Post-translation phases (cleaning, repairing, etc.)
+  if (phase === 'cleaning' || phase === 'repairing') {
+    const label = phase === 'cleaning' ? 'Cleaning entities…' : 'Repairing translation…'
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-400">
+          <span>{label}</span>
+        </div>
+        <div className="h-2 rounded-full bg-slate-700 overflow-hidden">
+          <div className="h-full bg-amber-500 rounded-full w-12"
+               style={{ animation: 'indeterminate 1.4s ease-in-out infinite' }} />
+        </div>
+      </div>
+    )
+  }
+
   // Indeterminate pulse when chunk just started (phase === "start")
   const isIndeterminate = phase === 'start' || !hasTokenData
 

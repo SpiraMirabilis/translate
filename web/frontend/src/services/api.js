@@ -98,6 +98,7 @@ export const api = {
   getAdvice:        (body)       => post('/api/entities/advice', body),
   propagateChange:  (body)       => post('/api/entities/propagate', body),
   batchEntities:    (body)       => post('/api/entities/batch', body),
+  decaseEntity:     (body)       => post('/api/entities/decase', body),
 
   // Queue
   listQueue:        (bookId)     => get(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
@@ -133,6 +134,7 @@ export const api = {
   wpBookStatus:     (bookId)         => get(`/api/wordpress/books/${bookId}/status`),
   wpPublish:        (bookId, body)   => post(`/api/wordpress/books/${bookId}/publish`, body),
   wpCancelPublish:  (bookId)         => post(`/api/wordpress/books/${bookId}/cancel`, {}),
+  wpPublishChapter: (bookId, num, body = {}) => post(`/api/wordpress/books/${bookId}/chapters/${num}/publish`, body),
 
   // Auth
   authStatus:       ()           => get('/api/auth/status'),

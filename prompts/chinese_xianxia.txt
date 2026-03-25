@@ -27,7 +27,7 @@ TRANSLATION GUIDELINES:
 - Do not capitalize words mid-sentence unless they are proper nouns.
 - Do not split a single sentence across multiple lines in the content array.
 - Separate paragraphs with an empty string ("") in the content array.
-- Retain special formatting symbols (e.g., 【】) as-is.
+- Retain special formatting symbols (e.g., 【】《》) as-is.
 
 ---
 

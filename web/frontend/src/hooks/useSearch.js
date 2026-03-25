@@ -211,9 +211,17 @@ export function useSearch() {
     var splitLines = txt.split('\n')
     if (matchObj.line >= splitLines.length) return txt
     var ln = splitLines[matchObj.line]
-    splitLines[matchObj.line] = ln.substring(0, matchObj.col) + replaceText + ln.substring(matchObj.col + matchObj.length)
+    var matched = ln.substring(matchObj.col, matchObj.col + matchObj.length)
+    var replacement = replaceText
+    if (isRegex) {
+      try {
+        var re = new RegExp(query, 'gi')
+        replacement = matched.replace(new RegExp(query, 'i'), replaceText)
+      } catch { /* fall back to literal replaceText */ }
+    }
+    splitLines[matchObj.line] = ln.substring(0, matchObj.col) + replacement + ln.substring(matchObj.col + matchObj.length)
     return splitLines.join('\n')
-  }, [replaceText])
+  }, [replaceText, isRegex, query])
 
   const replaceAllInChapter = useCallback(function doReplaceAll(txt) {
     if (!query) return txt

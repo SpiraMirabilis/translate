@@ -291,6 +291,7 @@ class ProcessNextRequest(BaseModel):
     no_clean: bool = False
     no_repair: bool = False
     auto_process: bool = False
+    max_chapters: Optional[int] = None  # Stop after N chapters (None = unlimited)
 
 
 def _setup_job(queue_item, settings):
@@ -355,7 +356,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     _setup_job(queue_item, settings)
 
     if req.auto_process:
-        _job_manager.start_auto_process()
+        _job_manager.start_auto_process(max_chapters=req.max_chapters)
 
     # Log the first item from the async context (thread not started yet)
     book_name = None
@@ -385,6 +386,12 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
 
                 _setup_job(next_item, settings)
                 _translate_one(next_item)
+            else:
+                # Loop ended because should_continue_auto() returned False
+                if _job_manager._auto_max and _job_manager._auto_done > _job_manager._auto_max:
+                    done = _job_manager._auto_max
+                    _job_manager.send_message_sync({"type": "auto_process_done", "reason": "limit_reached", "chapters_done": done})
+                    _job_manager.log_activity(type='info', message=f'Auto-process complete — {done} chapter limit reached.')
         except Exception as e:
             _job_manager.status = "error"
             _job_manager.error = str(e)

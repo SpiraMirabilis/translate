@@ -192,6 +192,17 @@ class WordPressClient:
     # Generic
     # ------------------------------------------------------------------
 
+    def delete_post(self, post_type: str, wp_post_id: int, force: bool = True) -> bool:
+        """Delete a post by type and ID. Returns True on success, False on 404."""
+        params = {"force": "true"} if force else {}
+        try:
+            self._request("DELETE", f"{self.base}/{post_type}/{wp_post_id}", params=params)
+            return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return False
+            raise
+
     def get_post(self, post_type: str, wp_post_id: int) -> dict | None:
         """Fetch a single post by type and ID. Returns None on 404."""
         try:

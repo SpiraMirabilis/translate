@@ -13,15 +13,43 @@ const DEFAULT_COLORS = {
   creatures:     'badge-indigo',
 }
 
-const EXTRA_COLORS = [
-  'badge-violet', 'badge-cyan', 'badge-orange',
-  'badge-lime', 'badge-fuchsia', 'badge-teal'
-]
+// HSL hues spread across the spectrum for dynamic categories
+const DYNAMIC_HUES = [270, 190, 25, 330, 90, 160, 350, 210, 50, 130, 290, 10]
 
-export function getCatColor(category) {
-  if (DEFAULT_COLORS[category]) return DEFAULT_COLORS[category]
+function hashString(str) {
   let hash = 0
-  for (let i = 0; i < category.length; i++)
-    hash = ((hash << 5) - hash) + category.charCodeAt(i)
-  return EXTRA_COLORS[Math.abs(hash) % EXTRA_COLORS.length]
+  for (let i = 0; i < str.length; i++)
+    hash = ((hash << 5) >>> 0) - hash + str.charCodeAt(i) >>> 0
+  return hash
+}
+
+/**
+ * Returns badge styling for a category.
+ * - For default categories: { className: 'badge badge-indigo' }
+ * - For dynamic categories: { className: 'badge', style: { backgroundColor, color } }
+ */
+export function getCatBadge(category) {
+  if (DEFAULT_COLORS[category]) {
+    return { className: `badge ${DEFAULT_COLORS[category]}` }
+  }
+  const hue = DYNAMIC_HUES[hashString(category) % DYNAMIC_HUES.length]
+  return {
+    className: 'badge',
+    style: {
+      backgroundColor: `hsl(${hue} 50% 20%)`,
+      color: `hsl(${hue} 60% 70%)`,
+    },
+  }
+}
+
+/**
+ * Spread helper: returns { className, style? } props for a badge element.
+ * Usage: <span {...catBadgeProps(cat, 'extra classes')}>{cat}</span>
+ */
+export function catBadgeProps(category, extraClass = '') {
+  const b = getCatBadge(category)
+  return {
+    className: [b.className, extraClass].filter(Boolean).join(' '),
+    ...(b.style ? { style: b.style } : {}),
+  }
 }

@@ -171,6 +171,94 @@ async def get_book_publish_status(book_id: int):
 # Publish
 # ------------------------------------------------------------------
 
+class PublishChapterRequest(BaseModel):
+    chapter_group: str = ""
+
+
+@router.post("/books/{book_id}/chapters/{chapter_number}/publish")
+async def publish_single_chapter(book_id: int, chapter_number: int, req: PublishChapterRequest):
+    """Publish or update a single chapter to WordPress."""
+    book = _db.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found.")
+
+    full_ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number)
+    if not full_ch:
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+
+    # Story must already exist on WP
+    story_state = _db.get_wp_state(book_id, chapter_number=None)
+    if not story_state:
+        raise HTTPException(status_code=400, detail="Book has not been published to WordPress yet. Use the full publish from the Books page first.")
+
+    client = _get_client()
+
+    # Verify story still exists
+    story_wp_id = story_state["wp_post_id"]
+    existing_story = client.get_post("fcn_story", story_wp_id)
+    if existing_story is None:
+        _db.delete_wp_state_single(book_id, chapter_number=None)
+        raise HTTPException(status_code=400, detail="Story post no longer exists on WordPress. Re-publish the full book first.")
+
+    content_lines = (full_ch.get("content") or [])
+    if isinstance(content_lines, str):
+        content_lines = content_lines.split("\n")
+    current_hash = compute_hash(content_lines)
+    html = content_to_html(content_lines)
+    title = full_ch.get("title") or f"Chapter {chapter_number}"
+
+    ch_state = _db.get_wp_state(book_id, chapter_number)
+    action = None
+
+    try:
+        if ch_state is None:
+            # New chapter
+            wp_id = client.create_chapter(title, html, story_wp_id, group=req.chapter_group)
+            _db.save_wp_state(book_id, chapter_number, wp_id, "fcn_chapter", current_hash)
+            action = "created"
+        elif ch_state["content_hash"] == current_hash:
+            action = "unchanged"
+        else:
+            # Changed — check if post still exists
+            wp_id = ch_state["wp_post_id"]
+            existing = client.get_post("fcn_chapter", wp_id)
+            if existing is None:
+                wp_id = client.create_chapter(title, html, story_wp_id, group=req.chapter_group)
+                _db.save_wp_state(book_id, chapter_number, wp_id, "fcn_chapter", current_hash)
+                action = "created"
+            else:
+                client.update_chapter(wp_id, title=title, html_content=html)
+                _db.save_wp_state(book_id, chapter_number, wp_id, "fcn_chapter", current_hash)
+                action = "updated"
+
+        # Update story chapter list
+        all_states = _db.get_all_wp_states(book_id)
+        chapter_wp_ids = [s["wp_post_id"] for s in all_states if s["chapter_number"] is not None]
+        if chapter_wp_ids:
+            client.update_story(story_wp_id, chapter_ids=chapter_wp_ids)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"WordPress publish failed: {e}")
+
+    # Activity log
+    try:
+        _job_manager.log_activity(
+            "wordpress",
+            f"Chapter {chapter_number} of \"{book['title']}\" {action} on WordPress",
+            book_id=book_id,
+            book_name=book["title"],
+        )
+    except Exception:
+        pass
+
+    wp_state = _db.get_wp_state(book_id, chapter_number)
+    return {
+        "status": "ok",
+        "action": action,
+        "wp_post_id": wp_state["wp_post_id"] if wp_state else None,
+    }
+
+
 class PublishRequest(BaseModel):
     story_status: str = "Ongoing"
     story_rating: str = "Everyone"
