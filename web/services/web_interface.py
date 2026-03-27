@@ -32,6 +32,7 @@ class WebInterface(UserInterface):
         self.no_review = False        # Entity review enabled
         self.no_clean = False         # Auto-clean generic nouns before review
         self.no_repair = False        # Skip partial translation repair
+        self.no_convert_units = False # Skip Chinese unit → metric conversion
         self.silent_notifications = True
         self.cleaning_model = None
         self.output_format = "text"

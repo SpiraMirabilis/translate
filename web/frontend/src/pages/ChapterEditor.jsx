@@ -6,7 +6,7 @@
  *        entity highlighting via overlay technique.
  * Reached via /books/:bookId/chapters/:chapterNum/edit
  */
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search, Pencil, Globe } from 'lucide-react'
@@ -24,6 +24,18 @@ function trimEmptyLines(lines) {
   let end = lines.length
   while (end > start && !lines[end - 1].trim()) end--
   return lines.slice(start, end)
+}
+
+// ── Debounced value hook ─────────────────────────────────────────────
+function useDebouncedValue(value, delay) {
+  const [debounced, setDebounced] = useState(value)
+  const isFirst = useRef(true)
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; setDebounced(value); return }
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
 }
 
 // ── localStorage helper ──────────────────────────────────────────────
@@ -91,8 +103,8 @@ const CATEGORY_COLORS = {
 }
 
 /**
- * Build a sorted matcher list from entities.
- * Returns [{ text, translation, untranslated, category }] sorted by text length desc.
+ * Build a matcher object from entities.
+ * Returns { lookup (Map), regex (RegExp), list (array) } for fast matching.
  * `field` is 'untranslated' for Chinese matching, 'translation' for English matching.
  */
 function buildMatcher(entities, field) {
@@ -112,52 +124,53 @@ function buildMatcher(entities, field) {
   }
   // Sort by length descending so longest matches win
   list.sort((a, b) => b.text.length - a.text.length)
-  return list
+
+  if (!list.length) return { lookup: new Map(), regex: null, list }
+
+  // Build a single regex from all entity texts (longest first for greedy matching)
+  const escaped = list.map(m => m.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const regex = new RegExp(`(${escaped.join('|')})`, 'g' + (field === 'translation' ? 'i' : ''))
+
+  // Build a lookup map (lowercased key -> entity) for O(1) match identification
+  const lookup = new Map()
+  for (const m of list) {
+    const k = m.text.toLowerCase()
+    if (!lookup.has(k)) lookup.set(k, m)
+  }
+
+  return { lookup, regex, list }
 }
 
 /**
  * Split a line into segments of plain text and entity matches.
  * Returns [{ text, entity? }] where entity is the matched entity info or null.
- * Uses case-insensitive matching for English, exact for Chinese.
+ * Uses a precompiled regex for fast matching instead of scanning all entities.
  */
-function highlightSegments(line, matcher, caseInsensitive = false) {
-  if (!line || !matcher.length) return [{ text: line || '\u00A0' }]
+function highlightSegments(line, matcher, _caseInsensitive = false) {
+  if (!line || !matcher.regex) return [{ text: line || '\u00A0' }]
 
+  const { regex, lookup } = matcher
   const segments = []
-  let remaining = line
-  let pos = 0
+  let lastIndex = 0
 
-  while (remaining.length > 0) {
-    let earliest = null
-    let earliestIdx = remaining.length
-
-    for (const m of matcher) {
-      const idx = caseInsensitive
-        ? remaining.toLowerCase().indexOf(m.lower)
-        : remaining.indexOf(m.text)
-      if (idx !== -1 && idx < earliestIdx) {
-        earliestIdx = idx
-        earliest = m
-      }
-      // Optimization: if we found a match at position 0 with the longest matcher, stop
-      if (earliestIdx === 0) break
+  // Reset regex state (it has the 'g' flag)
+  regex.lastIndex = 0
+  let match
+  while ((match = regex.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ text: line.slice(lastIndex, match.index) })
     }
-
-    if (!earliest) {
-      segments.push({ text: remaining })
-      break
-    }
-
-    if (earliestIdx > 0) {
-      segments.push({ text: remaining.slice(0, earliestIdx) })
-    }
-
-    const matchedText = remaining.slice(earliestIdx, earliestIdx + earliest.text.length)
-    segments.push({ text: matchedText, entity: earliest })
-    remaining = remaining.slice(earliestIdx + earliest.text.length)
+    const matched = match[0]
+    const entity = lookup.get(matched.toLowerCase())
+    segments.push({ text: matched, entity: entity || null })
+    lastIndex = regex.lastIndex
   }
 
-  return segments
+  if (lastIndex < line.length) {
+    segments.push({ text: line.slice(lastIndex) })
+  }
+
+  return segments.length ? segments : [{ text: line || '\u00A0' }]
 }
 
 
@@ -602,7 +615,7 @@ function applySearchHighlights(textContent, searchMatches, activeMatch) {
 
 
 // ── Highlighted Chinese line component ───────────────────────────────
-function HighlightedChineseLine({ line, matcher, annotation, onEntityClick, searchMatches, activeMatch }) {
+const HighlightedChineseLine = memo(function HighlightedChineseLine({ line, matcher, annotation, onEntityClick, searchMatches, activeMatch }) {
   const segments = useMemo(
     () => highlightSegments(line, matcher, false),
     [line, matcher]
@@ -679,12 +692,13 @@ function HighlightedChineseLine({ line, matcher, annotation, onEntityClick, sear
     )
   }
   return <>{content}</>
-}
+})
 
 
 // ── English overlay backdrop component ───────────────────────────────
-function EnglishBackdrop({ text, matcher, scrollTop, paddingClass, searchMatches, activeMatch }) {
+const EnglishBackdrop = memo(function EnglishBackdrop({ text, textLines, matcher, scrollTop, paddingClass, searchMatches, activeMatch }) {
   const ref = useRef(null)
+
   const segments = useMemo(
     () => highlightSegments(text, matcher, true),
     [text, matcher]
@@ -714,7 +728,7 @@ function EnglishBackdrop({ text, matcher, scrollTop, paddingClass, searchMatches
     >
       {hasSearchMatches ? (
         // Line-by-line rendering with search highlights
-        text.split('\n').map((line, lineIdx) => {
+        textLines.map((line, lineIdx) => {
           const lineMatches = searchByLine[lineIdx]
           if (lineMatches && lineMatches.length > 0) {
             const parts = applySearchHighlights(line, lineMatches, activeMatch)
@@ -736,11 +750,11 @@ function EnglishBackdrop({ text, matcher, scrollTop, paddingClass, searchMatches
                   }
                   return <span key={j} style={{ color: 'transparent' }}>{p.text}</span>
                 })}
-                {lineIdx < text.split('\n').length - 1 ? '\n' : ''}
+                {lineIdx < textLines.length - 1 ? '\n' : ''}
               </span>
             )
           }
-          return <span key={lineIdx} style={{ color: 'transparent' }}>{line}{lineIdx < text.split('\n').length - 1 ? '\n' : ''}</span>
+          return <span key={lineIdx} style={{ color: 'transparent' }}>{line}{lineIdx < textLines.length - 1 ? '\n' : ''}</span>
         })
       ) : (
         // Original entity-only rendering
@@ -765,7 +779,7 @@ function EnglishBackdrop({ text, matcher, scrollTop, paddingClass, searchMatches
       )}
     </div>
   )
-}
+})
 
 
 // ── Main Component ───────────────────────────────────────────────────
@@ -828,15 +842,22 @@ export default function ChapterEditor() {
   const scrollSyncSource = useRef(null)
   const pendingSelection = useRef(null)
   const [lineHeights, setLineHeights] = useState([])
+  const textLines = useMemo(() => text.split('\n'), [text])
+
+  // Debounced text for the backdrop overlay (entity/search highlights)
+  // The textarea itself updates instantly; the backdrop can lag slightly
+  const debouncedText = useDebouncedValue(text, 200)
+  const debouncedTextLines = useMemo(() => debouncedText.split('\n'), [debouncedText])
 
   // Build matchers from entities
+  const emptyMatcher = useMemo(() => ({ lookup: new Map(), regex: null, list: [] }), [])
   const chineseMatcher = useMemo(
-    () => showEntities ? buildMatcher(entities, 'untranslated') : [],
-    [entities, showEntities]
+    () => showEntities ? buildMatcher(entities, 'untranslated') : emptyMatcher,
+    [entities, showEntities, emptyMatcher]
   )
   const englishMatcher = useMemo(
-    () => showEntities ? buildMatcher(entities, 'translation') : [],
-    [entities, showEntities]
+    () => showEntities ? buildMatcher(entities, 'translation') : emptyMatcher,
+    [entities, showEntities, emptyMatcher]
   )
 
   useEffect(() => {
@@ -931,14 +952,17 @@ export default function ChapterEditor() {
     return () => window.removeEventListener('keydown', handler)
   }, [search])
 
-  // Measure wrapped line heights for the gutter
-  const measureLineHeights = useCallback(() => {
+  // Measure wrapped line heights for the gutter (debounced to avoid per-keystroke DOM thrashing)
+  const measureTimerRef = useRef(null)
+  const textLinesRef = useRef(textLines)
+  textLinesRef.current = textLines
+
+  const measureLineHeightsNow = useCallback(() => {
     const mirror = mirrorRef.current
     const ta = textareaRef.current
     if (!mirror || !ta) return
-    // Match the textarea's content width
     mirror.style.width = ta.clientWidth + 'px'
-    const lines = text.split('\n')
+    const lines = textLinesRef.current
     const heights = []
     mirror.textContent = ''
     for (const line of lines) {
@@ -949,13 +973,32 @@ export default function ChapterEditor() {
       mirror.removeChild(span)
     }
     setLineHeights(heights)
-  }, [text])
+  }, []) // stable — reads textLines from ref
 
+  const measureLineHeights = useCallback(() => {
+    clearTimeout(measureTimerRef.current)
+    measureTimerRef.current = setTimeout(measureLineHeightsNow, 300)
+  }, [measureLineHeightsNow])
+
+  // Resize: remeasure immediately
   useEffect(() => {
-    measureLineHeights()
-    window.addEventListener('resize', measureLineHeights)
-    return () => window.removeEventListener('resize', measureLineHeights)
-  }, [measureLineHeights])
+    window.addEventListener('resize', measureLineHeightsNow)
+    return () => {
+      window.removeEventListener('resize', measureLineHeightsNow)
+      clearTimeout(measureTimerRef.current)
+    }
+  }, [measureLineHeightsNow])
+
+  // Text changes: debounced remeasure (immediate on first non-empty text)
+  const initialMeasureDone = useRef(false)
+  useEffect(() => {
+    if (!initialMeasureDone.current && text) {
+      initialMeasureDone.current = true
+      measureLineHeightsNow()
+    } else {
+      measureLineHeights()
+    }
+  }, [text, measureLineHeightsNow, measureLineHeights])
 
   // Recompute chapter-level search matches when inputs change
   const searchDebounceRef = useRef(null)
@@ -1119,8 +1162,7 @@ export default function ChapterEditor() {
     } else if (match.field === 'translated') {
       const ta = textareaRef.current
       if (!ta) return
-      const lines = text.split('\n')
-      const lineHeight = ta.scrollHeight / Math.max(lines.length, 1)
+      const lineHeight = ta.scrollHeight / Math.max(textLines.length, 1)
       const targetScroll = match.line * lineHeight - ta.clientHeight / 2
       ta.scrollTop = Math.max(0, targetScroll)
       setOverlayScrollTop(ta.scrollTop)
@@ -1160,8 +1202,7 @@ export default function ChapterEditor() {
     setSaving(true)
     setError(null)
     try {
-      const lines = text.split('\n')
-      const payload = { content: lines }
+      const payload = { content: textLines }
       if (chapter && chapter.title !== undefined) {
         payload.title = chapter.title
       }
@@ -1237,12 +1278,15 @@ export default function ChapterEditor() {
     }
   }
 
+  const textRef = useRef(text)
+  textRef.current = text
+
   const updateActiveLine = useCallback(() => {
     if (!textareaRef.current) return
     const pos = textareaRef.current.selectionStart
-    const lineNum = text.substring(0, pos).split('\n').length - 1
+    const lineNum = textRef.current.substring(0, pos).split('\n').length - 1
     setActiveLine(lineNum)
-  }, [text])
+  }, []) // stable — reads text from ref
 
   const handleTextareaScroll = useCallback(() => {
     const ta = textareaRef.current
@@ -1380,7 +1424,7 @@ export default function ChapterEditor() {
       .catch(() => {})
   }, [bookId])
 
-  const lineCount = text.split('\n').length
+  const lineCount = textLines.length
   const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0
   const entityCount = entities.length
 
@@ -1754,10 +1798,11 @@ export default function ChapterEditor() {
             {/* Text area + overlay container */}
             <div className="flex-1 relative overflow-hidden">
               {/* Backdrop: renders entity highlights behind the textarea */}
-              {((showEntities && englishMatcher.length > 0) || Object.keys(translatedSearchMatches).length > 0) && (
+              {((showEntities && englishMatcher.list.length > 0) || Object.keys(translatedSearchMatches).length > 0) && (
                 <EnglishBackdrop
-                  text={text}
-                  matcher={showEntities ? englishMatcher : []}
+                  text={debouncedText}
+                  textLines={debouncedTextLines}
+                  matcher={showEntities ? englishMatcher : emptyMatcher}
                   scrollTop={overlayScrollTop}
                   paddingClass={hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}
                   searchMatches={translatedSearchMatches}
@@ -1770,7 +1815,7 @@ export default function ChapterEditor() {
                            resize-none outline-none border-0
                            selection:bg-indigo-600/40 ${hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}`}
                 style={{
-                  background: showEntities && englishMatcher.length > 0 ? 'transparent' : undefined,
+                  background: showEntities && englishMatcher.list.length > 0 ? 'transparent' : undefined,
                   caretColor: '#e2e8f0',
                 }}
                 value={text}
