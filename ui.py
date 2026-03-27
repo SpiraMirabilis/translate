@@ -78,7 +78,8 @@ class UserInterface(ABC):
                     book_id=getattr(self, 'book_id', None),
                     stream=getattr(self, 'stream', False),
                     progress_callback=getattr(self, 'progress_callback', None),
-                    chapter_number=getattr(self, 'chapter_number', None)
+                    chapter_number=getattr(self, 'chapter_number', None),
+                    json_fix_callback=getattr(self, 'json_fix_callback', None),
                 )
 
                 if translation_results is None:

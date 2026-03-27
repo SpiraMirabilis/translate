@@ -37,6 +37,7 @@ export const api = {
   translate:     (body)  => post('/api/translate', body),
   submitReview:  (body)  => post('/api/translate/submit-review', body),
   skipReview:    ()      => post('/api/translate/skip-review', {}),
+  submitJsonFix: (body)  => post('/api/translate/submit-json-fix', body),
   cancelJob:     ()      => post('/api/translate/cancel', {}),
   getJobStatus:  ()      => get('/api/translate/status'),
 

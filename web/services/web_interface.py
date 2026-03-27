@@ -6,10 +6,15 @@ communicating with the frontend via the JobManager / WebSocket.
 """
 import sys
 import os
+from urllib.parse import quote as _urlquote
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ui import UserInterface
 from typing import Dict, List, Optional
+
+
+def _urlencode(s):
+    return _urlquote(str(s), safe='')
 
 
 class WebInterface(UserInterface):
@@ -40,6 +45,9 @@ class WebInterface(UserInterface):
 
         # Progress callback wired to job_manager
         self.progress_callback = self.job_manager.on_progress
+
+        # JSON fix callback — pauses translation on parse failure
+        self.json_fix_callback = self._handle_json_fix
 
     # ------------------------------------------------------------------
     # Abstract method implementations
@@ -116,6 +124,7 @@ class WebInterface(UserInterface):
             })
             cleaned_count = self._auto_clean_new_entities(entities)
             if cleaned_count > 0:
+                self._log_cleaned_entities()
                 has_entities = any(entities.get(cat, {}) for cat in entities)
                 if not has_entities:
                     return {}
@@ -147,6 +156,57 @@ class WebInterface(UserInterface):
         # Block until user submits (or timeout)
         result = self.job_manager.wait_for_review()
         return result
+
+    def _log_cleaned_entities(self):
+        """Log cleaned (removed) entities to the activity log with add-entity links."""
+        cleaned = getattr(self, '_cleaned_translations', {})
+        cleaned_keys = getattr(self, '_cleaned_entity_keys', {})
+        if not cleaned_keys:
+            return
+
+        book_id = self.job_manager.book_id
+        entity_links = []
+        for category, keys in cleaned_keys.items():
+            for key in keys:
+                translation = cleaned.get(key, '')
+                params = f'add=1&untranslated={_urlencode(key)}&translation={_urlencode(translation)}&category={_urlencode(category)}'
+                if book_id:
+                    params += f'&book_id={book_id}'
+                entity_links.append({
+                    'name': key,
+                    'label': f'{key} \u2192 {translation}' if translation else key,
+                    'link': f'/entities?{params}',
+                })
+
+        self.job_manager.log_activity(
+            type='entity_cleaned',
+            message='Generic terms cleaned:',
+            entities=entity_links,
+        )
+
+    def _handle_json_fix(self, raw_response, chunk_index, total_chunks, chunk_text):
+        """Pause translation and send malformed JSON to the frontend for fixing."""
+        # Truncate source text for display
+        display_text = chunk_text[:500] + ('…' if len(chunk_text) > 500 else '')
+
+        payload = {
+            "raw_response": raw_response,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
+            "chunk_text": display_text,
+        }
+        self.job_manager.pending_json_fix = payload
+        self.job_manager.send_message_sync({
+            "type": "json_fix_needed",
+            **payload,
+        })
+
+        self.job_manager.log_activity(
+            type='json_fix',
+            message=f'JSON parse failed on chunk {chunk_index}/{total_chunks} — fix required.',
+        )
+
+        return self.job_manager.wait_for_json_fix()
 
     def _fix_partial_translations(self, content, source_language='zh'):
         """Override to send a progress message before running repair."""

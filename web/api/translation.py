@@ -68,6 +68,11 @@ class ReviewSubmitRequest(BaseModel):
     entities: dict
 
 
+class JsonFixRequest(BaseModel):
+    action: str  # "retry" | "fix" | "abort"
+    json: Optional[str] = None  # Only for "fix" action
+
+
 # ------------------------------------------------------------------
 # Translation endpoints
 # ------------------------------------------------------------------
@@ -126,7 +131,7 @@ async def start_translation(req: TranslateRequest):
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             _job_manager.is_running = False
-            if _job_manager.status not in ("error", "awaiting_review"):
+            if _job_manager.status not in ("error", "awaiting_review", "awaiting_json_fix"):
                 _job_manager.status = "complete"
 
     thread = threading.Thread(target=run, daemon=True)
@@ -181,6 +186,21 @@ async def skip_review():
     return {"status": "ok"}
 
 
+@router.post("/api/translate/submit-json-fix")
+async def submit_json_fix(req: JsonFixRequest):
+    if _job_manager.status != "awaiting_json_fix":
+        raise HTTPException(status_code=409, detail="Not waiting for JSON fix.")
+
+    action_labels = {"retry": "Retrying chunk…", "fix": "Manual JSON fix submitted — resuming…", "abort": "Translation aborted by user."}
+    await _job_manager.log_activity_async(
+        type='json_fix' if req.action != 'abort' else 'info',
+        message=action_labels.get(req.action, f'JSON fix action: {req.action}'),
+    )
+
+    _job_manager.submit_json_fix({"action": req.action, "json": req.json})
+    return {"status": "ok"}
+
+
 @router.get("/api/translate/status")
 async def get_status():
     result = {
@@ -191,6 +211,8 @@ async def get_status():
     }
     if _job_manager.status == "awaiting_review" and _job_manager.pending_review:
         result["pending_review"] = _job_manager.pending_review
+    if _job_manager.status == "awaiting_json_fix" and _job_manager.pending_json_fix:
+        result["pending_json_fix"] = _job_manager.pending_json_fix
     return result
 
 
@@ -204,6 +226,8 @@ async def cancel_translation():
         _job_manager.stop_auto_process()
     if _job_manager.status == "awaiting_review":
         _job_manager.skip_review()
+    if _job_manager.status == "awaiting_json_fix":
+        _job_manager.submit_json_fix({"action": "abort"})
     _job_manager.is_running = False
     _job_manager.status = "idle"
     await _job_manager.log_activity_async(type='info', message='Translation cancelled.')

@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom'
 import { useWs } from '../App'
 import { api } from '../services/api'
 import EntityReviewPanel from '../components/EntityReviewPanel'
+import JsonFixPanel from '../components/JsonFixPanel'
 import TranslationProgress from '../components/TranslationProgress'
 import ComboBox from '../components/ComboBox'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -38,6 +39,7 @@ export default function Dashboard() {
   const [activityLog, setActivityLog] = useState([])
   const [hideSynopses, setHideSynopses] = useLocalStorage('dashboard.hideSynopses', false)
   const [entityReview, setEntityReview] = useState(null) // { entities, context } or null
+  const [jsonFix, setJsonFix] = useState(null) // { raw_response, chunk_index, total_chunks, chunk_text } or null
 
   const logRef = useRef(null)
 
@@ -52,6 +54,9 @@ export default function Dashboard() {
       if (d.status === 'awaiting_review' && d.pending_review) {
         setEntityReview(d.pending_review)
       }
+      if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
+        setJsonFix(d.pending_json_fix)
+      }
     }).catch(() => {})
   }, [])
 
@@ -64,6 +69,10 @@ export default function Dashboard() {
         if (d.status === 'awaiting_review' && d.pending_review) {
           setJobStatus('awaiting_review')
           setEntityReview(d.pending_review)
+        }
+        if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
+          setJobStatus('awaiting_json_fix')
+          setJsonFix(d.pending_json_fix)
         }
       }).catch(() => {})
     }, 3000)
@@ -85,15 +94,27 @@ export default function Dashboard() {
       setEntityReview({ entities: lastMessage.entities, context: lastMessage.context })
     }
 
+    if (type === 'json_fix_needed') {
+      setJobStatus('awaiting_json_fix')
+      setJsonFix({
+        raw_response: lastMessage.raw_response,
+        chunk_index: lastMessage.chunk_index,
+        total_chunks: lastMessage.total_chunks,
+        chunk_text: lastMessage.chunk_text,
+      })
+    }
+
     if (type === 'translation_complete') {
       setJobStatus('complete')
       setChunkProgress(null)
       setEntityReview(null)
+      setJsonFix(null)
     }
 
     if (type === 'error') {
       setJobStatus('error')
       setEntityReview(null)
+      setJsonFix(null)
     }
 
     // Append activity log entries from the backend
@@ -143,6 +164,11 @@ export default function Dashboard() {
     setJobStatus('running')
   }
 
+  const handleJsonFixDone = () => {
+    setJsonFix(null)
+    setJobStatus('running')
+  }
+
   const clearLog = async () => {
     try { await api.clearActivityLog() } catch { /* ignore */ }
     setActivityLog([])
@@ -153,7 +179,7 @@ export default function Dashboard() {
     (p.models || []).map(m => `${p.name}:${m}`)
   )
 
-  const isRunning = jobStatus === 'running' || jobStatus === 'awaiting_review'
+  const isRunning = jobStatus === 'running' || jobStatus === 'awaiting_review' || jobStatus === 'awaiting_json_fix'
 
   return (
     <div className="h-full flex flex-col">
@@ -392,6 +418,17 @@ export default function Dashboard() {
           onDone={handleReviewDone}
         />
       )}
+
+      {/* JSON fix overlay */}
+      {jsonFix && (
+        <JsonFixPanel
+          rawResponse={jsonFix.raw_response}
+          chunkIndex={jsonFix.chunk_index}
+          totalChunks={jsonFix.total_chunks}
+          chunkText={jsonFix.chunk_text}
+          onDone={handleJsonFixDone}
+        />
+      )}
     </div>
   )
 }
@@ -405,9 +442,11 @@ function ActivityEntry({ entry }) {
     error:             'text-rose-400',
     info:              'text-slate-400',
     entity_review:     'text-amber-400',
+    json_fix:          'text-amber-400',
     entities_accepted: 'text-slate-300',
     entity_edited:     'text-amber-300',
     entity_deleted:    'text-rose-300',
+    entity_cleaned:    'text-slate-400',
   }
 
   return (
@@ -419,7 +458,7 @@ function ActivityEntry({ entry }) {
           {i > 0 && ', '}
           {' '}
           <Link
-            to={`/entities?search=${encodeURIComponent(e.name)}`}
+            to={e.link || `/entities?search=${encodeURIComponent(e.name)}`}
             className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
           >
             {e.label}
@@ -443,6 +482,7 @@ function StatusBadge({ status }) {
     idle:             { label: 'Idle',           cls: 'badge-slate'   },
     running:          { label: 'Translating…',   cls: 'badge-indigo'  },
     awaiting_review:  { label: 'Review needed',  cls: 'badge-amber'   },
+    awaiting_json_fix:{ label: 'JSON Fix',       cls: 'badge-amber'   },
     complete:         { label: 'Complete',        cls: 'badge-emerald' },
     error:            { label: 'Error',           cls: 'badge-rose'    },
   }

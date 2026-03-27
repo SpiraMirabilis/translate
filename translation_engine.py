@@ -492,7 +492,7 @@ class TranslationEngine:
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None):
+    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None):
         """
         Translate a chapter of text using the configured LLM.
 
@@ -703,11 +703,36 @@ class TranslationEngine:
                     try:
                         parsed_chunk = provider.validate_json_response(response_text)
                     except json.JSONDecodeError as e:
-                        print("Failed to parse JSON. Writing response to json_fail_debug.txt")
-                        with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
-                            f.write(str(response_text))
-                        print(f"Error: {e}")
-                        raise
+                        if json_fix_callback:
+                            fix_action = None
+                            while True:
+                                fix_result = json_fix_callback(
+                                    raw_response=response_text,
+                                    chunk_index=chunk_index,
+                                    total_chunks=len(split_text),
+                                    chunk_text=chunk_str,
+                                )
+                                fix_action = fix_result.get("action")
+                                if fix_action == "abort":
+                                    raise Exception("Translation aborted by user")
+                                elif fix_action == "retry":
+                                    break
+                                elif fix_action == "fix":
+                                    try:
+                                        parsed_chunk = json.loads(fix_result["json"])
+                                        break
+                                    except json.JSONDecodeError:
+                                        response_text = fix_result["json"]
+                                        continue
+                            if fix_action == "retry":
+                                continue  # re-enter attempt loop
+                            # "fix" falls through with parsed_chunk set
+                        else:
+                            print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+                            with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                                f.write(str(response_text))
+                            print(f"Error: {e}")
+                            raise
                     break  # parsed successfully — exit attempt loop
             else:
                 self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
@@ -741,11 +766,37 @@ class TranslationEngine:
                         parsed_chunk = provider.validate_json_response(response_content)
                         break
                     except json.JSONDecodeError as e:
-                        print("Failed to parse JSON. Writing response to json_fail_debug.txt")
-                        with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
-                            f.write(str(response_content))
-                        print(f"Error: {e}")
-                        raise
+                        if json_fix_callback:
+                            fix_action = None
+                            while True:
+                                fix_result = json_fix_callback(
+                                    raw_response=response_content,
+                                    chunk_index=chunk_index,
+                                    total_chunks=len(split_text),
+                                    chunk_text=chunk_str,
+                                )
+                                fix_action = fix_result.get("action")
+                                if fix_action == "abort":
+                                    raise Exception("Translation aborted by user")
+                                elif fix_action == "retry":
+                                    break
+                                elif fix_action == "fix":
+                                    try:
+                                        parsed_chunk = json.loads(fix_result["json"])
+                                        break
+                                    except json.JSONDecodeError:
+                                        response_content = fix_result["json"]
+                                        continue
+                            if fix_action == "retry":
+                                continue  # re-enter attempt loop
+                            # "fix" falls through with parsed_chunk set
+                            break
+                        else:
+                            print("Failed to parse JSON. Writing response to json_fail_debug.txt")
+                            with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                                f.write(str(response_content))
+                            print(f"Error: {e}")
+                            raise
                     except Exception as e:
                         self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
                         if attempt < MAX_RETRIES:

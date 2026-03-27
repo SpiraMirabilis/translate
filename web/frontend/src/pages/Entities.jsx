@@ -41,7 +41,16 @@ export default function Entities() {
   const [search, setSearch] = useState(() => searchParams.get('search') || '')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [editingEntity, setEditingEntity] = useState(null)
-  const [showAddForm, setShowAddForm] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(() => searchParams.get('add') === '1')
+  const [prefillEntity, setPrefillEntity] = useState(() => {
+    if (searchParams.get('add') !== '1') return null
+    const p = {}
+    if (searchParams.get('category')) p.category = searchParams.get('category')
+    if (searchParams.get('untranslated')) p.untranslated = searchParams.get('untranslated')
+    if (searchParams.get('translation')) p.translation = searchParams.get('translation')
+    if (searchParams.get('book_id')) p.book_id = parseInt(searchParams.get('book_id'))
+    return Object.keys(p).length ? p : null
+  })
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [duplicates, setDuplicates] = useState(null)
   const [error, setError] = useState(null)
@@ -301,11 +310,11 @@ export default function Entities() {
       {/* Modals */}
       {(showAddForm || editingEntity) && (
         <EntityFormModal
-          entity={editingEntity}
+          entity={editingEntity || prefillEntity}
           books={books}
           categories={activeCategories}
-          onClose={() => { setShowAddForm(false); setEditingEntity(null) }}
-          onSaved={() => { setShowAddForm(false); setEditingEntity(null); load() }}
+          onClose={() => { setShowAddForm(false); setEditingEntity(null); setPrefillEntity(null) }}
+          onSaved={() => { setShowAddForm(false); setEditingEntity(null); setPrefillEntity(null); load() }}
         />
       )}
 

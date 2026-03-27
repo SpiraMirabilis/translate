@@ -93,6 +93,10 @@ export default function Queue() {
       setJobStatus('awaiting_review')
       navigate('/')
     }
+    if (lastMessage.type === 'json_fix_needed') {
+      setJobStatus('awaiting_json_fix')
+      navigate('/')
+    }
   }, [lastMessage, load, autoProcess])
 
   const handleProcessNext = async () => {

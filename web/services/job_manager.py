@@ -41,6 +41,11 @@ class JobManager:
         self._review_result: Optional[dict] = None
         self.pending_review: Optional[dict] = None  # {entities, context} for late-joining clients
 
+        # JSON fix synchronisation (same pattern as entity review)
+        self._json_fix_event = threading.Event()
+        self._json_fix_result: Optional[dict] = None
+        self.pending_json_fix: Optional[dict] = None
+
         # Auto-process queue state
         self.auto_process = False
         self._stop_auto = threading.Event()
@@ -115,6 +120,28 @@ class JobManager:
         self._review_result = {}
         self.pending_review = None
         self._review_event.set()
+
+    # ------------------------------------------------------------------
+    # JSON fix pause/resume
+    # ------------------------------------------------------------------
+
+    def wait_for_json_fix(self) -> dict:
+        """
+        Block the translation thread until the user submits a JSON fix.
+        """
+        self.status = "awaiting_json_fix"
+        self._json_fix_event.clear()
+        self._json_fix_event.wait()
+        self.status = "running"
+        result = self._json_fix_result or {}
+        self._json_fix_result = None
+        return result
+
+    def submit_json_fix(self, result: dict):
+        """Called from the API endpoint when user submits a JSON fix action."""
+        self._json_fix_result = result
+        self.pending_json_fix = None
+        self._json_fix_event.set()
 
     # ------------------------------------------------------------------
     # Auto-process queue
