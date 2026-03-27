@@ -70,7 +70,10 @@ class ReviewSubmitRequest(BaseModel):
 
 class JsonFixRequest(BaseModel):
     action: str  # "retry" | "fix" | "abort"
-    json: Optional[str] = None  # Only for "fix" action
+    fixed_json: Optional[str] = None  # Only for "fix" action
+
+    class Config:
+        fields = {'fixed_json': {'alias': 'json'}}
 
 
 # ------------------------------------------------------------------
@@ -197,7 +200,7 @@ async def submit_json_fix(req: JsonFixRequest):
         message=action_labels.get(req.action, f'JSON fix action: {req.action}'),
     )
 
-    _job_manager.submit_json_fix({"action": req.action, "json": req.json})
+    _job_manager.submit_json_fix({"action": req.action, "json": req.fixed_json})
     return {"status": "ok"}
 
 
