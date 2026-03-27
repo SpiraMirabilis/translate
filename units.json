@@ -1,0 +1,13 @@
+{
+  "zhang":       { "value": 3.33,   "unit": "m",    "type": "length", "action": "annotate" },
+  "li":          { "value": 500.0,  "unit": "m",    "type": "length", "action": "annotate" },
+  "chi":         { "value": 0.333,  "unit": "m",    "type": "length", "action": "annotate" },
+  "cun":         { "value": 0.0333, "unit": "m",    "type": "length", "action": "annotate" },
+  "jin":         { "value": 0.5,    "unit": "kg",   "type": "mass",   "action": "annotate" },
+  "liang":       { "value": 0.05,   "unit": "kg",   "type": "mass",   "action": "annotate" },
+  "mu":          { "value": 0.0667, "unit": "ha",   "type": "area",   "action": "annotate" },
+  "qing":        { "value": 6.667,  "unit": "ha",   "type": "area",   "action": "annotate" },
+  "double-hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace"  },
+  "double hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace"  },
+  "shichen":     { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace"  }
+}

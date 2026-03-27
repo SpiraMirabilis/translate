@@ -163,6 +163,10 @@ class UserInterface(ABC):
                             _source_lang = _book_info.get('source_language', 'zh') or 'zh'
                     end_object['content'] = self._fix_partial_translations(end_object['content'], source_language=_source_lang)
 
+                # Convert Chinese measurement units to metric equivalents
+                if not getattr(self, 'no_convert_units', False):
+                    end_object['content'] = self._convert_chinese_units(end_object['content'])
+
                 # Apply entity edits to the translation
                 if edited_entities:
                     # Process edited entities
@@ -690,6 +694,11 @@ class UserInterface(ABC):
         'ja': 'Japanese',
         'ko': 'Korean',
     }
+
+    def _convert_chinese_units(self, content: List[str]) -> List[str]:
+        """Append metric equivalents to Chinese measurement units in translated text."""
+        from unit_converter import convert_units
+        return convert_units(content)
 
     def _fix_partial_translations(self, content: List[str], source_language: str = 'zh') -> List[str]:
         """

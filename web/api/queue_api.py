@@ -290,6 +290,7 @@ class ProcessNextRequest(BaseModel):
     no_review: bool = False
     no_clean: bool = False
     no_repair: bool = False
+    no_convert_units: bool = False
     auto_process: bool = False
     max_chapters: Optional[int] = None  # Stop after N chapters (None = unlimited)
 
@@ -311,6 +312,7 @@ def _setup_job(queue_item, settings):
     _web_interface.no_review = settings["no_review"]
     _web_interface.no_clean = settings["no_clean"]
     _web_interface.no_repair = settings["no_repair"]
+    _web_interface.no_convert_units = settings["no_convert_units"]
     _web_interface._current_queue_item = queue_item
 
 
@@ -350,6 +352,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         "no_review": req.no_review,
         "no_clean": req.no_clean,
         "no_repair": req.no_repair,
+        "no_convert_units": req.no_convert_units,
     }
 
     _job_manager.is_running = True

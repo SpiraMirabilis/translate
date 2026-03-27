@@ -201,7 +201,9 @@ class CommandLineInterface(UserInterface):
                     help="Disable streaming API and progress tracking (slightly faster for very short texts)")
         parser.add_argument("--no-clean", action="store_true",
                     help="Disable automatic cleaning of generic nouns from new entities during post-translation review")
-        
+        parser.add_argument("--no-convert-units", action="store_true",
+                    help="Skip automatic Chinese unit to metric conversion (zhang, li, jin, etc.)")
+
         args = parser.parse_args()
    
         if args.no_review:
@@ -218,6 +220,11 @@ class CommandLineInterface(UserInterface):
             self.no_clean = True
         else:
             self.no_clean = False
+
+        if args.no_convert_units:
+            self.no_convert_units = True
+        else:
+            self.no_convert_units = False
 
         # Store cleaning model spec (will be used by entity cleaning)
         self.cleaning_model = args.cleaning_model

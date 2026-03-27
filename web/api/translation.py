@@ -59,6 +59,7 @@ class TranslateRequest(BaseModel):
     no_review: bool = False
     no_clean: bool = False
     no_repair: bool = False
+    no_convert_units: bool = False
 
 
 class ReviewSubmitRequest(BaseModel):
@@ -99,6 +100,7 @@ async def start_translation(req: TranslateRequest):
     _web_interface.no_review = req.no_review
     _web_interface.no_clean = req.no_clean
     _web_interface.no_repair = req.no_repair
+    _web_interface.no_convert_units = req.no_convert_units
 
     # Resolve book name for the activity log
     book_name = None
