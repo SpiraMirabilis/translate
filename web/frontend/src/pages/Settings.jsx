@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../services/api'
-import { Check, Eye, EyeOff, Loader2, RefreshCw, Download, X } from 'lucide-react'
+import { Check, Eye, EyeOff, Loader2, RefreshCw, Download, X, FileJson } from 'lucide-react'
+import CodeEditor from '@uiw/react-textarea-code-editor'
 
 export default function Settings() {
   const [providers, setProviders] = useState([])
@@ -113,6 +114,9 @@ export default function Settings() {
       {/* WordPress */}
       <WordPressSection />
 
+      {/* Unit Conversions */}
+      <UnitsSection />
+
       {/* Database */}
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">Database</h2>
@@ -124,6 +128,131 @@ export default function Settings() {
         </div>
       </section>
     </div>
+  )
+}
+
+function UnitsSection() {
+  const [open, setOpen] = useState(false)
+  const [content, setContent] = useState('')
+  const [original, setOriginal] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState(null)
+  const [validationError, setValidationError] = useState('')
+
+  const load = async () => {
+    setLoading(true); setError(null)
+    try {
+      const res = await api.getUnits()
+      // Pretty-print for editing
+      const pretty = JSON.stringify(JSON.parse(res.content), null, 2)
+      setContent(pretty)
+      setOriginal(pretty)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleOpen = () => {
+    setOpen(true)
+    load()
+  }
+
+  // Validate on every edit
+  useEffect(() => {
+    if (!open) return
+    try {
+      JSON.parse(content)
+      setValidationError('')
+    } catch (e) {
+      setValidationError(e.message)
+    }
+  }, [content, open])
+
+  const handleSave = async () => {
+    setSaving(true); setError(null)
+    try {
+      await api.updateUnits({ content })
+      setOriginal(content)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const dirty = content !== original
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold text-slate-300 mb-3">Unit Conversions</h2>
+      <div className="card p-4">
+        {!open ? (
+          <>
+            <p className="text-sm text-slate-400 mb-3">
+              Configure how Chinese measurement units are converted in translated text.
+            </p>
+            <button className="btn-secondary flex items-center gap-1.5" onClick={handleOpen}>
+              <FileJson size={13} /> Edit units.json
+            </button>
+          </>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Each entry maps a unit name to its metric value, unit type, and action (<code className="text-slate-400">annotate</code> adds a parenthetical, <code className="text-slate-400">replace</code> substitutes it).
+            </p>
+            {loading ? (
+              <div className="flex items-center gap-2 text-slate-400 text-sm py-4">
+                <Loader2 size={14} className="animate-spin" /> Loading...
+              </div>
+            ) : (
+              <>
+                <div className="rounded-lg overflow-hidden border border-slate-700">
+                  <CodeEditor
+                    value={content}
+                    language="json"
+                    onChange={(e) => setContent(e.target.value)}
+                    padding={16}
+                    style={{
+                      fontSize: 13,
+                      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                      backgroundColor: '#0f172a',
+                      minHeight: 200,
+                      maxHeight: 450,
+                      overflow: 'auto',
+                    }}
+                    data-color-mode="dark"
+                  />
+                </div>
+                {validationError && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <X size={14} className="text-rose-400" />
+                    <span className="text-rose-400">{validationError}</span>
+                  </div>
+                )}
+                {error && <p className="text-rose-400 text-xs">{error}</p>}
+                <div className="flex items-center gap-2">
+                  <button
+                    className="btn-primary flex items-center gap-1.5"
+                    onClick={handleSave}
+                    disabled={saving || !dirty || !!validationError}
+                  >
+                    {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                    {saved ? 'Saved!' : 'Save'}
+                  </button>
+                  <button className="btn-secondary" onClick={() => setOpen(false)}>Close</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
 

@@ -60,8 +60,8 @@ export default function Dashboard() {
     }).catch(() => {})
   }, [])
 
-  // Poll job status as fallback for missed WebSocket messages (React 18 batching
-  // can drop messages when multiple arrive in the same frame).
+  // Poll job status + activity log as fallback for missed WebSocket messages
+  // (React 18 batching can drop messages when multiple arrive in the same frame).
   useEffect(() => {
     if (jobStatus !== 'running') return
     const interval = setInterval(() => {
@@ -75,7 +75,9 @@ export default function Dashboard() {
           setJsonFix(d.pending_json_fix)
         }
       }).catch(() => {})
-    }, 3000)
+      // Sync activity log to pick up entries missed by WS batching
+      api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
+    }, 5000)
     return () => clearInterval(interval)
   }, [jobStatus])
 
@@ -109,12 +111,15 @@ export default function Dashboard() {
       setChunkProgress(null)
       setEntityReview(null)
       setJsonFix(null)
+      // Re-fetch full log to catch any entries dropped by React 18 batching
+      api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
     }
 
     if (type === 'error') {
       setJobStatus('error')
       setEntityReview(null)
       setJsonFix(null)
+      api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
     }
 
     // Append activity log entries from the backend

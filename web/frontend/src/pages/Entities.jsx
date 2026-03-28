@@ -39,7 +39,7 @@ export default function Entities() {
   const [filterBook, setFilterBook] = useState(() => localStorage.getItem('entities_filterBook') || '')
   const [filterCat, setFilterCat] = useState(() => localStorage.getItem('entities_filterCat') || '')
   const [search, setSearch] = useState(() => searchParams.get('search') || '')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get('search') || '')
   const [editingEntity, setEditingEntity] = useState(null)
   const [showAddForm, setShowAddForm] = useState(() => searchParams.get('add') === '1')
   const [prefillEntity, setPrefillEntity] = useState(() => {
@@ -617,7 +617,7 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
         gender: form.gender || null,
         note: form.note || null,
       }
-      if (entity) {
+      if (entity?.id) {
         await api.updateEntity(entity.id, body)
         // If translation changed and entity belongs to a book, offer propagation
         const translationChanged = entity.translation && form.translation !== entity.translation
@@ -673,7 +673,7 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-200">{entity ? 'Edit Entity' : 'Add Entity'}</h2>
+          <h2 className="font-semibold text-slate-200">{entity?.id ? 'Edit Entity' : 'Add Entity'}</h2>
           <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
         </div>
 
@@ -687,8 +687,8 @@ function EntityFormModal({ entity, books, categories: parentCategories = DEFAULT
           <div>
             <label className="label">Untranslated (Chinese)</label>
             <div className="flex gap-2">
-              <input className="input font-mono flex-1" value={form.untranslated} onChange={e => setForm(f => ({...f, untranslated: e.target.value}))} disabled={!!entity} />
-              {entity && (
+              <input className="input font-mono flex-1" value={form.untranslated} onChange={e => setForm(f => ({...f, untranslated: e.target.value}))} disabled={!!entity?.id} />
+              {entity?.id && (
                 <button
                   className="btn-ghost p-2 shrink-0"
                   title="Copy entity + context to clipboard"

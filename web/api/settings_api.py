@@ -151,6 +151,40 @@ async def export_db():
 
 _entity_manager = None
 
+# ------------------------------------------------------------------
+# Units config
+# ------------------------------------------------------------------
+
+_UNITS_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "units.json")
+)
+
+
+@router.get("/units")
+async def get_units():
+    import json
+    if not os.path.exists(_UNITS_PATH):
+        return {"content": "{}"}
+    with open(_UNITS_PATH, "r", encoding="utf-8") as f:
+        return {"content": f.read()}
+
+
+class UnitsUpdate(BaseModel):
+    content: str
+
+
+@router.put("/units")
+async def update_units(req: UnitsUpdate):
+    import json
+    # Validate JSON before saving
+    try:
+        json.loads(req.content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+    with open(_UNITS_PATH, "w", encoding="utf-8") as f:
+        f.write(req.content)
+    return {"status": "ok"}
+
 
 def init_db(entity_manager):
     global _entity_manager

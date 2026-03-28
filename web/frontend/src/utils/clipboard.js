@@ -6,7 +6,8 @@
  */
 export function copyToClipboard(text) {
   // Use textarea fallback for iOS where clipboard API mangles Unicode
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   if (isIOS || !navigator.clipboard?.writeText) {
     const ta = document.createElement('textarea')
     ta.value = text

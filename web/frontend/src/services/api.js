@@ -119,6 +119,8 @@ export const api = {
   setApiKey:        (name, body) => post(`/api/settings/providers/${name}/key`, body),
   testProvider:     (name)       => post(`/api/settings/providers/${name}/test`, {}),
   exportDb:         ()           => get('/api/settings/db/export-json'),
+  getUnits:         ()           => get('/api/settings/units'),
+  updateUnits:      (body)       => put('/api/settings/units', body),
 
   // Activity log
   getActivityLog:    ()  => get('/api/activity-log'),
