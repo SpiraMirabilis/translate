@@ -6,6 +6,7 @@ Protected by:
   - Per-IP rate limiting
 """
 import os
+import re
 import time
 import threading
 from collections import defaultdict
@@ -126,6 +127,8 @@ async def list_books(request: Request, response: Response):
             "description": b.get("description"),
             "cover_image": b.get("cover_image"),
             "chapter_count": b.get("chapter_count", 0),
+            "total_source_chapters": b.get("total_source_chapters"),
+            "status": b.get("status", "ongoing"),
         }
         for b in books if b.get("is_public", True)
     ]}
@@ -151,6 +154,8 @@ async def get_book(book_id: int, request: Request, response: Response):
         "description": book.get("description"),
         "cover_image": book.get("cover_image"),
         "source_language": book.get("source_language"),
+        "total_source_chapters": book.get("total_source_chapters"),
+        "status": book.get("status", "ongoing"),
     }
 
 
@@ -183,7 +188,14 @@ async def get_chapter(book_id: int, chapter_number: int, request: Request, respo
         "content": ch.get("content", []),
     }
     if ch.get("untranslated"):
-        result["untranslated"] = ch["untranslated"]
+        lines = ch["untranslated"]
+        # Strip the first line if it's a chapter heading (第X章)
+        if lines and re.match(r'第.+章', lines[0]):
+            lines = lines[1:]
+        # Strip all lines beginning with #
+        lines = [l for l in lines if not l.startswith('#')]
+        if lines:
+            result["untranslated"] = lines
     return result
 
 

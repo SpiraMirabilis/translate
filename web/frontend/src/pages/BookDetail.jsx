@@ -189,9 +189,22 @@ export default function BookDetail() {
                 {book.author}
               </p>
             )}
-            <p className={`mt-1 text-sm ${t.meta}`}>
-              {chapters.length} chapter{chapters.length !== 1 ? 's' : ''}
-              {book.source_language && ` \u00b7 Source: ${book.source_language}`}
+            <p className={`mt-1 text-sm ${t.meta} flex items-center gap-1.5 flex-wrap justify-center sm:justify-start`}>
+              <span>
+                {chapters.length} chapter{chapters.length !== 1 ? 's' : ''}
+                {book.total_source_chapters > 0 && (
+                  <> / {book.total_source_chapters} ({Math.round((chapters.length / book.total_source_chapters) * 100)}%)</>
+                )}
+              </span>
+              {book.source_language && <span>&middot; Source: {book.source_language}</span>}
+              {book.status && book.status !== 'ongoing' && (
+                <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
+                  book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
+                  book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
+                  book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
+                  'bg-slate-500/20 text-slate-400'
+                }`}>{book.status}</span>
+              )}
             </p>
 
             {/* Action buttons */}

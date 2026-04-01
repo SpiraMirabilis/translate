@@ -217,7 +217,8 @@ class TranslationEngine:
         # Ensure all entity categories exist (entities dict already has the right keys)
         end_entities = {}
         for category in entities:
-            end_entities[category] = self.entity_manager.entities_inside_text(pretext, entities[category], "THIS CHAPTER", do_count)
+            chapter_label = str(chapter_number) if chapter_number and isinstance(chapter_number, int) and chapter_number > 0 else "THIS CHAPTER"
+            end_entities[category] = self.entity_manager.entities_inside_text(pretext, entities[category], chapter_label, do_count)
 
         entities_json = json.dumps(end_entities, ensure_ascii=False, indent=4)
 
@@ -553,7 +554,10 @@ class TranslationEngine:
 
         total_char_count = sum(len(line) for line in chapter_text)
 
-        # Use entities from SQLite database
+        # Load entities scoped to this book so categories from other books
+        # don't leak into the system prompt's {{ENTITY_CATEGORIES}}.
+        if book_id:
+            self.entity_manager._load_entities(book_id=book_id)
         old_entities = self.entity_manager.entities.copy()
         # Ensure all categories for this book exist in the dict
         if book_id:

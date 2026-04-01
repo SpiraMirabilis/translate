@@ -146,8 +146,21 @@ export default function Library() {
                       {book.author}
                     </p>
                   )}
-                  <p className={`mt-0.5 text-xs ${t.chapters}`}>
-                    {book.chapter_count} chapter{book.chapter_count !== 1 ? 's' : ''}
+                  <p className={`mt-0.5 text-xs ${t.chapters} flex items-center gap-1 flex-wrap`}>
+                    <span>
+                      {book.chapter_count} chapter{book.chapter_count !== 1 ? 's' : ''}
+                      {book.total_source_chapters > 0 && (
+                        <> / {book.total_source_chapters} ({Math.round((book.chapter_count / book.total_source_chapters) * 100)}%)</>
+                      )}
+                    </span>
+                    {book.status && book.status !== 'ongoing' && (
+                      <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
+                        book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
+                        book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
+                        book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
+                        'bg-slate-500/20 text-slate-400'
+                      }`}>{book.status}</span>
+                    )}
                   </p>
                 </div>
               </Link>
