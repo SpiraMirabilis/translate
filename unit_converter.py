@@ -19,7 +19,8 @@ def _load_units() -> dict:
     with open(json_path, "r") as f:
         raw = json.load(f)
     return {
-        name: (entry["value"], entry["unit"], entry["type"], entry.get("action", "annotate"))
+        name: (entry["value"], entry["unit"], entry["type"],
+               entry.get("action", "annotate"), entry.get("numeral", "arabic"))
         for name, entry in raw.items()
     }
 
@@ -74,6 +75,63 @@ def _format_number(value: float) -> str:
         formatted = formatted.rstrip('0').rstrip('.')
 
     return formatted
+
+
+# ── Number-to-words (for "english" numeral mode) ─────────────────
+
+_WORD_ONES = [
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+]
+_WORD_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+
+def _int_to_words(n: int) -> str:
+    """Convert a non-negative integer to English words (e.g. 24 -> 'twenty-four')."""
+    if n == 0:
+        return "zero"
+    if n < 0:
+        return "negative " + _int_to_words(-n)
+
+    parts = []
+    if n >= 1_000_000:
+        parts.append(_int_to_words(n // 1_000_000) + " million")
+        n %= 1_000_000
+    if n >= 1000:
+        parts.append(_int_to_words(n // 1000) + " thousand")
+        n %= 1000
+    if n >= 100:
+        parts.append(_WORD_ONES[n // 100] + " hundred")
+        n %= 100
+    if n >= 20:
+        tens_word = _WORD_TENS[n // 10]
+        ones_word = _WORD_ONES[n % 10]
+        parts.append(f"{tens_word}-{ones_word}" if ones_word else tens_word)
+    elif n > 0:
+        parts.append(_WORD_ONES[n])
+
+    return " ".join(parts)
+
+
+def _number_to_words(value: float) -> str:
+    """Convert a numeric value to English words.
+
+    Handles integers (24 -> 'twenty-four') and simple halves (1.5 -> 'one and a half').
+    Falls back to formatted arabic numeral for complex decimals.
+    """
+    if value == int(value):
+        return _int_to_words(int(value))
+
+    # Handle .5 (halves) — common in time conversions
+    if value % 1 == 0.5:
+        whole = int(value)
+        if whole == 0:
+            return "half"
+        return _int_to_words(whole) + " and a half"
+
+    # For other decimals, fall back to arabic — words like "three point three three" are awkward
+    return _format_number(value)
 
 
 # ── Word-to-number parser ──────────────────────────────────────────
@@ -255,12 +313,19 @@ def _convert_match(match: re.Match) -> str:
     if unit_info is None:
         return full
 
-    base_value, base_unit, _, action = unit_info
+    base_value, base_unit, _, action, numeral = unit_info
     raw = number * base_value
     scaled, final_unit = _scale(raw, base_unit)
-    formatted = _format_number(scaled)
+
+    if numeral == "english":
+        formatted = _number_to_words(scaled)
+    else:
+        formatted = _format_number(scaled)
 
     if action == "replace":
+        # Special case: "an hour" reads better than "one hour"
+        if numeral == "english" and scaled == 1.0 and final_unit == "hour":
+            return "an hour"
         # Pluralize the unit if value != 1
         unit_label = final_unit
         if scaled != 1.0 and not unit_label.endswith("s"):

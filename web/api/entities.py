@@ -91,7 +91,7 @@ async def list_entities(
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
@@ -146,7 +146,7 @@ async def create_entity(req: EntityCreate):
 
 @router.put("/{entity_id}")
 async def update_entity(entity_id: int, req: EntityUpdate):
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
 
     # Check exists and get book_id for category validation
@@ -201,7 +201,7 @@ async def decase_entity(req: DecaseRequest):
 
     lowered = word[0].lower() + word[1:]
 
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, translated_content FROM chapters WHERE book_id = ?",
@@ -255,7 +255,7 @@ async def decase_entity(req: DecaseRequest):
 
 @router.delete("/{entity_id}")
 async def delete_entity(entity_id: int):
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM entities WHERE id = ?", (entity_id,))
     if not cursor.fetchone():
@@ -276,7 +276,7 @@ async def batch_operation(req: BatchRequest):
     if not req.ids:
         raise HTTPException(status_code=400, detail="No entity IDs provided.")
 
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
 
     # Verify all IDs exist
@@ -329,7 +329,7 @@ async def get_entity_context(entity_id: int, radius: int = Query(100)):
     """Get surrounding context for an entity from its origin chapter."""
     import json
 
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
@@ -377,7 +377,7 @@ async def get_entity_context(entity_id: int, radius: int = Query(100)):
 
 @router.get("/duplicates")
 async def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[str] = Query(None)):
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
@@ -444,7 +444,7 @@ async def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[s
 
 @router.post("/resolve-duplicate")
 async def resolve_duplicate(req: DuplicateResolveRequest):
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
 
     if req.action == "keep_one":
@@ -518,7 +518,7 @@ async def propagate_change(req: PropagateRequest):
     import json, re
     from itertools import zip_longest
 
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 

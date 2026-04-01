@@ -250,7 +250,17 @@ class TranslationEngine:
                 raise
 
         # Insert the entity categories list into the template
-        prompt = prompt.replace("{{ENTITY_CATEGORIES}}", ", ".join(entities.keys()))
+        categories_str = ", ".join(entities.keys())
+        self.logger.debug(f"ENTITY_CATEGORIES replacement: keys={list(entities.keys())}, placeholder_present={'{{ENTITY_CATEGORIES}}' in prompt}")
+        if "{{ENTITY_CATEGORIES}}" in prompt:
+            prompt = prompt.replace("{{ENTITY_CATEGORIES}}", categories_str)
+        else:
+            # Fallback: template may already have literal default categories baked in
+            default_categories_str = ", ".join(DEFAULT_CATEGORIES)
+            prompt = prompt.replace(
+                f"Entity categories: {default_categories_str}.",
+                f"Entity categories: {categories_str}.",
+            )
 
         # Insert the entities JSON into the template (both default and custom)
         prompt = prompt.replace("{{ENTITIES_JSON}}", entities_json)
@@ -397,7 +407,7 @@ class TranslationEngine:
         existing_duplicates = []
         try:
             # We'll look for similar translations to warn the user
-            conn = sqlite3.connect(self.entity_manager.db_path)
+            conn = self.entity_manager.get_connection()
             cursor = conn.cursor()
             
             # Get current translations that might be similar (same starting character)
@@ -554,6 +564,8 @@ class TranslationEngine:
                 old_entities.setdefault(cat, {})
 
         real_old_entities = old_entities
+        self.logger.debug(f"translate_chapter: old_entities keys={list(old_entities.keys())}, book_id={book_id}")
+        self.logger.debug(f"translate_chapter: entity_manager.entities keys={list(self.entity_manager.entities.keys())}")
 
         # Calculate chunks count, ensuring at least 1 chunk
         max_chars = self.config.get_max_chars(self.config.translation_model)
@@ -696,6 +708,16 @@ class TranslationEngine:
 
                     if repetition_detected and attempt < MAX_STREAM_RETRIES:
                         continue  # retry the chunk
+
+                    # Empty response — treat as a transient failure and retry
+                    if not response_text.strip():
+                        self.logger.warning(f"Empty response on chunk {chunk_index} (attempt {attempt + 1})")
+                        if attempt < MAX_STREAM_RETRIES:
+                            print(f"\n⚠️  Empty response on chunk {chunk_index}. Retrying...")
+                            continue
+                        # Last attempt — fall through to JSON parse which will
+                        # trigger the fix callback with a clear message
+                        response_text = "(empty response from model)"
 
                     print("\rTranslation complete. Parsing response...                 ")
 

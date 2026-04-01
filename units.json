@@ -7,7 +7,7 @@
   "liang":       { "value": 0.05,   "unit": "kg",   "type": "mass",   "action": "annotate" },
   "mu":          { "value": 0.0667, "unit": "ha",   "type": "area",   "action": "annotate" },
   "qing":        { "value": 6.667,  "unit": "ha",   "type": "area",   "action": "annotate" },
-  "double-hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace"  },
-  "double hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace"  },
-  "shichen":     { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace"  }
+  "double-hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
+  "double hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
+  "shichen":     { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" }
 }

@@ -170,5 +170,8 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# EPUB cache
+epub_cache/
+
 # Node
 node_modules/

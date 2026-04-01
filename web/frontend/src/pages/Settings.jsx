@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { api } from '../services/api'
 import { Check, Eye, EyeOff, Loader2, RefreshCw, Download, X, FileJson } from 'lucide-react'
-import CodeEditor from '@uiw/react-textarea-code-editor'
+const CodeEditor = lazy(() => import('@uiw/react-textarea-code-editor'))
 
 export default function Settings() {
   const [providers, setProviders] = useState([])
@@ -100,6 +100,15 @@ export default function Settings() {
                 onChange={e => setSettings(s => ({ ...s, debug_mode: e.target.checked }))}
               />
               Debug mode
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.public_library !== false}
+                onChange={e => setSettings(s => ({ ...s, public_library: e.target.checked }))}
+              />
+              Public library
+              <span className="text-xs text-slate-500 font-normal">— allow unauthenticated access to the reader and library pages</span>
             </label>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
@@ -204,7 +213,7 @@ function UnitsSection() {
         ) : (
           <div className="space-y-3">
             <p className="text-xs text-slate-500">
-              Each entry maps a unit name to its metric value, unit type, and action (<code className="text-slate-400">annotate</code> adds a parenthetical, <code className="text-slate-400">replace</code> substitutes it).
+              Each entry maps a unit name to its metric value, unit type, and action (<code className="text-slate-400">annotate</code> adds a parenthetical, <code className="text-slate-400">replace</code> substitutes it). Optional <code className="text-slate-400">numeral</code>: <code className="text-slate-400">arabic</code> (default) or <code className="text-slate-400">english</code> for word numerals.
             </p>
             {loading ? (
               <div className="flex items-center gap-2 text-slate-400 text-sm py-4">
@@ -213,21 +222,23 @@ function UnitsSection() {
             ) : (
               <>
                 <div className="rounded-lg overflow-hidden border border-slate-700">
-                  <CodeEditor
-                    value={content}
-                    language="json"
-                    onChange={(e) => setContent(e.target.value)}
-                    padding={16}
-                    style={{
-                      fontSize: 13,
-                      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                      backgroundColor: '#0f172a',
-                      minHeight: 200,
-                      maxHeight: 450,
-                      overflow: 'auto',
-                    }}
-                    data-color-mode="dark"
-                  />
+                  <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor…</div>}>
+                    <CodeEditor
+                      value={content}
+                      language="json"
+                      onChange={(e) => setContent(e.target.value)}
+                      padding={16}
+                      style={{
+                        fontSize: 13,
+                        fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                        backgroundColor: '#0f172a',
+                        minHeight: 200,
+                        maxHeight: 450,
+                        overflow: 'auto',
+                      }}
+                      data-color-mode="dark"
+                    />
+                  </Suspense>
                 </div>
                 {validationError && (
                   <div className="flex items-center gap-2 text-xs">

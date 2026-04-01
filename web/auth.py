@@ -24,12 +24,18 @@ SESSION_PAYLOAD = "t9_authenticated"
 _password: str | None = None
 _serializer: URLSafeTimedSerializer | None = None
 _secure_cookie: bool | None = None  # None = auto-detect from request
+_public_library: bool = True  # Whether /api/public/* is accessible without auth
+
+
+def is_public_library() -> bool:
+    return _public_library
 
 
 def configure_auth():
     """Read T9_PASSWORD from environment and set up the signer."""
-    global _password, _serializer, _secure_cookie
+    global _password, _serializer, _secure_cookie, _public_library
     _password = os.getenv("T9_PASSWORD")
+    _public_library = os.getenv("T9_PUBLIC_LIBRARY", "1").lower() not in ("0", "false", "no")
     env_val = os.getenv("T9_SECURE_COOKIE", "").lower()
     if env_val in ("1", "true", "yes"):
         _secure_cookie = True
@@ -73,7 +79,7 @@ def validate_cookie(cookie_value: str) -> bool:
 # ── Middleware ───────────────────────────────────────────────────────
 
 # Paths that never require auth
-_PUBLIC_PREFIXES = ("/api/auth/", "/api/health")
+_ALWAYS_PUBLIC_PREFIXES = ("/api/auth/", "/api/health")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -84,8 +90,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        # Allow auth endpoints through
-        if any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        # Always-public endpoints (auth, health)
+        if any(path.startswith(p) for p in _ALWAYS_PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # Public library API — only bypass auth when the setting is on
+        if path.startswith("/api/public/") and _public_library:
             return await call_next(request)
 
         # Allow non-API, non-WS routes (static frontend files)
@@ -145,8 +155,8 @@ async def logout(request: Request, response: Response):
 @router.get("/api/auth/status")
 async def auth_status(request: Request):
     if not auth_required():
-        return {"authenticated": True, "auth_required": False}
+        return {"authenticated": True, "auth_required": False, "public_library": _public_library}
 
     cookie = request.cookies.get(COOKIE_NAME)
     authenticated = bool(cookie and validate_cookie(cookie))
-    return {"authenticated": authenticated, "auth_required": True}
+    return {"authenticated": authenticated, "auth_required": True, "public_library": _public_library}

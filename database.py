@@ -6,6 +6,7 @@ import datetime
 from typing import Dict, List, Optional, Any, Union, Tuple
 from itertools import zip_longest
 import re
+from db_backend import create_backend
 
 DEFAULT_CATEGORIES = [
     'characters', 'places', 'organizations', 'abilities',
@@ -18,174 +19,81 @@ class DatabaseManager:
     def __init__(self, config: 'TranslationConfig', logger: 'Logger'):
         self.config = config
         self.logger = logger
-        self.db_path = os.path.join(self.config.script_dir, "database.db")
+        self.backend = create_backend(config)
+        self.db_path = self.backend.db_path  # backward compat for external callers
         self.entities = {}  # Cached entities
         self._initialize_database()
         self._load_entities()
         self._check_legacy_queue()
+
+    def get_connection(self):
+        """Return a new database connection via the configured backend."""
+        return self.backend.get_connection()
     
     def _initialize_database(self):
-        """Initialize the SQLite database with proper schema if it doesn't exist"""
+        """Initialize the database with proper schema if it doesn't exist"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
-            
-            # Create main entities table with a unique constraint on book_id+untranslated
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS entities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL,
-                untranslated TEXT NOT NULL,
-                translation TEXT NOT NULL,
-                last_chapter TEXT,
-                incorrect_translation TEXT,
-                gender TEXT,
-                book_id INTEGER,
-                UNIQUE(book_id, untranslated)
-            )
-            ''')
-        
-            
-            # Create indices for faster lookups
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON entities(category)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_untranslated ON entities(untranslated)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_book_id ON entities(book_id)')
-            
-            # Create books table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS books (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                author TEXT,
-                language TEXT DEFAULT 'en',
-                description TEXT,
-                created_date TEXT,
-                modified_date TEXT,
-                prompt_template TEXT,
-                source_language TEXT DEFAULT 'zh',
-                target_language TEXT DEFAULT 'en',
-                UNIQUE(title)
-            )
-            ''')
-            
-            # Create chapters table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS chapters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                book_id INTEGER NOT NULL,
-                chapter_number INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                untranslated_content TEXT NOT NULL,
-                translated_content TEXT NOT NULL,
-                summary TEXT,
-                translation_date TEXT,
-                translation_model TEXT,
-                UNIQUE(book_id, chapter_number),
-                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
-            )
-            ''')
-            
-            # Create indices for chapters table
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_chapters_book_id ON chapters(book_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_chapter_number ON chapters(chapter_number)')
 
-            # Create queue table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                book_id INTEGER NOT NULL,
-                chapter_number INTEGER,
-                title TEXT NOT NULL,
-                source TEXT,
-                content TEXT NOT NULL,
-                metadata TEXT,
-                position INTEGER NOT NULL,
-                created_date TEXT NOT NULL,
-                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
-            )
-            ''')
-
-            # Create indices for queue table
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_queue_position ON queue(position)')
-            cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_position_unique ON queue(position)')
-
-            # Create token_ratios table (one row per book, book_id=0 for global)
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS token_ratios (
-                book_id INTEGER PRIMARY KEY,
-                total_input_chars INTEGER NOT NULL DEFAULT 0,
-                total_output_tokens INTEGER NOT NULL DEFAULT 0,
-                sample_count INTEGER NOT NULL DEFAULT 0
-            )
-            ''')
-
-            # Create activity log table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                type TEXT NOT NULL,
-                message TEXT NOT NULL,
-                book_id INTEGER,
-                chapter INTEGER,
-                book_name TEXT,
-                entities_json TEXT,
-                created_at TEXT NOT NULL
-            )
-            ''')
+            # Create all tables using backend-specific DDL
+            for ddl in self.backend.create_tables_ddl():
+                try:
+                    cursor.execute(ddl)
+                except Exception:
+                    # Index may already exist (MySQL raises on IF NOT EXISTS for some index forms)
+                    pass
 
             # Migrations: add columns if missing
-            cursor.execute("PRAGMA table_info(entities)")
-            entity_cols = {row[1] for row in cursor.fetchall()}
+            entity_cols = self.backend.get_table_columns(conn, 'entities')
             if 'origin_chapter' not in entity_cols:
                 cursor.execute("ALTER TABLE entities ADD COLUMN origin_chapter INTEGER")
                 self.logger.info("Added origin_chapter column to entities table")
             # Backfill: set origin_chapter = last_chapter for entities missing it
-            cursor.execute("UPDATE entities SET origin_chapter = last_chapter WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL")
+            # Only copy values that are actually numeric (SQLite allows text in INTEGER columns, MySQL doesn't)
+            if self.backend.name == 'mysql':
+                cursor.execute("UPDATE entities SET origin_chapter = CAST(last_chapter AS SIGNED) WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL AND last_chapter REGEXP '^[0-9]+$'")
+            else:
+                cursor.execute("UPDATE entities SET origin_chapter = last_chapter WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL")
             if cursor.rowcount > 0:
                 self.logger.info(f"Backfilled origin_chapter for {cursor.rowcount} entities")
             if 'note' not in entity_cols:
                 cursor.execute("ALTER TABLE entities ADD COLUMN note TEXT")
                 self.logger.info("Added note column to entities table")
 
-            cursor.execute("PRAGMA table_info(chapters)")
-            chapter_cols = {row[1] for row in cursor.fetchall()}
+            chapter_cols = self.backend.get_table_columns(conn, 'chapters')
             if 'is_proofread' not in chapter_cols:
                 cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread INTEGER DEFAULT 0")
                 self.logger.info("Added is_proofread column to chapters table")
 
-            cursor.execute("PRAGMA table_info(books)")
-            book_cols = {row[1] for row in cursor.fetchall()}
+            book_cols = self.backend.get_table_columns(conn, 'books')
             if 'cover_image' not in book_cols:
                 cursor.execute("ALTER TABLE books ADD COLUMN cover_image TEXT")
                 self.logger.info("Added cover_image column to books table")
             if 'categories' not in book_cols:
                 cursor.execute("ALTER TABLE books ADD COLUMN categories TEXT")
                 self.logger.info("Added categories column to books table")
+            if 'is_public' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN is_public INTEGER DEFAULT 1")
+                self.logger.info("Added is_public column to books table")
+            if 'total_source_chapters' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN total_source_chapters INTEGER")
+                self.logger.info("Added total_source_chapters column to books table")
+            if 'status' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN status TEXT DEFAULT 'ongoing'")
+                self.logger.info("Added status column to books table")
 
-            # Create covers directory
-            covers_dir = os.path.join(os.path.dirname(self.db_path), "covers")
+            # Create covers directory (only meaningful for local installs)
+            if self.backend.name == 'sqlite':
+                covers_dir = os.path.join(os.path.dirname(self.db_path), "covers")
+            else:
+                covers_dir = os.path.join(self.config.script_dir, "covers")
             os.makedirs(covers_dir, exist_ok=True)
-
-            # WordPress publish state tracking
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS wp_publish_state (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                book_id INTEGER NOT NULL,
-                chapter_number INTEGER,
-                wp_post_id INTEGER NOT NULL,
-                wp_post_type TEXT NOT NULL,
-                last_published TEXT,
-                content_hash TEXT,
-                UNIQUE(book_id, chapter_number),
-                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
-            )
-            ''')
 
             conn.commit()
             conn.close()
             self.logger.info("Database initialized successfully")
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Database initialization error: {e}")
             raise
 
@@ -206,7 +114,7 @@ class DatabaseManager:
             int: Book ID if successful, None otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Check if book already exists
@@ -234,7 +142,7 @@ class DatabaseManager:
             self.logger.info(f"Created new book: '{title}' with ID {book_id}")
             return book_id
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error creating book: {e}")
             return None
     
@@ -245,7 +153,7 @@ class DatabaseManager:
         Returns None if no custom template is set.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -259,7 +167,7 @@ class DatabaseManager:
             if result and result[0]:
                 return result[0]
             return None
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error retrieving book prompt template: {e}")
             return None
 
@@ -268,7 +176,7 @@ class DatabaseManager:
         Set the prompt template for a specific book.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -281,14 +189,14 @@ class DatabaseManager:
             conn.close()
             
             return True
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error setting book prompt template: {e}")
             return False
 
     def get_book_categories(self, book_id):
         """Get entity categories for a book. Returns DEFAULT_CATEGORIES if none set."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT categories FROM books WHERE id = ?", (book_id,))
             row = cursor.fetchone()
@@ -303,14 +211,14 @@ class DatabaseManager:
     def set_book_categories(self, book_id, categories):
         """Set entity categories for a book. Pass None to reset to defaults."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             value = json.dumps(categories) if categories is not None else None
             cursor.execute("UPDATE books SET categories = ? WHERE id = ?", (value, book_id))
             conn.commit()
             conn.close()
             return True
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error setting book categories: {e}")
             return False
 
@@ -330,20 +238,22 @@ class DatabaseManager:
             return None
             
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             if book_id:
                 cursor.execute('''
                 SELECT id, title, author, language, description, created_date, modified_date,
-                    source_language, target_language, cover_image, categories
+                    source_language, target_language, cover_image, categories, is_public,
+                    total_source_chapters, status
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
             else:
                 cursor.execute('''
                 SELECT id, title, author, language, description, created_date, modified_date,
-                    source_language, target_language, cover_image, categories
+                    source_language, target_language, cover_image, categories, is_public,
+                    total_source_chapters, status
                 FROM books
                 WHERE title = ?
                 ''', (title,))
@@ -367,11 +277,14 @@ class DatabaseManager:
                 "target_language": row[8],
                 "cover_image": row[9] if len(row) > 9 else None,
                 "categories": json.loads(raw_cats) if raw_cats else None,
+                "is_public": bool(row[11]) if len(row) > 11 else True,
+                "total_source_chapters": row[12] if len(row) > 12 else None,
+                "status": row[13] if len(row) > 13 else "ongoing",
             }
             
             return book_info
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error getting book information: {e}")
             return None
 
@@ -387,7 +300,7 @@ class DatabaseManager:
             bool: True if successful, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Check if book exists
@@ -406,9 +319,15 @@ class DatabaseManager:
             
             for key, value in kwargs.items():
                 if key in ['title', 'author', 'language', 'description', 'source_language',
-                        'target_language', 'modified_date', 'cover_image']:
+                        'target_language', 'modified_date', 'cover_image', 'is_public',
+                        'total_source_chapters', 'status']:
                     set_clause.append(f"{key} = ?")
-                    values.append(value)
+                    if key == 'is_public':
+                        values.append(int(value))
+                    elif key == 'total_source_chapters':
+                        values.append(int(value) if value is not None else None)
+                    else:
+                        values.append(value)
             
             if not set_clause:
                 self.logger.warning("No valid fields to update")
@@ -427,11 +346,16 @@ class DatabaseManager:
             
             conn.commit()
             conn.close()
-            
+
+            # Invalidate cached EPUB if metadata that affects it changed
+            epub_fields = {'title', 'author', 'language', 'description', 'cover_image'}
+            if epub_fields & set(kwargs):
+                self.invalidate_epub_cache(book_id)
+
             self.logger.info(f"Updated book with ID {book_id}")
             return True
-            
-        except sqlite3.Error as e:
+
+        except Exception as e:
             self.logger.error(f"Error updating book: {e}")
             return False
 
@@ -443,13 +367,13 @@ class DatabaseManager:
             list: List of book information dictionaries
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
             SELECT id, title, author, language, created_date, cover_image, categories,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count,
-                description
+                description, is_public, total_source_chapters, status
             FROM books
             ORDER BY title
             ''')
@@ -459,7 +383,7 @@ class DatabaseManager:
 
             result = []
             for row in rows:
-                book_id, title, author, language, created_date, cover_image, raw_cats, chapter_count, description = row
+                book_id, title, author, language, created_date, cover_image, raw_cats, chapter_count, description, is_public, total_source_chapters, status = row
                 result.append({
                     "id": book_id,
                     "title": title,
@@ -469,12 +393,15 @@ class DatabaseManager:
                     "cover_image": cover_image,
                     "categories": json.loads(raw_cats) if raw_cats else None,
                     "chapter_count": chapter_count,
-                    "description": description
+                    "description": description,
+                    "is_public": bool(is_public) if is_public is not None else True,
+                    "total_source_chapters": total_source_chapters,
+                    "status": status or "ongoing",
                 })
             
             return result
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error listing books: {e}")
             return []
 
@@ -489,7 +416,7 @@ class DatabaseManager:
             bool: True if successful, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Check if book exists
@@ -504,7 +431,7 @@ class DatabaseManager:
             book_title = book[0]
             
             # Enable foreign key constraints
-            cursor.execute("PRAGMA foreign_keys = ON")
+            self.backend.enable_foreign_keys(conn)
             
             # Delete book (will cascade to chapters)
             cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
@@ -514,11 +441,12 @@ class DatabaseManager:
             
             conn.commit()
             conn.close()
-            
+            self.invalidate_epub_cache(book_id)
+
             self.logger.info(f"Deleted book '{book_title}' (ID: {book_id}) and all its chapters")
             return True
-            
-        except sqlite3.Error as e:
+
+        except Exception as e:
             self.logger.error(f"Error deleting book: {e}")
             return False
         
@@ -527,8 +455,23 @@ class DatabaseManager:
     
     # End Book management section    
     
+    # EPUB cache management
+    def _epub_cache_dir(self):
+        """Return the path to the EPUB cache directory."""
+        return os.path.join(self.config.script_dir, "epub_cache")
+
+    def invalidate_epub_cache(self, book_id):
+        """Delete the cached EPUB file for a book so it will be regenerated on next export."""
+        cache_path = os.path.join(self._epub_cache_dir(), f"{book_id}.epub")
+        if os.path.exists(cache_path):
+            try:
+                os.remove(cache_path)
+                self.logger.info(f"Invalidated EPUB cache for book {book_id}")
+            except OSError as e:
+                self.logger.warning(f"Failed to remove cached EPUB for book {book_id}: {e}")
+
     # Chapter management section
-    def save_chapter(self, book_id, chapter_number, title, untranslated_content, translated_content, 
+    def save_chapter(self, book_id, chapter_number, title, untranslated_content, translated_content,
                     summary=None, translation_model=None):
         """
         Save a chapter to the database.
@@ -570,7 +513,7 @@ class DatabaseManager:
             if translation_model is None:
                 translation_model = self.config.translation_model
                 
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Check if chapter already exists
@@ -624,10 +567,11 @@ class DatabaseManager:
             
             conn.commit()
             conn.close()
-            
+            self.invalidate_epub_cache(book_id)
+
             return chapter_id
-            
-        except sqlite3.Error as e:
+
+        except Exception as e:
             self.logger.error(f"Error saving chapter: {e}")
             return None
 
@@ -648,7 +592,7 @@ class DatabaseManager:
             return None
             
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             if chapter_id:
@@ -703,7 +647,7 @@ class DatabaseManager:
             
             return chapter_data
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error retrieving chapter data: {e}")
             return None
 
@@ -724,7 +668,7 @@ class DatabaseManager:
                 self.logger.warning(f"Book with ID {book_id} not found")
                 return []
                 
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -751,7 +695,7 @@ class DatabaseManager:
             
             return result
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error listing chapters: {e}")
             return []
 
@@ -768,7 +712,7 @@ class DatabaseManager:
             list of dicts with chapter_number, title, match_count, matches
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT chapter_number, title, untranslated_content, translated_content
@@ -805,7 +749,8 @@ class DatabaseManager:
                             for m in pattern.finditer(line):
                                 matches.append({
                                     'line': line_idx, 'col': m.start(),
-                                    'length': m.end() - m.start(), 'field': 'untranslated'
+                                    'length': m.end() - m.start(), 'field': 'untranslated',
+                                    'text': line,
                                 })
                         else:
                             line_lower = line.lower()
@@ -816,7 +761,8 @@ class DatabaseManager:
                                     break
                                 matches.append({
                                     'line': line_idx, 'col': idx,
-                                    'length': len(query), 'field': 'untranslated'
+                                    'length': len(query), 'field': 'untranslated',
+                                    'text': line,
                                 })
                                 start = idx + 1
 
@@ -827,7 +773,8 @@ class DatabaseManager:
                             for m in pattern.finditer(line):
                                 matches.append({
                                     'line': line_idx, 'col': m.start(),
-                                    'length': m.end() - m.start(), 'field': 'translated'
+                                    'length': m.end() - m.start(), 'field': 'translated',
+                                    'text': line,
                                 })
                         else:
                             line_lower = line.lower()
@@ -838,7 +785,8 @@ class DatabaseManager:
                                     break
                                 matches.append({
                                     'line': line_idx, 'col': idx,
-                                    'length': len(query), 'field': 'translated'
+                                    'length': len(query), 'field': 'translated',
+                                    'text': line,
                                 })
                                 start = idx + 1
 
@@ -851,7 +799,7 @@ class DatabaseManager:
                     })
 
             return results
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error searching chapters: {e}")
             return []
 
@@ -867,7 +815,7 @@ class DatabaseManager:
             dict with affected_chapters, total_replacements, and can_undo flag
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             sql = 'SELECT id, chapter_number, translated_content FROM chapters WHERE book_id = ?'
@@ -938,6 +886,9 @@ class DatabaseManager:
             conn.commit()
             conn.close()
 
+            if affected > 0:
+                self.invalidate_epub_cache(book_id)
+
             # Store undo snapshot (one level, keyed by book)
             if snapshots:
                 DatabaseManager._replace_undo[book_id] = {
@@ -950,7 +901,7 @@ class DatabaseManager:
 
             return {'affected_chapters': affected, 'total_replacements': total, 'can_undo': len(snapshots) > 0}
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error replacing in chapters: {e}")
             return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
 
@@ -965,7 +916,7 @@ class DatabaseManager:
             return None
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             for ch_id, old_content in undo['snapshots']:
                 cursor.execute(
@@ -974,8 +925,9 @@ class DatabaseManager:
                 )
             conn.commit()
             conn.close()
+            self.invalidate_epub_cache(book_id)
             return {'restored_chapters': len(undo['snapshots'])}
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error undoing replace: {e}")
             return None
 
@@ -1000,7 +952,7 @@ class DatabaseManager:
             return False
             
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Get chapter details first (for logging)
@@ -1042,15 +994,16 @@ class DatabaseManager:
             
             conn.commit()
             conn.close()
-            
+            self.invalidate_epub_cache(book_id)
+
             if chapter_id:
                 self.logger.info(f"Deleted chapter {chapter[1]}: '{chapter[2]}' from book ID {chapter[0]}")
             else:
                 self.logger.info(f"Deleted chapter {chapter_number} (ID: {chapter[0]}): '{chapter[1]}' from book ID {book_id}")
-                
+
             return True
-            
-        except sqlite3.Error as e:
+
+        except Exception as e:
             self.logger.error(f"Error deleting chapter: {e}")
             return False
 
@@ -1078,7 +1031,7 @@ class DatabaseManager:
                 self.logger.error(f"Book with ID {book_id} not found")
                 return None
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             if priority:
@@ -1118,7 +1071,7 @@ class DatabaseManager:
             self.logger.info(f"Added item to queue (ID: {queue_id}, position: {next_position}) for book '{book['title']}'")
             return queue_id
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error adding to queue: {e}")
             return None
 
@@ -1133,7 +1086,7 @@ class DatabaseManager:
             dict: Queue item data or None if queue empty
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Build query with optional book_id filter
@@ -1192,7 +1145,7 @@ class DatabaseManager:
                 'book_title': row[9]
             }
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error getting next queue item: {e}")
             return None
 
@@ -1207,7 +1160,7 @@ class DatabaseManager:
             bool: True if successful
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Get the position of the item being removed
@@ -1230,7 +1183,7 @@ class DatabaseManager:
             self.logger.info(f"Removed queue item {queue_id} from position {removed_position}")
             return True
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error removing from queue: {e}")
             return False
 
@@ -1245,7 +1198,7 @@ class DatabaseManager:
             list: List of queue item dicts ordered by position
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Build query with optional book_id filter
@@ -1303,7 +1256,7 @@ class DatabaseManager:
 
             return result
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error listing queue: {e}")
             return []
 
@@ -1318,7 +1271,7 @@ class DatabaseManager:
             int: Number of items removed
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             if book_id:
@@ -1345,7 +1298,7 @@ class DatabaseManager:
             self.logger.info(f"Cleared {count} items from queue" + (f" for book_id {book_id}" if book_id else ""))
             return count
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error clearing queue: {e}")
             return 0
 
@@ -1360,7 +1313,7 @@ class DatabaseManager:
             int: Number of items in queue
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             if book_id:
@@ -1373,7 +1326,7 @@ class DatabaseManager:
 
             return count
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error getting queue count: {e}")
             return 0
 
@@ -1389,7 +1342,7 @@ class DatabaseManager:
             bool: True if duplicate exists
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             cursor.execute('SELECT id FROM queue WHERE book_id = ? AND chapter_number = ?',
@@ -1400,7 +1353,7 @@ class DatabaseManager:
 
             return result is not None
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error checking duplicate in queue: {e}")
             return False
 
@@ -1411,7 +1364,7 @@ class DatabaseManager:
     def add_activity_log(self, type, message, book_id=None, chapter=None, book_name=None, entities=None):
         """Add an entry to the activity log. Returns the entry dict."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             created_at = datetime.datetime.now().isoformat()
             entities_json = json.dumps(entities) if entities else None
@@ -1421,7 +1374,7 @@ class DatabaseManager:
             )
             entry_id = cursor.lastrowid
             # Cap at 500 rows
-            cursor.execute('DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 500)')
+            cursor.execute(self.backend.cap_activity_log_sql())
             conn.commit()
             conn.close()
             return {
@@ -1429,14 +1382,14 @@ class DatabaseManager:
                 'book_id': book_id, 'chapter': chapter, 'book_name': book_name,
                 'entities': entities, 'created_at': created_at,
             }
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error adding activity log: {e}")
             return None
 
     def get_activity_log(self, limit=200):
         """Get recent activity log entries, oldest first."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT id, type, message, book_id, chapter, book_name, entities_json, created_at FROM activity_log ORDER BY id DESC LIMIT ?', (limit,))
             rows = cursor.fetchall()
@@ -1450,19 +1403,59 @@ class DatabaseManager:
                     'created_at': row[7],
                 })
             return entries
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error reading activity log: {e}")
             return []
 
     def clear_activity_log(self):
         """Delete all activity log entries."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             conn.execute('DELETE FROM activity_log')
             conn.commit()
             conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error clearing activity log: {e}")
+
+    # ------------------------------------------------------------------
+    # Reader view log
+    # ------------------------------------------------------------------
+
+    def log_reader_view(self, book_id: int, chapter_number: int, ip: str):
+        """Record a chapter view from the public reader."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO reader_log (book_id, chapter_number, ip, viewed_at) VALUES (?, ?, ?, ?)',
+                (book_id, chapter_number, ip, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.logger.error(f"Error logging reader view: {e}")
+
+    def get_reader_log(self, book_id: int = None, limit: int = 200):
+        """Return recent reader log entries, optionally filtered by book."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            if book_id is not None:
+                cursor.execute(
+                    'SELECT id, book_id, chapter_number, ip, viewed_at FROM reader_log WHERE book_id = ? ORDER BY id DESC LIMIT ?',
+                    (book_id, limit)
+                )
+            else:
+                cursor.execute(
+                    'SELECT id, book_id, chapter_number, ip, viewed_at FROM reader_log ORDER BY id DESC LIMIT ?',
+                    (limit,)
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            self.logger.error(f"Error reading reader log: {e}")
+            return []
 
     def _check_legacy_queue(self):
         """Check for legacy queue.json and warn user"""
@@ -1502,7 +1495,7 @@ class DatabaseManager:
         default_entities = {cat: {} for cat in cats}
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Get all entities grouped by category
@@ -1549,7 +1542,7 @@ class DatabaseManager:
             self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities from database")
             return entities
                 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error loading entities from database: {e}")
             # Return default empty structure on error
             self.entities = default_entities
@@ -1603,7 +1596,7 @@ class DatabaseManager:
     def save_entities(self):
         """Save the current entities cache to the SQLite database"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Track which entities we've already saved to avoid duplicates
@@ -1662,7 +1655,7 @@ class DatabaseManager:
             conn.commit()
             conn.close()
             self.logger.info("Entities saved to database successfully")
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error saving entities to database: {e}")
             # Consider creating a backup JSON in this case
             self.save_json_file("entities_backup.json", self.entities)
@@ -1814,7 +1807,7 @@ class DatabaseManager:
             gender: Entity gender (for characters)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Check if entity already exists for this book (regardless of category)
@@ -1875,7 +1868,7 @@ class DatabaseManager:
             self.entities[category][untranslated] = entity_data
             return True
                 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error adding entity to database: {e}")
             return False
     
@@ -1890,7 +1883,7 @@ class DatabaseManager:
         Returns True if the entity was updated, False if it wasn't found.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Check if book_id is the only field being updated (changing book assignment)
@@ -1970,7 +1963,7 @@ class DatabaseManager:
 
             return True
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error updating entity in database: {e}")
             return False
     
@@ -1980,7 +1973,7 @@ class DatabaseManager:
         Returns True if the entity was deleted, False if it wasn't found.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -2002,7 +1995,7 @@ class DatabaseManager:
             
             return True
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error deleting entity from database: {e}")
             return False
     
@@ -2012,7 +2005,7 @@ class DatabaseManager:
         Returns True if the entity was moved, False otherwise.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Check if entity exists in the source category
@@ -2059,7 +2052,7 @@ class DatabaseManager:
             
             return True
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error changing entity category in database: {e}")
             return False
     
@@ -2071,7 +2064,7 @@ class DatabaseManager:
         This is useful for finding duplicates by translation rather than by untranslated text.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -2097,7 +2090,7 @@ class DatabaseManager:
             
             return (category, untranslated, entity_data)
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error finding entity by translation in database: {e}")
             return None
     
@@ -2124,7 +2117,7 @@ class DatabaseManager:
                 self.logger.warning(f"No data found in JSON file '{filepath}'")
                 return False
             
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             
             # Clear existing data?
@@ -2141,16 +2134,8 @@ class DatabaseManager:
                     incorrect_translation = entity_data.get('incorrect_translation', None)
                     gender = entity_data.get('gender', None)
                     
-                    cursor.execute('''
-                    INSERT INTO entities (category, untranslated, translation, last_chapter, incorrect_translation, gender)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(book_id, untranslated) DO UPDATE SET
-                        category = excluded.category,
-                        translation = excluded.translation,
-                        last_chapter = excluded.last_chapter,
-                        incorrect_translation = excluded.incorrect_translation,
-                        gender = excluded.gender
-                    ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender))
+                    cursor.execute(self.backend.upsert_entity_sql(),
+                        (category, untranslated, translation, last_chapter, incorrect_translation, gender))
                     count += 1
             
             conn.commit()
@@ -2186,7 +2171,7 @@ class DatabaseManager:
         default_entities = {cat: {} for cat in cats}
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Build SQL query with filters
@@ -2246,7 +2231,7 @@ class DatabaseManager:
             self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities for review")
             return entities
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error loading entities for review: {e}")
             return default_entities
 
@@ -2257,7 +2242,7 @@ class DatabaseManager:
         global aggregate (book_id=0).  Returns 1.0 when no data is available.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             if book_id:
@@ -2288,17 +2273,10 @@ class DatabaseManager:
     def update_token_ratio(self, book_id, input_chars, output_tokens):
         """Add a chapter's char/token counts to the running totals for book and global stats."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
-            upsert_sql = '''
-            INSERT INTO token_ratios (book_id, total_input_chars, total_output_tokens, sample_count)
-            VALUES (?, ?, ?, 1)
-            ON CONFLICT(book_id) DO UPDATE SET
-                total_input_chars = total_input_chars + excluded.total_input_chars,
-                total_output_tokens = total_output_tokens + excluded.total_output_tokens,
-                sample_count = sample_count + 1
-            '''
+            upsert_sql = self.backend.upsert_token_ratio_sql()
 
             if book_id:
                 cursor.execute(upsert_sql, (book_id, input_chars, output_tokens))
@@ -2336,7 +2314,7 @@ class DatabaseManager:
             chapter_number, title, book_title
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             # Search in both untranslated and translated content
@@ -2373,7 +2351,7 @@ class DatabaseManager:
 
             return results
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error finding chapters using entity: {e}")
             return []
 
@@ -2384,7 +2362,7 @@ class DatabaseManager:
     def get_wp_state(self, book_id, chapter_number=None):
         """Get a single wp_publish_state record."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             if chapter_number is None:
                 cursor.execute(
@@ -2407,33 +2385,27 @@ class DatabaseManager:
                 "wp_post_id": row[3], "wp_post_type": row[4],
                 "last_published": row[5], "content_hash": row[6],
             }
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error getting wp state: {e}")
             return None
 
     def save_wp_state(self, book_id, chapter_number, wp_post_id, wp_post_type, content_hash):
         """Upsert a wp_publish_state record."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             now = datetime.datetime.utcnow().isoformat()
-            cursor.execute(
-                "INSERT INTO wp_publish_state (book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(book_id, chapter_number) DO UPDATE SET "
-                "wp_post_id=excluded.wp_post_id, wp_post_type=excluded.wp_post_type, "
-                "last_published=excluded.last_published, content_hash=excluded.content_hash",
-                (book_id, chapter_number, wp_post_id, wp_post_type, now, content_hash),
-            )
+            cursor.execute(self.backend.upsert_wp_state_sql(),
+                (book_id, chapter_number, wp_post_id, wp_post_type, now, content_hash))
             conn.commit()
             conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error saving wp state: {e}")
 
     def get_all_wp_states(self, book_id):
         """Get all wp_publish_state records for a book."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
@@ -2450,25 +2422,25 @@ class DatabaseManager:
                 }
                 for r in rows
             ]
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error getting all wp states: {e}")
             return []
 
     def delete_wp_states(self, book_id):
         """Delete all wp_publish_state records for a book."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM wp_publish_state WHERE book_id = ?", (book_id,))
             conn.commit()
             conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error deleting wp states: {e}")
 
     def delete_wp_state_single(self, book_id, chapter_number=None):
         """Delete a single wp_publish_state record."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.backend.get_connection()
             cursor = conn.cursor()
             if chapter_number is None:
                 cursor.execute(
@@ -2482,5 +2454,5 @@ class DatabaseManager:
                 )
             conn.commit()
             conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error deleting wp state: {e}")

@@ -111,10 +111,12 @@ async def test_api_key(provider_name: str):
 
 @router.get("")
 async def get_settings():
+    from web.auth import is_public_library
     return {
         "translation_model": _config.translation_model,
         "advice_model": _config.advice_model,
         "debug_mode": _config.debug_mode,
+        "public_library": is_public_library(),
     }
 
 
@@ -122,6 +124,7 @@ class SettingsUpdate(BaseModel):
     translation_model: Optional[str] = None
     advice_model: Optional[str] = None
     debug_mode: Optional[bool] = None
+    public_library: Optional[bool] = None
 
 
 @router.put("")
@@ -132,6 +135,10 @@ async def update_settings(req: SettingsUpdate):
         _config.advice_model = req.advice_model
     if req.debug_mode is not None:
         _config.debug_mode = req.debug_mode
+    if req.public_library is not None:
+        import web.auth as auth_mod
+        auth_mod._public_library = req.public_library
+        _persist_env("T9_PUBLIC_LIBRARY", "1" if req.public_library else "0")
     return {"status": "ok"}
 
 

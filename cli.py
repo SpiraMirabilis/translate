@@ -645,9 +645,9 @@ class CommandLineInterface(UserInterface):
             return
         
         # Connect to the database
-        conn = sqlite3.connect(self.entity_manager.db_path)
+        conn = self.entity_manager.get_connection()
         cursor = conn.cursor()
-        
+
         # Check for duplicate untranslated entities
         print("\n=== Checking for Duplicate Untranslated Entities ===")
         cursor.execute('''
@@ -908,9 +908,9 @@ class CommandLineInterface(UserInterface):
 
     def _report_database_duplicates(self):
         """Non-interactive version of check_database_duplicates that just reports issues"""
-        
+
         # Connect to the database
-        conn = sqlite3.connect(self.entity_manager.db_path)
+        conn = self.entity_manager.get_connection()
         cursor = conn.cursor()
         
         # Check for duplicate untranslated entities
@@ -1539,12 +1539,16 @@ class CommandLineInterface(UserInterface):
             # Get the default template
             default_template = self.translator.generate_system_prompt([], entities_json, do_count=False)
             
-            # Replace with placeholder
+            # Replace with placeholders
             current_template = default_template.replace(
                 json.dumps(entities_json, ensure_ascii=False, indent=4),
                 "{{ENTITIES_JSON}}"
             )
-        
+            current_template = current_template.replace(
+                ", ".join(entities_json.keys()),
+                "{{ENTITY_CATEGORIES}}"
+            )
+
         # Add header with instructions
         template_with_instructions = (
             "# Edit this prompt template for book: " + book['title'] + "\n"
@@ -1640,7 +1644,12 @@ class CommandLineInterface(UserInterface):
             json.dumps(entities_json, ensure_ascii=False, indent=4),
             "{{ENTITIES_JSON}}"
         )
-        
+        # Restore the entity categories placeholder
+        template_with_placeholder = template_with_placeholder.replace(
+            ", ".join(entities_json.keys()),
+            "{{ENTITY_CATEGORIES}}"
+        )
+
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(template_with_placeholder)
@@ -3100,7 +3109,7 @@ class CommandLineInterface(UserInterface):
                 
                 # Need to override database constraints to add this duplicate
                 try:
-                    conn = sqlite3.connect(self.entity_manager.db_path)
+                    conn = self.entity_manager.get_connection()
                     cursor = conn.cursor()
                     cursor.execute('''
                     INSERT INTO entities (category, untranslated, translation, last_chapter)
@@ -3108,11 +3117,11 @@ class CommandLineInterface(UserInterface):
                     ''', (new_category, untranslated, translation, duplicate.get('last_chapter', 'THIS CHAPTER')))
                     conn.commit()
                     conn.close()
-                    
+
                     # Update memory cache
                     self.entity_manager._load_entities()
-                    
-                except sqlite3.Error as e:
+
+                except Exception as e:
                     self.logger.error(f"Error allowing duplicate: {e}")
                     print(f"Database error: {e}")
             

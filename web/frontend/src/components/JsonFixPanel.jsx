@@ -4,8 +4,8 @@
  * Modal overlay that appears when a translation chunk returns malformed JSON.
  * User can retry the chunk, manually fix the JSON, or abort translation.
  */
-import { useState, useEffect, useCallback } from 'react'
-import CodeEditor from '@uiw/react-textarea-code-editor'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+const CodeEditor = lazy(() => import('@uiw/react-textarea-code-editor'))
 import { api } from '../services/api'
 import { RefreshCw, Check, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
 
@@ -16,9 +16,14 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
   const [submitting, setSubmitting] = useState(false)
   const [showSource, setShowSource] = useState(false)
 
-  // Re-initialize when rawResponse changes (e.g. after failed fix attempt reappears)
+  // Always fetch raw_response from API — the WS message triggers the modal
+  // but the payload can get lost/truncated in transit.
   useEffect(() => {
-    setEditedJson(rawResponse || '')
+    api.getJobStatus().then(d => {
+      if (d.pending_json_fix?.raw_response) {
+        setEditedJson(d.pending_json_fix.raw_response)
+      }
+    }).catch(() => {})
   }, [rawResponse])
 
   // Validate JSON on every edit
@@ -81,21 +86,23 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
           <div>
             <label className="label mb-1.5">AI response (edit to fix)</label>
             <div className="rounded-lg overflow-hidden border border-slate-700">
-              <CodeEditor
-                value={editedJson}
-                language="json"
-                onChange={(e) => setEditedJson(e.target.value)}
-                padding={16}
-                style={{
-                  fontSize: 13,
-                  fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                  backgroundColor: '#0f172a',
-                  minHeight: 200,
-                  maxHeight: 400,
-                  overflow: 'auto',
-                }}
-                data-color-mode="dark"
-              />
+              <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor…</div>}>
+                <CodeEditor
+                  value={editedJson}
+                  language="json"
+                  onChange={(e) => setEditedJson(e.target.value)}
+                  padding={16}
+                  style={{
+                    fontSize: 13,
+                    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                    backgroundColor: '#0f172a',
+                    minHeight: 200,
+                    maxHeight: 400,
+                    overflow: 'auto',
+                  }}
+                  data-color-mode="dark"
+                />
+              </Suspense>
             </div>
           </div>
 

@@ -243,7 +243,7 @@ class UserInterface(ABC):
                 # Save entities directly to database to avoid duplication
                 self.logger.debug("--- Direct entity saving ---")
                 try:
-                    conn = sqlite3.connect(self.entity_manager.db_path)
+                    conn = self.entity_manager.get_connection()
                     cursor = conn.cursor()
 
                     # Process each entity from end_object
@@ -295,7 +295,7 @@ class UserInterface(ABC):
                     conn.commit()
                     conn.close()
                     self.logger.info("Entities saved to database successfully")
-                except sqlite3.Error as e:
+                except Exception as e:
                     self.logger.error(f"Error saving entities to database: {e}")
                 
                 # Update in-memory cache for consistent state
@@ -469,7 +469,7 @@ class UserInterface(ABC):
 
         if all_untranslated:
             try:
-                conn = sqlite3.connect(self.entity_manager.db_path)
+                conn = self.entity_manager.get_connection()
                 cursor = conn.cursor()
 
                 for untranslated in all_untranslated:
@@ -494,7 +494,7 @@ class UserInterface(ABC):
                         }
 
                 conn.close()
-            except sqlite3.Error as e:
+            except Exception as e:
                 self.logger.error(f"Error checking existing entities: {e}")
 
         db_count = 0

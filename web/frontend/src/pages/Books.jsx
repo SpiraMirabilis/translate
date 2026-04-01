@@ -6,7 +6,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import ComboBox from '../components/ComboBox'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search, Eye, EyeOff
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -101,6 +101,15 @@ export default function Books() {
     }
   }
 
+  const togglePublic = async (book) => {
+    try {
+      await api.updateBook(book.id, { is_public: !book.is_public })
+      setBooks(prev => prev.map(b => b.id === book.id ? { ...b, is_public: !book.is_public } : b))
+    } catch (e) {
+      alert(`Failed to update visibility: ${e.message}`)
+    }
+  }
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -156,12 +165,38 @@ export default function Books() {
                     <span className="font-medium text-slate-200 truncate">{book.title}</span>
                     <span className="badge-slate text-xs">ID: {book.id}</span>
                   </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
+                  <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1 flex-wrap">
                     {book.author && <span>{book.author} · </span>}
-                    {book.chapter_count ?? 0} chapters · {book.language}
+                    <span>
+                      {book.chapter_count ?? 0} chapters
+                      {book.total_source_chapters > 0 && (
+                        <> / {book.total_source_chapters} ({Math.round(((book.chapter_count ?? 0) / book.total_source_chapters) * 100)}%)</>
+                      )}
+                    </span>
+                    <span>· {book.language}</span>
+                    {book.status && book.status !== 'ongoing' && (
+                      <span className={`ml-1 px-1.5 py-0 rounded text-[10px] font-medium ${
+                        book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
+                        book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
+                        book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
+                        'bg-slate-500/20 text-slate-400'
+                      }`}>{book.status}</span>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5">
+                  {/* Read */}
+                  <Link to={`/read/${book.id}`} className="btn-ghost p-1.5" title="Read">
+                    <Eye size={14} />
+                  </Link>
+                  {/* Public visibility toggle */}
+                  <button
+                    className={`btn-ghost p-1.5 ${book.is_public === false ? 'text-rose-400/60' : 'text-emerald-400/60'}`}
+                    title={book.is_public === false ? 'Hidden from public library (click to make public)' : 'Visible in public library (click to hide)'}
+                    onClick={() => togglePublic(book)}
+                  >
+                    {book.is_public === false ? <EyeOff size={14} /> : <Eye size={14} className="text-emerald-400" />}
+                  </button>
                   {/* Export */}
                   <div className="relative group">
                     <button className="btn-ghost p-1.5" title="Export">
@@ -258,6 +293,13 @@ export default function Books() {
                             </td>
                             <td className="py-2">
                               <div className="flex gap-1 justify-end">
+                                <Link
+                                  to={`/read/${book.id}?chapter=${ch.chapter}`}
+                                  className="btn-ghost p-1"
+                                  title="Read from here"
+                                >
+                                  <Eye size={12} />
+                                </Link>
                                 <button
                                   className="btn-ghost p-1"
                                   title="Retranslate chapter"
@@ -355,6 +397,8 @@ function BookFormModal({ book, onClose, onSaved }) {
     source_language: book?.source_language || 'zh',
     description: book?.description || '',
     genre: '',
+    total_source_chapters: book?.total_source_chapters || '',
+    status: book?.status || 'ongoing',
   })
   const [genres, setGenres] = useState([])
   const [saving, setSaving] = useState(false)
@@ -385,6 +429,7 @@ function BookFormModal({ book, onClose, onSaved }) {
       if (book) {
         // Don't send genre or source_language on edit
         const { genre, source_language, ...editForm } = form
+        editForm.total_source_chapters = editForm.total_source_chapters ? parseInt(editForm.total_source_chapters, 10) : null
         await api.updateBook(book.id, editForm)
       } else {
         await api.createBook(form)
@@ -459,6 +504,21 @@ function BookFormModal({ book, onClose, onSaved }) {
             <div><label className="label">Target Language</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
           </div>
           <div><label className="label">Description</label><textarea className="input h-20 resize-none" value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Total Source Chapters</label>
+              <input className="input" type="number" min="0" placeholder="Optional" value={form.total_source_chapters} onChange={e => setForm(f => ({...f, total_source_chapters: e.target.value}))} />
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <select className="input" value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}>
+                <option value="ongoing">Ongoing</option>
+                <option value="hiatus">Hiatus</option>
+                <option value="completed">Completed</option>
+                <option value="dropped">Dropped</option>
+              </select>
+            </div>
+          </div>
 
           {/* Cover image */}
           {book && (

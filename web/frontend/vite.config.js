@@ -14,5 +14,13 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'code-editor': ['@uiw/react-textarea-code-editor'],
+        },
+      },
+    },
   },
 })

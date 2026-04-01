@@ -28,6 +28,14 @@ class TranslationConfig:
         self.wp_username = os.getenv("WP_USERNAME", "")
         self.wp_app_password = os.getenv("WP_APP_PASSWORD", "")
 
+        # Database backend: "sqlite" (default) or "mysql"
+        self.db_backend = os.getenv("DB_BACKEND", "sqlite")
+        self.mysql_host = os.getenv("MYSQL_HOST", "localhost")
+        self.mysql_user = os.getenv("MYSQL_USER", "")
+        self.mysql_pass = os.getenv("MYSQL_PASS", "")
+        self.mysql_db = os.getenv("MYSQL_DB", "t9")
+        self.mysql_port = int(os.getenv("MYSQL_PORT", "3306"))
+
         # Translation settings (now per-provider via models.json)
         # Legacy fallback for MAX_CHARS env var if needed
         self._fallback_max_chars = int(os.getenv("MAX_CHARS", "5000"))

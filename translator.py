@@ -65,7 +65,7 @@ class TranslationApp:
         if os.path.exists(json_path):
             try:
                 # Check if the database is empty
-                conn = sqlite3.connect(self.entity_manager.db_path)
+                conn = self.entity_manager.get_connection()
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM entities")
                 count = cursor.fetchone()[0]

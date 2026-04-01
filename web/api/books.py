@@ -44,6 +44,9 @@ class BookUpdate(BaseModel):
     author: Optional[str] = None
     language: Optional[str] = None
     description: Optional[str] = None
+    is_public: Optional[bool] = None
+    total_source_chapters: Optional[int] = None
+    status: Optional[str] = None
 
 
 class PromptUpdate(BaseModel):
@@ -154,6 +157,11 @@ async def get_default_prompt():
         json.dumps(entities_json, ensure_ascii=False, indent=4),
         "{{ENTITIES_JSON}}"
     )
+    # Restore the entity categories placeholder
+    default = default.replace(
+        ", ".join(DEFAULT_CATEGORIES),
+        "{{ENTITY_CATEGORIES}}"
+    )
     # Restore the chapter number placeholder (generate_system_prompt strips it when chapter_number is None)
     if "{{CHAPTER_NUMBER}}" not in default:
         default = default.replace(
@@ -181,7 +189,11 @@ async def update_book(book_id: int, req: BookUpdate):
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
     dump = req.model_dump() if hasattr(req, 'model_dump') else req.dict()
-    kwargs = {k: v for k, v in dump.items() if v is not None}
+    # Allow total_source_chapters=null to clear the value
+    nullable_fields = {'total_source_chapters'}
+    kwargs = {k: v for k, v in dump.items() if v is not None or k in nullable_fields}
+    if 'status' in kwargs and kwargs['status'] not in ('ongoing', 'hiatus', 'completed', 'dropped'):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be one of: ongoing, hiatus, completed, dropped")
     success = _entity_manager.update_book(book_id, **kwargs)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update book.")
@@ -393,8 +405,7 @@ async def reset_categories(book_id: int):
 @router.get("/{book_id}/categories/entity-counts")
 async def category_entity_counts(book_id: int):
     """Return the count of entities per category for a book (includes global)."""
-    import sqlite3
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT category, COUNT(*) FROM entities WHERE book_id = ? OR book_id IS NULL GROUP BY category",
@@ -489,8 +500,7 @@ async def update_chapter_translation(book_id: int, chapter_number: int, req: Cha
 
 @router.put("/{book_id}/chapters/{chapter_number}/proofread")
 async def set_proofread(book_id: int, chapter_number: int, req: ChapterProofreadUpdate):
-    import sqlite3
-    conn = sqlite3.connect(_entity_manager.db_path)
+    conn = _entity_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute(
         "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
@@ -543,22 +553,32 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
             book_info["cover_image"] = cover_full
 
     if format == "epub":
-        all_chapters = []
-        for ch_meta in chapters:
-            ch = _entity_manager.get_chapter(book_id=book_id, chapter_number=ch_meta["chapter"])
-            if ch:
-                all_chapters.append({
-                    "chapter": ch_meta["chapter"],
-                    "title": ch.get("title", f"Chapter {ch_meta['chapter']}"),
-                    "content": ch.get("content", []),
-                })
-
-        output_path = formatter.save_book_as_epub(all_chapters, book_info)
-        if not output_path or not os.path.exists(output_path):
-            raise HTTPException(status_code=500, detail="Failed to generate EPUB.")
-
+        # Check for cached EPUB first
+        cache_dir = _entity_manager._epub_cache_dir()
+        cached_path = os.path.join(cache_dir, f"{book_id}.epub")
         filename = f"{book['title'].replace(' ', '_')}.epub"
-        with open(output_path, "rb") as f:
+
+        if not os.path.exists(cached_path):
+            all_chapters = []
+            for ch_meta in chapters:
+                ch = _entity_manager.get_chapter(book_id=book_id, chapter_number=ch_meta["chapter"])
+                if ch:
+                    all_chapters.append({
+                        "chapter": ch_meta["chapter"],
+                        "title": ch.get("title", f"Chapter {ch_meta['chapter']}"),
+                        "content": ch.get("content", []),
+                    })
+
+            output_path = formatter.save_book_as_epub(all_chapters, book_info)
+            if not output_path or not os.path.exists(output_path):
+                raise HTTPException(status_code=500, detail="Failed to generate EPUB.")
+
+            # Cache the generated EPUB
+            os.makedirs(cache_dir, exist_ok=True)
+            import shutil
+            shutil.copy2(output_path, cached_path)
+
+        with open(cached_path, "rb") as f:
             epub_bytes = f.read()
         return StreamingResponse(
             io.BytesIO(epub_bytes),

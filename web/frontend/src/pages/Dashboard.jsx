@@ -5,7 +5,7 @@
  * Right panel: persistent activity log + progress
  * Bottom:      entity review panel (modal overlay when entities need review)
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useWs } from '../App'
 import { api } from '../services/api'
@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 
 export default function Dashboard() {
-  const { lastMessage } = useWs()
+  const { lastMessage, subscribe } = useWs()
 
   const [books, setBooks] = useState([])
   const [providers, setProviders] = useState([])
@@ -42,6 +42,22 @@ export default function Dashboard() {
   const [jsonFix, setJsonFix] = useState(null) // { raw_response, chunk_index, total_chunks, chunk_text } or null
 
   const logRef = useRef(null)
+
+  // Direct WS subscriber for json_fix_needed — bypasses React 18 state batching
+  // which can drop the message when activity_log arrives in the same frame.
+  useEffect(() => {
+    return subscribe((msg) => {
+      if (msg.type === 'json_fix_needed') {
+        setJobStatus('awaiting_json_fix')
+        setJsonFix({
+          raw_response: msg.raw_response,
+          chunk_index: msg.chunk_index,
+          total_chunks: msg.total_chunks,
+          chunk_text: msg.chunk_text,
+        })
+      }
+    })
+  }, [subscribe])
 
   // Load books + providers + activity log + restore state on mount
   useEffect(() => {
@@ -96,15 +112,7 @@ export default function Dashboard() {
       setEntityReview({ entities: lastMessage.entities, context: lastMessage.context })
     }
 
-    if (type === 'json_fix_needed') {
-      setJobStatus('awaiting_json_fix')
-      setJsonFix({
-        raw_response: lastMessage.raw_response,
-        chunk_index: lastMessage.chunk_index,
-        total_chunks: lastMessage.total_chunks,
-        chunk_text: lastMessage.chunk_text,
-      })
-    }
+    // json_fix_needed is handled by the direct subscribe() listener above
 
     if (type === 'translation_complete') {
       setJobStatus('complete')

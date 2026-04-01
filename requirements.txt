@@ -10,6 +10,8 @@ rich>=10.11.0
 pyperclip>=1.8.2
 
 # Database (sqlite3 is built into Python)
+# Optional: MySQL/MariaDB backend (only needed if DB_BACKEND=mysql)
+# mysql-connector-python>=8.0.0
 
 # EPUB processing
 ebooklib>=0.17.1
