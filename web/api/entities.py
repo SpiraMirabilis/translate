@@ -77,6 +77,7 @@ class PropagateRequest(BaseModel):
     old_translation: str
     new_translation: str
     action: str  # "substitute" | "requeue"
+    from_chapter: Optional[int] = None  # only affect chapters >= this number
 
 
 # ------------------------------------------------------------------
@@ -90,6 +91,7 @@ async def list_entities(
     include_global: bool = Query(False),
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    origin_chapter: Optional[int] = Query(None),
 ):
     conn = _entity_manager.get_connection()
     conn.row_factory = sqlite3.Row
@@ -112,6 +114,9 @@ async def list_entities(
     if search:
         query += " AND (untranslated LIKE ? OR translation LIKE ?)"
         params.extend([f"%{search}%", f"%{search}%"])
+    if origin_chapter is not None:
+        query += " AND origin_chapter = ?"
+        params.append(origin_chapter)
 
     query += " ORDER BY category, untranslated"
 
@@ -119,6 +124,20 @@ async def list_entities(
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return {"entities": rows}
+
+
+@router.get("/origin-chapters")
+async def list_origin_chapters(book_id: int = Query(...)):
+    """Return distinct origin_chapter values that have entities for this book."""
+    conn = _entity_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT DISTINCT origin_chapter FROM entities WHERE book_id = ? AND origin_chapter IS NOT NULL ORDER BY origin_chapter",
+        (book_id,),
+    )
+    chapters = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return {"chapters": chapters}
 
 
 # ------------------------------------------------------------------
@@ -536,11 +555,17 @@ async def propagate_change(req: PropagateRequest):
         conn.close()
         raise HTTPException(status_code=400, detail="Cannot propagate changes for global entities (no book_id).")
 
-    # Get all chapters for this book
-    cursor.execute(
-        "SELECT id, chapter_number, title, untranslated_content, translated_content FROM chapters WHERE book_id = ?",
-        (book_id,),
-    )
+    # Get chapters for this book (optionally from a specific chapter forward)
+    if req.from_chapter is not None:
+        cursor.execute(
+            "SELECT id, chapter_number, title, untranslated_content, translated_content FROM chapters WHERE book_id = ? AND chapter_number >= ?",
+            (book_id, req.from_chapter),
+        )
+    else:
+        cursor.execute(
+            "SELECT id, chapter_number, title, untranslated_content, translated_content FROM chapters WHERE book_id = ?",
+            (book_id,),
+        )
     chapters = cursor.fetchall()
 
     if req.action == "substitute":

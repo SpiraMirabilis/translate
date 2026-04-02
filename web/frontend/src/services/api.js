@@ -88,6 +88,7 @@ export const api = {
     }
     if (params.category)             q.set('category', params.category)
     if (params.search)               q.set('search',   params.search)
+    if (params.origin_chapter != null) q.set('origin_chapter', params.origin_chapter)
     return get(`/api/entities${q.toString() ? '?' + q : ''}`)
   },
   createEntity:     (body)       => post('/api/entities', body),
@@ -95,6 +96,7 @@ export const api = {
   deleteEntity:     (id)         => del(`/api/entities/${id}`),
   getDuplicates:    (params)     => get('/api/entities/duplicates' + (params ? '?' + new URLSearchParams(params) : '')),
   resolveDuplicate: (body)       => post('/api/entities/resolve-duplicate', body),
+  getOriginChapters: (bookId)    => get(`/api/entities/origin-chapters?book_id=${bookId}`),
   getEntityContext: (id)         => get(`/api/entities/${id}/context`),
   getAdvice:        (body)       => post('/api/entities/advice', body),
   propagateChange:  (body)       => post('/api/entities/propagate', body),

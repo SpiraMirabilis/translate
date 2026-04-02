@@ -6,10 +6,11 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import ComboBox from '../components/ComboBox'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search, Eye, EyeOff
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search, Eye, EyeOff, ListChecks
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
+import RetroactiveReviewModal from '../components/RetroactiveReviewModal'
 
 export default function Books() {
   const [books, setBooks] = useState([])
@@ -24,6 +25,7 @@ export default function Books() {
   const [publishingBook, setPublishingBook] = useState(null) // book obj or null
   const [categoriesBook, setCategoriesBook] = useState(null) // book obj or null
   const [showSearch, setShowSearch] = useState(false)
+  const [reviewingBook, setReviewingBook] = useState(null)
   const [exporting, setExporting] = useState(null) // 'bookId-format' or null
   const [error, setError] = useState(null)
 
@@ -187,7 +189,7 @@ export default function Books() {
                 <div className="flex items-center gap-1.5">
                   {/* Read */}
                   <Link to={`/read/${book.id}`} className="btn-ghost p-1.5" title="Read">
-                    <Eye size={14} />
+                    <BookOpen size={14} />
                   </Link>
                   {/* Public visibility toggle */}
                   <button
@@ -197,64 +199,18 @@ export default function Books() {
                   >
                     {book.is_public === false ? <EyeOff size={14} /> : <Eye size={14} className="text-emerald-400" />}
                   </button>
-                  {/* Export */}
-                  <div className="relative group">
-                    <button className="btn-ghost p-1.5" title="Export">
-                      {exporting?.startsWith(`${book.id}-`)
-                        ? <Loader2 size={14} className="animate-spin text-indigo-400" />
-                        : <Download size={14} />}
-                    </button>
-                    <div className="absolute right-0 top-full pt-1 hidden group-hover:flex flex-col z-10 min-w-[120px]">
-                    <div className="bg-slate-800 border border-slate-700 rounded shadow-xl flex flex-col">
-                      {['text', 'markdown', 'html', 'epub'].map(fmt => (
-                        <button
-                          key={fmt}
-                          className="text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-1.5 disabled:opacity-50"
-                          onClick={() => handleExport(book.id, fmt)}
-                          disabled={!!exporting}
-                        >
-                          {exporting === `${book.id}-${fmt}` && <Loader2 size={11} className="animate-spin" />}
-                          {fmt.toUpperCase()}
-                        </button>
-                      ))}
-                    </div>
-                    </div>
-                  </div>
-                  <button
-                    className="btn-ghost p-1.5"
-                    title="Publish to WordPress"
-                    onClick={() => setPublishingBook(book)}
-                  >
-                    <Globe size={14} />
-                  </button>
-                  <button
-                    className="btn-ghost p-1.5"
-                    title="Entity Categories"
-                    onClick={() => setCategoriesBook(book)}
-                  >
-                    <Tags size={14} />
-                  </button>
-                  <button
-                    className="btn-ghost p-1.5"
-                    title="System Prompt"
-                    onClick={() => setEditingPrompt(book)}
-                  >
-                    <ScrollText size={14} />
-                  </button>
-                  <button
-                    className="btn-ghost p-1.5"
-                    title="Edit"
-                    onClick={() => { setEditingBook(book); setShowForm(true) }}
-                  >
-                    <Edit2 size={14} />
-                  </button>
-                  <button
-                    className="btn-ghost p-1.5 hover:text-rose-400"
-                    title="Delete"
-                    onClick={() => handleDelete(book.id)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  {/* Actions dropdown */}
+                  <BookActionsMenu
+                    book={book}
+                    exporting={exporting}
+                    onExport={handleExport}
+                    onPublish={() => setPublishingBook(book)}
+                    onCategories={() => setCategoriesBook(book)}
+                    onReview={() => setReviewingBook(book)}
+                    onPrompt={() => setEditingPrompt(book)}
+                    onEdit={() => { setEditingBook(book); setShowForm(true) }}
+                    onDelete={() => handleDelete(book.id)}
+                  />
                 </div>
               </div>
 
@@ -298,7 +254,7 @@ export default function Books() {
                                   className="btn-ghost p-1"
                                   title="Read from here"
                                 >
-                                  <Eye size={12} />
+                                  <BookOpen size={12} />
                                 </Link>
                                 <button
                                   className="btn-ghost p-1"
@@ -378,12 +334,77 @@ export default function Books() {
         />
       )}
 
+      {reviewingBook && (
+        <RetroactiveReviewModal
+          book={reviewingBook}
+          onClose={() => setReviewingBook(null)}
+        />
+      )}
+
       {/* Global search modal */}
       {showSearch && (
         <GlobalSearchModal
           books={books}
           onClose={() => setShowSearch(false)}
         />
+      )}
+    </div>
+  )
+}
+
+function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const item = (icon, label, onClick, className = '') => (
+    <button
+      className={`text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-2 w-full ${className}`}
+      onClick={() => { setOpen(false); onClick() }}
+    >
+      {icon} {label}
+    </button>
+  )
+
+  return (
+    <div className="relative" ref={ref}>
+      <button className="btn-ghost p-1.5 flex items-center gap-0.5 text-xs" onClick={() => setOpen(v => !v)}>
+        Actions <ChevronDown size={12} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] bg-slate-800 border border-slate-700 rounded shadow-xl flex flex-col py-1">
+          {/* Export submenu */}
+          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Export</div>
+          {['text', 'markdown', 'html', 'epub'].map(fmt => (
+            <button
+              key={fmt}
+              className="text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-2 disabled:opacity-50"
+              onClick={() => { setOpen(false); onExport(book.id, fmt) }}
+              disabled={!!exporting}
+            >
+              {exporting === `${book.id}-${fmt}` ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+              {fmt.toUpperCase()}
+            </button>
+          ))}
+          <div className="border-t border-slate-700 my-1" />
+          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Publish</div>
+          {item(<Globe size={12} />, 'WordPress', onPublish)}
+          <div className="border-t border-slate-700 my-1" />
+          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Entities</div>
+          {item(<Tags size={12} />, 'Categories', onCategories)}
+          {item(<ListChecks size={12} />, 'Review Entities', onReview)}
+          <div className="border-t border-slate-700 my-1" />
+          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
+          {item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
+          {item(<Edit2 size={12} />, 'Edit Book', onEdit)}
+          {item(<Trash2 size={12} />, 'Delete', onDelete, 'text-rose-400 hover:text-rose-300')}
+        </div>
       )}
     </div>
   )

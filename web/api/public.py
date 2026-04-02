@@ -182,18 +182,22 @@ async def get_chapter(book_id: int, chapter_number: int, request: Request, respo
     # Log the chapter view
     ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     _db.log_reader_view(book_id, chapter_number, ip)
+    content = ch.get("content", [])
+    # Strip the first line if it's a chapter heading (Chapter X...)
+    if content and re.match(r'^Chapter\s+\d+', content[0], re.IGNORECASE):
+        content = content[1:]
     result = {
         "chapter": ch["chapter"],
         "title": ch.get("title"),
-        "content": ch.get("content", []),
+        "content": content,
     }
     if ch.get("untranslated"):
         lines = ch["untranslated"]
-        # Strip the first line if it's a chapter heading (第X章)
-        if lines and re.match(r'第.+章', lines[0]):
-            lines = lines[1:]
         # Strip all lines beginning with #
         lines = [l for l in lines if not l.startswith('#')]
+        # Strip the first line if it's a chapter heading (第X章)
+        if lines and re.match(r'第\d', lines[0]):
+            lines = lines[1:]
         if lines:
             result["untranslated"] = lines
     return result
