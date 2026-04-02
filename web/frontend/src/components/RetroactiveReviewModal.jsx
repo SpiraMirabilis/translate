@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, ChevronLeft, ChevronRight, Save, Sparkles, BookOpen, Copy, Replace, RotateCcw, Loader2, AlertCircle } from 'lucide-react'
+import { X, ChevronLeft, ChevronRight, Save, Sparkles, BookOpen, Copy, Replace, RotateCcw, Loader2, AlertCircle, Trash2 } from 'lucide-react'
 import { api } from '../services/api'
 import { copyToClipboard } from '../utils/clipboard'
 import { DictResult, useDictLookup } from './DictLookup'
@@ -209,6 +209,14 @@ export default function RetroactiveReviewModal({ book, onClose }) {
                 onUpdate={patch => update(row.id, patch)}
                 onSave={() => handleSave(row)}
                 onAdvice={() => handleAdvice(row)}
+                onDelete={async () => {
+                  try {
+                    await api.deleteEntity(row.id)
+                    setRows(prev => prev.filter(r => r.id !== row.id))
+                  } catch (e) {
+                    setError(e.message)
+                  }
+                }}
                 bookId={book.id}
               />
             ))
@@ -226,9 +234,11 @@ export default function RetroactiveReviewModal({ book, onClose }) {
   )
 }
 
-function EntityRow({ row, categories, onUpdate, onSave, onAdvice, bookId }) {
+function EntityRow({ row, categories, onUpdate, onSave, onAdvice, onDelete, bookId }) {
   const [showAdvice, setShowAdvice] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
 
   const isDirty =
@@ -351,6 +361,38 @@ function EntityRow({ row, categories, onUpdate, onSave, onAdvice, bookId }) {
             disabled={row.saving}
           >
             {row.saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          </button>
+        )}
+
+        {/* Delete button */}
+        {confirmDelete ? (
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              className="text-xs px-1.5 py-0.5 rounded bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700"
+              onClick={async () => {
+                setDeleting(true)
+                await onDelete()
+                setDeleting(false)
+              }}
+              disabled={deleting}
+            >
+              {deleting ? '...' : 'Yes'}
+            </button>
+            <button
+              className="text-xs px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 border border-slate-600"
+              onClick={() => setConfirmDelete(false)}
+              disabled={deleting}
+            >
+              No
+            </button>
+          </div>
+        ) : (
+          <button
+            className="btn-ghost p-1.5 shrink-0"
+            title="Delete entity"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 size={14} className="text-slate-400 hover:text-rose-400" />
           </button>
         )}
       </div>
