@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
@@ -8,10 +8,13 @@ import Entities from './pages/Entities'
 import Queue from './pages/Queue'
 import Settings from './pages/Settings'
 import Help from './pages/Help'
+import ApiCalls from './pages/ApiCalls'
+import ApiLogPage from './pages/ApiLogPage'
 import Reader from './pages/Reader'
 import Library from './pages/Library'
 import BookDetail from './pages/BookDetail'
 import Login from './pages/Login'
+import NotFound from './pages/NotFound'
 import { api } from './services/api'
 
 // ------------------------------------------------------------------
@@ -69,53 +72,49 @@ function WsProvider({ children }) {
 }
 
 // ------------------------------------------------------------------
-// Auth-gated admin routes
+// Auth gate — pathless layout route that guards all admin routes
 // ------------------------------------------------------------------
-function AdminRoutes() {
-  const [authChecked, setAuthChecked] = useState(false)
-  const [needsLogin, setNeedsLogin] = useState(false)
-
-  useEffect(() => {
-    api.authStatus()
-      .then(({ auth_required, authenticated }) => {
-        setNeedsLogin(auth_required && !authenticated)
-        setAuthChecked(true)
-      })
-      .catch(() => {
-        setAuthChecked(true)
-      })
-  }, [])
-
-  if (!authChecked) {
-    return <div className="min-h-screen bg-slate-900" />
-  }
-
+function AdminGate({ authState, onLoginSuccess }) {
+  const needsLogin = authState.auth_required && !authState.authenticated
   if (needsLogin) {
-    return <Login onSuccess={() => setNeedsLogin(false)} />
+    return <Login onSuccess={onLoginSuccess} />
   }
-
   return (
     <WsProvider>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="books" element={<Books />} />
-          <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
-          <Route path="entities" element={<Entities />} />
-          <Route path="queue" element={<Queue />} />
-          <Route path="settings" element={<Settings />} />
-          <Route path="help" element={<Help />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
+      <Outlet />
     </WsProvider>
   )
+}
+
+// Catch-all for unknown top-level URIs: send unauthenticated users to the
+// public library (when enabled) instead of exposing the admin shell; show a
+// 404 otherwise.
+function UnknownRoute({ authState }) {
+  const needsLogin = authState.auth_required && !authState.authenticated
+  if (needsLogin && authState.public_library) {
+    return <Navigate to="/library" replace />
+  }
+  return <NotFound publicLibrary={authState.public_library} />
 }
 
 // ------------------------------------------------------------------
 // App — public routes are outside the auth gate (when enabled)
 // ------------------------------------------------------------------
 export default function App() {
+  const [authState, setAuthState] = useState(null)
+
+  useEffect(() => {
+    api.authStatus()
+      .then(setAuthState)
+      .catch(() => setAuthState({ auth_required: false, authenticated: true, public_library: true }))
+  }, [])
+
+  if (!authState) {
+    return <div className="min-h-screen bg-slate-900" />
+  }
+
+  const handleLoginSuccess = () => setAuthState({ ...authState, authenticated: true })
+
   return (
     <BrowserRouter>
       <Routes>
@@ -126,8 +125,24 @@ export default function App() {
         <Route path="/library/read/:bookId" element={<Reader isPublic />} />
         <Route path="/read/:bookId/:chapterNum" element={<Reader isPublic />} />
         <Route path="/read/:bookId" element={<Reader isPublic />} />
-        {/* Admin routes — auth gated */}
-        <Route path="/*" element={<AdminRoutes />} />
+        {/* Admin routes — auth gated. Only specific paths are listed, so
+            unknown URIs fall through to the catch-all below rather than
+            resolving to the Dashboard. */}
+        <Route element={<AdminGate authState={authState} onLoginSuccess={handleLoginSuccess} />}>
+          <Route path="/" element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="books" element={<Books />} />
+            <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
+            <Route path="books/:bookId/api-calls" element={<ApiCalls />} />
+            <Route path="api-logs" element={<ApiLogPage />} />
+            <Route path="entities" element={<Entities />} />
+            <Route path="queue" element={<Queue />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="help" element={<Help />} />
+          </Route>
+        </Route>
+        {/* Unknown URIs — redirect unauthenticated users to /library, else 404 */}
+        <Route path="*" element={<UnknownRoute authState={authState} />} />
       </Routes>
     </BrowserRouter>
   )

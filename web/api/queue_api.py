@@ -57,6 +57,7 @@ class QueueAddRequest(BaseModel):
     chapter_number: Optional[int] = None
     title: Optional[str] = None
     priority: bool = False
+    retranslation_reason: Optional[str] = None
 
 
 @router.post("/add")
@@ -73,6 +74,7 @@ async def add_to_queue(req: QueueAddRequest):
         chapter_number=req.chapter_number,
         source="web",
         priority=req.priority,
+        retranslation_reason=req.retranslation_reason,
     )
     if not queue_id:
         raise HTTPException(status_code=500, detail="Failed to add to queue.")
@@ -313,6 +315,7 @@ def _setup_job(queue_item, settings):
     _web_interface.no_clean = settings["no_clean"]
     _web_interface.no_repair = settings["no_repair"]
     _web_interface.no_convert_units = settings["no_convert_units"]
+    _web_interface.retranslation_reason = queue_item.get("retranslation_reason") or None
     _web_interface._current_queue_item = queue_item
 
 
@@ -325,9 +328,13 @@ def _translate_one(queue_item):
             book_name = book.get("title")
 
     ch = queue_item.get("chapter_number")
+    remaining = ""
+    if _job_manager._auto_max:
+        left = _job_manager._auto_max - _job_manager._auto_done
+        remaining = f" ({left} to go)" if left > 0 else " (last)"
     _job_manager.log_activity(
         type='start',
-        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…',
+        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…{remaining}',
         book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,
     )
     _web_interface.run_translation()
@@ -368,9 +375,13 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         if book:
             book_name = book.get("title")
     ch = queue_item.get("chapter_number")
+    remaining = ""
+    if _job_manager._auto_max:
+        left = _job_manager._auto_max - _job_manager._auto_done
+        remaining = f" ({left} to go)" if left > 0 else " (last)"
     await _job_manager.log_activity_async(
         type='start',
-        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…',
+        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…{remaining}',
         book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,
     )
 

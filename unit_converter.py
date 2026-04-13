@@ -2,13 +2,16 @@
 Post-translation Chinese unit → metric conversion.
 
 Appends metric equivalents in parentheses, e.g. "1000 zhang (3.3 km)".
-Pure regex — no LLM needed.
+Uses regex to find matches, with optional AI-powered false positive filtering.
 """
 
 import json
+import logging
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # ── Unit table ──────────────────────────────────────────────────────
 # Loaded from units.json: each entry has value, unit, type
@@ -254,7 +257,7 @@ _vague_prefix = (
 _PATTERN = re.compile(
     r"(?<!['\w])"                       # not preceded by word char or apostrophe
     r"(?!" + _vague_prefix + r")"       # negative lookahead for vague quantifiers
-    r"(" + _numeric + r"|" + _number_words + r"|a|an)"  # number capture
+    r"(" + _numeric + r"|" + _number_words + r"|a\s+full|an\s+full|a|an)"  # number capture
     r"[\s\-]+"                          # separator
     r"(" + _unit_names + r")"           # unit name
     r"s?"                               # optional plural
@@ -300,8 +303,9 @@ def _convert_match(match: re.Match) -> str:
     if _VAGUE_BEFORE.search(before):
         return full
 
-    # Handle "a"/"an" as 1
-    if num_str.lower() in ("a", "an"):
+    # Handle "a"/"an"/"a full"/"an full" as 1
+    normalized = re.sub(r"\s+", " ", num_str.strip().lower())
+    if normalized in ("a", "an", "a full", "an full"):
         number = 1.0
     else:
         number = _word_to_number(num_str)
@@ -336,13 +340,168 @@ def _convert_match(match: re.Match) -> str:
         return f"{full} ({formatted} {final_unit})"
 
 
-def convert_units(lines: List[str]) -> List[str]:
+def _extract_sentence_context(line: str, match_start: int, match_end: int,
+                               max_len: int = 200) -> Tuple[str, int]:
+    """Extract the sentence containing the match, capped at max_len chars.
+
+    Returns (context_string, offset_of_context_start_within_line).
+    """
+    # Search backwards for sentence start
+    sent_start = 0
+    for i in range(match_start - 1, -1, -1):
+        if line[i] in '.!?;\n':
+            sent_start = i + 1
+            break
+
+    # Search forwards for sentence end
+    sent_end = len(line)
+    for i in range(match_end, len(line)):
+        if line[i] in '.!?;\n':
+            sent_end = i + 1
+            break
+
+    context = line[sent_start:sent_end].strip()
+    ctx_offset = sent_start
+
+    # Cap at max_len centered on match if sentence is very long
+    if len(context) > max_len:
+        match_center = (match_start + match_end) // 2 - sent_start
+        half = max_len // 2
+        ctx_start = max(0, match_center - half)
+        ctx_end = min(len(context), ctx_start + max_len)
+        context = context[ctx_start:ctx_end]
+        ctx_offset = sent_start + ctx_start
+
+    return context, ctx_offset
+
+
+def _load_cleaning_prompt() -> str:
+    """Load the unit cleaning prompt from the prompts directory."""
+    prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "prompts", "unit_cleaning_prompt.txt")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _filter_false_positives(lines: List[str], all_matches: list,
+                            cleaning_model: str) -> Set[int]:
+    """Call cleaning model to identify false positive unit matches.
+
+    Args:
+        lines: Original text lines.
+        all_matches: List of (line_idx, match_obj, match_id) tuples.
+        cleaning_model: Model spec string (e.g. "gemini:gemini-2.0-flash").
+
+    Returns:
+        Set of match IDs that should NOT be converted (false positives).
+    """
+    try:
+        from providers import create_provider
+        from config import TranslationConfig
+        config = TranslationConfig()
+
+        # Build context dict with highlighted matches
+        context = {}
+        for line_idx, match, match_id in all_matches:
+            line = lines[line_idx]
+            sentence, ctx_offset = _extract_sentence_context(
+                line, match.start(), match.end()
+            )
+            # Calculate match position within the context string
+            rel_start = match.start() - ctx_offset
+            rel_end = match.end() - ctx_offset
+            # Highlight the match
+            highlighted = (sentence[:rel_start] + ">>>" +
+                          sentence[rel_start:rel_end] + "<<<" +
+                          sentence[rel_end:])
+            context[str(match_id)] = highlighted
+
+        if not context:
+            return set()
+
+        system_prompt = _load_cleaning_prompt()
+        user_prompt = json.dumps(context, ensure_ascii=False, indent=2)
+
+        provider_name, model_name = config.parse_model_spec(cleaning_model)
+        provider = create_provider(provider_name)
+
+        logger.info(f"Filtering {len(context)} unit match(es) with {model_name}...")
+
+        response = provider.chat_completion(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+        )
+
+        raw = provider.get_response_content(response).strip()
+
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw_lines = raw.split("\n")
+            raw = "\n".join(raw_lines[1:-1]) if len(raw_lines) > 2 else raw
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+
+        false_positive_list = json.loads(raw)
+
+        if not isinstance(false_positive_list, list):
+            logger.warning("Cleaning model returned non-list, ignoring")
+            return set()
+
+        result = {int(x) for x in false_positive_list if str(x) in context}
+        if result:
+            logger.info(f"Cleaning model flagged {len(result)} false positive(s)")
+        return result
+
+    except Exception as e:
+        logger.error(f"Unit cleaning model failed, converting all matches: {e}")
+        return set()
+
+
+def convert_units(lines: List[str], cleaning_model: Optional[str] = None) -> List[str]:
     """Convert Chinese units in translated text to include metric equivalents.
 
     Args:
         lines: List of translated text lines.
+        cleaning_model: Optional model spec (provider:model) for AI-powered
+            false positive filtering. If None, all regex matches are converted.
 
     Returns:
         Lines with metric annotations appended where units were found.
     """
-    return [_PATTERN.sub(_convert_match, line) for line in lines]
+    # Pass 1: Collect all matches across all lines
+    all_matches = []  # List of (line_idx, match_obj, match_id)
+    for line_idx, line in enumerate(lines):
+        for match in _PATTERN.finditer(line):
+            all_matches.append((line_idx, match, len(all_matches)))
+
+    if not all_matches:
+        return list(lines)
+
+    # Pass 2: Optionally filter false positives via cleaning model
+    false_positive_ids: Set[int] = set()
+    if cleaning_model:
+        false_positive_ids = _filter_false_positives(
+            lines, all_matches, cleaning_model
+        )
+
+    # Pass 3: Apply conversions, skipping false positives
+    # Group by line index, process in reverse offset order to preserve positions
+    matches_by_line: dict = {}
+    for line_idx, match, match_id in all_matches:
+        matches_by_line.setdefault(line_idx, []).append((match, match_id))
+
+    result = list(lines)
+    for line_idx, match_list in matches_by_line.items():
+        line = result[line_idx]
+        for match, match_id in sorted(match_list, key=lambda x: x[0].start(), reverse=True):
+            if match_id in false_positive_ids:
+                continue
+            replacement = _convert_match(match)
+            line = line[:match.start()] + replacement + line[match.end():]
+        result[line_idx] = line
+
+    return result

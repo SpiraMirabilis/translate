@@ -63,8 +63,33 @@ class DatabaseManager:
 
             chapter_cols = self.backend.get_table_columns(conn, 'chapters')
             if 'is_proofread' not in chapter_cols:
-                cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread INTEGER DEFAULT 0")
+                if self.backend.name == 'mysql':
+                    cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread DATETIME NULL")
+                else:
+                    cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread TEXT")
                 self.logger.info("Added is_proofread column to chapters table")
+            else:
+                # Migrate from INTEGER (0/1) to timestamp if needed
+                if self.backend.name == 'mysql':
+                    # Check if column is still INT and needs conversion to DATETIME
+                    cursor.execute("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chapters' AND COLUMN_NAME = 'is_proofread'")
+                    row = cursor.fetchone()
+                    if row and row[0] == 'int':
+                        now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                        # Add a temp DATETIME column, copy data, swap
+                        cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread_new DATETIME NULL")
+                        cursor.execute("UPDATE chapters SET is_proofread_new = ? WHERE is_proofread = 1", (now,))
+                        cursor.execute("ALTER TABLE chapters DROP COLUMN is_proofread")
+                        cursor.execute("ALTER TABLE chapters CHANGE COLUMN is_proofread_new is_proofread DATETIME NULL")
+                        self.logger.info("Migrated is_proofread from INT to DATETIME (MySQL)")
+                else:
+                    cursor.execute("SELECT COUNT(*) FROM chapters WHERE is_proofread = '1' OR is_proofread = '0'")
+                    count = cursor.fetchone()[0]
+                    if count > 0:
+                        now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                        cursor.execute("UPDATE chapters SET is_proofread = ? WHERE is_proofread = '1'", (now,))
+                        cursor.execute("UPDATE chapters SET is_proofread = NULL WHERE is_proofread = '0'")
+                        self.logger.info("Migrated is_proofread from boolean to timestamp")
 
             book_cols = self.backend.get_table_columns(conn, 'books')
             if 'cover_image' not in book_cols:
@@ -82,6 +107,11 @@ class DatabaseManager:
             if 'status' not in book_cols:
                 cursor.execute("ALTER TABLE books ADD COLUMN status TEXT DEFAULT 'ongoing'")
                 self.logger.info("Added status column to books table")
+
+            queue_cols = self.backend.get_table_columns(conn, 'queue')
+            if 'retranslation_reason' not in queue_cols:
+                cursor.execute("ALTER TABLE queue ADD COLUMN retranslation_reason TEXT")
+                self.logger.info("Added retranslation_reason column to queue table")
 
             # Create covers directory (only meaningful for local installs)
             if self.backend.name == 'sqlite':
@@ -642,7 +672,7 @@ class DatabaseManager:
                 "translation_date": row[7],
                 "model": row[8],
                 "book_title": row[9],
-                "is_proofread": bool(row[10]) if row[10] else False,
+                "is_proofread": row[10],
             }
             
             return chapter_data
@@ -690,7 +720,7 @@ class DatabaseManager:
                     "title": title,
                     "translation_date": translation_date,
                     "model": model,
-                    "is_proofread": bool(is_proofread),
+                    "is_proofread": is_proofread,
                 })
             
             return result
@@ -1008,7 +1038,7 @@ class DatabaseManager:
             return False
 
     # Queue management section
-    def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None, priority=False):
+    def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None, priority=False, retranslation_reason=None):
         """
         Add an item to the translation queue.
 
@@ -1020,6 +1050,8 @@ class DatabaseManager:
             source: Source file path or description (optional)
             metadata: Additional metadata dict (optional)
             priority: If True, place at the front of the queue instead of the back
+            retranslation_reason: Optional free-text reason shown to the model
+                when retranslating an existing chapter. Appended to the system prompt.
 
         Returns:
             int: Queue item ID if successful, None otherwise
@@ -1058,11 +1090,14 @@ class DatabaseManager:
             from datetime import datetime
             created_date = datetime.now().isoformat()
 
+            # Normalize reason: treat empty/whitespace as None
+            reason = (retranslation_reason or "").strip() or None
+
             # Insert queue item
             cursor.execute('''
-            INSERT INTO queue (book_id, chapter_number, title, source, content, metadata, position, created_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (book_id, chapter_number, title or "Untitled", source, content_json, metadata_json, next_position, created_date))
+            INSERT INTO queue (book_id, chapter_number, title, source, content, metadata, position, created_date, retranslation_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (book_id, chapter_number, title or "Untitled", source, content_json, metadata_json, next_position, created_date, reason))
 
             queue_id = cursor.lastrowid
             conn.commit()
@@ -1093,7 +1128,8 @@ class DatabaseManager:
             if book_id:
                 cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
-                       q.metadata, q.position, q.created_date, b.title as book_title
+                       q.metadata, q.position, q.created_date, b.title as book_title,
+                       q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE q.book_id = ?
@@ -1103,7 +1139,8 @@ class DatabaseManager:
             else:
                 cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
-                       q.metadata, q.position, q.created_date, b.title as book_title
+                       q.metadata, q.position, q.created_date, b.title as book_title,
+                       q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 ORDER BY q.position ASC
@@ -1142,7 +1179,8 @@ class DatabaseManager:
                 'metadata': metadata,
                 'position': row[7],
                 'created_date': row[8],
-                'book_title': row[9]
+                'book_title': row[9],
+                'retranslation_reason': row[10],
             }
 
         except Exception as e:
@@ -1205,7 +1243,8 @@ class DatabaseManager:
             if book_id:
                 cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
-                       q.metadata, q.position, q.created_date, b.title as book_title
+                       q.metadata, q.position, q.created_date, b.title as book_title,
+                       q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE q.book_id = ?
@@ -1214,7 +1253,8 @@ class DatabaseManager:
             else:
                 cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
-                       q.metadata, q.position, q.created_date, b.title as book_title
+                       q.metadata, q.position, q.created_date, b.title as book_title,
+                       q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 ORDER BY q.position ASC
@@ -1251,7 +1291,8 @@ class DatabaseManager:
                     'metadata': metadata,
                     'position': row[7],
                     'created_date': row[8],
-                    'book_title': row[9]
+                    'book_title': row[9],
+                    'retranslation_reason': row[10],
                 })
 
             return result
@@ -2456,3 +2497,164 @@ class DatabaseManager:
             conn.close()
         except Exception as e:
             self.logger.error(f"Error deleting wp state: {e}")
+
+    # ------------------------------------------------------------------
+    # API call logging
+    # ------------------------------------------------------------------
+
+    def log_api_call(self, session_id, book_id, chapter_number, chunk_index,
+                     total_chunks, system_prompt, user_prompt, response_text,
+                     model_name, provider, prompt_tokens=0, completion_tokens=0,
+                     total_tokens=0, duration_ms=0, success=1, attempt=0):
+        """Log an LLM API call. Returns the row id or None on failure."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            created_at = datetime.datetime.now().isoformat()
+            cursor.execute(
+                'INSERT INTO api_calls (session_id, book_id, chapter_number, chunk_index, '
+                'total_chunks, system_prompt, user_prompt, response_text, model_name, provider, '
+                'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (session_id, book_id, chapter_number, chunk_index, total_chunks,
+                 system_prompt, user_prompt, response_text, model_name, provider,
+                 prompt_tokens, completion_tokens, total_tokens, duration_ms,
+                 success, attempt, created_at),
+            )
+            row_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return row_id
+        except Exception as e:
+            self.logger.error(f"Error logging API call: {e}")
+            return None
+
+    def get_all_api_calls(self, book_id=None, limit=500):
+        """Get API call logs across all books, optionally filtered by book_id."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            if book_id is not None:
+                cursor.execute(
+                    'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
+                    'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
+                    'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
+                    'b.title as book_title '
+                    'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
+                    'WHERE ac.book_id = ? '
+                    'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
+                    (book_id, limit),
+                )
+            else:
+                cursor.execute(
+                    'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
+                    'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
+                    'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
+                    'b.title as book_title '
+                    'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
+                    'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
+                    (limit,),
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            return [
+                {
+                    'id': r[0], 'session_id': r[1], 'book_id': r[2],
+                    'chapter_number': r[3], 'chunk_index': r[4], 'total_chunks': r[5],
+                    'system_prompt': r[6], 'user_prompt': r[7], 'response_text': r[8],
+                    'model_name': r[9], 'provider': r[10],
+                    'prompt_tokens': r[11], 'completion_tokens': r[12], 'total_tokens': r[13],
+                    'duration_ms': r[14], 'success': r[15], 'attempt': r[16],
+                    'created_at': r[17], 'book_title': r[18],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            self.logger.error(f"Error getting all API calls: {e}")
+            return []
+
+    def get_api_calls(self, book_id, chapter_number=None, limit=500):
+        """Get API call logs for a book, optionally filtered by chapter number."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            if chapter_number is not None:
+                cursor.execute(
+                    'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
+                    'system_prompt, user_prompt, response_text, model_name, provider, '
+                    'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
+                    'FROM api_calls WHERE book_id = ? AND chapter_number = ? '
+                    'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
+                    (book_id, chapter_number, limit),
+                )
+            else:
+                cursor.execute(
+                    'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
+                    'system_prompt, user_prompt, response_text, model_name, provider, '
+                    'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
+                    'FROM api_calls WHERE book_id = ? '
+                    'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
+                    (book_id, limit),
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            return [
+                {
+                    'id': r[0], 'session_id': r[1], 'book_id': r[2],
+                    'chapter_number': r[3], 'chunk_index': r[4], 'total_chunks': r[5],
+                    'system_prompt': r[6], 'user_prompt': r[7], 'response_text': r[8],
+                    'model_name': r[9], 'provider': r[10],
+                    'prompt_tokens': r[11], 'completion_tokens': r[12], 'total_tokens': r[13],
+                    'duration_ms': r[14], 'success': r[15], 'attempt': r[16],
+                    'created_at': r[17],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            self.logger.error(f"Error getting API calls: {e}")
+            return []
+
+    def get_api_call(self, call_id):
+        """Get a single API call log entry by id."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
+                'system_prompt, user_prompt, response_text, model_name, provider, '
+                'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
+                'FROM api_calls WHERE id = ?',
+                (call_id,),
+            )
+            r = cursor.fetchone()
+            conn.close()
+            if not r:
+                return None
+            return {
+                'id': r[0], 'session_id': r[1], 'book_id': r[2],
+                'chapter_number': r[3], 'chunk_index': r[4], 'total_chunks': r[5],
+                'system_prompt': r[6], 'user_prompt': r[7], 'response_text': r[8],
+                'model_name': r[9], 'provider': r[10],
+                'prompt_tokens': r[11], 'completion_tokens': r[12], 'total_tokens': r[13],
+                'duration_ms': r[14], 'success': r[15], 'attempt': r[16],
+                'created_at': r[17],
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting API call: {e}")
+            return None
+
+    def update_api_call_response(self, call_id, response_text):
+        """Update the response_text of an API call log entry."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE api_calls SET response_text = ? WHERE id = ?',
+                (response_text, call_id),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error updating API call response: {e}")
+            return False

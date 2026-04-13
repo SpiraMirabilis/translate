@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -6,6 +6,8 @@ import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import ReaderTOC from '../components/ReaderTOC'
 import ReaderSettings from '../components/ReaderSettings'
 import ReaderSearch from '../components/ReaderSearch'
+import EntityFormModal from '../components/EntityFormModal'
+import { CATEGORY_COLORS } from '../utils/categories'
 import {
   ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search
 } from 'lucide-react'
@@ -44,6 +46,11 @@ export default function Reader({ isPublic = false }) {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [barVisible, setBarVisible] = useState(true)
 
+  // Entity support (visible when authenticated or auth disabled)
+  const [canEdit, setCanEdit] = useState(false)
+  const [entities, setEntities] = useState([])
+  const [editingEntity, setEditingEntity] = useState(null)
+
   const contentRef = useRef(null)
   const barTimer = useRef(null)
 
@@ -76,6 +83,35 @@ export default function Reader({ isPublic = false }) {
     load()
     return () => { cancelled = true }
   }, [bookId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Check if user can edit entities (authenticated or auth disabled)
+  useEffect(() => {
+    api.authStatus()
+      .then(({ auth_required, authenticated }) => {
+        setCanEdit(!auth_required || authenticated)
+      })
+      .catch(() => setCanEdit(false))
+  }, [])
+
+  // Load entities when authenticated
+  useEffect(() => {
+    if (!canEdit || !bookId) return
+    api.listEntities({ book_id: parseInt(bookId), include_global: true })
+      .then(res => setEntities(res.entities || []))
+      .catch(() => setEntities([]))
+  }, [canEdit, bookId])
+
+  const reloadEntities = useCallback(() => {
+    if (!canEdit || !bookId) return
+    api.listEntities({ book_id: parseInt(bookId), include_global: true })
+      .then(res => setEntities(res.entities || []))
+      .catch(() => {})
+  }, [canEdit, bookId])
+
+  const newInChapter = useMemo(
+    () => entities.filter(e => e.origin_chapter === currentNum && e.book_id === parseInt(bookId)),
+    [entities, currentNum, bookId]
+  )
 
   // Load chapter content
   useEffect(() => {
@@ -155,16 +191,21 @@ export default function Reader({ isPublic = false }) {
     return () => window.removeEventListener('keydown', onKey)
   }) // intentionally no deps — uses latest closure
 
-  // Auto-hide top bar on scroll
+  // Auto-hide top bar on scroll — requires meaningful upward scroll to reappear
   const lastScroll = useRef(0)
+  const maxScroll = useRef(0)
   const handleScroll = useCallback(() => {
     const el = contentRef.current
     if (!el) return
     const y = el.scrollTop
     if (y > lastScroll.current && y > 80) {
+      // Scrolling down — hide bar and track furthest point
       setBarVisible(false)
-    } else {
+      maxScroll.current = y
+    } else if (y <= 80 || maxScroll.current - y > 50) {
+      // Near top, or scrolled up 50px from the furthest-down point
       setBarVisible(true)
+      maxScroll.current = 0
     }
     lastScroll.current = y
   }, [])
@@ -304,6 +345,38 @@ export default function Reader({ isPublic = false }) {
               )}
             </header>
 
+            {/* New entities in this chapter */}
+            {canEdit && newInChapter.length > 0 && (
+              <details className="mb-6 text-xs">
+                <summary className={`cursor-pointer select-none ${
+                  isDark ? 'text-indigo-400/70 hover:text-indigo-400'
+                    : prefs.theme === 'sepia' ? 'text-amber-800/60 hover:text-amber-800'
+                    : 'text-indigo-500/70 hover:text-indigo-600'
+                }`}>
+                  {newInChapter.length} new entit{newInChapter.length === 1 ? 'y' : 'ies'} in this chapter
+                </summary>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {newInChapter.map(ent => {
+                    const colors = CATEGORY_COLORS[ent.category] || CATEGORY_COLORS.characters
+                    return (
+                      <span
+                        key={ent.id}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded cursor-pointer
+                                   hover:brightness-150 transition-all"
+                        style={{ backgroundColor: colors.bg, borderBottom: `1px dashed ${colors.border}` }}
+                        title={`${ent.category} — click to edit`}
+                        onClick={() => setEditingEntity(ent)}
+                      >
+                        <span className={isDark ? 'text-slate-400' : prefs.theme === 'sepia' ? 'text-amber-900/70' : 'text-gray-500'}>{ent.untranslated}</span>
+                        <span className={isDark ? 'text-slate-600' : prefs.theme === 'sepia' ? 'text-amber-800/40' : 'text-gray-400'}>&rarr;</span>
+                        <span className={isDark ? 'text-slate-300' : prefs.theme === 'sepia' ? 'text-amber-900' : 'text-gray-700'}>{ent.translation}</span>
+                      </span>
+                    )
+                  })}
+                </div>
+              </details>
+            )}
+
             {/* Chapter text */}
             <div style={contentStyle}>
               {contentMode === 'both' && hasSource ? (
@@ -393,6 +466,15 @@ export default function Reader({ isPublic = false }) {
         theme={prefs.theme}
         api={readerApi}
       />
+
+      {/* Entity edit modal */}
+      {editingEntity && (
+        <EntityFormModal
+          entity={editingEntity}
+          onClose={() => setEditingEntity(null)}
+          onSaved={() => { setEditingEntity(null); reloadEntities() }}
+        />
+      )}
     </div>
   )
 }

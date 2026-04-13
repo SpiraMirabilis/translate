@@ -83,7 +83,7 @@ class OutputFormatter:
         
         # Process based on format
         if format.lower() == "text":
-            return self._save_text(content, title, final_output_path)
+            return self._save_text(content, title, final_output_path, chapter)
         elif format.lower() == "html":
             return self._save_html(content, title, chapter, final_output_path)
         elif format.lower() == "markdown":
@@ -174,7 +174,7 @@ class OutputFormatter:
             # Add each chapter
             for chapter_data in sorted(all_chapters, key=lambda x: x.get('chapter', 0)):
                 chapter_number = chapter_data.get('chapter', 0)
-                chapter_title = chapter_data.get('title', f'Chapter {chapter_number}')
+                chapter_title = self._display_title(chapter_data.get('title', ''), chapter_number)
                 
                 # Handle both 'content' and legacy 'translated_content' keys
                 if 'content' in chapter_data:
@@ -252,6 +252,14 @@ class OutputFormatter:
             self.logger.error(traceback.format_exc())
             return ""
 
+    def _display_title(self, title: str, chapter: Union[int, str] = 0) -> str:
+        """Build a display title with 'Chapter N: Title' format."""
+        if chapter:
+            if title:
+                return f"Chapter {chapter}: {title}"
+            return f"Chapter {chapter}"
+        return title or "Untitled Chapter"
+
     def _clean_filename(self, title: str) -> str:
         """
         Generate a clean filename from a title.
@@ -272,24 +280,26 @@ class OutputFormatter:
         
         return cleaned
     
-    def _save_text(self, content: List[str], title: str, output_path: str) -> str:
+    def _save_text(self, content: List[str], title: str, output_path: str, chapter: Union[int, str] = 0) -> str:
         """
         Save content as plain text.
-        
+
         Args:
             content: List of content lines
             title: Chapter title
             output_path: Path to save the file
-            
+            chapter: Chapter number
+
         Returns:
             str: Path to the saved file
         """
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
+
+            display_title = self._display_title(title, chapter)
             with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(f"{title}\n\n")
+                f.write(f"{display_title}\n\n")
                 for line in content:
                     f.write(f"{line}\n")
             
@@ -321,7 +331,8 @@ class OutputFormatter:
                 f.write('<html lang="en">\n')
                 f.write('<head>\n')
                 f.write('    <meta charset="UTF-8">\n')
-                f.write(f'    <title>{title}</title>\n')
+                display_title = self._display_title(title, chapter)
+                f.write(f'    <title>{display_title}</title>\n')
                 f.write('    <style>\n')
                 f.write('        body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }\n')
                 f.write('        h1 { text-align: center; margin-bottom: 30px; }\n')
@@ -330,7 +341,7 @@ class OutputFormatter:
                 f.write('    </style>\n')
                 f.write('</head>\n')
                 f.write('<body>\n')
-                f.write(f'    <h1>{title}</h1>\n')
+                f.write(f'    <h1>{display_title}</h1>\n')
                 
                 for line in content:
                     if line.strip() == "":
@@ -349,7 +360,7 @@ class OutputFormatter:
             self.logger.error(f"Error saving HTML output: {e}")
             return ""
     
-    def _save_markdown(self, filename_base: str, content: List[str], title: str, chapter: Union[int, str]) -> str:
+    def _save_markdown(self, content: List[str], title: str, chapter: Union[int, str], output_path: str) -> str:
         """
         Save content as Markdown.
         
@@ -362,15 +373,13 @@ class OutputFormatter:
         Returns:
             str: Path to the saved file
         """
-        output_path = os.path.join(self.output_dir, f"{filename_base}.md")
-        
         try:
-
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
+
+            display_title = self._display_title(title, chapter)
             with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(f"# {title}\n\n")
+                f.write(f"# {display_title}\n\n")
                 
                 for line in content:
                     if line.strip() == "":
@@ -384,16 +393,16 @@ class OutputFormatter:
             self.logger.error(f"Error saving Markdown output: {e}")
             return ""
     
-    def _save_epub(self, filename_base: str, content: List[str], title: str, chapter: Union[int, str], book_info: Dict = None) -> str:
+    def _save_epub(self, content: List[str], title: str, chapter: Union[int, str], book_info: Dict = None, output_path: str = None) -> str:
         """
         Save content as EPUB or append to existing EPUB.
-        
+
         Args:
-            filename_base: Base filename
             content: List of content lines
             title: Chapter title
             chapter: Chapter number
             book_info: Optional dictionary with book metadata
+            output_path: Optional output path
             
         Returns:
             str: Path to the saved file
@@ -409,8 +418,9 @@ class OutputFormatter:
             book_language = book_info.get('language', book_language)
         
         # Clean the book title for filename
-        book_filename = self._clean_filename(book_title)
-        output_path = os.path.join(self.output_dir, f"{book_filename}.epub")
+        if not output_path:
+            book_filename = self._clean_filename(book_title)
+            output_path = os.path.join(self.output_dir, f"{book_filename}.epub")
         
         # Determine if we're creating a new EPUB or appending to existing
         append_mode = os.path.exists(output_path)
@@ -480,9 +490,10 @@ class OutputFormatter:
                     html_content += f"<p>{line}</p>\n"
             
             # Create chapter
+            display_title = self._display_title(title, chapter)
             chapter_id = f"chapter_{chapter}"
             chapter_filename = f"chapter_{chapter}.xhtml"
-            
+
             # Check if chapter already exists
             chapter_exists = False
             for item in book.get_items():
@@ -492,28 +503,28 @@ class OutputFormatter:
                     item.content = f'''
                         <html>
                         <head>
-                            <title>{title}</title>
+                            <title>{display_title}</title>
                             <link rel="stylesheet" href="style/default.css" type="text/css" />
                         </head>
                         <body>
-                            <h1>{title}</h1>
+                            <h1>{display_title}</h1>
                             {html_content}
                         </body>
                         </html>
                     '''
                     break
-            
+
             if not chapter_exists:
                 # Create new chapter
-                epub_chapter = epub.EpubHtml(title=title, file_name=chapter_filename, lang=book_language)
+                epub_chapter = epub.EpubHtml(title=display_title, file_name=chapter_filename, lang=book_language)
                 epub_chapter.content = f'''
                     <html>
                     <head>
-                        <title>{title}</title>
+                        <title>{display_title}</title>
                         <link rel="stylesheet" href="style/default.css" type="text/css" />
                     </head>
                     <body>
-                        <h1>{title}</h1>
+                        <h1>{display_title}</h1>
                         {html_content}
                     </body>
                     </html>
@@ -522,7 +533,7 @@ class OutputFormatter:
                 
                 # Add chapter to table of contents and spine
                 book.spine.append(epub_chapter)
-                book.toc.append(epub.Link(chapter_filename, title, chapter_id))
+                book.toc.append(epub.Link(chapter_filename, display_title, chapter_id))
             
             # Save the EPUB file
             # Create directory if it doesn't exist

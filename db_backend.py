@@ -353,6 +353,7 @@ _COMMON_DDL_SQLITE = [
         metadata TEXT,
         position INTEGER NOT NULL,
         created_date TEXT NOT NULL,
+        retranslation_reason TEXT,
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     )''',
     'CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)',
@@ -403,6 +404,32 @@ _COMMON_DDL_SQLITE = [
     )''',
     'CREATE INDEX IF NOT EXISTS idx_reader_log_book ON reader_log(book_id)',
     'CREATE INDEX IF NOT EXISTS idx_reader_log_viewed ON reader_log(viewed_at)',
+
+    # api_calls — logs every LLM API call made during translation
+    '''CREATE TABLE IF NOT EXISTS api_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        book_id INTEGER,
+        chapter_number INTEGER,
+        chunk_index INTEGER NOT NULL,
+        total_chunks INTEGER NOT NULL,
+        system_prompt TEXT,
+        user_prompt TEXT,
+        response_text TEXT,
+        model_name TEXT,
+        provider TEXT,
+        prompt_tokens INTEGER DEFAULT 0,
+        completion_tokens INTEGER DEFAULT 0,
+        total_tokens INTEGER DEFAULT 0,
+        duration_ms INTEGER DEFAULT 0,
+        success INTEGER DEFAULT 1,
+        attempt INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_api_calls_book ON api_calls(book_id)',
+    'CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id)',
+    'CREATE INDEX IF NOT EXISTS idx_api_calls_chapter ON api_calls(book_id, chapter_number)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -465,6 +492,7 @@ _COMMON_DDL_MYSQL = [
         metadata TEXT,
         position INTEGER NOT NULL,
         created_date VARCHAR(50) NOT NULL,
+        retranslation_reason TEXT,
         UNIQUE KEY uq_queue_position (position),
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
@@ -515,6 +543,32 @@ _COMMON_DDL_MYSQL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_reader_log_book ON reader_log(book_id)',
     'CREATE INDEX idx_reader_log_viewed ON reader_log(viewed_at)',
+
+    # api_calls — logs every LLM API call made during translation
+    '''CREATE TABLE IF NOT EXISTS api_calls (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        session_id VARCHAR(36) NOT NULL,
+        book_id INTEGER,
+        chapter_number INTEGER,
+        chunk_index INTEGER NOT NULL,
+        total_chunks INTEGER NOT NULL,
+        system_prompt LONGTEXT,
+        user_prompt LONGTEXT,
+        response_text LONGTEXT,
+        model_name VARCHAR(255),
+        provider VARCHAR(255),
+        prompt_tokens INTEGER DEFAULT 0,
+        completion_tokens INTEGER DEFAULT 0,
+        total_tokens INTEGER DEFAULT 0,
+        duration_ms INTEGER DEFAULT 0,
+        success INTEGER DEFAULT 1,
+        attempt INTEGER DEFAULT 0,
+        created_at VARCHAR(50) NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_api_calls_book ON api_calls(book_id)',
+    'CREATE INDEX idx_api_calls_session ON api_calls(session_id)',
+    'CREATE INDEX idx_api_calls_chapter ON api_calls(book_id, chapter_number)',
 ]
 
 

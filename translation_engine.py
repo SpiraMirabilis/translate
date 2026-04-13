@@ -5,6 +5,7 @@ import math
 import os
 import time
 import re
+import uuid
 from database import DEFAULT_CATEGORIES
 
 class TranslationEngine:
@@ -200,7 +201,7 @@ class TranslationEngine:
         }
         return placeholders.get(source_language, f"示例{category}")
 
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh'):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
 
@@ -208,6 +209,8 @@ class TranslationEngine:
             provider: The model provider instance (used to detect Gemini and remove schema)
             chapter_number: Known chapter number to inject into the prompt template
             source_language: Source language code for the book (default: zh)
+            retranslation_reason: Optional free-text reason for retranslating this chapter,
+                appended as an extra section at the end of the prompt.
         """
         # Debug info
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
@@ -293,6 +296,19 @@ class TranslationEngine:
         if provider and hasattr(provider, 'provider_name') and 'Gemini' in provider.provider_name:
             prompt = template_pattern.sub('', prompt)
             self.logger.debug("Removed JSON schema template for Gemini provider")
+
+        # Append retranslation reason (if any) as a final, high-priority section
+        reason = (retranslation_reason or "").strip()
+        if reason:
+            prompt = prompt.rstrip() + (
+                "\n\n---\n\n"
+                "RETRANSLATION NOTE:\n"
+                "This chapter is being retranslated because a previous attempt was unsatisfactory. "
+                "The user's reason for retranslation is below. Pay particular attention to it and "
+                "avoid repeating the same mistake.\n\n"
+                f"{reason}\n"
+            )
+            self.logger.info(f"Appended retranslation reason to system prompt ({len(reason)} chars)")
 
         return prompt
     
@@ -503,7 +519,7 @@ class TranslationEngine:
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None):
+    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None):
         """
         Translate a chapter of text using the configured LLM.
 
@@ -513,10 +529,16 @@ class TranslationEngine:
             stream (bool): Whether to use streaming output.
             progress_callback (callable, optional): Callback for chunk progress updates.
             chapter_number (int, optional): Known chapter number, injected into the system prompt.
+            retranslation_reason (str, optional): Free-text reason for retranslating an
+                existing chapter. Appended to the system prompt so the model knows what
+                the previous attempt got wrong.
 
         Returns:
             dict: A dictionary containing the translated chapter data.
         """
+        # Unique session ID for this translation run (groups all chunks together)
+        session_id = str(uuid.uuid4())
+
         # Strip common scraping artifacts from the last line
         if chapter_text and chapter_text[-1].strip() == '(本章完)':
             chapter_text = chapter_text[:-1]
@@ -578,7 +600,8 @@ class TranslationEngine:
         # Generate the initial system prompt
         system_prompt = self.generate_system_prompt(chapter_text, old_entities,
                                                book_prompt_template=book_prompt_template, provider=provider,
-                                               chapter_number=chapter_number, source_language=source_language)
+                                               chapter_number=chapter_number, source_language=source_language,
+                                               retranslation_reason=retranslation_reason)
 
         # Split the text into chunks for the LLM if necessary due to output token limits
         split_text = list(self.split_by_n(chapter_text, chunks_count))
@@ -637,6 +660,7 @@ class TranslationEngine:
                     response_text = ""
                     chunk_count = 0
                     start_time = time.time()
+                    call_start_time = time.time()
                     repetition_detected = False
 
                     try:
@@ -700,6 +724,14 @@ class TranslationEngine:
                     except Exception as e:
                         print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
                         self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
+                        self.entity_manager.log_api_call(
+                            session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                            chunk_index=chunk_index, total_chunks=len(split_text),
+                            system_prompt=system_prompt, user_prompt=user_text, response_text="",
+                            model_name=model_name, provider=provider.provider_name,
+                            duration_ms=int((time.time() - call_start_time) * 1000),
+                            success=0, attempt=attempt,
+                        )
                         if attempt < MAX_STREAM_RETRIES:
                             continue
                         else:
@@ -710,6 +742,19 @@ class TranslationEngine:
                     total_output_tokens += token_count
                     self.logger.info(f"Chunk {chunk_index}/{len(split_text)} attempt {attempt + 1} - Input chars: {len(chunk_str)}, Output tokens (est): {token_count}, Ratio: {token_count / len(chunk_str):.2f}")
 
+                    # Log the API call to the database
+                    self.entity_manager.log_api_call(
+                        session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                        chunk_index=chunk_index, total_chunks=len(split_text),
+                        system_prompt=system_prompt, user_prompt=user_text,
+                        response_text=response_text,
+                        model_name=model_name, provider=provider.provider_name,
+                        completion_tokens=token_count,
+                        duration_ms=int((time.time() - call_start_time) * 1000),
+                        success=0 if (repetition_detected or not response_text.strip()) else 1,
+                        attempt=attempt,
+                    )
+
                     if repetition_detected and attempt < MAX_STREAM_RETRIES:
                         continue  # retry the chunk
 
@@ -719,9 +764,8 @@ class TranslationEngine:
                         if attempt < MAX_STREAM_RETRIES:
                             print(f"\n⚠️  Empty response on chunk {chunk_index}. Retrying...")
                             continue
-                        # Last attempt — fall through to JSON parse which will
-                        # trigger the fix callback with a clear message
-                        response_text = "(empty response from model)"
+                        # Last attempt — fall through to JSON parse with empty string
+                        # (don't substitute a fake string that masks the real problem)
 
                     print("\rTranslation complete. Parsing response...                 ")
 
@@ -771,6 +815,7 @@ class TranslationEngine:
                 for attempt in range(MAX_RETRIES + 1):
                     if attempt > 0:
                         print(f"🔄 Retrying chunk {chunk_index} (attempt {attempt + 1}/{MAX_RETRIES + 1})...")
+                    call_start_time = time.time()
                     try:
                         response = provider.chat_completion(
                             messages=[
@@ -789,6 +834,19 @@ class TranslationEngine:
                             response_format={"type": "json_object"}
                         )
                         response_content = provider.get_response_content(response)
+                        usage = response.get("usage", {}) if isinstance(response, dict) else {}
+                        self.entity_manager.log_api_call(
+                            session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                            chunk_index=chunk_index, total_chunks=len(split_text),
+                            system_prompt=system_prompt, user_prompt=user_text,
+                            response_text=response_content,
+                            model_name=model_name, provider=provider.provider_name,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                            duration_ms=int((time.time() - call_start_time) * 1000),
+                            success=1, attempt=attempt,
+                        )
                         parsed_chunk = provider.validate_json_response(response_content)
                         break
                     except json.JSONDecodeError as e:
@@ -825,6 +883,14 @@ class TranslationEngine:
                             raise
                     except Exception as e:
                         self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
+                        self.entity_manager.log_api_call(
+                            session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                            chunk_index=chunk_index, total_chunks=len(split_text),
+                            system_prompt=system_prompt, user_prompt=user_text, response_text="",
+                            model_name=model_name, provider=provider.provider_name,
+                            duration_ms=int((time.time() - call_start_time) * 1000),
+                            success=0, attempt=attempt,
+                        )
                         if attempt < MAX_RETRIES:
                             print(f"⚠️  Connection error: {e}. Retrying...")
                         else:

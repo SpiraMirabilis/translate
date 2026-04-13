@@ -108,6 +108,31 @@ export default function BookDetail() {
 
   const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
 
+  const [epubLoading, setEpubLoading] = useState(false)
+
+  const handleEpubDownload = async () => {
+    setEpubLoading(true)
+    try {
+      const res = await fetch(`/api/public/books/${bookId}/epub`, { credentials: 'same-origin' })
+      if (!res.ok) throw new Error('Download failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const disposition = res.headers.get('content-disposition')
+      const match = disposition?.match(/filename="?(.+?)"?$/i)
+      a.download = match?.[1] || `${book?.title || 'book'}.epub`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      // silently fail — user can retry
+    } finally {
+      setEpubLoading(false)
+    }
+  }
+
   const currentChapter = progress?.[bookId]
   const hasProgress = currentChapter && currentChapter > 1
 
@@ -223,14 +248,14 @@ export default function BookDetail() {
                   No chapters yet
                 </span>
               )}
-              <a
-                href={`/api/public/books/${bookId}/epub`}
-                download
-                className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2`}
+              <button
+                onClick={handleEpubDownload}
+                disabled={epubLoading}
+                className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2 ${epubLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
-                <Download size={16} />
-                EPUB
-              </a>
+                {epubLoading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                {epubLoading ? 'Preparing...' : 'EPUB'}
+              </button>
             </div>
           </div>
         </div>
@@ -249,14 +274,14 @@ export default function BookDetail() {
         {chapters.length > 0 && (
           <section className="mt-10">
             <h2 className={`text-lg font-semibold ${t.sectionTitle} mb-3`}>Chapters</h2>
-            <div className={`border-t ${t.divider}`}>
+            <div className={`border-t ${t.divider} md:columns-2 md:gap-x-6`}>
               {displayedChapters.map(ch => {
                 const isCurrent = currentChapter === ch.chapter
                 return (
                   <Link
                     key={ch.chapter}
                     to={`/library/read/${bookId}/${ch.chapter}`}
-                    className={`flex items-center py-3 px-3 -mx-3 rounded transition-colors ${isCurrent ? t.progressHighlight : t.chapterRow} group`}
+                    className={`flex items-center py-3 px-3 -mx-3 rounded transition-colors break-inside-avoid ${isCurrent ? t.progressHighlight : t.chapterRow} group`}
                   >
                     <span className={`w-16 flex-shrink-0 text-sm font-mono ${t.chapterNum}`}>
                       Ch {ch.chapter}

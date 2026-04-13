@@ -190,10 +190,11 @@ class WebInterface(UserInterface):
         display_text = chunk_text[:500] + ('…' if len(chunk_text) > 500 else '')
 
         payload = {
-            "raw_response": raw_response,
+            "raw_response": raw_response or "",
             "chunk_index": chunk_index,
             "total_chunks": total_chunks,
             "chunk_text": display_text,
+            "is_empty": not bool(raw_response and raw_response.strip()),
         }
         self.job_manager.pending_json_fix = payload
         self.job_manager.send_message_sync({

@@ -3,6 +3,17 @@ export const DEFAULT_CATEGORIES = [
   'titles', 'equipment', 'creatures'
 ]
 
+// rgba-based colors for entity highlighting overlays (used in ChapterEditor, Reader)
+export const CATEGORY_COLORS = {
+  characters:    { bg: 'rgba(99,102,241,0.28)',  border: 'rgba(99,102,241,0.6)' },   // indigo
+  places:        { bg: 'rgba(34,197,94,0.28)',   border: 'rgba(34,197,94,0.6)' },    // green
+  organizations: { bg: 'rgba(249,115,22,0.28)',  border: 'rgba(249,115,22,0.6)' },   // orange
+  abilities:     { bg: 'rgba(168,85,247,0.28)',  border: 'rgba(168,85,247,0.6)' },   // purple
+  titles:        { bg: 'rgba(236,72,153,0.28)',  border: 'rgba(236,72,153,0.6)' },   // pink
+  equipment:     { bg: 'rgba(234,179,8,0.28)',   border: 'rgba(234,179,8,0.6)' },    // yellow
+  creatures:     { bg: 'rgba(6,182,212,0.28)',   border: 'rgba(6,182,212,0.6)' },    // cyan
+}
+
 const DEFAULT_COLORS = {
   characters:    'badge-indigo',
   places:        'badge-emerald',

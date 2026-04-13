@@ -62,6 +62,9 @@ export const api = {
   updateChapter:       (bookId, num, body) => put(`/api/books/${bookId}/chapters/${num}`, body),
   deleteChapter:       (bookId, num)  => del(`/api/books/${bookId}/chapters/${num}`),
   setProofread:        (bookId, num, isProofread) => put(`/api/books/${bookId}/chapters/${num}/proofread`, { is_proofread: isProofread }),
+  batchDeleteChapters: (bookId, chapters) => post(`/api/books/${bookId}/chapters/batch-delete`, { chapters }),
+  batchProofread:      (bookId, chapters, isProofread) => post(`/api/books/${bookId}/chapters/batch-proofread`, { chapters, is_proofread: isProofread }),
+  batchRequeue:        (bookId, chapters, retranslationReason = null) => post(`/api/books/${bookId}/chapters/batch-requeue`, { chapters, retranslation_reason: retranslationReason }),
 
   // Genres
   listGenres:    ()              => get('/api/books/genres'),
@@ -127,6 +130,12 @@ export const api = {
   // Activity log
   getActivityLog:    ()  => get('/api/activity-log'),
   clearActivityLog:  ()  => del('/api/activity-log'),
+
+  // API call logs
+  listAllApiCalls: (bookId) => get(`/api/api-calls${bookId != null ? '?book_id=' + bookId : ''}`),
+  listApiCalls:    (bookId, chapterNum) => get(`/api/api-calls/${bookId}${chapterNum != null ? '?chapter_number=' + chapterNum : ''}`),
+  getApiCall:      (id)       => get(`/api/api-calls/detail/${id}`),
+  updateApiCall:   (id, body) => put(`/api/api-calls/detail/${id}`, body),
 
   // Dictionary
   dictLookup:       (q)          => get(`/api/dict/lookup?q=${encodeURIComponent(q)}`),

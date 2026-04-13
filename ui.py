@@ -80,6 +80,7 @@ class UserInterface(ABC):
                     progress_callback=getattr(self, 'progress_callback', None),
                     chapter_number=getattr(self, 'chapter_number', None),
                     json_fix_callback=getattr(self, 'json_fix_callback', None),
+                    retranslation_reason=getattr(self, 'retranslation_reason', None),
                 )
 
                 if translation_results is None:
@@ -699,7 +700,8 @@ class UserInterface(ABC):
     def _convert_chinese_units(self, content: List[str]) -> List[str]:
         """Append metric equivalents to Chinese measurement units in translated text."""
         from unit_converter import convert_units
-        return convert_units(content)
+        model = getattr(self, 'cleaning_model', None)
+        return convert_units(content, cleaning_model=model)
 
     def _fix_partial_translations(self, content: List[str], source_language: str = 'zh') -> List[str]:
         """

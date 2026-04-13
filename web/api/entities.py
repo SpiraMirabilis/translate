@@ -78,6 +78,8 @@ class PropagateRequest(BaseModel):
     new_translation: str
     action: str  # "substitute" | "requeue"
     from_chapter: Optional[int] = None  # only affect chapters >= this number
+    old_gender: Optional[str] = None
+    new_gender: Optional[str] = None
 
 
 # ------------------------------------------------------------------
@@ -617,6 +619,47 @@ async def propagate_change(req: PropagateRequest):
         return {"status": "ok", "affected": affected}
 
     elif req.action == "requeue":
+        # Build an auto-generated retranslation reason from whatever actually
+        # changed on the entity (translation and/or gender), so the model knows
+        # exactly what was corrected.
+        old_t = (req.old_translation or "").strip()
+        new_t = (req.new_translation or "").strip()
+        old_g = (req.old_gender or "").strip().lower() or None
+        new_g = (req.new_gender or "").strip().lower() or None
+        translation_changed = bool(new_t) and old_t != new_t
+        gender_changed = old_g != new_g
+
+        clauses = []
+        if translation_changed and old_t:
+            clauses.append(
+                f"The entity \"{untranslated}\" was previously translated as "
+                f"\"{old_t}\" but has been corrected to \"{new_t}\"."
+            )
+        elif translation_changed and not old_t:
+            clauses.append(
+                f"The entity \"{untranslated}\" now has a canonical translation "
+                f"(\"{new_t}\")."
+            )
+        if gender_changed:
+            # Humanize None -> "unspecified" for readability
+            def _g(v):
+                return v if v else "unspecified"
+            clauses.append(
+                f"The character entity \"{untranslated}\" gender has changed "
+                f"from {_g(old_g)} to {_g(new_g)}. Please use the appropriate "
+                f"pronouns and gendered language consistently."
+            )
+
+        if clauses:
+            auto_reason = " ".join(clauses)
+            if translation_changed and not gender_changed:
+                auto_reason += " Please use the corrected translation consistently throughout this chapter."
+        else:
+            auto_reason = (
+                f"The entity \"{untranslated}\" was edited. Please re-check its "
+                f"translation and any related terminology throughout this chapter."
+            )
+
         affected = 0
         for ch in chapters:
             try:
@@ -636,6 +679,7 @@ async def propagate_change(req: PropagateRequest):
                     title=ch["title"] or f"Chapter {ch['chapter_number']}",
                     chapter_number=ch["chapter_number"],
                     source="retranslation",
+                    retranslation_reason=auto_reason,
                 )
                 affected += 1
 

@@ -9,13 +9,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, Trash2, CheckCircle2, Search, Pencil, Globe } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, CheckCircle2, Search, Pencil, Globe } from 'lucide-react'
 import ComboBox from '../components/ComboBox'
 import { useSearch } from '../hooks/useSearch'
 import SearchBar from '../components/SearchBar'
-import DeleteEntityModal from '../components/DeleteEntityModal'
-
-const CATEGORIES = ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']
+import EntityFormModal from '../components/EntityFormModal'
+import { CATEGORY_COLORS } from '../utils/categories'
 
 // ── Trim empty lines from start/end of an array ─────────────────────
 function trimEmptyLines(lines) {
@@ -91,16 +90,6 @@ function pinyinToMarked(pinyin) {
 
 
 // ── Entity highlighting helpers ──────────────────────────────────────
-// Category → color mapping for entity highlights
-const CATEGORY_COLORS = {
-  characters:    { bg: 'rgba(99,102,241,0.28)',  border: 'rgba(99,102,241,0.6)' },   // indigo
-  places:        { bg: 'rgba(34,197,94,0.28)',   border: 'rgba(34,197,94,0.6)' },    // green
-  organizations: { bg: 'rgba(249,115,22,0.28)',  border: 'rgba(249,115,22,0.6)' },   // orange
-  abilities:     { bg: 'rgba(168,85,247,0.28)',  border: 'rgba(168,85,247,0.6)' },   // purple
-  titles:        { bg: 'rgba(236,72,153,0.28)',  border: 'rgba(236,72,153,0.6)' },   // pink
-  equipment:     { bg: 'rgba(234,179,8,0.28)',   border: 'rgba(234,179,8,0.6)' },    // yellow
-  creatures:     { bg: 'rgba(6,182,212,0.28)',   border: 'rgba(6,182,212,0.6)' },    // cyan
-}
 
 /**
  * Build a matcher object from entities.
@@ -384,179 +373,6 @@ function RetranslateModal({ chineseText, lineIndex, allLines, bookId, providers,
             </div>
           )}
         </div>
-      </div>
-    </div>
-  )
-}
-
-
-// ── Inline Entity Edit Modal ─────────────────────────────────────────
-function EntityEditModal({ entity, onClose, onSaved }) {
-  const [form, setForm] = useState({
-    category: entity.category,
-    translation: entity.translation,
-    gender: entity.gender || '',
-    note: entity.note || '',
-  })
-  const [saving, setSaving] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-  const [showDeleteModal, setShowDeleteModal] = useState(false)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
-
-  const handleSave = async () => {
-    if (!form.translation.trim()) { setError('Translation is required'); return }
-    setSaving(true); setError(null)
-    try {
-      await api.updateEntity(entity.id, {
-        category: form.category,
-        translation: form.translation,
-        gender: form.gender || null,
-        note: form.note || null,
-      })
-      onSaved()
-    } catch (e) {
-      setError(e.message); setSaving(false)
-    }
-  }
-
-  const handleDelete = async (decase) => {
-    setShowDeleteModal(false)
-    setDeleting(true); setError(null)
-    try {
-      if (decase && entity.book_id && entity.translation && /^[A-Z]/.test(entity.translation)) {
-        await api.decaseEntity({ translation: entity.translation, book_id: entity.book_id })
-      }
-      await api.deleteEntity(entity.id)
-      onSaved()
-    } catch (e) {
-      setError(e.message); setDeleting(false)
-    }
-  }
-
-  const colors = CATEGORY_COLORS[entity.category] || CATEGORY_COLORS.characters
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-2xl w-[420px] max-w-[90vw]">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <span
-              className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: colors.border }}
-            />
-            <span className="text-sm font-medium text-slate-200">Edit Entity</span>
-          </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300">
-            <X size={14} />
-          </button>
-        </div>
-
-        <div className="px-4 py-3 space-y-3">
-          {/* Untranslated (read-only) */}
-          <div>
-            <label className="text-xs text-slate-600 uppercase tracking-wider block mb-1">Chinese</label>
-            <div className="text-sm text-slate-300 bg-slate-950 rounded px-3 py-2 font-mono">
-              {entity.untranslated}
-            </div>
-          </div>
-
-          {/* Translation */}
-          <div>
-            <label className="text-xs text-slate-600 uppercase tracking-wider block mb-1">Translation</label>
-            <input
-              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200
-                         focus:outline-none focus:border-indigo-500"
-              value={form.translation}
-              onChange={e => setForm(f => ({ ...f, translation: e.target.value }))}
-              autoFocus
-            />
-          </div>
-
-          {/* Category */}
-          <div>
-            <label className="text-xs text-slate-600 uppercase tracking-wider block mb-1">Category</label>
-            <select
-              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200
-                         focus:outline-none focus:border-indigo-500"
-              value={form.category}
-              onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-            >
-              {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-
-          {/* Gender (characters only) */}
-          {form.category === 'characters' && (
-            <div>
-              <label className="text-xs text-slate-600 uppercase tracking-wider block mb-1">Gender</label>
-              <select
-                className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200
-                           focus:outline-none focus:border-indigo-500"
-                value={form.gender}
-                onChange={e => setForm(f => ({ ...f, gender: e.target.value }))}
-              >
-                <option value="">Unknown</option>
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-                <option value="neutral">Neutral</option>
-              </select>
-            </div>
-          )}
-
-          {/* Note */}
-          <div>
-            <label className="text-xs text-slate-600 uppercase tracking-wider block mb-1">Note</label>
-            <input
-              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200
-                         focus:outline-none focus:border-indigo-500"
-              value={form.note}
-              onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
-              placeholder="Translation guidance for AI"
-            />
-          </div>
-
-          {/* Book scope indicator */}
-          <div className="text-xs text-slate-600">
-            {entity.book_id ? `Book-specific (book ${entity.book_id})` : 'Global entity'}
-          </div>
-
-          {error && <p className="text-rose-400 text-xs">{error}</p>}
-
-          <div className="flex items-center justify-between pt-1">
-            <button
-              className="text-xs text-rose-400/70 hover:text-rose-400 flex items-center gap-1"
-              onClick={() => setShowDeleteModal(true)}
-              disabled={deleting}
-            >
-              {deleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-              Delete
-            </button>
-            <div className="flex gap-2">
-              <button className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
-              <button
-                className="btn-primary text-sm flex items-center gap-1.5"
-                onClick={handleSave}
-                disabled={saving}
-              >
-                {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      {showDeleteModal && (
-        <DeleteEntityModal
-          entities={[entity]}
-          onConfirm={handleDelete}
-          onCancel={() => setShowDeleteModal(false)}
-        />
-      )}
       </div>
     </div>
   )
@@ -1594,7 +1410,7 @@ export default function ChapterEditor() {
               : 'border-slate-700 text-slate-500 hover:text-slate-400'
           }`}
           onClick={toggleProofread}
-          title={isProofread ? 'Marked as proofread' : 'Mark as proofread'}
+          title={isProofread ? `Proofread ${new Date(isProofread).toLocaleDateString()}` : 'Mark as proofread'}
         >
           <CheckCircle2 size={12} />
           {isProofread ? 'Proofread' : 'Not proofread'}
@@ -1865,7 +1681,7 @@ export default function ChapterEditor() {
       )}
 
       {editingEntity && (
-        <EntityEditModal
+        <EntityFormModal
           entity={editingEntity}
           onClose={() => setEditingEntity(null)}
           onSaved={handleEntitySaved}

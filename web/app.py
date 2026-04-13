@@ -12,9 +12,10 @@ import os
 # Make the project root importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from config import TranslationConfig
 from logger import Logger
@@ -23,7 +24,7 @@ from translation_engine import TranslationEngine
 
 from web.services.job_manager import job_manager
 from web.services.web_interface import WebInterface
-from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, wordpress_api, health, public
+from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public
 from web.auth import configure_auth, AuthMiddleware, router as auth_router
 
 # ------------------------------------------------------------------
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     settings_api.init_db(entity_manager)
     dictionary_api.init(entity_manager, translator)
     activity_log_api.init(entity_manager)
+    api_calls.init(entity_manager)
     wordpress_api.init(config, entity_manager, job_manager)
     health.init(entity_manager)
     public.init(entity_manager)
@@ -60,6 +62,24 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Static asset cache headers
+    class CacheHeaderMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            response = await call_next(request)
+            path = request.url.path
+            if path.startswith("/assets/"):
+                # Vite-built assets have content hashes — cache for 1 year
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif path.endswith((".ico", ".png", ".jpg", ".svg", ".webp", ".woff2", ".woff")):
+                # Other static files — cache for 1 day
+                response.headers["Cache-Control"] = "public, max-age=86400"
+            elif path == "/" or (not path.startswith("/api/") and not path.startswith("/ws") and "." not in path.split("/")[-1]):
+                # SPA HTML pages — always revalidate
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+
+    app.add_middleware(CacheHeaderMiddleware)
 
     # Auth — must be added after CORS so CORS headers are still set on 401s
     configure_auth()
@@ -76,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_api.router)
     app.include_router(dictionary_api.router)
     app.include_router(activity_log_api.router)
+    app.include_router(api_calls.router)
     app.include_router(wordpress_api.router)
     app.include_router(health.router)
     app.include_router(public.router)

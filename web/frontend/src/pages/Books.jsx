@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../services/api'
 import { useWs } from '../App'
-import { useLocalStorage } from '../hooks/useLocalStorage'
-import ComboBox from '../components/ComboBox'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Info, Globe, Tags, Search, Eye, EyeOff, ListChecks
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, SquareMinus, Code
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -22,12 +20,17 @@ export default function Books() {
   const [editingChapter, setEditingChapter] = useState(null)
   const [editingPrompt, setEditingPrompt] = useState(null) // book obj or null
   const [retranslating, setRetranslating] = useState(null) // { bookId, chapter, title } or null
+  const [batchRetranslating, setBatchRetranslating] = useState(null) // { bookId, chapters: number[] } or null
   const [publishingBook, setPublishingBook] = useState(null) // book obj or null
   const [categoriesBook, setCategoriesBook] = useState(null) // book obj or null
   const [showSearch, setShowSearch] = useState(false)
   const [reviewingBook, setReviewingBook] = useState(null)
   const [exporting, setExporting] = useState(null) // 'bookId-format' or null
+  const [selected, setSelected] = useState({})    // { bookId: Set of chapter numbers }
+  const [lastChecked, setLastChecked] = useState({}) // { bookId: chapter number }
+  const [batchBusy, setBatchBusy] = useState(false)
   const [error, setError] = useState(null)
+  const navigate = useNavigate()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -64,6 +67,7 @@ export default function Books() {
   const toggleExpand = async (bookId) => {
     if (expandedBook === bookId) {
       setExpandedBook(null)
+      setSelected(prev => ({ ...prev, [bookId]: new Set() }))
     } else {
       setExpandedBook(bookId)
       await loadChapters(bookId)
@@ -110,6 +114,77 @@ export default function Books() {
     } catch (e) {
       alert(`Failed to update visibility: ${e.message}`)
     }
+  }
+
+  const getSelected = (bookId) => selected[bookId] || new Set()
+  const selectedCount = (bookId) => getSelected(bookId).size
+
+  const toggleChapter = (bookId, chapterNum, shiftKey) => {
+    setSelected(prev => {
+      const cur = new Set(prev[bookId] || [])
+      const chapterList = (chapters[bookId] || []).map(c => c.chapter)
+      if (shiftKey && lastChecked[bookId] != null) {
+        const lastIdx = chapterList.indexOf(lastChecked[bookId])
+        const curIdx = chapterList.indexOf(chapterNum)
+        if (lastIdx !== -1 && curIdx !== -1) {
+          const [from, to] = lastIdx < curIdx ? [lastIdx, curIdx] : [curIdx, lastIdx]
+          for (let i = from; i <= to; i++) cur.add(chapterList[i])
+        }
+      } else {
+        if (cur.has(chapterNum)) cur.delete(chapterNum)
+        else cur.add(chapterNum)
+      }
+      return { ...prev, [bookId]: cur }
+    })
+    setLastChecked(prev => ({ ...prev, [bookId]: chapterNum }))
+  }
+
+  const selectAll = (bookId) => {
+    const all = new Set((chapters[bookId] || []).map(c => c.chapter))
+    setSelected(prev => ({ ...prev, [bookId]: all }))
+  }
+
+  const unselectAll = (bookId) => {
+    setSelected(prev => ({ ...prev, [bookId]: new Set() }))
+  }
+
+  const handleBatchDelete = async (bookId) => {
+    const nums = [...getSelected(bookId)]
+    if (!nums.length) return
+    if (!confirm(`Delete ${nums.length} chapter(s)?`)) return
+    setBatchBusy(true)
+    try {
+      await api.batchDeleteChapters(bookId, nums)
+      setChapters(prev => ({
+        ...prev,
+        [bookId]: (prev[bookId] || []).filter(c => !getSelected(bookId).has(c.chapter))
+      }))
+      unselectAll(bookId)
+    } catch (e) { alert(e.message) }
+    finally { setBatchBusy(false) }
+  }
+
+  const handleBatchProofread = async (bookId) => {
+    const nums = [...getSelected(bookId)]
+    if (!nums.length) return
+    setBatchBusy(true)
+    try {
+      await api.batchProofread(bookId, nums, true)
+      setChapters(prev => ({
+        ...prev,
+        [bookId]: (prev[bookId] || []).map(c =>
+          getSelected(bookId).has(c.chapter) ? { ...c, is_proofread: new Date().toISOString() } : c
+        )
+      }))
+      unselectAll(bookId)
+    } catch (e) { alert(e.message) }
+    finally { setBatchBusy(false) }
+  }
+
+  const handleBatchRequeue = (bookId) => {
+    const nums = [...getSelected(bookId)].sort((a, b) => a - b)
+    if (!nums.length) return
+    setBatchRetranslating({ bookId, chapters: nums })
   }
 
   return (
@@ -208,6 +283,7 @@ export default function Books() {
                     onCategories={() => setCategoriesBook(book)}
                     onReview={() => setReviewingBook(book)}
                     onPrompt={() => setEditingPrompt(book)}
+                    onApiLogs={() => navigate(`/books/${book.id}/api-calls`)}
                     onEdit={() => { setEditingBook(book); setShowForm(true) }}
                     onDelete={() => handleDelete(book.id)}
                   />
@@ -220,69 +296,125 @@ export default function Books() {
                   {(chapters[book.id] || []).length === 0 ? (
                     <p className="text-xs text-slate-500">No chapters yet.</p>
                   ) : (
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-xs text-slate-500 border-b border-slate-700">
-                          <th className="text-left pb-2 font-medium">Ch.</th>
-                          <th className="text-left pb-2 font-medium">Title</th>
-                          <th className="text-left pb-2 font-medium hidden sm:table-cell">Model</th>
-                          <th className="text-left pb-2 font-medium hidden sm:table-cell">Date</th>
-                          <th className="pb-2" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(chapters[book.id] || []).map(ch => (
-                          <tr key={ch.chapter} className={`border-b border-slate-800 last:border-0 ${!ch.is_proofread ? 'bg-amber-500/5' : ''}`}>
-                            <td className="py-2 text-slate-400 font-mono">
-                              <span className="inline-flex items-center gap-1">
-                                {ch.chapter}
-                                {ch.is_proofread
-                                  ? <CheckCircle2 size={11} className="text-emerald-500" />
-                                  : <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500/60" title="Not proofread" />
-                                }
-                              </span>
-                            </td>
-                            <td className="py-2 text-slate-300 truncate max-w-[240px]">{ch.title}</td>
-                            <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">{ch.model || '—'}</td>
-                            <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">
-                              {ch.translation_date ? new Date(ch.translation_date).toLocaleDateString() : '—'}
-                            </td>
-                            <td className="py-2">
-                              <div className="flex gap-1 justify-end">
-                                <Link
-                                  to={`/read/${book.id}?chapter=${ch.chapter}`}
-                                  className="btn-ghost p-1"
-                                  title="Read from here"
-                                >
-                                  <BookOpen size={12} />
-                                </Link>
-                                <button
-                                  className="btn-ghost p-1"
-                                  title="Retranslate chapter"
-                                  onClick={() => setRetranslating({ bookId: book.id, chapter: ch.chapter, title: ch.title })}
-                                >
-                                  <Sparkles size={12} />
-                                </button>
-                                <Link
-                                  to={`/books/${book.id}/chapters/${ch.chapter}/edit`}
-                                  className="btn-ghost p-1"
-                                  title="Edit translation"
-                                >
-                                  <Edit2 size={12} />
-                                </Link>
-                                <button
-                                  className="btn-ghost p-1 hover:text-rose-400"
-                                  title="Delete chapter"
-                                  onClick={() => handleDeleteChapter(book.id, ch.chapter)}
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              </div>
-                            </td>
+                    <>
+                      {/* Selection toolbar */}
+                      <div className="flex items-center gap-2 mb-2 text-xs">
+                        <button className="btn-ghost px-2 py-1 text-xs" onClick={() => selectAll(book.id)}>Select All</button>
+                        <button className="btn-ghost px-2 py-1 text-xs" onClick={() => unselectAll(book.id)}>Unselect All</button>
+                        <Link to={`/books/${book.id}/api-calls`} className="btn-ghost px-2 py-1 text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1">
+                          <Code size={12} /> API Logs
+                        </Link>
+                        {selectedCount(book.id) > 0 && (
+                          <span className="text-slate-400 ml-1">{selectedCount(book.id)} selected</span>
+                        )}
+                        {selectedCount(book.id) > 0 && (
+                          <div className="flex items-center gap-1 ml-auto">
+                            <button
+                              className="btn-ghost px-2 py-1 text-xs text-emerald-400 hover:text-emerald-300 disabled:opacity-50"
+                              disabled={batchBusy}
+                              onClick={() => handleBatchProofread(book.id)}
+                              title="Mark selected as proofread"
+                            >
+                              <CheckCircle2 size={12} className="inline mr-1" />Proofread
+                            </button>
+                            <button
+                              className="btn-ghost px-2 py-1 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
+                              disabled={batchBusy}
+                              onClick={() => handleBatchRequeue(book.id)}
+                              title="Requeue selected for retranslation"
+                            >
+                              <Sparkles size={12} className="inline mr-1" />Requeue
+                            </button>
+                            <button
+                              className="btn-ghost px-2 py-1 text-xs text-rose-400 hover:text-rose-300 disabled:opacity-50"
+                              disabled={batchBusy}
+                              onClick={() => handleBatchDelete(book.id)}
+                              title="Delete selected chapters"
+                            >
+                              <Trash2 size={12} className="inline mr-1" />Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-xs text-slate-500 border-b border-slate-700">
+                            <th className="pb-2 w-8" />
+                            <th className="text-left pb-2 font-medium">Ch.</th>
+                            <th className="text-left pb-2 font-medium">Title</th>
+                            <th className="text-left pb-2 font-medium hidden sm:table-cell">Model</th>
+                            <th className="text-left pb-2 font-medium hidden sm:table-cell">Date</th>
+                            <th className="pb-2" />
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {(chapters[book.id] || []).map(ch => {
+                            const isChecked = getSelected(book.id).has(ch.chapter)
+                            return (
+                              <tr key={ch.chapter} className={`border-b border-slate-800 last:border-0 ${isChecked ? 'bg-blue-500/10' : !ch.is_proofread ? 'bg-amber-500/5' : ''}`}>
+                                <td className="py-2 w-8 text-center">
+                                  <button
+                                    className="p-0.5 text-slate-500 hover:text-slate-300"
+                                    onClick={(e) => toggleChapter(book.id, ch.chapter, e.shiftKey)}
+                                  >
+                                    {isChecked
+                                      ? <CheckSquare size={14} className="text-blue-400" />
+                                      : <Square size={14} />
+                                    }
+                                  </button>
+                                </td>
+                                <td className="py-2 text-slate-400 font-mono">
+                                  <span className="inline-flex items-center gap-1">
+                                    {ch.chapter}
+                                    {ch.is_proofread
+                                      ? <CheckCircle2 size={11} className="text-emerald-500" title={`Proofread ${new Date(ch.is_proofread).toLocaleDateString()}`} />
+                                      : <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500/60" title="Not proofread" />
+                                    }
+                                  </span>
+                                </td>
+                                <td className="py-2 text-slate-300 truncate max-w-[240px]">{ch.title}</td>
+                                <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">{ch.model || '—'}</td>
+                                <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">
+                                  {ch.translation_date ? new Date(ch.translation_date).toLocaleDateString() : '—'}
+                                </td>
+                                <td className="py-2">
+                                  <div className="flex gap-1 justify-end">
+                                    <Link
+                                      to={`/read/${book.id}?chapter=${ch.chapter}`}
+                                      className="btn-ghost p-1"
+                                      title="Read from here"
+                                    >
+                                      <BookOpen size={12} />
+                                    </Link>
+                                    <button
+                                      className="btn-ghost p-1"
+                                      title="Retranslate chapter"
+                                      onClick={() => setRetranslating({ bookId: book.id, chapter: ch.chapter, title: ch.title })}
+                                    >
+                                      <Sparkles size={12} />
+                                    </button>
+                                    <Link
+                                      to={`/books/${book.id}/chapters/${ch.chapter}/edit`}
+                                      className="btn-ghost p-1"
+                                      title="Edit translation"
+                                    >
+                                      <Edit2 size={12} />
+                                    </Link>
+                                    <button
+                                      className="btn-ghost p-1 hover:text-rose-400"
+                                      title="Delete chapter"
+                                      onClick={() => handleDeleteChapter(book.id, ch.chapter)}
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </>
                   )}
                 </div>
               )}
@@ -315,6 +447,16 @@ export default function Books() {
           chapterNum={retranslating.chapter}
           chapterTitle={retranslating.title}
           onClose={() => setRetranslating(null)}
+        />
+      )}
+
+      {/* Batch retranslate modal */}
+      {batchRetranslating && (
+        <BatchRetranslateModal
+          bookId={batchRetranslating.bookId}
+          chapters={batchRetranslating.chapters}
+          onClose={() => setBatchRetranslating(null)}
+          onDone={() => { unselectAll(batchRetranslating.bookId); setBatchRetranslating(null) }}
         />
       )}
 
@@ -352,7 +494,7 @@ export default function Books() {
   )
 }
 
-function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete }) {
+function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -372,10 +514,20 @@ function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, o
     </button>
   )
 
+  const isExporting = exporting && exporting.startsWith(`${book.id}-`)
+  const exportFormat = isExporting ? exporting.split('-').pop().toUpperCase() : null
+
   return (
     <div className="relative" ref={ref}>
       <button className="btn-ghost p-1.5 flex items-center gap-0.5 text-xs" onClick={() => setOpen(v => !v)}>
-        Actions <ChevronDown size={12} />
+        {isExporting ? (
+          <>
+            <Loader2 size={12} className="animate-spin" />
+            <span className="text-indigo-400">Preparing {exportFormat}...</span>
+          </>
+        ) : (
+          <>Actions <ChevronDown size={12} /></>
+        )}
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] bg-slate-800 border border-slate-700 rounded shadow-xl flex flex-col py-1">
@@ -402,6 +554,7 @@ function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, o
           <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
           {item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
+          {item(<Code size={12} />, 'API Logs', onApiLogs)}
           {item(<Edit2 size={12} />, 'Edit Book', onEdit)}
           {item(<Trash2 size={12} />, 'Delete', onDelete, 'text-rose-400 hover:text-rose-300')}
         </div>
@@ -739,21 +892,10 @@ function PromptEditorModal({ book, onClose }) {
 }
 
 function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
-  const [providers, setProviders] = useState([])
-  const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
-  const [adviceModel, setAdviceModel]           = useLocalStorage('shared.adviceModel', '')
-  const [cleaningModel, setCleaningModel]       = useLocalStorage('shared.cleaningModel', '')
+  const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [done, setDone] = useState(false)
-
-  useEffect(() => {
-    api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
-  }, [])
-
-  const modelOptions = providers.flatMap(p =>
-    (p.models || []).map(m => `${p.name}:${m}`)
-  )
 
   const handleSubmit = async () => {
     setSubmitting(true)
@@ -774,6 +916,7 @@ function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
         chapter_number: chapterNum,
         title: chapterTitle,
         priority: true,
+        retranslation_reason: reason.trim() || null,
       })
       setDone(true)
     } catch (e) {
@@ -800,49 +943,18 @@ function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
           <>
             <div className="space-y-3">
               <div>
-                <label className="label">Translation model</label>
-                <ComboBox
-                  value={translationModel}
-                  onChange={setTranslationModel}
-                  options={modelOptions}
-                  placeholder="Default"
+                <label className="label">Reason for retranslation <span className="text-slate-500 font-normal">(optional)</span></label>
+                <textarea
+                  className="input w-full resize-y min-h-[72px]"
+                  rows={3}
+                  value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  placeholder="e.g. Previous version garbled cultivation terminology; keep honorifics."
+                  disabled={submitting}
                 />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label flex items-center gap-1">
-                    Advice model
-                    <span className="relative group">
-                      <Info size={11} className="text-slate-500 hover:text-slate-300 cursor-help" />
-                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                        Suggests translations for new entity names. A small, cheap model works well here.
-                      </span>
-                    </span>
-                  </label>
-                  <ComboBox
-                    value={adviceModel}
-                    onChange={setAdviceModel}
-                    options={modelOptions}
-                    placeholder="Default"
-                  />
-                </div>
-                <div>
-                  <label className="label flex items-center gap-1">
-                    Cleaning model
-                    <span className="relative group">
-                      <Info size={11} className="text-slate-500 hover:text-slate-300 cursor-help" />
-                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                        Filters out common words misidentified as entities. A small, cheap model works well.
-                      </span>
-                    </span>
-                  </label>
-                  <ComboBox
-                    value={cleaningModel}
-                    onChange={setCleaningModel}
-                    options={modelOptions}
-                    placeholder="Same as translation"
-                  />
-                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Appended to the system prompt so the model knows what to fix.
+                </p>
               </div>
             </div>
 
@@ -867,6 +979,99 @@ function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
             </p>
             <div className="flex justify-end">
               <button className="btn-primary" onClick={onClose}>Done</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function BatchRetranslateModal({ bookId, chapters, onClose, onDone }) {
+  const [reason, setReason] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null) // { queued, errors }
+
+  const sorted = [...chapters].sort((a, b) => a - b)
+  const firstCh = sorted[0]
+  const lastCh = sorted[sorted.length - 1]
+  const rangeLabel = sorted.length === 1
+    ? `Ch. ${firstCh}`
+    : (sorted.length === (lastCh - firstCh + 1) && sorted.every((n, i) => n === firstCh + i))
+      ? `Chs. ${firstCh}–${lastCh}`
+      : `${sorted.length} chapters`
+
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await api.batchRequeue(bookId, sorted, reason.trim() || null)
+      setResult({ queued: res.queued || 0, errors: res.errors || [] })
+    } catch (e) {
+      setError(e.message)
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-slate-200">Retranslate Chapters</h2>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <p className="text-sm text-slate-400">
+          Queue <span className="text-slate-200">{rangeLabel}</span>
+          {' '}for retranslation. Chapters will be processed in ascending order. Existing translations will be overwritten.
+        </p>
+
+        {!result ? (
+          <>
+            <div className="space-y-3">
+              <div>
+                <label className="label">Reason for retranslation <span className="text-slate-500 font-normal">(optional)</span></label>
+                <textarea
+                  className="input w-full resize-y min-h-[72px]"
+                  rows={3}
+                  value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  placeholder="e.g. Previous version garbled cultivation terminology; keep honorifics."
+                  disabled={submitting}
+                />
+                <p className="text-xs text-slate-500 mt-1">
+                  Applied to every chapter in this batch. Appended to the system prompt so the model knows what to fix.
+                </p>
+              </div>
+            </div>
+
+            {error && <p className="text-rose-400 text-sm">{error}</p>}
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose} disabled={submitting}>Cancel</button>
+              <button
+                className="btn-primary flex items-center gap-1.5"
+                onClick={handleSubmit}
+                disabled={submitting}
+              >
+                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                Queue {sorted.length} for Retranslation
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-emerald-400">
+              Queued {result.queued} chapter(s) for retranslation.
+            </p>
+            {result.errors.length > 0 && (
+              <div className="text-xs text-amber-400 space-y-1">
+                {result.errors.map((err, i) => <p key={i}>• {err}</p>)}
+              </div>
+            )}
+            <div className="flex justify-end">
+              <button className="btn-primary" onClick={onDone}>Done</button>
             </div>
           </div>
         )}

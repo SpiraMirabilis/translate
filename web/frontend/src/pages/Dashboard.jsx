@@ -439,6 +439,7 @@ export default function Dashboard() {
           chunkIndex={jsonFix.chunk_index}
           totalChunks={jsonFix.total_chunks}
           chunkText={jsonFix.chunk_text}
+          isEmpty={jsonFix.is_empty}
           onDone={handleJsonFixDone}
         />
       )}

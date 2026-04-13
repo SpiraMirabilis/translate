@@ -3,6 +3,7 @@ Book and chapter management endpoints.
 """
 import io
 import os
+import datetime
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -59,7 +60,21 @@ class ChapterContentUpdate(BaseModel):
 
 
 class ChapterProofreadUpdate(BaseModel):
-    is_proofread: bool
+    is_proofread: bool  # True sets timestamp, False clears it
+
+
+class BatchChapterAction(BaseModel):
+    chapters: List[int]
+
+
+class BatchRequeueAction(BaseModel):
+    chapters: List[int]
+    retranslation_reason: Optional[str] = None
+
+
+class BatchProofreadAction(BaseModel):
+    chapters: List[int]
+    is_proofread: bool  # True sets timestamp, False clears it
 
 
 class CategoriesUpdate(BaseModel):
@@ -500,18 +515,20 @@ async def update_chapter_translation(book_id: int, chapter_number: int, req: Cha
 
 @router.put("/{book_id}/chapters/{chapter_number}/proofread")
 async def set_proofread(book_id: int, chapter_number: int, req: ChapterProofreadUpdate):
+    fmt = '%Y-%m-%d %H:%M:%S' if _entity_manager.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
+    now = datetime.datetime.utcnow().strftime(fmt) if req.is_proofread else None
     conn = _entity_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute(
         "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
-        (1 if req.is_proofread else 0, book_id, chapter_number),
+        (now, book_id, chapter_number),
     )
     if cursor.rowcount == 0:
         conn.close()
         raise HTTPException(status_code=404, detail="Chapter not found.")
     conn.commit()
     conn.close()
-    return {"status": "ok", "is_proofread": req.is_proofread}
+    return {"status": "ok", "is_proofread": now}
 
 
 @router.delete("/{book_id}/chapters/{chapter_number}")
@@ -520,6 +537,68 @@ async def delete_chapter(book_id: int, chapter_number: int):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete chapter.")
     return {"status": "ok"}
+
+
+@router.post("/{book_id}/chapters/batch-delete")
+async def batch_delete_chapters(book_id: int, req: BatchChapterAction):
+    deleted = 0
+    for num in req.chapters:
+        if _entity_manager.delete_chapter(book_id=book_id, chapter_number=num):
+            deleted += 1
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.post("/{book_id}/chapters/batch-proofread")
+async def batch_proofread_chapters(book_id: int, req: BatchProofreadAction):
+    fmt = '%Y-%m-%d %H:%M:%S' if _entity_manager.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
+    now = datetime.datetime.utcnow().strftime(fmt) if req.is_proofread else None
+    conn = _entity_manager.get_connection()
+    cursor = conn.cursor()
+    updated = 0
+    for num in req.chapters:
+        cursor.execute(
+            "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
+            (now, book_id, num),
+        )
+        updated += cursor.rowcount
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "updated": updated}
+
+
+@router.post("/{book_id}/chapters/batch-requeue")
+async def batch_requeue_chapters(book_id: int, req: BatchRequeueAction):
+    book = _entity_manager.get_book(book_id=book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found.")
+
+    queued = 0
+    errors = []
+    reason = (req.retranslation_reason or "").strip() or None
+    # Iterate in descending chapter order so that when each item is inserted
+    # with priority=True (which places it at the front of the queue), the
+    # lowest-numbered chapter ends up first and is translated first.
+    for num in sorted(req.chapters, reverse=True):
+        chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=num)
+        if not chapter:
+            errors.append(f"Chapter {num} not found")
+            continue
+        untranslated = chapter.get("untranslated", [])
+        if not untranslated:
+            errors.append(f"Chapter {num} has no source text")
+            continue
+        queue_id = _entity_manager.add_to_queue(
+            book_id=book_id,
+            content=untranslated,
+            title=chapter.get("title", f"Chapter {num}"),
+            chapter_number=num,
+            source="web",
+            priority=True,
+            retranslation_reason=reason,
+        )
+        if queue_id:
+            queued += 1
+    return {"status": "ok", "queued": queued, "errors": errors}
 
 
 # ------------------------------------------------------------------

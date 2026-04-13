@@ -128,8 +128,9 @@ export default function Queue() {
   }
 
   const handleClear = async () => {
-    if (!confirm('Clear the entire queue?')) return
-    await api.clearQueue(filterBook ? parseInt(filterBook) : undefined)
+    const bookName = books.find(b => String(b.id) === String(filterBook))?.title || `Book ${filterBook}`
+    if (!confirm(`Clear all queued chapters for "${bookName}"?`)) return
+    await api.clearQueue(parseInt(filterBook))
     load()
   }
 
@@ -147,7 +148,7 @@ export default function Queue() {
           <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={() => setShowUpload(true)}>
             <Upload size={13} /> Upload File
           </button>
-          {queue.length > 0 && (
+          {queue.length > 0 && filterBook && (
             <button className="btn-danger flex items-center gap-1.5 text-xs" onClick={handleClear}>
               <X size={13} /> Clear Queue
             </button>

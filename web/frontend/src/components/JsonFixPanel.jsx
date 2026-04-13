@@ -9,19 +9,22 @@ const CodeEditor = lazy(() => import('@uiw/react-textarea-code-editor'))
 import { api } from '../services/api'
 import { RefreshCw, Check, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
 
-export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chunkText, onDone }) {
+export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chunkText, isEmpty, onDone }) {
   const [editedJson, setEditedJson] = useState(rawResponse || '')
   const [isValid, setIsValid] = useState(false)
   const [validationError, setValidationError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [showSource, setShowSource] = useState(false)
+  const [responseEmpty, setResponseEmpty] = useState(isEmpty || false)
 
   // Always fetch raw_response from API — the WS message triggers the modal
   // but the payload can get lost/truncated in transit.
   useEffect(() => {
     api.getJobStatus().then(d => {
-      if (d.pending_json_fix?.raw_response) {
-        setEditedJson(d.pending_json_fix.raw_response)
+      if (d.pending_json_fix) {
+        const fix = d.pending_json_fix
+        if (fix.raw_response) setEditedJson(fix.raw_response)
+        if (fix.is_empty) setResponseEmpty(true)
       }
     }).catch(() => {})
   }, [rawResponse])
@@ -79,6 +82,14 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
                   {chunkText}
                 </pre>
               )}
+            </div>
+          )}
+
+          {/* Empty response warning */}
+          {responseEmpty && (
+            <div className="flex items-center gap-2 p-3 bg-amber-900/30 border border-amber-700/50 rounded-lg text-xs text-amber-300">
+              <AlertTriangle size={14} className="shrink-0" />
+              <span>The model returned an empty response after all retry attempts. You can retry the chunk or abort.</span>
             </div>
           )}
 
