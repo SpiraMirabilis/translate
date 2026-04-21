@@ -30,34 +30,28 @@ def _load_units() -> dict:
 UNITS = _load_units()
 
 # ── Smart scaling ───────────────────────────────────────────────────
+# Each entry: (threshold, target_unit, factor). For SCALE_UP, target = value / factor
+# when value >= threshold. For SCALE_DOWN, target = value * factor when value < threshold.
 SCALE_UP = {
-    "m":  [(1000.0, "km")],
-    "kg": [],               # kg is already a good unit
-    "ha": [],
+    "m":      [(1000.0, "km",   1000.0)],
+    "minute": [(60.0,   "hour", 60.0)],
 }
 
 SCALE_DOWN = {
-    "m":  [(1.0, "cm")],    # below 1 m → cm
-    "kg": [(1.0, "g")],     # below 1 kg → g
-    "ha": [],
+    "m":  [(1.0, "cm", 100.0)],
+    "kg": [(1.0, "g",  1000.0)],
 }
 
 
 def _scale(value: float, base_unit: str) -> tuple:
     """Scale value to the most readable unit."""
-    # Scale down: m → cm, kg → g
-    for threshold, small_unit in SCALE_DOWN.get(base_unit, []):
+    for threshold, small_unit, factor in SCALE_DOWN.get(base_unit, []):
         if value < threshold:
-            if small_unit == "cm":
-                return value * 100, "cm"
-            elif small_unit == "g":
-                return value * 1000, "g"
+            return value * factor, small_unit
 
-    # Scale up: m → km
-    for threshold, big_unit in SCALE_UP.get(base_unit, []):
+    for threshold, big_unit, factor in SCALE_UP.get(base_unit, []):
         if value >= threshold:
-            if big_unit == "km":
-                return value / 1000, "km"
+            return value / factor, big_unit
 
     return value, base_unit
 
@@ -126,12 +120,18 @@ def _number_to_words(value: float) -> str:
     if value == int(value):
         return _int_to_words(int(value))
 
-    # Handle .5 (halves) — common in time conversions
-    if value % 1 == 0.5:
-        whole = int(value)
+    whole = int(value)
+    frac = round(value - whole, 4)
+
+    # Standalone form (whole part is zero) uses idiomatic English
+    standalone = {0.25: "a quarter", 0.5: "half", 0.75: "three-quarters"}
+    # Suffix form (after "N and ...") uses article forms
+    suffix = {0.25: "a quarter", 0.5: "a half", 0.75: "three-quarters"}
+
+    if frac in suffix:
         if whole == 0:
-            return "half"
-        return _int_to_words(whole) + " and a half"
+            return standalone[frac]
+        return _int_to_words(whole) + " and " + suffix[frac]
 
     # For other decimals, fall back to arabic — words like "three point three three" are awkward
     return _format_number(value)
@@ -253,18 +253,62 @@ _vague_prefix = (
     r"hundreds\s+of|thousands\s+of|countless|myriad|various|multiple)\s+"
 )
 
+# Fraction phrases like "a quarter", "three-quarters", "half" that can prefix
+# a unit phrase via "... of a <unit>" (e.g. "a quarter of a ke")
+_FRACTION_DENOMS = {
+    "quarter": 4, "quarters": 4, "fourth": 4, "fourths": 4,
+    "third": 3, "thirds": 3,
+    "fifth": 5, "fifths": 5,
+    "sixth": 6, "sixths": 6,
+    "seventh": 7, "sevenths": 7,
+    "eighth": 8, "eighths": 8,
+    "ninth": 9, "ninths": 9,
+    "tenth": 10, "tenths": 10,
+}
+
+_fraction_phrase = (
+    r"(?:(?:a|an|one|two|three|four|five|six|seven|eight|nine)[\s\-]"
+    r"(?:quarters?|fourths?|thirds?|fifths?|sixths?|sevenths?|eighths?|ninths?|tenths?)"
+    r"|half)"
+)
+
 # Main pattern
 _PATTERN = re.compile(
     r"(?<!['\w])"                       # not preceded by word char or apostrophe
     r"(?!" + _vague_prefix + r")"       # negative lookahead for vague quantifiers
-    r"(" + _numeric + r"|" + _number_words + r"|a\s+full|an\s+full|a|an)"  # number capture
+    r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"  # optional fractional prefix
+    r"(?P<num>" + _numeric + r"|" + _number_words + r"|a\s+full|an\s+full|a|an)"
     r"[\s\-]+"                          # separator
-    r"(" + _unit_names + r")"           # unit name
+    r"(?P<unit>" + _unit_names + r")"   # unit name
     r"s?"                               # optional plural
     r"(?!\s*\()"                        # negative lookahead: not already annotated
     r"(?!['\w])",                       # not followed by word char or apostrophe
     re.IGNORECASE
 )
+
+
+def _parse_fraction_phrase(text: str) -> Optional[float]:
+    """Parse phrases like 'a quarter', 'three-quarters', 'half' to a float multiplier."""
+    words = text.strip().lower().replace("-", " ").split()
+    if not words:
+        return None
+    if len(words) == 1:
+        if words[0] == "half":
+            return 0.5
+        if words[0] in _FRACTION_DENOMS:
+            return 1.0 / _FRACTION_DENOMS[words[0]]
+        return None
+    numerator_word, denom_word = words[0], words[1]
+    if numerator_word in ("a", "an"):
+        numerator = 1.0
+    else:
+        parsed = _word_to_number(numerator_word)
+        if parsed is None:
+            return None
+        numerator = parsed
+    if denom_word in _FRACTION_DENOMS:
+        return numerator / _FRACTION_DENOMS[denom_word]
+    return None
 
 
 _VAGUE_BEFORE = re.compile(
@@ -295,8 +339,9 @@ def _lookup_unit(matched_text: str) -> tuple:
 def _convert_match(match: re.Match) -> str:
     """Replace callback for unit matches."""
     full = match.group(0)
-    num_str = match.group(1).strip()
-    unit_text = match.group(2)
+    fraction_str = match.group("frac")
+    num_str = match.group("num").strip()
+    unit_text = match.group("unit")
 
     # Check text before match for vague quantifiers
     before = match.string[:match.start()]
@@ -316,6 +361,13 @@ def _convert_match(match: re.Match) -> str:
     unit_info = _lookup_unit(unit_text)
     if unit_info is None:
         return full
+
+    # Apply fractional multiplier if we matched one (e.g. "a quarter of a ke")
+    if fraction_str:
+        frac_mult = _parse_fraction_phrase(fraction_str)
+        if frac_mult is None:
+            return full
+        number *= frac_mult
 
     base_value, base_unit, _, action, numeral = unit_info
     raw = number * base_value

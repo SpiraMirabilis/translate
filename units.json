@@ -9,5 +9,6 @@
   "qing":        { "value": 6.667,  "unit": "ha",   "type": "area",   "action": "annotate" },
   "double-hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
   "double hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
-  "shichen":     { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" }
+  "shichen":     { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
+  "ke":          { "value": 15.0,   "unit": "minute", "type": "time", "action": "replace",  "numeral": "english" }
 }
