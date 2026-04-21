@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
 import { useWs } from '../App'
 import {
@@ -9,28 +9,36 @@ import {
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
 import RetroactiveReviewModal from '../components/RetroactiveReviewModal'
+import { useUrlModal } from '../hooks/useUrlState'
 
 export default function Books() {
+  const { bookId: bookIdParam } = useParams()
+  const expandedBook = bookIdParam ? parseInt(bookIdParam, 10) : null
+  const navigate = useNavigate()
+
   const [books, setBooks] = useState([])
   const [loading, setLoading] = useState(true)
-  const [expandedBook, setExpandedBook] = useState(null)
   const [chapters, setChapters] = useState({})
-  const [showForm, setShowForm] = useState(false)
-  const [editingBook, setEditingBook] = useState(null)   // book obj or null
-  const [editingChapter, setEditingChapter] = useState(null)
-  const [editingPrompt, setEditingPrompt] = useState(null) // book obj or null
-  const [retranslating, setRetranslating] = useState(null) // { bookId, chapter, title } or null
-  const [batchRetranslating, setBatchRetranslating] = useState(null) // { bookId, chapters: number[] } or null
-  const [publishingBook, setPublishingBook] = useState(null) // book obj or null
-  const [categoriesBook, setCategoriesBook] = useState(null) // book obj or null
-  const [showSearch, setShowSearch] = useState(false)
-  const [reviewingBook, setReviewingBook] = useState(null)
+
+  // URL-driven modals (push history — back button closes them)
+  const searchModal = useUrlModal('search')
+  const editBookModal = useUrlModal('editBook', { idKey: 'book' })
+  const promptModal = useUrlModal('prompt', { idKey: 'book' })
+  const retranslateModal = useUrlModal('retranslate', { paramKeys: ['book', 'ch'] })
+  const batchRetranslateModal = useUrlModal('batchRetranslate', { idKey: 'book' })
+  const publishModal = useUrlModal('publish', { idKey: 'book' })
+  const categoriesModal = useUrlModal('categories', { idKey: 'book' })
+  const reviewModal = useUrlModal('review', { idKey: 'book' })
+
+  // Chapter selection for batch retranslate — too large to live in the URL,
+  // so it's kept local and keyed by book id.
+  const [batchChaptersById, setBatchChaptersById] = useState({})
+
   const [exporting, setExporting] = useState(null) // 'bookId-format' or null
   const [selected, setSelected] = useState({})    // { bookId: Set of chapter numbers }
   const [lastChecked, setLastChecked] = useState({}) // { bookId: chapter number }
   const [batchBusy, setBatchBusy] = useState(false)
   const [error, setError] = useState(null)
-  const navigate = useNavigate()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -51,12 +59,12 @@ export default function Books() {
     function onKey(e) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault()
-        setShowSearch(true)
+        searchModal.open()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [searchModal])
 
   const loadChapters = async (bookId) => {
     if (chapters[bookId]) return
@@ -64,15 +72,21 @@ export default function Books() {
     setChapters(prev => ({ ...prev, [bookId]: d.chapters || [] }))
   }
 
-  const toggleExpand = async (bookId) => {
+  const toggleExpand = (bookId) => {
     if (expandedBook === bookId) {
-      setExpandedBook(null)
+      navigate('/books')
       setSelected(prev => ({ ...prev, [bookId]: new Set() }))
     } else {
-      setExpandedBook(bookId)
-      await loadChapters(bookId)
+      navigate(`/books/${bookId}`)
     }
   }
+
+  // Load chapters when the expanded-book URL param changes — covers both
+  // clicks and direct URL entry / back-forward navigation.
+  useEffect(() => {
+    if (expandedBook != null) loadChapters(expandedBook)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedBook])
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this book and all its chapters?')) return
@@ -184,7 +198,8 @@ export default function Books() {
   const handleBatchRequeue = (bookId) => {
     const nums = [...getSelected(bookId)].sort((a, b) => a - b)
     if (!nums.length) return
-    setBatchRetranslating({ bookId, chapters: nums })
+    setBatchChaptersById(prev => ({ ...prev, [bookId]: nums }))
+    batchRetranslateModal.open(bookId)
   }
 
   return (
@@ -194,12 +209,12 @@ export default function Books() {
         <div className="flex items-center gap-2">
           <button
             className="btn-ghost p-2 text-slate-400 hover:text-slate-200"
-            onClick={() => setShowSearch(true)}
+            onClick={() => searchModal.open()}
             title="Search across books (Ctrl+F)"
           >
             <Search size={16} />
           </button>
-          <button className="btn-primary flex items-center gap-1.5" onClick={() => { setEditingBook(null); setShowForm(true) }}>
+          <button className="btn-primary flex items-center gap-1.5" onClick={() => editBookModal.open('new')}>
             <Plus size={14} /> New Book
           </button>
         </div>
@@ -279,12 +294,12 @@ export default function Books() {
                     book={book}
                     exporting={exporting}
                     onExport={handleExport}
-                    onPublish={() => setPublishingBook(book)}
-                    onCategories={() => setCategoriesBook(book)}
-                    onReview={() => setReviewingBook(book)}
-                    onPrompt={() => setEditingPrompt(book)}
+                    onPublish={() => publishModal.open(book.id)}
+                    onCategories={() => categoriesModal.open(book.id)}
+                    onReview={() => reviewModal.open(book.id)}
+                    onPrompt={() => promptModal.open(book.id)}
                     onApiLogs={() => navigate(`/books/${book.id}/api-calls`)}
-                    onEdit={() => { setEditingBook(book); setShowForm(true) }}
+                    onEdit={() => editBookModal.open(book.id)}
                     onDelete={() => handleDelete(book.id)}
                   />
                 </div>
@@ -389,7 +404,7 @@ export default function Books() {
                                     <button
                                       className="btn-ghost p-1"
                                       title="Retranslate chapter"
-                                      onClick={() => setRetranslating({ bookId: book.id, chapter: ch.chapter, title: ch.title })}
+                                      onClick={() => retranslateModal.open({ book: book.id, ch: ch.chapter })}
                                     >
                                       <Sparkles size={12} />
                                     </button>
@@ -424,70 +439,77 @@ export default function Books() {
       )}
 
       {/* Book form modal */}
-      {showForm && (
+      {editBookModal.isOpen && (
         <BookFormModal
-          book={editingBook}
-          onClose={() => setShowForm(false)}
-          onSaved={() => { setShowForm(false); load() }}
+          book={editBookModal.id === 'new' ? null : books.find(b => b.id === parseInt(editBookModal.id, 10))}
+          onClose={editBookModal.close}
+          onSaved={() => { editBookModal.close(); load() }}
         />
       )}
 
       {/* System prompt editor modal */}
-      {editingPrompt && (
-        <PromptEditorModal
-          book={editingPrompt}
-          onClose={() => setEditingPrompt(null)}
-        />
-      )}
+      {promptModal.isOpen && (() => {
+        const book = books.find(b => b.id === parseInt(promptModal.id, 10))
+        if (!book) return null
+        return <PromptEditorModal book={book} onClose={promptModal.close} />
+      })()}
 
       {/* Retranslate modal */}
-      {retranslating && (
-        <RetranslateModal
-          bookId={retranslating.bookId}
-          chapterNum={retranslating.chapter}
-          chapterTitle={retranslating.title}
-          onClose={() => setRetranslating(null)}
-        />
-      )}
+      {retranslateModal.isOpen && (() => {
+        const bId = parseInt(retranslateModal.params.book, 10)
+        const chNum = parseInt(retranslateModal.params.ch, 10)
+        if (!bId || !chNum) return null
+        const chObj = (chapters[bId] || []).find(c => c.chapter === chNum)
+        return (
+          <RetranslateModal
+            bookId={bId}
+            chapterNum={chNum}
+            chapterTitle={chObj?.title || ''}
+            onClose={retranslateModal.close}
+          />
+        )
+      })()}
 
       {/* Batch retranslate modal */}
-      {batchRetranslating && (
-        <BatchRetranslateModal
-          bookId={batchRetranslating.bookId}
-          chapters={batchRetranslating.chapters}
-          onClose={() => setBatchRetranslating(null)}
-          onDone={() => { unselectAll(batchRetranslating.bookId); setBatchRetranslating(null) }}
-        />
-      )}
+      {batchRetranslateModal.isOpen && (() => {
+        const bId = parseInt(batchRetranslateModal.id, 10)
+        const chs = batchChaptersById[bId] || []
+        if (!bId || !chs.length) return null
+        return (
+          <BatchRetranslateModal
+            bookId={bId}
+            chapters={chs}
+            onClose={batchRetranslateModal.close}
+            onDone={() => { unselectAll(bId); batchRetranslateModal.close() }}
+          />
+        )
+      })()}
 
       {/* WordPress publish modal */}
-      {publishingBook && (
-        <WordPressPublishModal
-          book={publishingBook}
-          onClose={() => setPublishingBook(null)}
-        />
-      )}
+      {publishModal.isOpen && (() => {
+        const book = books.find(b => b.id === parseInt(publishModal.id, 10))
+        if (!book) return null
+        return <WordPressPublishModal book={book} onClose={publishModal.close} />
+      })()}
 
       {/* Category manager modal */}
-      {categoriesBook && (
-        <CategoryManagerModal
-          book={categoriesBook}
-          onClose={() => setCategoriesBook(null)}
-        />
-      )}
+      {categoriesModal.isOpen && (() => {
+        const book = books.find(b => b.id === parseInt(categoriesModal.id, 10))
+        if (!book) return null
+        return <CategoryManagerModal book={book} onClose={categoriesModal.close} />
+      })()}
 
-      {reviewingBook && (
-        <RetroactiveReviewModal
-          book={reviewingBook}
-          onClose={() => setReviewingBook(null)}
-        />
-      )}
+      {reviewModal.isOpen && (() => {
+        const book = books.find(b => b.id === parseInt(reviewModal.id, 10))
+        if (!book) return null
+        return <RetroactiveReviewModal book={book} onClose={reviewModal.close} />
+      })()}
 
       {/* Global search modal */}
-      {showSearch && (
+      {searchModal.isOpen && (
         <GlobalSearchModal
           books={books}
-          onClose={() => setShowSearch(false)}
+          onClose={searchModal.close}
         />
       )}
     </div>

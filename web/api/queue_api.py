@@ -293,6 +293,7 @@ class ProcessNextRequest(BaseModel):
     no_clean: bool = False
     no_repair: bool = False
     no_convert_units: bool = False
+    no_stream: bool = False
     auto_process: bool = False
     max_chapters: Optional[int] = None  # Stop after N chapters (None = unlimited)
 
@@ -315,6 +316,7 @@ def _setup_job(queue_item, settings):
     _web_interface.no_clean = settings["no_clean"]
     _web_interface.no_repair = settings["no_repair"]
     _web_interface.no_convert_units = settings["no_convert_units"]
+    _web_interface.stream = not settings["no_stream"]
     _web_interface.retranslation_reason = queue_item.get("retranslation_reason") or None
     _web_interface._current_queue_item = queue_item
 
@@ -360,6 +362,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         "no_clean": req.no_clean,
         "no_repair": req.no_repair,
         "no_convert_units": req.no_convert_units,
+        "no_stream": req.no_stream,
     }
 
     _job_manager.is_running = True
@@ -414,7 +417,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         finally:
             _job_manager.is_running = False
             _job_manager.auto_process = False
-            if _job_manager.status not in ("error", "awaiting_review"):
+            if _job_manager.status not in ("error", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
 
     thread = threading.Thread(target=run, daemon=True)

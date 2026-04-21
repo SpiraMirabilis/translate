@@ -3010,15 +3010,7 @@ class CommandLineInterface(UserInterface):
         for line in content:
             translated_total_words += len(line.split())
             translated_total_chars += len(line)
-        
-        # Try to copy to clipboard if available
-        try:
-            import pyperclip
-            pyperclip.copy("\n".join(content))
-            self.logger.info("Translated text copied to clipboard for pasting.")
-        except ImportError:
-            self.logger.info("pyperclip not available - clipboard functions disabled")
-        
+
         # Display summary
         self.logger.info(f"TITLE: {chapter_title}")
         self.logger.info(

@@ -293,8 +293,8 @@ async def download_epub(book_id: int, request: Request):
     return FileResponse(
         cached_path,
         media_type="application/epub+zip",
+        filename=filename,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": f"public, max-age={_CACHE_SHORT}",
         },
     )

@@ -60,6 +60,7 @@ class TranslateRequest(BaseModel):
     no_clean: bool = False
     no_repair: bool = False
     no_convert_units: bool = False
+    no_stream: bool = False
 
 
 class ReviewSubmitRequest(BaseModel):
@@ -74,6 +75,10 @@ class JsonFixRequest(BaseModel):
 
     class Config:
         fields = {'fixed_json': {'alias': 'json'}}
+
+
+class ChapterConflictRequest(BaseModel):
+    decision: str  # "proceed" | "cancel"
 
 
 # ------------------------------------------------------------------
@@ -109,6 +114,7 @@ async def start_translation(req: TranslateRequest):
     _web_interface.no_clean = req.no_clean
     _web_interface.no_repair = req.no_repair
     _web_interface.no_convert_units = req.no_convert_units
+    _web_interface.stream = not req.no_stream
 
     # Resolve book name for the activity log
     book_name = None
@@ -134,7 +140,7 @@ async def start_translation(req: TranslateRequest):
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             _job_manager.is_running = False
-            if _job_manager.status not in ("error", "awaiting_review", "awaiting_json_fix"):
+            if _job_manager.status not in ("error", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
 
     thread = threading.Thread(target=run, daemon=True)
@@ -204,6 +210,26 @@ async def submit_json_fix(req: JsonFixRequest):
     return {"status": "ok"}
 
 
+@router.post("/api/translate/resolve-chapter-conflict")
+async def resolve_chapter_conflict(req: ChapterConflictRequest):
+    if _job_manager.status != "awaiting_chapter_conflict":
+        raise HTTPException(status_code=409, detail="Not waiting for chapter conflict resolution.")
+    if req.decision not in ("proceed", "cancel"):
+        raise HTTPException(status_code=400, detail="decision must be 'proceed' or 'cancel'.")
+
+    pending = _job_manager.pending_chapter_conflict or {}
+    ch = pending.get("chapter_number")
+    book_name = pending.get("book_title")
+    label = "Overwriting existing chapter…" if req.decision == "proceed" else "Skipping chapter — queue item dropped."
+    await _job_manager.log_activity_async(
+        type='info', message=f'Chapter {ch}: {label}',
+        book_id=pending.get("book_id"), chapter=ch, book_name=book_name,
+    )
+
+    _job_manager.submit_chapter_conflict(req.decision)
+    return {"status": "ok"}
+
+
 @router.get("/api/translate/status")
 async def get_status():
     result = {
@@ -216,6 +242,8 @@ async def get_status():
         result["pending_review"] = _job_manager.pending_review
     if _job_manager.status == "awaiting_json_fix" and _job_manager.pending_json_fix:
         result["pending_json_fix"] = _job_manager.pending_json_fix
+    if _job_manager.status == "awaiting_chapter_conflict" and _job_manager.pending_chapter_conflict:
+        result["pending_chapter_conflict"] = _job_manager.pending_chapter_conflict
     return result
 
 
@@ -231,6 +259,8 @@ async def cancel_translation():
         _job_manager.skip_review()
     if _job_manager.status == "awaiting_json_fix":
         _job_manager.submit_json_fix({"action": "abort"})
+    if _job_manager.status == "awaiting_chapter_conflict":
+        _job_manager.submit_chapter_conflict("cancel")
     _job_manager.is_running = False
     _job_manager.status = "idle"
     await _job_manager.log_activity_async(type='info', message='Translation cancelled.')

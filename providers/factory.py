@@ -8,6 +8,7 @@ from .base import ModelProvider
 from .openai_provider import OpenAIProvider
 from .claude_provider import ClaudeProvider
 from .gemini_provider import GeminiProvider
+from .claude_code_provider import ClaudeCodeProvider
 
 
 class ProviderFactory:
@@ -64,17 +65,17 @@ class ProviderFactory:
         
         provider_config = self.config['providers'][resolved_name]
         
-        # Get API key
+        # Get API key. Providers without `api_key_env` configured handle auth
+        # out-of-band (e.g. ClaudeCodeProvider relies on the local CLI session).
         if api_key is None:
             api_key_env = provider_config.get('api_key_env')
             if api_key_env:
                 api_key = os.getenv(api_key_env)
-            
-            if not api_key:
-                raise RuntimeError(
-                    f"API key not provided and not found in environment variable {api_key_env} "
-                    f"for provider {provider_name}"
-                )
+                if not api_key:
+                    raise RuntimeError(
+                        f"API key not provided and not found in environment variable {api_key_env} "
+                        f"for provider {provider_name}"
+                    )
         
         # Get provider class
         class_name = provider_config.get('class')
@@ -112,6 +113,7 @@ class ProviderFactory:
             'OpenAIProvider': OpenAIProvider,
             'ClaudeProvider': ClaudeProvider,
             'GeminiProvider': GeminiProvider,
+            'ClaudeCodeProvider': ClaudeCodeProvider,
         }
         
         if class_name not in classes:

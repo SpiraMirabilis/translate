@@ -184,6 +184,87 @@ class WebInterface(UserInterface):
             entities=entity_links,
         )
 
+    def check_chapter_conflict(self, chapter_text):
+        """
+        If a chapter with this (book_id, chapter_number) already exists and
+        its source text differs, pause translation and ask the user whether
+        to overwrite or skip.
+
+        Returns True to proceed (no conflict, identical retranslation, or user
+        accepted), False if the user cancelled.
+        """
+        book_id = getattr(self, 'book_id', None)
+        chapter_number = getattr(self, 'chapter_number', None)
+        if not book_id or not isinstance(chapter_number, int) or chapter_number <= 0:
+            return True
+
+        try:
+            existing = self.entity_manager.get_chapter(
+                book_id=book_id, chapter_number=chapter_number
+            )
+        except Exception as e:
+            self.logger.error(f"Chapter conflict check — get_chapter failed: {e}")
+            return True
+
+        if not existing:
+            return True
+
+        existing_untranslated = existing.get('untranslated') or []
+        if isinstance(existing_untranslated, str):
+            existing_untranslated = existing_untranslated.splitlines()
+
+        new_untranslated = chapter_text or []
+        if isinstance(new_untranslated, str):
+            new_untranslated = new_untranslated.splitlines()
+
+        def _normalise(lines):
+            return [str(line).strip() for line in lines if str(line).strip()]
+
+        if _normalise(existing_untranslated) == _normalise(new_untranslated):
+            # Same source — legitimate retranslation, proceed silently.
+            return True
+
+        # Resolve book title for display
+        book_title = None
+        try:
+            book = self.entity_manager.get_book(book_id=book_id)
+            if book:
+                book_title = book.get('title')
+        except Exception:
+            pass
+
+        new_title = ''
+        if isinstance(chapter_text, list) and chapter_text:
+            first = str(chapter_text[0]).strip()
+            new_title = first.lstrip('#').strip() if first.startswith('#') else first
+
+        payload = {
+            "book_id": book_id,
+            "chapter_number": chapter_number,
+            "book_title": book_title,
+            "existing_title": existing.get('title') or '',
+            "existing_untranslated": existing_untranslated,
+            "new_title": new_title,
+            "new_untranslated": new_untranslated,
+        }
+        self.job_manager.pending_chapter_conflict = payload
+        self.job_manager.send_message_sync({
+            "type": "chapter_conflict_needed",
+            **payload,
+        })
+        self.job_manager.log_activity(
+            type='info',
+            message=(
+                f'Chapter {chapter_number} of "{book_title or book_id}" already exists with different '
+                f'source text — awaiting user decision.'
+            ),
+            book_id=book_id, chapter=chapter_number, book_name=book_title,
+        )
+
+        result = self.job_manager.wait_for_chapter_conflict()
+        decision = (result or {}).get("decision", "cancel")
+        return decision == "proceed"
+
     def _handle_json_fix(self, raw_response, chunk_index, total_chunks, chunk_text):
         """Pause translation and send malformed JSON to the frontend for fixing."""
         # Truncate source text for display

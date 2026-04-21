@@ -430,6 +430,24 @@ _COMMON_DDL_SQLITE = [
     'CREATE INDEX IF NOT EXISTS idx_api_calls_book ON api_calls(book_id)',
     'CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id)',
     'CREATE INDEX IF NOT EXISTS idx_api_calls_chapter ON api_calls(book_id, chapter_number)',
+
+    # recommendations — novel translation requests from public users
+    '''CREATE TABLE IF NOT EXISTS recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        novel_title TEXT NOT NULL,
+        author TEXT,
+        source_url TEXT NOT NULL,
+        source_language TEXT DEFAULT 'zh',
+        description TEXT,
+        requester_name TEXT NOT NULL,
+        requester_email TEXT NOT NULL,
+        notes TEXT,
+        status TEXT DEFAULT 'new',
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        admin_notes TEXT
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -569,6 +587,24 @@ _COMMON_DDL_MYSQL = [
     'CREATE INDEX idx_api_calls_book ON api_calls(book_id)',
     'CREATE INDEX idx_api_calls_session ON api_calls(session_id)',
     'CREATE INDEX idx_api_calls_chapter ON api_calls(book_id, chapter_number)',
+
+    # recommendations — novel translation requests from public users
+    '''CREATE TABLE IF NOT EXISTS recommendations (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        novel_title VARCHAR(500) NOT NULL,
+        author VARCHAR(500),
+        source_url TEXT NOT NULL,
+        source_language VARCHAR(10) DEFAULT 'zh',
+        description TEXT,
+        requester_name VARCHAR(255) NOT NULL,
+        requester_email VARCHAR(255) NOT NULL,
+        notes TEXT,
+        status VARCHAR(20) DEFAULT 'new',
+        created_at VARCHAR(50) NOT NULL,
+        reviewed_at VARCHAR(50),
+        admin_notes TEXT
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_recommendations_status ON recommendations(status)',
 ]
 
 

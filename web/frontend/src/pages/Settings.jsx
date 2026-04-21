@@ -300,19 +300,21 @@ function ProviderCard({ provider }) {
     }
   }
 
+  const cliAuth = !provider.api_key_env
+
   return (
     <div className="card p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="font-medium text-slate-200 capitalize">{provider.name}</span>
-          <span className={provider.has_key ? 'badge-emerald' : 'badge-slate'}>
-            {provider.has_key ? 'Key set' : 'No key'}
+          <span className={cliAuth || provider.has_key ? 'badge-emerald' : 'badge-slate'}>
+            {cliAuth ? 'CLI auth' : provider.has_key ? 'Key set' : 'No key'}
           </span>
         </div>
         <button
           className="btn-secondary text-xs flex items-center gap-1"
           onClick={handleTest}
-          disabled={testing || !provider.has_key}
+          disabled={testing || (!cliAuth && !provider.has_key)}
         >
           {testing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
           Test
@@ -321,7 +323,7 @@ function ProviderCard({ provider }) {
 
       <div className="text-xs text-slate-500">
         Default: <span className="font-mono text-slate-400">{provider.default_model}</span>
-        {' · '}{provider.api_key_env}
+        {provider.api_key_env && <>{' · '}{provider.api_key_env}</>}
       </div>
 
       {testResult && (
@@ -330,31 +332,33 @@ function ProviderCard({ provider }) {
         </div>
       )}
 
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <input
-            type={showKey ? 'text' : 'password'}
-            className="input pr-8 text-sm font-mono"
-            placeholder={`Enter ${provider.api_key_env}…`}
-            value={key}
-            onChange={e => setKey(e.target.value)}
-          />
+      {!cliAuth && (
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showKey ? 'text' : 'password'}
+              className="input pr-8 text-sm font-mono"
+              placeholder={`Enter ${provider.api_key_env}…`}
+              value={key}
+              onChange={e => setKey(e.target.value)}
+            />
+            <button
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+              onClick={() => setShowKey(v => !v)}
+            >
+              {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </div>
           <button
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-            onClick={() => setShowKey(v => !v)}
+            className="btn-secondary flex items-center gap-1 shrink-0"
+            onClick={handleSaveKey}
+            disabled={saving || !key.trim()}
           >
-            {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+            Set
           </button>
         </div>
-        <button
-          className="btn-secondary flex items-center gap-1 shrink-0"
-          onClick={handleSaveKey}
-          disabled={saving || !key.trim()}
-        >
-          {saving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-          Set
-        </button>
-      </div>
+      )}
 
       {error && <p className="text-rose-400 text-xs">{error}</p>}
     </div>

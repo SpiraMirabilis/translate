@@ -8,6 +8,7 @@ import Entities from './pages/Entities'
 import Queue from './pages/Queue'
 import Settings from './pages/Settings'
 import Help from './pages/Help'
+import Recommendations from './pages/Recommendations'
 import ApiCalls from './pages/ApiCalls'
 import ApiLogPage from './pages/ApiLogPage'
 import Reader from './pages/Reader'
@@ -132,11 +133,13 @@ export default function App() {
           <Route path="/" element={<Layout />}>
             <Route index element={<Dashboard />} />
             <Route path="books" element={<Books />} />
+            <Route path="books/:bookId" element={<Books />} />
             <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
             <Route path="books/:bookId/api-calls" element={<ApiCalls />} />
             <Route path="api-logs" element={<ApiLogPage />} />
             <Route path="entities" element={<Entities />} />
             <Route path="queue" element={<Queue />} />
+            <Route path="recommendations" element={<Recommendations />} />
             <Route path="settings" element={<Settings />} />
             <Route path="help" element={<Help />} />
           </Route>

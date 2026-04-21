@@ -30,7 +30,20 @@ class UserInterface(ABC):
     def review_entities(self, entities: Dict, untranslated_text: List[str]) -> Dict:
         """Allow the user to review and edit entities"""
         pass
-    
+
+    def check_chapter_conflict(self, chapter_text: List[str]) -> bool:
+        """
+        Pre-translation guard: when an existing chapter has the same
+        (book_id, chapter_number), decide whether to proceed.
+
+        Returns True to proceed (legit retranslation, or user opted to overwrite),
+        False to abort the current item.
+
+        Default base behaviour: proceed silently — only the WebInterface
+        subclass surfaces this to the user.
+        """
+        return True
+
     def run_translation(self):
         """Run the translation process from start to finish"""
         try:
@@ -70,6 +83,27 @@ class UserInterface(ABC):
                         else:
                             self.logger.info("Warning: Failed to create default book, chapter will not be saved to database")
             
+                # Pre-translation guard: if a chapter with this
+                # (book_id, chapter_number) already exists and the source text
+                # differs, ask the user whether to overwrite or skip.
+                chapter_num_for_check = getattr(self, 'chapter_number', None)
+                if (self.book_id is not None
+                        and isinstance(chapter_num_for_check, int)
+                        and chapter_num_for_check > 0):
+                    if not self.check_chapter_conflict(chapter_text):
+                        self.logger.info(
+                            f"Skipping chapter {chapter_num_for_check} for book {self.book_id} "
+                            f"— user cancelled chapter-conflict prompt."
+                        )
+                        # Drop the queue item (if any) so auto-process advances
+                        # to the next item instead of re-fetching this one.
+                        if hasattr(self, '_current_queue_item') and self._current_queue_item:
+                            try:
+                                self.entity_manager.remove_from_queue(self._current_queue_item['id'])
+                            except Exception as e:
+                                self.logger.error(f"Failed to remove cancelled queue item: {e}")
+                        break
+
                 # Perform translation
                 stream = getattr(self,'stream', False)
                 self.logger.debug(f"Stream mode is {stream}")

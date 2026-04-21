@@ -29,6 +29,7 @@ export default function Queue() {
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
   const [noRepair, setNoRepair]                   = useLocalStorage('queue.noRepair', false)
   const [noConvertUnits, setNoConvertUnits]       = useLocalStorage('queue.noConvertUnits', false)
+  const [noStream, setNoStream]                   = useLocalStorage('queue.noStream', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
   const [maxChapters, setMaxChapters]             = useLocalStorage('queue.maxChapters', '')
 
@@ -112,6 +113,7 @@ export default function Queue() {
         no_clean: noClean,
         no_repair: noRepair,
         no_convert_units: noConvertUnits,
+        no_stream: noStream,
         auto_process: autoProcess,
         max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
       })
@@ -276,6 +278,20 @@ export default function Queue() {
               <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
               <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
                 Chinese measurement units (zhang, li, jin, etc.) are automatically annotated with metric equivalents. Disable this to keep units unconverted.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={noStream}
+              onChange={e => setNoStream(e.target.checked)}
+            />
+            Disable streaming
+            <span className="relative group">
+              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won't update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
               </span>
             </span>
           </label>

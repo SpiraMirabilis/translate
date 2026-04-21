@@ -20,16 +20,6 @@
       "max_output_tokens": 16384
     },
 
-    "max": {
-      "class": "OpenAIProvider",
-      "base_url": "http://127.0.0.1:3456/v1/",
-      "api_key_env": "ANTHROPIC_KEY",
-      "default_model": "claude-sonnet-4-6",
-      "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
-      "max_chars": 5000,
-      "max_output_tokens": 8192
-    },
-
     "deepseek": {
       "class": "OpenAIProvider",
       "base_url": "https://api.deepseek.com/v1/",
@@ -74,6 +64,20 @@
       "models": [],
       "max_chars": 5000,
       "max_output_tokens": 8192
+    },
+    "claudecode": {
+      "class": "ClaudeCodeProvider",
+      "default_model": "sonnet",
+      "models": [
+        "sonnet",
+        "opus",
+        "haiku",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        "claude-haiku-4-5"
+      ],
+      "max_chars": 8000,
+      "timeout": 1800
     }
   },
   "aliases": {
@@ -81,6 +85,7 @@
     "ds": "deepseek",
     "claude": "anthropic",
     "gemini": "google",
-    "or": "openrouter"
+    "or": "openrouter",
+    "cc": "claudecode"
   }
 }

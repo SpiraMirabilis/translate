@@ -46,6 +46,12 @@ class JobManager:
         self._json_fix_result: Optional[dict] = None
         self.pending_json_fix: Optional[dict] = None
 
+        # Chapter-conflict synchronisation — fires when an incoming chapter
+        # has the same chapter_number as an existing one but different source.
+        self._chapter_conflict_event = threading.Event()
+        self._chapter_conflict_result: Optional[dict] = None
+        self.pending_chapter_conflict: Optional[dict] = None
+
         # Auto-process queue state
         self.auto_process = False
         self._stop_auto = threading.Event()
@@ -142,6 +148,30 @@ class JobManager:
         self._json_fix_result = result
         self.pending_json_fix = None
         self._json_fix_event.set()
+
+    # ------------------------------------------------------------------
+    # Chapter-conflict pause/resume
+    # ------------------------------------------------------------------
+
+    def wait_for_chapter_conflict(self) -> dict:
+        """
+        Block the translation thread until the user decides whether to
+        proceed (overwrite the existing chapter) or cancel (skip this item).
+        Returns {"decision": "proceed" | "cancel"}.
+        """
+        self.status = "awaiting_chapter_conflict"
+        self._chapter_conflict_event.clear()
+        self._chapter_conflict_event.wait()
+        self.status = "running"
+        result = self._chapter_conflict_result or {}
+        self._chapter_conflict_result = None
+        return result
+
+    def submit_chapter_conflict(self, decision: str):
+        """Called from the API endpoint when the user resolves the conflict."""
+        self._chapter_conflict_result = {"decision": decision}
+        self.pending_chapter_conflict = None
+        self._chapter_conflict_event.set()
 
     # ------------------------------------------------------------------
     # Auto-process queue

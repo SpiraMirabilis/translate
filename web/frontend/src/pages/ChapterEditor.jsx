@@ -15,6 +15,7 @@ import { useSearch } from '../hooks/useSearch'
 import SearchBar from '../components/SearchBar'
 import EntityFormModal from '../components/EntityFormModal'
 import { CATEGORY_COLORS } from '../utils/categories'
+import { useUrlState, useUrlModal } from '../hooks/useUrlState'
 
 // ── Trim empty lines from start/end of an array ─────────────────────
 function trimEmptyLines(lines) {
@@ -613,7 +614,14 @@ export default function ChapterEditor() {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState(null)
   const [dirty, setDirty] = useState(false)
-  const [activeLine, setActiveLine] = useState(0)
+  // activeLine tracked in URL (replace mode — rapid clicks shouldn't flood history)
+  const [activeLine, setActiveLine] = useUrlState('line', 0, {
+    serialize: String,
+    deserialize: (s) => {
+      const n = parseInt(s, 10)
+      return Number.isFinite(n) ? n : 0
+    },
+  })
   const [providers, setProviders] = useState(null)
   const [entities, setEntities] = useState([])
   const [showEntities, setShowEntities] = useLocalStorage('editor.showEntities', true)
@@ -636,10 +644,26 @@ export default function ChapterEditor() {
   const [dictPos, setDictPos] = useState(null)
   const [selToolbar, setSelToolbar] = useState(null)
 
-  // Retranslation state
-  const [retranslateModal, setRetranslateModal] = useState(null)
+  // Retranslation state — URL flag + local payload (text+lineIndex can't live
+  // in the URL because partial selections aren't reconstructable from indices)
+  const retranslateModalUrl = useUrlModal('retranslate')
+  const [retranslatePayload, setRetranslatePayload] = useState(null) // { text, lineIndex }
+  const retranslateModal = retranslateModalUrl.isOpen ? retranslatePayload : null
+  const openRetranslateModal = (payload) => {
+    setRetranslatePayload(payload)
+    retranslateModalUrl.open()
+  }
+  const closeRetranslateModal = () => {
+    setRetranslatePayload(null)
+    retranslateModalUrl.close()
+  }
   const [annotations, setAnnotations] = useState({})
-  const [editingEntity, setEditingEntity] = useState(null)
+
+  // Entity edit modal — id in URL, entity object looked up from `entities`
+  const entityModalUrl = useUrlModal('editEntity', { idKey: 'ent' })
+  const editingEntity = entityModalUrl.isOpen
+    ? entities.find(e => String(e.id) === entityModalUrl.id) || null
+    : null
 
   // Search
   const search = useSearch()
@@ -1208,13 +1232,15 @@ export default function ChapterEditor() {
     if (!pendingSelection.current) return
     const { text: selText, lineIndex } = pendingSelection.current
     setSelToolbar(null)
-    setRetranslateModal({ text: selText, lineIndex })
+    openRetranslateModal({ text: selText, lineIndex })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleRetranslateLine = useCallback((lineIndex) => {
     const line = untranslatedLines[lineIndex]
     if (!line) return
-    setRetranslateModal({ text: line, lineIndex })
+    openRetranslateModal({ text: line, lineIndex })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [untranslatedLines])
 
   const handleRetranslateResult = useCallback((chineseText, translation, lineIndex) => {
@@ -1229,15 +1255,17 @@ export default function ChapterEditor() {
     const full = entities.find(e =>
       e.untranslated === matcherEntity.untranslated && e.category === matcherEntity.category
     )
-    if (full) setEditingEntity(full)
+    if (full) entityModalUrl.open(full.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entities])
 
   const handleEntitySaved = useCallback(() => {
-    setEditingEntity(null)
+    entityModalUrl.close()
     // Reload entities to reflect changes
     api.listEntities({ book_id: parseInt(bookId), include_global: true })
       .then(res => setEntities(res.entities || []))
       .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId])
 
   const lineCount = textLines.length
@@ -1513,7 +1541,7 @@ export default function ChapterEditor() {
                                      hover:brightness-150 transition-all"
                           style={{ backgroundColor: colors.bg, borderBottom: `1px dashed ${colors.border}` }}
                           title={`${ent.category} — click to edit`}
-                          onClick={() => setEditingEntity(ent)}
+                          onClick={() => entityModalUrl.open(ent.id)}
                         >
                           <span className="text-slate-400">{ent.untranslated}</span>
                           <span className="text-slate-600">→</span>
@@ -1676,14 +1704,14 @@ export default function ChapterEditor() {
           bookId={bookId}
           providers={providers}
           onResult={handleRetranslateResult}
-          onClose={() => setRetranslateModal(null)}
+          onClose={closeRetranslateModal}
         />
       )}
 
       {editingEntity && (
         <EntityFormModal
           entity={editingEntity}
-          onClose={() => setEditingEntity(null)}
+          onClose={entityModalUrl.close}
           onSaved={handleEntitySaved}
         />
       )}

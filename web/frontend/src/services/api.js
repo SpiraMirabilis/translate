@@ -38,6 +38,7 @@ export const api = {
   submitReview:  (body)  => post('/api/translate/submit-review', body),
   skipReview:    ()      => post('/api/translate/skip-review', {}),
   submitJsonFix: (body)  => post('/api/translate/submit-json-fix', body),
+  resolveChapterConflict: (body) => post('/api/translate/resolve-chapter-conflict', body),
   cancelJob:     ()      => post('/api/translate/cancel', {}),
   getJobStatus:  ()      => get('/api/translate/status'),
 
@@ -149,6 +150,12 @@ export const api = {
   wpPublish:        (bookId, body)   => post(`/api/wordpress/books/${bookId}/publish`, body),
   wpCancelPublish:  (bookId)         => post(`/api/wordpress/books/${bookId}/cancel`, {}),
   wpPublishChapter: (bookId, num, body = {}) => post(`/api/wordpress/books/${bookId}/chapters/${num}/publish`, body),
+
+  // Recommendations
+  listRecommendations: (status) => get(`/api/recommendations${status ? '?status=' + status : ''}`),
+  countRecommendations: (status) => get(`/api/recommendations/count${status ? '?status=' + status : ''}`),
+  updateRecommendation: (id, body) => put(`/api/recommendations/${id}`, body),
+  deleteRecommendation: (id) => del(`/api/recommendations/${id}`),
 
   // Auth
   authStatus:       ()           => get('/api/auth/status'),

@@ -239,10 +239,7 @@ class TranslationEngine:
             try:
                 if os.path.exists(prompt_file_path):
                     with open(prompt_file_path, 'r', encoding='utf-8') as file:
-                        # Read lines and filter out comments
-                        lines = [line for line in file.readlines() if not line.strip().startswith('#')]
-                        prompt = ''.join(lines)
-
+                        prompt = file.read()
                     self.logger.info(f"Loaded system prompt from {prompt_file_path}")
                 else:
                     self.logger.error(f"No system prompt found at {prompt_file_path}. Place a prompt file in prompts/ or create a book with a genre preset.")
@@ -252,6 +249,14 @@ class TranslationEngine:
             except Exception as e:
                 self.logger.error(f"Error loading system prompt from file: {e}")
                 raise
+
+        # Strip out comment lines (lines whose first non-whitespace char is #).
+        # Applied uniformly so book-stored templates (saved raw from genre prompt
+        # files) are cleaned at translation time without a DB migration.
+        prompt = ''.join(
+            line for line in prompt.splitlines(keepends=True)
+            if not line.lstrip().startswith('#')
+        )
 
         # Insert the entity categories list into the template
         categories_str = ", ".join(entities.keys())

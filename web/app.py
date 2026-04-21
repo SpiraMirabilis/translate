@@ -24,7 +24,7 @@ from translation_engine import TranslationEngine
 
 from web.services.job_manager import job_manager
 from web.services.web_interface import WebInterface
-from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public
+from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public, recommendations_public, recommendations_admin
 from web.auth import configure_auth, AuthMiddleware, router as auth_router
 
 # ------------------------------------------------------------------
@@ -52,6 +52,8 @@ def create_app() -> FastAPI:
     wordpress_api.init(config, entity_manager, job_manager)
     health.init(entity_manager)
     public.init(entity_manager)
+    recommendations_public.init(entity_manager)
+    recommendations_admin.init(entity_manager)
 
     app = FastAPI(title="T9 Translation GUI", version="1.0.0")
 
@@ -100,6 +102,8 @@ def create_app() -> FastAPI:
     app.include_router(wordpress_api.router)
     app.include_router(health.router)
     app.include_router(public.router)
+    app.include_router(recommendations_public.router)
+    app.include_router(recommendations_admin.router)
 
     # Serve built frontend (production)
     static_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")

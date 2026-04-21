@@ -11,9 +11,11 @@ import { useWs } from '../App'
 import { api } from '../services/api'
 import EntityReviewPanel from '../components/EntityReviewPanel'
 import JsonFixPanel from '../components/JsonFixPanel'
+import ChapterConflictPanel from '../components/ChapterConflictPanel'
 import TranslationProgress from '../components/TranslationProgress'
 import ComboBox from '../components/ComboBox'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useUrlState } from '../hooks/useUrlState'
 import {
   Play, Square, Info, Trash2
 } from 'lucide-react'
@@ -24,8 +26,11 @@ export default function Dashboard() {
   const [books, setBooks] = useState([])
   const [providers, setProviders] = useState([])
   const [inputText, setInputText] = useState('')
-  const [selectedBook, setSelectedBook] = useState('')
-  const [chapterNum, setChapterNum] = useState('')
+  // Book + chapter selection live in the URL so the workspace state is
+  // shareable / refresh-safe. Replace mode — ComboBox changes shouldn't
+  // pollute the back-button history.
+  const [selectedBook, setSelectedBook] = useUrlState('book', '')
+  const [chapterNum, setChapterNum] = useUrlState('chapter', '')
   const [modelOverride, setModelOverride] = useState('')
   const [adviceModel, setAdviceModel]     = useLocalStorage('shared.adviceModel', '')
   const [cleaningModel, setCleaningModel] = useLocalStorage('shared.cleaningModel', '')
@@ -33,6 +38,7 @@ export default function Dashboard() {
   const [noClean, setNoClean] = useState(false)
   const [noRepair, setNoRepair] = useState(false)
   const [noConvertUnits, setNoConvertUnits] = useState(false)
+  const [noStream, setNoStream] = useState(false)
 
   const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
   const [chunkProgress, setChunkProgress] = useState(null)
@@ -40,6 +46,7 @@ export default function Dashboard() {
   const [hideSynopses, setHideSynopses] = useLocalStorage('dashboard.hideSynopses', false)
   const [entityReview, setEntityReview] = useState(null) // { entities, context } or null
   const [jsonFix, setJsonFix] = useState(null) // { raw_response, chunk_index, total_chunks, chunk_text } or null
+  const [chapterConflict, setChapterConflict] = useState(null) // { book_id, chapter_number, ... } or null
 
   const logRef = useRef(null)
 
@@ -73,6 +80,9 @@ export default function Dashboard() {
       if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
         setJsonFix(d.pending_json_fix)
       }
+      if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
+        setChapterConflict(d.pending_chapter_conflict)
+      }
     }).catch(() => {})
   }, [])
 
@@ -89,6 +99,10 @@ export default function Dashboard() {
         if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
           setJobStatus('awaiting_json_fix')
           setJsonFix(d.pending_json_fix)
+        }
+        if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
+          setJobStatus('awaiting_chapter_conflict')
+          setChapterConflict(d.pending_chapter_conflict)
         }
       }).catch(() => {})
       // Sync activity log to pick up entries missed by WS batching
@@ -112,6 +126,19 @@ export default function Dashboard() {
       setEntityReview({ entities: lastMessage.entities, context: lastMessage.context })
     }
 
+    if (type === 'chapter_conflict_needed') {
+      setJobStatus('awaiting_chapter_conflict')
+      setChapterConflict({
+        book_id: lastMessage.book_id,
+        chapter_number: lastMessage.chapter_number,
+        book_title: lastMessage.book_title,
+        existing_title: lastMessage.existing_title,
+        existing_untranslated: lastMessage.existing_untranslated,
+        new_title: lastMessage.new_title,
+        new_untranslated: lastMessage.new_untranslated,
+      })
+    }
+
     // json_fix_needed is handled by the direct subscribe() listener above
 
     if (type === 'translation_complete') {
@@ -119,6 +146,7 @@ export default function Dashboard() {
       setChunkProgress(null)
       setEntityReview(null)
       setJsonFix(null)
+      setChapterConflict(null)
       // Re-fetch full log to catch any entries dropped by React 18 batching
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
     }
@@ -127,6 +155,7 @@ export default function Dashboard() {
       setJobStatus('error')
       setEntityReview(null)
       setJsonFix(null)
+      setChapterConflict(null)
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
     }
 
@@ -161,6 +190,7 @@ export default function Dashboard() {
         no_clean: noClean,
         no_repair: noRepair,
         no_convert_units: noConvertUnits,
+        no_stream: noStream,
       })
     } catch (e) {
       setJobStatus('error')
@@ -182,6 +212,11 @@ export default function Dashboard() {
     setJobStatus('running')
   }
 
+  const handleChapterConflictDone = () => {
+    setChapterConflict(null)
+    setJobStatus('running')
+  }
+
   const clearLog = async () => {
     try { await api.clearActivityLog() } catch { /* ignore */ }
     setActivityLog([])
@@ -192,7 +227,7 @@ export default function Dashboard() {
     (p.models || []).map(m => `${p.name}:${m}`)
   )
 
-  const isRunning = jobStatus === 'running' || jobStatus === 'awaiting_review' || jobStatus === 'awaiting_json_fix'
+  const isRunning = jobStatus === 'running' || jobStatus === 'awaiting_review' || jobStatus === 'awaiting_json_fix' || jobStatus === 'awaiting_chapter_conflict'
 
   return (
     <div className="h-full flex flex-col">
@@ -340,6 +375,21 @@ export default function Dashboard() {
                   </span>
                 </span>
               </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="rounded border-slate-600"
+                  checked={noStream}
+                  onChange={e => setNoStream(e.target.checked)}
+                />
+                Disable streaming
+                <span className="relative group">
+                  <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                    Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won't update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
+                  </span>
+                </span>
+              </label>
             </div>
 
             {/* Action buttons */}
@@ -443,6 +493,20 @@ export default function Dashboard() {
           onDone={handleJsonFixDone}
         />
       )}
+
+      {/* Chapter-conflict overlay */}
+      {chapterConflict && (
+        <ChapterConflictPanel
+          bookId={chapterConflict.book_id}
+          chapterNumber={chapterConflict.chapter_number}
+          bookTitle={chapterConflict.book_title}
+          existingTitle={chapterConflict.existing_title}
+          existingUntranslated={chapterConflict.existing_untranslated}
+          newTitle={chapterConflict.new_title}
+          newUntranslated={chapterConflict.new_untranslated}
+          onDone={handleChapterConflictDone}
+        />
+      )}
     </div>
   )
 }
@@ -497,6 +561,7 @@ function StatusBadge({ status }) {
     running:          { label: 'Translating…',   cls: 'badge-indigo'  },
     awaiting_review:  { label: 'Review needed',  cls: 'badge-amber'   },
     awaiting_json_fix:{ label: 'JSON Fix',       cls: 'badge-amber'   },
+    awaiting_chapter_conflict: { label: 'Chapter conflict', cls: 'badge-amber' },
     complete:         { label: 'Complete',        cls: 'badge-emerald' },
     error:            { label: 'Error',           cls: 'badge-rose'    },
   }

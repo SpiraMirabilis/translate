@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, AlertTriangle,
@@ -9,6 +8,7 @@ import {
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import DeleteEntityModal from '../components/DeleteEntityModal'
 import EntityFormModal from '../components/EntityFormModal'
+import { useUrlState, useUrlModal } from '../hooks/useUrlState'
 
 const TRUNCATE_LIMIT = 25
 
@@ -31,32 +31,94 @@ function parseSearchFilters(raw) {
 }
 
 export default function Entities() {
-  const [searchParams, setSearchParams] = useSearchParams()
   const [books, setBooks] = useState([])
   const [entities, setEntities] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filterBook, setFilterBook] = useState(() => localStorage.getItem('entities_filterBook') || '')
-  const [filterCat, setFilterCat] = useState(() => localStorage.getItem('entities_filterCat') || '')
-  const [search, setSearch] = useState(() => searchParams.get('search') || '')
-  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get('search') || '')
-  const [editingEntity, setEditingEntity] = useState(null)
-  const [showAddForm, setShowAddForm] = useState(() => searchParams.get('add') === '1')
-  const [prefillEntity, setPrefillEntity] = useState(() => {
-    if (searchParams.get('add') !== '1') return null
-    const p = {}
-    if (searchParams.get('category')) p.category = searchParams.get('category')
-    if (searchParams.get('untranslated')) p.untranslated = searchParams.get('untranslated')
-    if (searchParams.get('translation')) p.translation = searchParams.get('translation')
-    if (searchParams.get('book_id')) p.book_id = parseInt(searchParams.get('book_id'))
-    return Object.keys(p).length ? p : null
+
+  // Filter/search state lives in the URL as query params so the view is
+  // shareable. Replace mode — avoids polluting history with every keystroke.
+  const [search, setSearch] = useUrlState('search', '')
+  const [filterBook, setFilterBook] = useUrlState('book', '')
+  const [filterCat, setFilterCat] = useUrlState('cat', '')
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+
+  // If URL filters are empty on first render but localStorage has a remembered
+  // value, block the initial load until the URL has been seeded. Without this
+  // gate two loads would fire (empty → all entities, then seeded → filtered),
+  // and the slower unfiltered fetch can resolve last and overwrite the correct
+  // result.
+  const [filtersReady, setFiltersReady] = useState(() => {
+    const url = new URLSearchParams(window.location.search)
+    const needsBookSeed = !url.get('book') && !!localStorage.getItem('entities_filterBook')
+    const needsCatSeed = !url.get('cat') && !!localStorage.getItem('entities_filterCat')
+    return !needsBookSeed && !needsCatSeed
   })
-  const [showDuplicates, setShowDuplicates] = useState(false)
+
+  // Seed URL from last-used filter on mount when no URL param is present.
+  // URL always wins when it has a value; localStorage is just a per-browser
+  // default so navigating away and back doesn't wipe the filter.
+  useEffect(() => {
+    if (!filterBook) {
+      const ls = localStorage.getItem('entities_filterBook')
+      if (ls) setFilterBook(ls)
+    }
+    if (!filterCat) {
+      const ls = localStorage.getItem('entities_filterCat')
+      if (ls) setFilterCat(ls)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Once the URL reflects the seeded values, release the load gate.
+  useEffect(() => {
+    if (filtersReady) return
+    const lsBook = localStorage.getItem('entities_filterBook') || ''
+    const lsCat = localStorage.getItem('entities_filterCat') || ''
+    const bookReady = !lsBook || filterBook === lsBook
+    const catReady = !lsCat || filterCat === lsCat
+    if (bookReady && catReady) setFiltersReady(true)
+  }, [filterBook, filterCat, filtersReady])
+
+  // Persist the current filter to localStorage so it survives page navigation.
+  useEffect(() => {
+    if (filterBook) localStorage.setItem('entities_filterBook', filterBook)
+    else localStorage.removeItem('entities_filterBook')
+  }, [filterBook])
+  useEffect(() => {
+    if (filterCat) localStorage.setItem('entities_filterCat', filterCat)
+    else localStorage.removeItem('entities_filterCat')
+  }, [filterCat])
+
+  // Modals — URL-driven so the back button closes them
+  const addModal = useUrlModal('add', {
+    paramKeys: ['category', 'untranslated', 'translation', 'book_id'],
+  })
+  const editEntityModal = useUrlModal('editEntity', { idKey: 'ent' })
+  const duplicatesModal = useUrlModal('duplicates')
+  const batchModal = useUrlModal('batch', { idKey: 'op' })
+  const deleteModal = useUrlModal('delete')
+
+  const prefillEntity = useMemo(() => {
+    if (!addModal.isOpen) return null
+    const p = {}
+    if (addModal.params.category) p.category = addModal.params.category
+    if (addModal.params.untranslated) p.untranslated = addModal.params.untranslated
+    if (addModal.params.translation) p.translation = addModal.params.translation
+    if (addModal.params.book_id) p.book_id = parseInt(addModal.params.book_id, 10)
+    return Object.keys(p).length ? p : null
+  }, [addModal.isOpen, addModal.params])
+
+  const editingEntity = editEntityModal.isOpen
+    ? entities.find(e => String(e.id) === editEntityModal.id) || null
+    : null
+
   const [duplicates, setDuplicates] = useState(null)
   const [error, setError] = useState(null)
   const [activeCategories, setActiveCategories] = useState(DEFAULT_CATEGORIES)
   const [selected, setSelected] = useState(new Set())
-  const [batchAction, setBatchAction] = useState(null) // null | 'move_category' | 'change_book'
-  const [pendingDelete, setPendingDelete] = useState(null) // null | { entities: [...], mode: 'single'|'batch' }
+  // Local payload for the delete modal (list of entities can't live in URL)
+  const [pendingDeletePayload, setPendingDeletePayload] = useState(null)
+  const pendingDelete = deleteModal.isOpen ? pendingDeletePayload : null
   const searchRef = useRef(null)
 
   const toggleSelect = useCallback((id) => {
@@ -123,25 +185,35 @@ export default function Entities() {
     }
   }, [filterBook])
 
-  useEffect(() => { localStorage.setItem('entities_filterBook', filterBook) }, [filterBook])
-  useEffect(() => { localStorage.setItem('entities_filterCat', filterCat) }, [filterCat])
+  useEffect(() => {
+    if (!filtersReady) return
+    load()
+    clearSelection()
+  }, [load, filtersReady])
 
-  useEffect(() => { load(); clearSelection() }, [load])
+  const openDeleteModal = (payload) => {
+    setPendingDeletePayload(payload)
+    deleteModal.open()
+  }
+  const closeDeleteModal = () => {
+    setPendingDeletePayload(null)
+    deleteModal.close()
+  }
 
   const handleDelete = (id) => {
     const ent = entities.find(e => e.id === id)
-    if (ent) setPendingDelete({ entities: [ent], mode: 'single' })
+    if (ent) openDeleteModal({ entities: [ent], mode: 'single' })
   }
 
   const handleBatchDelete = () => {
     const ents = entities.filter(e => selected.has(e.id))
-    if (ents.length) setPendingDelete({ entities: ents, mode: 'batch' })
+    if (ents.length) openDeleteModal({ entities: ents, mode: 'batch' })
   }
 
   const confirmDelete = async (decase) => {
     if (!pendingDelete) return
     const { entities: ents, mode } = pendingDelete
-    setPendingDelete(null)
+    closeDeleteModal()
     try {
       if (decase) {
         // Group by book_id and decase each unique translation per book
@@ -168,7 +240,7 @@ export default function Entities() {
     try {
       await api.batchEntities({ ids: [...selected], action, ...params })
       clearSelection()
-      setBatchAction(null)
+      batchModal.close()
       load()
     } catch (e) { setError(e.message) }
   }
@@ -179,7 +251,7 @@ export default function Entities() {
     else if (filterBook) params.book_id = filterBook
     const d = await api.getDuplicates(Object.keys(params).length ? params : undefined)
     setDuplicates(d)
-    setShowDuplicates(true)
+    duplicatesModal.open()
   }
 
   // Group entities by category for display (known categories first, then extras)
@@ -210,7 +282,7 @@ export default function Entities() {
           <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={handleCheckDuplicates}>
             <AlertTriangle size={13} /> Check Duplicates
           </button>
-          <button className="btn-primary flex items-center gap-1.5" onClick={() => setShowAddForm(true)}>
+          <button className="btn-primary flex items-center gap-1.5" onClick={() => addModal.open()}>
             <Plus size={14} /> Add Entity
           </button>
         </div>
@@ -268,10 +340,10 @@ export default function Entities() {
         <div className="flex items-center gap-3 mb-4 px-4 py-2.5 rounded-lg bg-indigo-950/40 border border-indigo-800/50 flex-wrap">
           <span className="text-xs text-indigo-300 font-medium">{selected.size} selected</span>
           <div className="flex gap-2 flex-wrap">
-            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1" onClick={() => setBatchAction('move_category')}>
+            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1" onClick={() => batchModal.open('move_category')}>
               <ArrowRightLeft size={12} /> Move Category
             </button>
-            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1" onClick={() => setBatchAction('change_book')}>
+            <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1" onClick={() => batchModal.open('change_book')}>
               <FolderInput size={12} /> Change Book
             </button>
             <button className="btn-secondary flex items-center gap-1.5 text-xs !py-1 hover:!text-rose-400 hover:!border-rose-800" onClick={handleBatchDelete}>
@@ -295,7 +367,7 @@ export default function Entities() {
               key={cat}
               category={cat}
               entities={catEntities}
-              onEdit={setEditingEntity}
+              onEdit={(ent) => editEntityModal.open(ent.id)}
               onDelete={handleDelete}
               defaultOpen={!!debouncedSearch || !!filterCat}
               selected={selected}
@@ -307,39 +379,39 @@ export default function Entities() {
       )}
 
       {/* Modals */}
-      {(showAddForm || editingEntity) && (
+      {(addModal.isOpen || editingEntity) && (
         <EntityFormModal
           entity={editingEntity || prefillEntity}
           books={books}
           categories={activeCategories}
-          onClose={() => { setShowAddForm(false); setEditingEntity(null); setPrefillEntity(null) }}
-          onSaved={() => { setShowAddForm(false); setEditingEntity(null); setPrefillEntity(null); load() }}
+          onClose={() => { addModal.close(); editEntityModal.close() }}
+          onSaved={() => { addModal.close(); editEntityModal.close(); load() }}
         />
       )}
 
-      {showDuplicates && duplicates && (
+      {duplicatesModal.isOpen && duplicates && (
         <DuplicatesModal
           duplicates={duplicates}
           books={books}
-          onClose={() => setShowDuplicates(false)}
+          onClose={duplicatesModal.close}
           onResolved={load}
         />
       )}
 
-      {batchAction === 'move_category' && (
+      {batchModal.isOpen && batchModal.id === 'move_category' && (
         <BatchCategoryModal
           count={selected.size}
           categories={activeCategories}
-          onClose={() => setBatchAction(null)}
+          onClose={batchModal.close}
           onConfirm={(category) => handleBatchAction('move_category', { category })}
         />
       )}
 
-      {batchAction === 'change_book' && (
+      {batchModal.isOpen && batchModal.id === 'change_book' && (
         <BatchBookModal
           count={selected.size}
           books={books}
-          onClose={() => setBatchAction(null)}
+          onClose={batchModal.close}
           onConfirm={(book_id) => handleBatchAction('change_book', { book_id })}
         />
       )}
@@ -348,7 +420,7 @@ export default function Entities() {
         <DeleteEntityModal
           entities={pendingDelete.entities}
           onConfirm={confirmDelete}
-          onCancel={() => setPendingDelete(null)}
+          onCancel={closeDeleteModal}
         />
       )}
     </div>

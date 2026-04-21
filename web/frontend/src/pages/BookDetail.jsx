@@ -119,9 +119,11 @@ export default function BookDetail() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      const disposition = res.headers.get('content-disposition')
-      const match = disposition?.match(/filename="?(.+?)"?$/i)
-      a.download = match?.[1] || `${book?.title || 'book'}.epub`
+      const disposition = res.headers.get('content-disposition') || ''
+      const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+      const asciiMatch = disposition.match(/filename="([^"]+)"/i)
+      const parsedName = utf8Match ? decodeURIComponent(utf8Match[1]) : asciiMatch?.[1]
+      a.download = parsedName || `${book?.title || 'book'}.epub`
       document.body.appendChild(a)
       a.click()
       a.remove()

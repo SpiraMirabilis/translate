@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
+import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
+import { useUrlModal } from '../hooks/useUrlState'
 import ReaderTOC from '../components/ReaderTOC'
 import ReaderSettings from '../components/ReaderSettings'
 import ReaderSearch from '../components/ReaderSearch'
@@ -40,16 +41,23 @@ export default function Reader({ isPublic = false }) {
   const [chapter, setChapter] = useState(null)
   const [loading, setLoading] = useState(true)
   const [chapterLoading, setChapterLoading] = useState(false)
-  const [tocOpen, setTocOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
+  // Drawer overlays — URL-driven so the browser back button closes them
+  const tocModal = useUrlModal('toc')
+  const settingsModal = useUrlModal('settings')
+  const searchModal = useUrlModal('search')
+  const entityModal = useUrlModal('editEntity', { idKey: 'ent' })
+  const tocOpen = tocModal.isOpen
+  const settingsOpen = settingsModal.isOpen
+  const searchOpen = searchModal.isOpen
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [barVisible, setBarVisible] = useState(true)
 
   // Entity support (visible when authenticated or auth disabled)
   const [canEdit, setCanEdit] = useState(false)
   const [entities, setEntities] = useState([])
-  const [editingEntity, setEditingEntity] = useState(null)
+  const editingEntity = entityModal.isOpen
+    ? entities.find(e => String(e.id) === entityModal.id)
+    : null
 
   const contentRef = useRef(null)
   const barTimer = useRef(null)
@@ -142,12 +150,13 @@ export default function Reader({ isPublic = false }) {
     return () => { document.title = 'T9' }
   }, [book, chapter, currentNum])
 
-  // Save progress + update URL
+  // Save progress + update URL. Preserve the query string so drawer modal
+  // state (?modal=toc etc.) survives chapter-to-chapter navigation.
   useEffect(() => {
     if (currentNum != null) {
       setProgress(prev => ({ ...prev, [bookId]: currentNum }))
       const base = libraryPrefix ? `/library/read/${bookId}` : `/read/${bookId}`
-      window.history.replaceState(null, '', `${base}/${currentNum}`)
+      window.history.replaceState(null, '', `${base}/${currentNum}${window.location.search}${window.location.hash}`)
     }
   }, [currentNum, bookId, setProgress, libraryPrefix])
 
@@ -176,11 +185,11 @@ export default function Reader({ isPublic = false }) {
     function onKey(e) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault()
-        setSearchOpen(true)
+        searchModal.open()
         return
       }
       if (e.key === 'Escape' && searchOpen) {
-        setSearchOpen(false)
+        searchModal.close()
         return
       }
       if (tocOpen || settingsOpen || searchOpen) return
@@ -303,16 +312,16 @@ export default function Reader({ isPublic = false }) {
               </span>
             )}
           </div>
-          <button onClick={() => setTocOpen(true)} className={`${barText} hover:${barTextStrong} p-1.5`} title="Table of Contents">
+          <button onClick={() => tocModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Table of Contents">
             <List size={20} />
           </button>
-          <button onClick={() => setSearchOpen(true)} className={`${barText} hover:${barTextStrong} p-1.5`} title="Search (Ctrl+F)">
+          <button onClick={() => searchModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Search (Ctrl+F)">
             <Search size={20} />
           </button>
           <button onClick={toggleFullscreen} className={`${barText} hover:${barTextStrong} p-1.5`} title={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}>
             {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
           </button>
-          <button onClick={() => setSettingsOpen(true)} className={`${barText} hover:${barTextStrong} p-1.5`} title="Settings">
+          <button onClick={() => settingsModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Settings">
             <Settings2 size={20} />
           </button>
         </div>
@@ -365,7 +374,7 @@ export default function Reader({ isPublic = false }) {
                                    hover:brightness-150 transition-all"
                         style={{ backgroundColor: colors.bg, borderBottom: `1px dashed ${colors.border}` }}
                         title={`${ent.category} — click to edit`}
-                        onClick={() => setEditingEntity(ent)}
+                        onClick={() => entityModal.open(ent.id)}
                       >
                         <span className={isDark ? 'text-slate-400' : prefs.theme === 'sepia' ? 'text-amber-900/70' : 'text-gray-500'}>{ent.untranslated}</span>
                         <span className={isDark ? 'text-slate-600' : prefs.theme === 'sepia' ? 'text-amber-800/40' : 'text-gray-400'}>&rarr;</span>
@@ -443,7 +452,7 @@ export default function Reader({ isPublic = false }) {
       {/* Drawers */}
       <ReaderTOC
         open={tocOpen}
-        onClose={() => setTocOpen(false)}
+        onClose={tocModal.close}
         book={book}
         chapters={chapters}
         currentChapter={currentNum}
@@ -453,14 +462,14 @@ export default function Reader({ isPublic = false }) {
       />
       <ReaderSettings
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={settingsModal.close}
         prefs={prefs}
         setPrefs={setPrefs}
         hasSource={hasSource}
       />
       <ReaderSearch
         open={searchOpen}
-        onClose={() => setSearchOpen(false)}
+        onClose={searchModal.close}
         bookId={bookId}
         onNavigate={setCurrentNum}
         theme={prefs.theme}
@@ -471,8 +480,8 @@ export default function Reader({ isPublic = false }) {
       {editingEntity && (
         <EntityFormModal
           entity={editingEntity}
-          onClose={() => setEditingEntity(null)}
-          onSaved={() => { setEditingEntity(null); reloadEntities() }}
+          onClose={entityModal.close}
+          onSaved={() => { entityModal.close(); reloadEntities() }}
         />
       )}
     </div>

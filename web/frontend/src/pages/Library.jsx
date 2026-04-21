@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset } from 'lucide-react'
+import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
+import RecommendModal from '../components/RecommendModal'
+import { useUrlModal } from '../hooks/useUrlState'
 
 const publicApi = {
   listBooks: () => fetch('/api/public/books', { credentials: 'same-origin' }).then(r => r.json()),
@@ -24,6 +26,10 @@ const T = {
     author: 'text-gray-500', chapters: 'text-gray-400',
     toggleBg: 'bg-stone-100', toggleActive: 'bg-white text-indigo-600 shadow-sm',
     toggleInactive: 'text-gray-400 hover:text-gray-600',
+    // Modal theme tokens
+    modalBg: 'bg-white', modalText: 'text-gray-900', modalBorder: 'border-gray-200',
+    inputBg: 'bg-gray-50', inputBorder: 'border-gray-300', inputText: 'text-gray-900',
+    labelText: 'text-gray-700', subtleText: 'text-gray-500', turnstileTheme: 'light',
   },
   sepia: {
     headerBg: 'bg-amber-100/80', headerBorder: 'border-amber-200',
@@ -34,6 +40,9 @@ const T = {
     author: 'text-amber-800/60', chapters: 'text-amber-700/50',
     toggleBg: 'bg-amber-200/50', toggleActive: 'bg-amber-50 text-amber-900 shadow-sm',
     toggleInactive: 'text-amber-700/50 hover:text-amber-900',
+    modalBg: 'bg-amber-50', modalText: 'text-amber-950', modalBorder: 'border-amber-200',
+    inputBg: 'bg-amber-100/50', inputBorder: 'border-amber-300', inputText: 'text-amber-950',
+    labelText: 'text-amber-800', subtleText: 'text-amber-700/60', turnstileTheme: 'light',
   },
   dark: {
     headerBg: 'bg-slate-800/80', headerBorder: 'border-slate-700',
@@ -44,12 +53,16 @@ const T = {
     author: 'text-slate-400', chapters: 'text-slate-500',
     toggleBg: 'bg-slate-800', toggleActive: 'bg-slate-700 text-slate-100 shadow-sm',
     toggleInactive: 'text-slate-500 hover:text-slate-300',
+    modalBg: 'bg-slate-800', modalText: 'text-slate-100', modalBorder: 'border-slate-700',
+    inputBg: 'bg-slate-700', inputBorder: 'border-slate-600', inputText: 'text-slate-100',
+    labelText: 'text-slate-300', subtleText: 'text-slate-400', turnstileTheme: 'dark',
   },
 }
 
 export default function Library() {
   const [books, setBooks] = useState([])
   const [loading, setLoading] = useState(true)
+  const recommendModal = useUrlModal('recommend')
   const { prefs, setPrefs, theme } = useReaderPrefs()
   const t = T[prefs.theme] || T.light
 
@@ -165,9 +178,40 @@ export default function Library() {
                 </div>
               </Link>
             ))}
+
+            {/* Recommend a Novel card */}
+            <button
+              onClick={() => recommendModal.open()}
+              className="group block text-left"
+            >
+              <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative cursor-pointer`}>
+                <div className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br ${t.placeholderFrom} ${t.placeholderTo} p-4`}>
+                  <MessageSquarePlus size={36} className={`${t.placeholderIcon} mb-3 group-hover:scale-110 transition-transform duration-300`} />
+                  <span className={`text-sm font-medium ${t.placeholderText} text-center leading-tight`}>
+                    Recommend a Novel
+                  </span>
+                </div>
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
+              </div>
+              <div className="mt-3">
+                <h3 className={`font-semibold ${t.title} text-sm leading-tight ${t.titleHover} transition-colors`}>
+                  Recommend a Novel
+                </h3>
+                <p className={`mt-0.5 text-xs ${t.chapters}`}>
+                  Suggest a novel for translation
+                </p>
+              </div>
+            </button>
           </div>
         )}
       </main>
+
+      {recommendModal.isOpen && (
+        <RecommendModal
+          onClose={recommendModal.close}
+          theme={t}
+        />
+      )}
     </div>
   )
 }

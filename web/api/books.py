@@ -4,12 +4,19 @@ Book and chapter management endpoints.
 import io
 import os
 import datetime
+from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from PIL import Image
 from database import DEFAULT_CATEGORIES
+
+
+def _content_disposition(filename: str) -> str:
+    """Build an RFC 5987-compliant Content-Disposition header that tolerates non-ASCII filenames."""
+    ascii_fallback = filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 THUMB_MAX_SIZE = (80, 112)  # 2x the display size (w-8 h-11 = 32x44) for retina
 
@@ -662,7 +669,7 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
         return StreamingResponse(
             io.BytesIO(epub_bytes),
             media_type="application/epub+zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": _content_disposition(filename)},
         )
 
     # HTML — generate a proper HTML document with chapter structure
@@ -725,7 +732,7 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
         return StreamingResponse(
             io.BytesIO("\n".join(html_parts).encode("utf-8")),
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": _content_disposition(filename)},
         )
 
     # Text / markdown — return as plain text file
@@ -744,5 +751,5 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
     return StreamingResponse(
         io.BytesIO(content_str.encode("utf-8")),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": _content_disposition(filename)},
     )
