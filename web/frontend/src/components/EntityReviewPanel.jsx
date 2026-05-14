@@ -31,6 +31,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
         rows.push({
           id: `${cat}::${untranslated}`,
           category: cat,
+          originalCategory: cat,
           untranslated,
           translation: data.translation || '',
           originalTranslation: data.translation || '',
@@ -76,8 +77,9 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
       const result = {}
       for (const row of rows) {
         if (row.deleted) {
-          result[row.category] = result[row.category] || {}
-          result[row.category][row.untranslated] = { deleted: true }
+          const cat = row.originalCategory
+          result[cat] = result[cat] || {}
+          result[cat][row.untranslated] = { deleted: true }
         } else {
           result[row.category] = result[row.category] || {}
           const entry = {
@@ -89,6 +91,11 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
           // can find-and-replace it in the chapter text
           if (row.translation !== row.originalTranslation) {
             entry.incorrect_translation = row.originalTranslation
+          }
+          // If category was changed, include the original so the backend
+          // can move the entity from its old category to the new one
+          if (row.category !== row.originalCategory) {
+            entry.original_category = row.originalCategory
           }
           result[row.category][row.untranslated] = entry
         }

@@ -555,11 +555,22 @@ class TranslationEngine:
         average_ratio = 1.0
         book_prompt_template = None
         source_language = 'zh'
+        book_info = None
         if book_id:
             book_prompt_template = self.entity_manager.get_book_prompt_template(book_id)
             book_info = self.entity_manager.get_book(book_id)
             if book_info:
                 source_language = book_info.get('source_language', 'zh') or 'zh'
+
+        # Optional trad→simp preprocessing — runs before the AI sees the source so
+        # entity matching and prompt generation work against canonical (simplified) text.
+        # Idempotent: if the source was already converted in add_to_queue, this is a no-op.
+        if self.entity_manager._should_convert_trad(book_info):
+            try:
+                from trad_simp import convert_text
+                chapter_text = convert_text(chapter_text)
+            except ImportError as e:
+                self.logger.error(f"Trad→simp conversion skipped: {e}")
 
         provider, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")

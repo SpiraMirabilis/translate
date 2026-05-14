@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { api } from '../services/api'
+import { useSite } from '../App'
 
 export default function Login({ onSuccess }) {
+  const { site_name } = useSite()
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -23,7 +25,7 @@ export default function Login({ onSuccess }) {
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-sm bg-slate-800 border border-slate-700 rounded-xl p-8 shadow-xl">
-        <h1 className="text-2xl font-bold text-slate-100 text-center mb-2">T9 Translation</h1>
+        <h1 className="text-2xl font-bold text-slate-100 text-center mb-2">{site_name} Translation</h1>
         <p className="text-slate-400 text-center text-sm mb-6">Enter your password to continue</p>
 
         <form onSubmit={handleSubmit}>

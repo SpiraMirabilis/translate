@@ -7,10 +7,13 @@ import { useUrlModal } from '../hooks/useUrlState'
 import ReaderTOC from '../components/ReaderTOC'
 import ReaderSettings from '../components/ReaderSettings'
 import ReaderSearch from '../components/ReaderSearch'
+import ReaderComments from '../components/ReaderComments'
 import EntityFormModal from '../components/EntityFormModal'
+import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
+import { useSite } from '../App'
 import {
-  ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search
+  ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle
 } from 'lucide-react'
 
 // Public API for unauthenticated access — mirrors the shape of the
@@ -28,6 +31,7 @@ export default function Reader({ isPublic = false }) {
   const location = useLocation()
   const { prefs, setPrefs, theme, contentStyle, marginClass } = useReaderPrefs()
   const [progress, setProgress] = useLocalStorage('reader-progress', {})
+  const { site_name, public_site_name } = useSite()
 
   // Use public or authenticated API depending on context
   const readerApi = isPublic ? publicApi : api
@@ -45,10 +49,14 @@ export default function Reader({ isPublic = false }) {
   const tocModal = useUrlModal('toc')
   const settingsModal = useUrlModal('settings')
   const searchModal = useUrlModal('search')
+  const commentsModal = useUrlModal('comments')
   const entityModal = useUrlModal('editEntity', { idKey: 'ent' })
   const tocOpen = tocModal.isOpen
   const settingsOpen = settingsModal.isOpen
   const searchOpen = searchModal.isOpen
+  const commentsOpen = commentsModal.isOpen
+  const [commentCount, setCommentCount] = useState(0)
+  const [commentsEnabled, setCommentsEnabled] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [barVisible, setBarVisible] = useState(true)
 
@@ -116,6 +124,27 @@ export default function Reader({ isPublic = false }) {
       .catch(() => {})
   }, [canEdit, bookId])
 
+  // Comment count + per-book toggle (refreshed on chapter change and after drawer close)
+  const refreshCommentCount = useCallback(() => {
+    if (!bookId || currentNum == null) return
+    const identity = loadIdentity()
+    const headers = identity?.uuid ? { 'X-Commenter-UUID': identity.uuid } : {}
+    fetch(`/api/public/comments/chapter/${bookId}/${currentNum}/count`, {
+      credentials: 'same-origin',
+      headers,
+    })
+      .then(r => r.ok ? r.json() : { count: 0, enabled: true })
+      .then(data => {
+        setCommentCount(data.count || 0)
+        setCommentsEnabled(data.enabled !== false)
+      })
+      .catch(() => {})
+  }, [bookId, currentNum])
+
+  useEffect(() => {
+    refreshCommentCount()
+  }, [refreshCommentCount])
+
   const newInChapter = useMemo(
     () => entities.filter(e => e.origin_chapter === currentNum && e.book_id === parseInt(bookId)),
     [entities, currentNum, bookId]
@@ -147,8 +176,8 @@ export default function Reader({ isPublic = false }) {
     else if (currentNum != null) parts.push(`Chapter ${currentNum}`)
     if (book?.title) parts.push(book.title)
     document.title = parts.length > 0 ? parts.join(' — ') : 'Reader'
-    return () => { document.title = 'T9' }
-  }, [book, chapter, currentNum])
+    return () => { document.title = isPublic ? public_site_name : site_name }
+  }, [book, chapter, currentNum, isPublic, site_name, public_site_name])
 
   // Save progress + update URL. Preserve the query string so drawer modal
   // state (?modal=toc etc.) survives chapter-to-chapter navigation.
@@ -192,7 +221,7 @@ export default function Reader({ isPublic = false }) {
         searchModal.close()
         return
       }
-      if (tocOpen || settingsOpen || searchOpen) return
+      if (tocOpen || settingsOpen || searchOpen || commentsOpen) return
       if (e.key === 'ArrowLeft') goChapter(-1)
       if (e.key === 'ArrowRight') goChapter(1)
     }
@@ -315,6 +344,16 @@ export default function Reader({ isPublic = false }) {
           <button onClick={() => tocModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Table of Contents">
             <List size={20} />
           </button>
+          {commentsEnabled && (
+            <button onClick={() => commentsModal.open()} className={`${barText} hover:${barTextStrong} p-1.5 relative`} title="Comments">
+              <MessageCircle size={20} />
+              {commentCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-indigo-600 text-white text-[10px] font-medium flex items-center justify-center">
+                  {commentCount > 99 ? '99+' : commentCount}
+                </span>
+              )}
+            </button>
+          )}
           <button onClick={() => searchModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Search (Ctrl+F)">
             <Search size={20} />
           </button>
@@ -474,6 +513,13 @@ export default function Reader({ isPublic = false }) {
         onNavigate={setCurrentNum}
         theme={prefs.theme}
         api={readerApi}
+      />
+      <ReaderComments
+        open={commentsOpen}
+        onClose={() => { commentsModal.close(); refreshCommentCount() }}
+        bookId={Number(bookId)}
+        chapterNumber={currentNum}
+        themeMode={prefs.theme}
       />
 
       {/* Entity edit modal */}

@@ -322,6 +322,11 @@ _COMMON_DDL_SQLITE = [
         prompt_template TEXT,
         source_language TEXT DEFAULT 'zh',
         target_language TEXT DEFAULT 'en',
+        source_url TEXT,
+        notes TEXT,
+        view_count INTEGER NOT NULL DEFAULT 0,
+        trad_to_simp INTEGER DEFAULT NULL,
+        tags TEXT,
         UNIQUE(title)
     )''',
 
@@ -448,6 +453,77 @@ _COMMON_DDL_SQLITE = [
         admin_notes TEXT
     )''',
     'CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status)',
+
+    # comments — reader comment threads on chapters
+    '''CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        parent_id INTEGER,
+        depth INTEGER NOT NULL DEFAULT 0,
+        root_id INTEGER,
+        commenter_uuid TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        email TEXT,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        edited_at TEXT,
+        deleted_at TEXT,
+        automod_state TEXT,
+        automod_reason TEXT,
+        ip TEXT NOT NULL,
+        user_agent TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE,
+        FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_comments_book_chapter ON comments(book_id, chapter_number)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_uuid ON comments(commenter_uuid)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_book_chap_status ON comments(book_id, chapter_number, status)',
+
+    # commenters — trust + identity index
+    '''CREATE TABLE IF NOT EXISTS commenters (
+        uuid TEXT PRIMARY KEY,
+        display_name TEXT,
+        email TEXT,
+        is_trusted INTEGER NOT NULL DEFAULT 0,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        comment_count INTEGER NOT NULL DEFAULT 0
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_commenters_email ON commenters(email)',
+
+    # comment_bans — admin bans (uuid/email/ip); IP bans also pushed to Cloudflare edge
+    '''CREATE TABLE IF NOT EXISTS comment_bans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        value TEXT NOT NULL,
+        reason TEXT,
+        cf_pushed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        UNIQUE(kind, value)
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_bans_kind_value ON comment_bans(kind, value)',
+
+    # email_suppressions — silent block list for unsubscribed / bounced addresses
+    '''CREATE TABLE IF NOT EXISTS email_suppressions (
+        email TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )''',
+
+    # email_notifications — idempotency log: one row per (reply, recipient).
+    # Guarantees a single email per recipient per reply even if the dispatch
+    # path fires multiple times (status flap, race between admin/automod, etc.)
+    '''CREATE TABLE IF NOT EXISTS email_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        comment_id INTEGER NOT NULL,
+        recipient_email TEXT NOT NULL,
+        sent_at TEXT NOT NULL,
+        UNIQUE(comment_id, recipient_email)
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_email_notif_comment ON email_notifications(comment_id)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -479,6 +555,11 @@ _COMMON_DDL_MYSQL = [
         prompt_template LONGTEXT,
         source_language VARCHAR(10) DEFAULT 'zh',
         target_language VARCHAR(10) DEFAULT 'en',
+        source_url TEXT,
+        notes TEXT,
+        view_count INTEGER NOT NULL DEFAULT 0,
+        trad_to_simp INTEGER DEFAULT NULL,
+        tags TEXT,
         UNIQUE KEY uq_title (title(500))
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
@@ -605,6 +686,75 @@ _COMMON_DDL_MYSQL = [
         admin_notes TEXT
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_recommendations_status ON recommendations(status)',
+
+    # comments — reader comment threads on chapters
+    '''CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        parent_id INTEGER,
+        depth INTEGER NOT NULL DEFAULT 0,
+        root_id INTEGER,
+        commenter_uuid VARCHAR(36) NOT NULL,
+        display_name VARCHAR(40) NOT NULL,
+        email VARCHAR(255),
+        body LONGTEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        edited_at VARCHAR(50),
+        deleted_at VARCHAR(50),
+        automod_state VARCHAR(20),
+        automod_reason VARCHAR(255),
+        ip VARCHAR(45) NOT NULL,
+        user_agent VARCHAR(256),
+        created_at VARCHAR(50) NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE,
+        FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_comments_book_chapter ON comments(book_id, chapter_number)',
+    'CREATE INDEX idx_comments_uuid ON comments(commenter_uuid)',
+    'CREATE INDEX idx_comments_status ON comments(status)',
+    'CREATE INDEX idx_comments_book_chap_status ON comments(book_id, chapter_number, status)',
+
+    # commenters — trust + identity index
+    '''CREATE TABLE IF NOT EXISTS commenters (
+        uuid VARCHAR(36) PRIMARY KEY,
+        display_name VARCHAR(40),
+        email VARCHAR(255),
+        is_trusted INTEGER NOT NULL DEFAULT 0,
+        first_seen VARCHAR(50) NOT NULL,
+        last_seen VARCHAR(50) NOT NULL,
+        comment_count INTEGER NOT NULL DEFAULT 0
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_commenters_email ON commenters(email)',
+
+    # comment_bans — admin bans (uuid/email/ip); IP bans also pushed to Cloudflare edge
+    '''CREATE TABLE IF NOT EXISTS comment_bans (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        kind VARCHAR(10) NOT NULL,
+        value VARCHAR(255) NOT NULL,
+        reason TEXT,
+        cf_pushed INTEGER NOT NULL DEFAULT 0,
+        created_at VARCHAR(50) NOT NULL,
+        UNIQUE KEY uq_ban (kind, value)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_bans_kind_value ON comment_bans(kind, value)',
+
+    # email_suppressions — silent block list for unsubscribed / bounced addresses
+    '''CREATE TABLE IF NOT EXISTS email_suppressions (
+        email VARCHAR(255) PRIMARY KEY,
+        reason VARCHAR(40) NOT NULL,
+        created_at VARCHAR(50) NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+
+    # email_notifications — idempotency log: one row per (reply, recipient)
+    '''CREATE TABLE IF NOT EXISTS email_notifications (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        comment_id INTEGER NOT NULL,
+        recipient_email VARCHAR(255) NOT NULL,
+        sent_at VARCHAR(50) NOT NULL,
+        UNIQUE KEY uq_notif (comment_id, recipient_email)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_email_notif_comment ON email_notifications(comment_id)',
 ]
 
 

@@ -1,15 +1,16 @@
 """
-Google Gemini provider implementation using the Google Generative AI API.
+Google Gemini provider implementation using the google-genai SDK.
 
-This provider supports Gemini models (Gemini 1.5 Pro, Gemini 1.5 Flash, etc.)
-through the official Google Generative AI SDK.
+This provider supports Gemini models (2.5 Pro/Flash, 1.5 Pro/Flash, etc.)
+through the official google-genai SDK (the replacement for the deprecated
+google-generativeai package).
 """
 from typing import Dict, List, Optional, Any, Union
-import json
 from .base import ModelProvider, StreamingResponse
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -17,17 +18,11 @@ except ImportError:
 
 class GeminiProvider(ModelProvider):
     """
-    Provider for Google Gemini models.
-    
-    Supports:
-    - Gemini 1.5 Pro
-    - Gemini 1.5 Flash  
-    - Gemini 1.0 Pro
-    - Other Gemini models as they become available
-    
-    Note: Requires 'google-generativeai' package to be installed.
+    Provider for Google Gemini models via the google-genai SDK.
+
+    Note: Requires 'google-genai' package to be installed.
     """
-    
+
     def __init__(self, api_key: str, base_url: Optional[str] = None, **kwargs):
         """
         Initialize Gemini provider.
@@ -40,102 +35,85 @@ class GeminiProvider(ModelProvider):
         """
         if not GEMINI_AVAILABLE:
             raise ImportError(
-                "google-generativeai package is required for Gemini provider. "
-                "Install with: pip install google-generativeai"
+                "google-genai package is required for Gemini provider. "
+                "Install with: pip install google-genai"
             )
 
         super().__init__(api_key, base_url, **kwargs)
 
-        # Store provider-specific configuration
         self.max_output_tokens = kwargs.get('max_output_tokens', None)
+        self.client = genai.Client(api_key=api_key)
 
-        genai.configure(api_key=api_key)
-    
-    def _convert_messages_to_gemini_format(self, messages: List[Dict[str, Any]]) -> tuple[Optional[str], List[Dict[str, Any]]]:
+    def _convert_messages_to_gemini_format(
+        self, messages: List[Dict[str, Any]]
+    ) -> tuple[Optional[str], List[Any]]:
         """
-        Convert OpenAI-style messages to Gemini format.
-        
+        Convert OpenAI-style messages to google-genai Content objects.
+
         Returns:
-            Tuple of (system_instruction, converted_messages)
+            Tuple of (system_instruction, list of Content objects)
         """
         system_instruction = None
-        gemini_messages = []
-        
+        contents = []
+
         for msg in messages:
             role = msg["role"]
             content = msg["content"]
-            
+
+            if isinstance(content, list):
+                text_content = "\n".join(
+                    item["text"] for item in content if item.get("type") == "text"
+                )
+            else:
+                text_content = content
+
             if role == "system":
-                # Gemini handles system messages as system_instruction
-                if isinstance(content, list):
-                    system_instruction = "\n".join([
-                        item["text"] for item in content 
-                        if item.get("type") == "text"
-                    ])
-                else:
-                    system_instruction = content
+                system_instruction = text_content
             elif role == "user":
-                # Convert content format if needed
-                if isinstance(content, list):
-                    text_content = "\n".join([
-                        item["text"] for item in content
-                        if item.get("type") == "text"
-                    ])
-                else:
-                    text_content = content
-                
-                gemini_messages.append({
-                    "role": "user",
-                    "parts": [text_content]
-                })
+                contents.append(
+                    genai_types.Content(
+                        role="user",
+                        parts=[genai_types.Part(text=text_content)],
+                    )
+                )
             elif role == "assistant":
-                # Convert content format if needed
-                if isinstance(content, list):
-                    text_content = "\n".join([
-                        item["text"] for item in content
-                        if item.get("type") == "text"
-                    ])
-                else:
-                    text_content = content
-                
-                gemini_messages.append({
-                    "role": "model",  # Gemini uses "model" instead of "assistant"
-                    "parts": [text_content]
-                })
-        
-        return system_instruction, gemini_messages
-    
+                contents.append(
+                    genai_types.Content(
+                        role="model",
+                        parts=[genai_types.Part(text=text_content)],
+                    )
+                )
+
+        return system_instruction, contents
+
     def _create_response_schema(self, response_format: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
         """
         Create Gemini response schema from OpenAI-style response_format.
-        
-        This matches the expected structure from the translation engine based on the system prompt.
+
+        Matches the translation engine's expected output structure.
         """
         if not response_format or response_format.get("type") != "json_object":
             return None
-        
-        # Translation response schema matching the system prompt template
+
         return {
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "The title of the chapter"
+                    "description": "The title of the chapter",
                 },
                 "chapter": {
                     "type": "integer",
-                    "description": "The chapter number"
+                    "description": "The chapter number",
                 },
                 "summary": {
                     "type": "string",
-                    "description": "A concise 75-word or less summary of the chapter"
+                    "description": "A concise 75-word or less summary of the chapter",
                 },
                 "content": {
                     "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "Array of translated content lines"
+                    "items": {"type": "string"},
+                    "description": "Array of translated content lines",
                 },
                 "entities": {
                     "type": "object",
@@ -148,10 +126,10 @@ class GeminiProvider(ModelProvider):
                                     "properties": {
                                         "translation": {"type": "string"},
                                         "gender": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
+                            },
                         },
                         "places": {
                             "type": "object",
@@ -160,10 +138,10 @@ class GeminiProvider(ModelProvider):
                                     "type": "object",
                                     "properties": {
                                         "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
+                            },
                         },
                         "organizations": {
                             "type": "object",
@@ -172,10 +150,10 @@ class GeminiProvider(ModelProvider):
                                     "type": "object",
                                     "properties": {
                                         "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
+                            },
                         },
                         "abilities": {
                             "type": "object",
@@ -184,10 +162,10 @@ class GeminiProvider(ModelProvider):
                                     "type": "object",
                                     "properties": {
                                         "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
+                            },
                         },
                         "titles": {
                             "type": "object",
@@ -196,10 +174,10 @@ class GeminiProvider(ModelProvider):
                                     "type": "object",
                                     "properties": {
                                         "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
+                            },
                         },
                         "equipment": {
                             "type": "object",
@@ -208,10 +186,10 @@ class GeminiProvider(ModelProvider):
                                     "type": "object",
                                     "properties": {
                                         "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
+                            },
                         },
                         "creatures": {
                             "type": "object",
@@ -220,315 +198,224 @@ class GeminiProvider(ModelProvider):
                                     "type": "object",
                                     "properties": {
                                         "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"}
-                                    }
+                                        "last_chapter": {"type": "integer"},
+                                    },
                                 }
-                            }
-                        }
-                    }
-                }
+                            },
+                        },
+                    },
+                },
             },
-            "required": ["title", "chapter", "summary", "content", "entities"]
+            "required": ["title", "chapter", "summary", "content", "entities"],
         }
-    
+
+    def _build_safety_settings(self) -> List[Any]:
+        """Build the most permissive safety settings the SDK exposes."""
+        # Categories present in the current SDK; CIVIC_INTEGRITY is sometimes
+        # rejected by the API depending on the model, so try BLOCK_NONE first
+        # and let the API surface any errors rather than guessing here.
+        category_names = [
+            "HARM_CATEGORY_HARASSMENT",
+            "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "HARM_CATEGORY_CIVIC_INTEGRITY",
+        ]
+        settings = []
+        for name in category_names:
+            if hasattr(genai_types.HarmCategory, name):
+                settings.append(
+                    genai_types.SafetySetting(
+                        category=getattr(genai_types.HarmCategory, name),
+                        threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                    )
+                )
+        return settings
+
     def chat_completion(
         self,
-        messages: List[Dict[str, Any]], 
+        messages: List[Dict[str, Any]],
         model: str,
         temperature: float = 1.0,
         top_p: float = 1.0,
         max_tokens: int = 8192,
         response_format: Optional[Dict[str, str]] = None,
         stream: bool = False,
-        **kwargs
+        **kwargs,
     ) -> Union[Dict[str, Any], StreamingResponse]:
         """
-        Perform Gemini chat completion.
-        
-        Note: Gemini API has some differences from OpenAI:
-        - System messages are handled as system_instruction
-        - Messages use "parts" instead of "content"
-        - Assistant role is called "model"
-        - JSON mode requires response_schema specification
+        Perform a Gemini chat completion via the google-genai SDK.
         """
-        # Convert messages to Gemini format
-        system_instruction, gemini_messages = self._convert_messages_to_gemini_format(messages)
-        
-        # Create model instance
-        generation_config = {
+        system_instruction, contents = self._convert_messages_to_gemini_format(messages)
+
+        config_kwargs: Dict[str, Any] = {
             "temperature": temperature,
             "top_p": top_p,
+            "safety_settings": self._build_safety_settings(),
         }
 
-        # Add max_output_tokens if configured (otherwise use model's default)
+        if system_instruction:
+            config_kwargs["system_instruction"] = system_instruction
+
         if self.max_output_tokens is not None:
-            generation_config["max_output_tokens"] = self.max_output_tokens
-        
-        # Handle JSON mode with response schema
+            config_kwargs["max_output_tokens"] = self.max_output_tokens
+
         if response_format and response_format.get("type") == "json_object":
-            generation_config["response_mime_type"] = "application/json"
-            response_schema = self._create_response_schema(response_format)
-            if response_schema:
-                generation_config["response_schema"] = response_schema
-        
-        # Add any additional generation config from kwargs
-        generation_config.update(kwargs.get('generation_config', {}))
-        
-        # Safety settings to allow fictional content - disable all safety filters
-        from google.generativeai.types import HarmCategory, HarmBlockThreshold
-        
-        # Core Gemini harm categories (per API error message)
-        core_categories = [
-            "HARM_CATEGORY_HARASSMENT",
-            "HARM_CATEGORY_HATE_SPEECH", 
-            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            "HARM_CATEGORY_DANGEROUS_CONTENT",
-            "HARM_CATEGORY_CIVIC_INTEGRITY"
-        ]
-        
-        # Additional legacy categories that may exist in newer versions
-        additional_categories = [
-            "HARM_CATEGORY_DEROGATORY",
-            "HARM_CATEGORY_TOXICITY", 
-            "HARM_CATEGORY_VIOLENCE",
-            "HARM_CATEGORY_SEXUAL",
-            "HARM_CATEGORY_MEDICAL",
-            "HARM_CATEGORY_DANGEROUS"
-        ]
-        
-        safety_settings = []
-        
-        # Add core categories with BLOCK_NONE threshold (most permissive available in SDK)
-        for category_name in core_categories:
-            if hasattr(HarmCategory, category_name):
-                safety_settings.append({
-                    "category": getattr(HarmCategory, category_name),
-                    "threshold": HarmBlockThreshold.BLOCK_NONE
-                })
-        
-        # Add additional categories if they exist
-        for category_name in additional_categories:
-            if hasattr(HarmCategory, category_name):
-                safety_settings.append({
-                    "category": getattr(HarmCategory, category_name),
-                    "threshold": HarmBlockThreshold.BLOCK_NONE
-                })
-        
-        model_instance = genai.GenerativeModel(
-            model_name=model,
-            system_instruction=system_instruction,
-            generation_config=generation_config,
-            safety_settings=safety_settings
-        )
-        
+            config_kwargs["response_mime_type"] = "application/json"
+            schema = self._create_response_schema(response_format)
+            if schema:
+                config_kwargs["response_schema"] = schema
+
+        # Allow callers to pass arbitrary additional config overrides via
+        # kwargs['generation_config'] (preserves prior interface).
+        config_kwargs.update(kwargs.get('generation_config', {}))
+
+        config = genai_types.GenerateContentConfig(**config_kwargs)
+
         if stream:
-            # Streaming response
-            try:
-                response_stream = model_instance.generate_content(
-                    gemini_messages,
-                    stream=True
-                )
-                # Check if response_stream is actually iterable
-                if hasattr(response_stream, '__iter__'):
-                    return StreamingResponse(iter(response_stream))
-                else:
-                    # Fallback to non-streaming if streaming fails
-                    response = response_stream
-                    return {
-                        "choices": [
-                            {
-                                "message": {
-                                    "content": self._get_response_text(response),
-                                    "role": "assistant"
-                                },
-                                "finish_reason": self._map_finish_reason(response.candidates[0].finish_reason if response.candidates else None)
-                            }
-                        ],
-                        "usage": {
-                            "prompt_tokens": getattr(response.usage_metadata, 'prompt_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0,
-                            "completion_tokens": getattr(response.usage_metadata, 'candidates_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0,
-                            "total_tokens": getattr(response.usage_metadata, 'total_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0
-                        },
-                        "model": model
-                    }
-            except Exception as e:
-                # If streaming fails, fall back to non-streaming
-                response = model_instance.generate_content(gemini_messages)
-                return {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": self._get_response_text(response),
-                                "role": "assistant"
-                            },
-                            "finish_reason": self._map_finish_reason(response.candidates[0].finish_reason if response.candidates else None)
-                        }
-                    ],
-                    "usage": {
-                        "prompt_tokens": getattr(response.usage_metadata, 'prompt_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0,
-                        "completion_tokens": getattr(response.usage_metadata, 'candidates_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0,
-                        "total_tokens": getattr(response.usage_metadata, 'total_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0
+            response_stream = self.client.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+            return StreamingResponse(iter(response_stream))
+
+        response = self.client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
+        return self._response_to_openai_dict(response, model)
+
+    def _response_to_openai_dict(self, response: Any, model: str) -> Dict[str, Any]:
+        """Wrap a GenerateContentResponse in OpenAI-style output."""
+        finish_reason = None
+        if getattr(response, "candidates", None):
+            finish_reason = getattr(response.candidates[0], "finish_reason", None)
+
+        usage = getattr(response, "usage_metadata", None)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": self._get_response_text(response),
+                        "role": "assistant",
                     },
-                    "model": model
+                    "finish_reason": self._map_finish_reason(finish_reason),
                 }
-        else:
-            # Non-streaming response
-            response = model_instance.generate_content(gemini_messages)
-            
-            # Convert to OpenAI-compatible format
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": self._get_response_text(response),
-                            "role": "assistant"
-                        },
-                        "finish_reason": self._map_finish_reason(response.candidates[0].finish_reason if response.candidates else None)
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": getattr(response.usage_metadata, 'prompt_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0,
-                    "completion_tokens": getattr(response.usage_metadata, 'candidates_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0,
-                    "total_tokens": getattr(response.usage_metadata, 'total_token_count', 0) if hasattr(response, 'usage_metadata') and response.usage_metadata else 0
-                },
-                "model": model
-            }
-    
+            ],
+            "usage": {
+                "prompt_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+                "completion_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+                "total_tokens": getattr(usage, "total_token_count", 0) or 0,
+            },
+            "model": model,
+        }
+
     def _get_response_text(self, response) -> str:
-        """Safely extract text from Gemini response, handling safety filter cases."""
+        """Safely extract text from a Gemini response, handling safety-filter cases."""
         try:
-            return response.text if response.text else ""
+            text = getattr(response, "text", None)
+            if text:
+                return text
         except ValueError as e:
-            # Handle safety filter or other response issues with detailed debugging
-            print(f"DEBUG: ValueError when getting response text: {e}")
-            
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                print(f"DEBUG: Candidate finish_reason: {getattr(candidate, 'finish_reason', 'None')}")
-                
-                # Check for safety ratings
-                if hasattr(candidate, 'safety_ratings'):
-                    print(f"DEBUG: Safety ratings: {candidate.safety_ratings}")
-                
-                # Check for content
-                if hasattr(candidate, 'content'):
-                    print(f"DEBUG: Candidate content: {candidate.content}")
-                
-                if hasattr(candidate, 'finish_reason'):
-                    finish_reason = candidate.finish_reason
-                    # Convert enum to string if needed
-                    if hasattr(finish_reason, 'name'):
-                        reason_name = finish_reason.name
-                    else:
-                        reason_name = str(finish_reason)
-                    
-                    print(f"DEBUG: Finish reason name: {reason_name}")
-                    print(f"DEBUG: Finish reason value: {finish_reason}")
-                    
-                    # Mapping based on Gemini API documentation:
-                    # STOP = Natural stop point
-                    # MAX_TOKENS = Maximum number of tokens reached  
-                    # SAFETY = Content flagged for safety reasons
-                    # RECITATION = Content flagged for recitation reasons
-                    # LANGUAGE = Unsupported language
-                    # OTHER = Unknown reason
-                    # BLOCKLIST = Contains forbidden terms
-                    # PROHIBITED_CONTENT = Potentially prohibited content
-                    # SPII = Potentially contains sensitive info
-                    # MALFORMED_FUNCTION_CALL = Invalid function call
-                    
-                    if reason_name in ["SAFETY"] or finish_reason == 3:
-                        return "Error: Content blocked by safety filter"
-                    elif reason_name in ["RECITATION"] or finish_reason == 4:
-                        return "Error: Content blocked due to recitation"
-                    elif reason_name in ["MAX_TOKENS"] or finish_reason == 2:
-                        return f"Error: Response truncated due to max tokens limit. Try increasing max_tokens or reducing input size."
-                    elif reason_name in ["BLOCKLIST", "PROHIBITED_CONTENT"]:
-                        return f"Error: Content blocked due to content policy ({reason_name})"
-                    elif reason_name in ["LANGUAGE"]:
-                        return f"Error: Unsupported language detected"
-                    elif reason_name in ["SPII"]:
-                        return f"Error: Content flagged for sensitive information"
-                    else:
-                        return f"Error: No content returned (finish_reason: {reason_name}, value: {finish_reason})"
-            else:
-                print(f"DEBUG: No candidates in response or empty candidates")
-                
-            return f"Error: {str(e)}"
-    
+            return self._format_response_error(response, e)
+
+        # `text` is None/empty — surface a useful error from finish_reason.
+        if getattr(response, "candidates", None):
+            return self._format_response_error(response, None)
+
+        return ""
+
+    def _format_response_error(self, response, exc: Optional[Exception]) -> str:
+        """Generate a human-readable error string when text extraction fails."""
+        if not getattr(response, "candidates", None):
+            return f"Error: {exc}" if exc else "Error: No response candidates returned"
+
+        candidate = response.candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        reason_name = getattr(finish_reason, "name", str(finish_reason)) if finish_reason else "UNKNOWN"
+
+        if reason_name == "SAFETY":
+            return "Error: Content blocked by safety filter"
+        if reason_name == "RECITATION":
+            return "Error: Content blocked due to recitation"
+        if reason_name == "MAX_TOKENS":
+            return "Error: Response truncated due to max tokens limit. Try increasing max_tokens or reducing input size."
+        if reason_name in ("BLOCKLIST", "PROHIBITED_CONTENT"):
+            return f"Error: Content blocked due to content policy ({reason_name})"
+        if reason_name == "LANGUAGE":
+            return "Error: Unsupported language detected"
+        if reason_name == "SPII":
+            return "Error: Content flagged for sensitive information"
+        return f"Error: No content returned (finish_reason: {reason_name})"
+
     def _map_finish_reason(self, gemini_finish_reason) -> str:
         """Map Gemini finish reason to OpenAI-compatible format."""
-        if not gemini_finish_reason:
+        if gemini_finish_reason is None:
             return "stop"
-        
-        # Map Gemini finish reasons to OpenAI equivalents
+
+        name = getattr(gemini_finish_reason, "name", str(gemini_finish_reason))
         mapping = {
             "STOP": "stop",
             "MAX_TOKENS": "length",
             "SAFETY": "content_filter",
             "RECITATION": "content_filter",
-            "OTHER": "stop"
+            "BLOCKLIST": "content_filter",
+            "PROHIBITED_CONTENT": "content_filter",
+            "SPII": "content_filter",
+            "LANGUAGE": "stop",
+            "OTHER": "stop",
         }
-        
-        return mapping.get(str(gemini_finish_reason), "stop")
-    
+        return mapping.get(name, "stop")
+
     def get_response_content(self, response: Dict[str, Any]) -> str:
         """Extract content from completed response."""
         return response["choices"][0]["message"]["content"]
-    
+
     def get_streaming_content(self, chunk: Any) -> Optional[str]:
-        """Extract content from streaming chunk."""
+        """Extract content from a streaming chunk."""
         try:
-            # First try to access text directly, but catch ValueError for safety filter issues
-            if hasattr(chunk, 'text'):
-                try:
-                    text = chunk.text
-                    if text:
-                        return text
-                except ValueError:
-                    # Fall through to manual content extraction
-                    pass
-            
-            # Try to extract content manually from candidates
-            if hasattr(chunk, 'candidates') and chunk.candidates:
-                candidate = chunk.candidates[0]
-                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                    parts = candidate.content.parts
-                    if parts and hasattr(parts[0], 'text'):
-                        return parts[0].text
-        except (AttributeError, IndexError, ValueError):
+            text = getattr(chunk, "text", None)
+            if text:
+                return text
+        except (ValueError, AttributeError):
             pass
-        
-        return None
-    
-    def is_stream_complete(self, chunk: Any) -> bool:
-        """Check if streaming is complete."""
+
         try:
-            # Check if chunk has candidates and if the finish_reason indicates completion
-            if hasattr(chunk, 'candidates') and chunk.candidates:
-                candidate = chunk.candidates[0]
-                if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
-                    finish_reason = candidate.finish_reason
-                    # Convert enum to string if needed
-                    if hasattr(finish_reason, 'name'):
-                        finish_reason = finish_reason.name
-                    else:
-                        finish_reason = str(finish_reason)
-                    
-                    # Consider stream complete for these finish reasons
-                    completion_reasons = ["STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER"]
-                    return finish_reason in completion_reasons
+            candidates = getattr(chunk, "candidates", None)
+            if candidates:
+                content = getattr(candidates[0], "content", None)
+                parts = getattr(content, "parts", None) if content else None
+                if parts:
+                    return getattr(parts[0], "text", None)
         except (AttributeError, IndexError):
             pass
-        
-        # If we can't determine, assume not complete
-        return False
-    
+
+        return None
+
+    def is_stream_complete(self, chunk: Any) -> bool:
+        """Check if a streaming chunk indicates the stream is complete."""
+        try:
+            candidates = getattr(chunk, "candidates", None)
+            if not candidates:
+                return False
+            finish_reason = getattr(candidates[0], "finish_reason", None)
+            if not finish_reason:
+                return False
+            name = getattr(finish_reason, "name", str(finish_reason))
+            return name in {
+                "STOP", "MAX_TOKENS", "SAFETY", "RECITATION",
+                "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "LANGUAGE", "OTHER",
+            }
+        except (AttributeError, IndexError):
+            return False
+
     @property
     def provider_name(self) -> str:
         """Return provider name."""
         return "Google Gemini"
-    
+
     @property
     def supported_features(self) -> List[str]:
         """Return supported features."""
@@ -536,12 +423,8 @@ class GeminiProvider(ModelProvider):
             "streaming",
             "system_messages",
             "temperature_control",
-            "top_p_control", 
+            "top_p_control",
             "max_tokens",
-            "json_mode_with_schema",  # Gemini supports structured output with schemas
-            "structured_output"
+            "json_mode_with_schema",
+            "structured_output",
         ]
-    
-    
-    
-    

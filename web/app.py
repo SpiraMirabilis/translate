@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import RedirectResponse
 
 from config import TranslationConfig
 from logger import Logger
@@ -24,7 +25,7 @@ from translation_engine import TranslationEngine
 
 from web.services.job_manager import job_manager
 from web.services.web_interface import WebInterface
-from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public, recommendations_public, recommendations_admin
+from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public, recommendations_public, recommendations_admin, reader_stats_api, comments_public, comments_admin
 from web.auth import configure_auth, AuthMiddleware, router as auth_router
 
 # ------------------------------------------------------------------
@@ -51,11 +52,14 @@ def create_app() -> FastAPI:
     api_calls.init(entity_manager)
     wordpress_api.init(config, entity_manager, job_manager)
     health.init(entity_manager)
-    public.init(entity_manager)
+    public.init(entity_manager, config)
     recommendations_public.init(entity_manager)
     recommendations_admin.init(entity_manager)
+    reader_stats_api.init(entity_manager)
+    comments_public.init(entity_manager, config)
+    comments_admin.init(entity_manager)
 
-    app = FastAPI(title="T9 Translation GUI", version="1.0.0")
+    app = FastAPI(title=f"{config.site_name} Translation GUI", version="1.0.0")
 
     app.add_middleware(
         CORSMiddleware,
@@ -83,6 +87,19 @@ def create_app() -> FastAPI:
 
     app.add_middleware(CacheHeaderMiddleware)
 
+    # WordPress-style feed URL fallback: some RSS readers probe /?feed=rss2
+    # at the site root before trying link-rel autodiscovery. Catch anywhere
+    # outside /api/ and redirect to our canonical feed.
+    class FeedRedirectMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            if not request.url.path.startswith("/api/"):
+                feed = request.query_params.get("feed", "").lower()
+                if feed in ("rss", "rss2", "atom", "rdf"):
+                    return RedirectResponse("/api/public/feed.rss", status_code=302)
+            return await call_next(request)
+
+    app.add_middleware(FeedRedirectMiddleware)
+
     # Auth — must be added after CORS so CORS headers are still set on 401s
     configure_auth()
     app.add_middleware(AuthMiddleware)
@@ -104,6 +121,9 @@ def create_app() -> FastAPI:
     app.include_router(public.router)
     app.include_router(recommendations_public.router)
     app.include_router(recommendations_admin.router)
+    app.include_router(reader_stats_api.router)
+    app.include_router(comments_public.router)
+    app.include_router(comments_admin.router)
 
     # Serve built frontend (production)
     static_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")

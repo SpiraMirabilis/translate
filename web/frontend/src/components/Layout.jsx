@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink } from 'react-router-dom'
-import { useWs } from '../App'
+import { useWs, useSite } from '../App'
 import { api } from '../services/api'
 import {
-  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus
+  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users
 } from 'lucide-react'
 
 const nav = [
@@ -12,36 +12,41 @@ const nav = [
   { to: '/entities',        icon: Database,          label: 'Entities'        },
   { to: '/queue',           icon: ListChecks,        label: 'Queue'           },
   { to: '/recommendations', icon: MessageSquarePlus, label: 'Recommendations', badgeKey: 'recs' },
+  { to: '/comments',        icon: MessageSquare,     label: 'Comments',        badgeKey: 'comments' },
   { to: '/api-logs',        icon: ScrollText,        label: 'API Logs'        },
+  { to: '/reader-stats',    icon: Users,             label: 'Reader Stats'    },
   { to: '/settings',        icon: Settings,          label: 'Settings'        },
   { to: '/help',            icon: HelpCircle,        label: 'Help'            },
 ]
 
 export default function Layout() {
   const { connected } = useWs()
+  const { site_name } = useSite()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [newRecsCount, setNewRecsCount] = useState(0)
+  const [pendingCommentsCount, setPendingCommentsCount] = useState(0)
 
   useEffect(() => {
-    api.countRecommendations('new')
-      .then(data => setNewRecsCount(data.count || 0))
-      .catch(() => {})
-    // Refresh every 5 minutes
-    const interval = setInterval(() => {
+    const fetchCounts = () => {
       api.countRecommendations('new')
         .then(data => setNewRecsCount(data.count || 0))
         .catch(() => {})
-    }, 5 * 60 * 1000)
+      api.countCommentsAdmin('pending')
+        .then(data => setPendingCommentsCount(data.count || 0))
+        .catch(() => {})
+    }
+    fetchCounts()
+    const interval = setInterval(fetchCounts, 5 * 60 * 1000)
     return () => clearInterval(interval)
   }, [])
 
-  const badges = { recs: newRecsCount }
+  const badges = { recs: newRecsCount, comments: pendingCommentsCount }
 
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Mobile top bar */}
       <div className="md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-3 py-2 bg-slate-950 border-b border-slate-800">
-        <div className="text-indigo-400 font-bold font-mono text-lg select-none">T9</div>
+        <div className="text-indigo-400 font-bold font-mono text-lg select-none">{site_name}</div>
         <div className="flex items-center gap-3">
           <div title={connected ? 'Connected' : 'Reconnecting…'}>
             {connected
@@ -87,7 +92,7 @@ export default function Layout() {
       {/* Desktop sidebar */}
       <aside className="hidden md:flex w-14 flex-col items-center py-4 gap-1 bg-slate-950 border-r border-slate-800 shrink-0">
         {/* Logo */}
-        <div className="mb-4 text-indigo-400 font-bold font-mono text-lg select-none">T9</div>
+        <div className="mb-4 text-indigo-400 font-bold font-mono text-lg select-none">{site_name}</div>
 
         {nav.map(({ to, icon: Icon, label, badgeKey }) => (
           <NavLink

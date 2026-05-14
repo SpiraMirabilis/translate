@@ -45,6 +45,8 @@ class BookCreate(BaseModel):
     source_language: Optional[str] = "zh"
     description: Optional[str] = None
     genre: Optional[str] = None
+    source_url: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class BookUpdate(BaseModel):
@@ -55,6 +57,11 @@ class BookUpdate(BaseModel):
     is_public: Optional[bool] = None
     total_source_chapters: Optional[int] = None
     status: Optional[str] = None
+    comments_enabled: Optional[bool] = None
+    source_url: Optional[str] = None
+    notes: Optional[str] = None
+    trad_to_simp: Optional[int] = None  # tri-state: null=inherit global, 0=off, 1=on
+    tags: Optional[List[str]] = None
 
 
 class PromptUpdate(BaseModel):
@@ -64,6 +71,10 @@ class PromptUpdate(BaseModel):
 class ChapterContentUpdate(BaseModel):
     content: List[str]
     title: Optional[str] = None
+
+
+class ChapterRenumber(BaseModel):
+    new_chapter_number: int
 
 
 class ChapterProofreadUpdate(BaseModel):
@@ -143,12 +154,23 @@ async def create_book(req: BookCreate):
             if cats:
                 _entity_manager.set_book_categories(book_id, cats)
 
+    # Apply optional metadata that create_book() doesn't accept directly
+    extras = {k: v for k, v in (("source_url", req.source_url), ("notes", req.notes)) if v}
+    if extras:
+        _entity_manager.update_book(book_id, **extras)
+
     return {"id": book_id, "title": req.title}
 
 
 # ------------------------------------------------------------------
 # Prompt template (literal paths MUST come before /{book_id} routes)
 # ------------------------------------------------------------------
+
+@router.get("/tags")
+async def list_all_tags():
+    """Return the deduped, sorted union of tags across all books (for autocomplete)."""
+    return {"tags": _entity_manager.get_all_tags()}
+
 
 @router.get("/genres")
 async def list_genres():
@@ -212,14 +234,39 @@ async def update_book(book_id: int, req: BookUpdate):
         raise HTTPException(status_code=404, detail="Book not found.")
     dump = req.model_dump() if hasattr(req, 'model_dump') else req.dict()
     # Allow total_source_chapters=null to clear the value
-    nullable_fields = {'total_source_chapters'}
+    nullable_fields = {'total_source_chapters', 'trad_to_simp'}
     kwargs = {k: v for k, v in dump.items() if v is not None or k in nullable_fields}
-    if 'status' in kwargs and kwargs['status'] not in ('ongoing', 'hiatus', 'completed', 'dropped'):
-        raise HTTPException(status_code=400, detail="Invalid status. Must be one of: ongoing, hiatus, completed, dropped")
+    if 'status' in kwargs and kwargs['status'] not in ('ongoing', 'ongoing-trial', 'hiatus', 'completed', 'dropped'):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be one of: ongoing, ongoing-trial, hiatus, completed, dropped")
+    if 'tags' in kwargs:
+        kwargs['tags'] = _normalize_tags(kwargs['tags'])
     success = _entity_manager.update_book(book_id, **kwargs)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update book.")
     return {"status": "ok"}
+
+
+def _normalize_tags(tags):
+    """Strip + lowercase + dedupe a tag list. Validates length and count."""
+    if not tags:
+        return []
+    seen = set()
+    cleaned = []
+    for t in tags:
+        if not isinstance(t, str):
+            raise HTTPException(status_code=400, detail="Tags must be strings.")
+        s = t.strip().lower()
+        if not s:
+            continue
+        if len(s) > 50:
+            raise HTTPException(status_code=400, detail=f"Tag too long (max 50 chars): {s[:50]}...")
+        if s in seen:
+            continue
+        seen.add(s)
+        cleaned.append(s)
+    if len(cleaned) > 30:
+        raise HTTPException(status_code=400, detail="Too many tags (max 30 per book).")
+    return cleaned
 
 
 @router.delete("/{book_id}")
@@ -546,6 +593,23 @@ async def delete_chapter(book_id: int, chapter_number: int):
     return {"status": "ok"}
 
 
+@router.post("/{book_id}/chapters/{chapter_number}/renumber")
+async def renumber_chapter(book_id: int, chapter_number: int, req: ChapterRenumber):
+    ok, reason = _entity_manager.renumber_chapter(book_id, chapter_number, req.new_chapter_number)
+    if not ok:
+        if reason == "invalid":
+            raise HTTPException(status_code=400, detail="Chapter number must be a positive integer.")
+        if reason == "not_found":
+            raise HTTPException(status_code=404, detail="Chapter not found.")
+        if reason == "target_exists":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Chapter {req.new_chapter_number} already exists for this book.",
+            )
+        raise HTTPException(status_code=500, detail=f"Failed to renumber chapter: {reason}")
+    return {"status": "ok", "chapter_number": req.new_chapter_number}
+
+
 @router.post("/{book_id}/chapters/batch-delete")
 async def batch_delete_chapters(book_id: int, req: BatchChapterAction):
     deleted = 0
@@ -606,6 +670,130 @@ async def batch_requeue_chapters(book_id: int, req: BatchRequeueAction):
         if queue_id:
             queued += 1
     return {"status": "ok", "queued": queued, "errors": errors}
+
+
+# ------------------------------------------------------------------
+# Per-chapter pronoun repair
+# ------------------------------------------------------------------
+
+
+class PronounRepairRequest(BaseModel):
+    entity_id: int
+
+
+@router.get("/{book_id}/chapters/{chapter_number}/gendered-entities")
+async def list_gendered_entities_in_chapter(book_id: int, chapter_number: int):
+    """Return character entities (with defined gender) whose English name appears in
+    this chapter's translated text. Used to populate the per-chapter pronoun-repair picker.
+    """
+    chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+    translated = chapter.get("content") or []
+    haystack = "\n".join(translated) if isinstance(translated, list) else str(translated or "")
+
+    conn = _entity_manager.backend.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, untranslated, translation, gender
+        FROM entities
+        WHERE book_id = ? AND category = 'characters'
+              AND gender IN ('male', 'female', 'neutral')
+              AND translation IS NOT NULL AND translation != ''
+        """,
+        (book_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    import re
+    out = []
+    for r in rows:
+        if isinstance(r, dict):
+            eid, untrans, trans, gender = r["id"], r["untranslated"], r["translation"], r["gender"]
+        else:
+            eid, untrans, trans, gender = r[0], r[1], r[2], r[3]
+        if not trans:
+            continue
+        if re.search(r"\b" + re.escape(trans) + r"\b", haystack):
+            out.append({
+                "entity_id": eid,
+                "untranslated": untrans,
+                "translation": trans,
+                "gender": gender,
+            })
+    out.sort(key=lambda e: e["translation"].lower())
+    return {"entities": out}
+
+
+@router.post("/{book_id}/chapters/{chapter_number}/pronoun-repair")
+async def pronoun_repair_chapter(book_id: int, chapter_number: int, req: PronounRepairRequest):
+    """Run pronoun_repair scoped to a single chapter for one entity. Synchronous —
+    one chapter is fast enough that we return the result inline."""
+    chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+
+    # Verify the entity belongs to this book and has the data pronoun_repair needs
+    conn = _entity_manager.backend.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT untranslated, translation, gender, book_id FROM entities WHERE id = ?",
+        (req.entity_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Entity {req.entity_id} not found.")
+    if isinstance(row, dict):
+        ent_untrans, ent_trans, ent_gender, ent_book_id = row["untranslated"], row["translation"], row["gender"], row["book_id"]
+    else:
+        ent_untrans, ent_trans, ent_gender, ent_book_id = row[0], row[1], row[2], row[3]
+    if ent_book_id != book_id:
+        raise HTTPException(status_code=400, detail="Entity does not belong to this book.")
+    if (ent_gender or "").lower() not in ("male", "female", "neutral"):
+        raise HTTPException(status_code=400, detail=f"Entity {ent_trans!r} has no usable gender; set one first.")
+
+    try:
+        from pronoun_repair import repair_pronouns_for_entity
+        summary = repair_pronouns_for_entity(
+            _entity_manager,
+            req.entity_id,
+            ent_gender.lower(),
+            chapter_numbers=[chapter_number],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pronoun repair failed: {e}")
+
+    # Log to activity feed for parity with the book-wide flow
+    try:
+        msg = (
+            f"Pronoun repair (chapter {chapter_number}): "
+            f"{summary['paragraphs_changed']} paragraph"
+            f"{'s' if summary['paragraphs_changed'] != 1 else ''} corrected for "
+            f"{summary.get('character_name') or ent_trans} "
+            f"({summary['windows_examined']} windows examined)"
+        )
+        if summary.get("errors"):
+            msg += f"; {len(summary['errors'])} window error(s)"
+        _entity_manager.add_activity_log(
+            type="pronoun_repair",
+            message=msg,
+            book_id=book_id,
+            chapter=chapter_number,
+            entities=[summary.get("character_name") or ent_trans],
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "paragraphs_changed": summary["paragraphs_changed"],
+        "windows_examined": summary["windows_examined"],
+        "errors": len(summary.get("errors", [])),
+        "character_name": summary.get("character_name") or ent_trans,
+    }
 
 
 # ------------------------------------------------------------------

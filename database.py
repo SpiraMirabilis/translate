@@ -13,6 +13,14 @@ DEFAULT_CATEGORIES = [
     'titles', 'equipment', 'creatures'
 ]
 
+# Pre-translation similarity matching: include entities whose first-2 or last-2
+# source-language chars appear in the chapter text, as reference-only hints for
+# naming-style consistency. Suffix matching is the strongest signal (cultivation
+# titles like 真君, 道人); prefix matching is noisier (common chars like 大, 小).
+# Flip INCLUDE_SIMILAR_PREFIX to False to drop the prefix half if it adds noise
+# without benefit.
+INCLUDE_SIMILAR_PREFIX = True
+
 class DatabaseManager:
     """Class to manage database operations including entities, books, and chapters using SQLite"""
     
@@ -107,6 +115,37 @@ class DatabaseManager:
             if 'status' not in book_cols:
                 cursor.execute("ALTER TABLE books ADD COLUMN status TEXT DEFAULT 'ongoing'")
                 self.logger.info("Added status column to books table")
+            if 'comments_enabled' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN comments_enabled INTEGER DEFAULT 1")
+                self.logger.info("Added comments_enabled column to books table")
+            if 'source_url' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
+                self.logger.info("Added source_url column to books table")
+            if 'notes' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN notes TEXT")
+                self.logger.info("Added notes column to books table")
+            if 'view_count' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0")
+                self.logger.info("Added view_count column to books table")
+                cursor.execute("""
+                    UPDATE books
+                    SET view_count = COALESCE(
+                        (SELECT COUNT(*) FROM reader_log WHERE reader_log.book_id = books.id),
+                        0
+                    )
+                """)
+                self.logger.info("Backfilled view_count from reader_log")
+            if 'trad_to_simp' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN trad_to_simp INTEGER DEFAULT NULL")
+                self.logger.info("Added trad_to_simp column to books table")
+            if 'tags' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN tags TEXT")
+                self.logger.info("Added tags column to books table")
+
+            comment_cols = self.backend.get_table_columns(conn, 'comments')
+            if 'notify_replies' not in comment_cols:
+                cursor.execute("ALTER TABLE comments ADD COLUMN notify_replies INTEGER NOT NULL DEFAULT 0")
+                self.logger.info("Added notify_replies column to comments table")
 
             queue_cols = self.backend.get_table_columns(conn, 'queue')
             if 'retranslation_reason' not in queue_cols:
@@ -252,6 +291,58 @@ class DatabaseManager:
             self.logger.error(f"Error setting book categories: {e}")
             return False
 
+    def get_book_tags(self, book_id):
+        """Get the tag list for a book. Returns [] if unset."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT tags FROM books WHERE id = ?", (book_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                return json.loads(row[0])
+            return []
+        except Exception as e:
+            self.logger.error(f"Error getting book tags: {e}")
+            return []
+
+    def set_book_tags(self, book_id, tags):
+        """Set tags for a book. Pass None or [] to clear."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            value = json.dumps(tags) if tags else None
+            cursor.execute("UPDATE books SET tags = ? WHERE id = ?", (value, book_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error setting book tags: {e}")
+            return False
+
+    def get_all_tags(self):
+        """Return the deduped, sorted union of tags across all books."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT tags FROM books WHERE tags IS NOT NULL")
+            seen = set()
+            for row in cursor.fetchall():
+                raw = row[0]
+                if not raw:
+                    continue
+                try:
+                    for tag in json.loads(raw):
+                        if isinstance(tag, str) and tag.strip():
+                            seen.add(tag)
+                except (ValueError, TypeError):
+                    continue
+            conn.close()
+            return sorted(seen)
+        except Exception as e:
+            self.logger.error(f"Error listing all tags: {e}")
+            return []
+
     def get_book(self, book_id=None, title=None):
         """
         Get book information from the database.
@@ -275,7 +366,8 @@ class DatabaseManager:
                 cursor.execute('''
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
-                    total_source_chapters, status
+                    total_source_chapters, status, comments_enabled, source_url, notes,
+                    view_count, trad_to_simp, tags
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
@@ -283,7 +375,8 @@ class DatabaseManager:
                 cursor.execute('''
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
-                    total_source_chapters, status
+                    total_source_chapters, status, comments_enabled, source_url, notes,
+                    view_count, trad_to_simp, tags
                 FROM books
                 WHERE title = ?
                 ''', (title,))
@@ -295,6 +388,7 @@ class DatabaseManager:
                 return None
 
             raw_cats = row[10] if len(row) > 10 else None
+            raw_tags = row[19] if len(row) > 19 else None
             book_info = {
                 "id": row[0],
                 "title": row[1],
@@ -310,6 +404,12 @@ class DatabaseManager:
                 "is_public": bool(row[11]) if len(row) > 11 else True,
                 "total_source_chapters": row[12] if len(row) > 12 else None,
                 "status": row[13] if len(row) > 13 else "ongoing",
+                "comments_enabled": bool(row[14]) if len(row) > 14 and row[14] is not None else True,
+                "source_url": row[15] if len(row) > 15 else None,
+                "notes": row[16] if len(row) > 16 else None,
+                "view_count": row[17] if len(row) > 17 and row[17] is not None else 0,
+                "trad_to_simp": row[18] if len(row) > 18 else None,
+                "tags": json.loads(raw_tags) if raw_tags else [],
             }
             
             return book_info
@@ -350,12 +450,20 @@ class DatabaseManager:
             for key, value in kwargs.items():
                 if key in ['title', 'author', 'language', 'description', 'source_language',
                         'target_language', 'modified_date', 'cover_image', 'is_public',
-                        'total_source_chapters', 'status']:
+                        'total_source_chapters', 'status', 'comments_enabled',
+                        'source_url', 'notes', 'trad_to_simp', 'tags']:
                     set_clause.append(f"{key} = ?")
-                    if key == 'is_public':
-                        values.append(int(value))
+                    if key in ('is_public', 'comments_enabled'):
+                        values.append(int(bool(value)))
                     elif key == 'total_source_chapters':
                         values.append(int(value) if value is not None else None)
+                    elif key == 'trad_to_simp':
+                        if value is None:
+                            values.append(None)
+                        else:
+                            values.append(int(bool(value)))
+                    elif key == 'tags':
+                        values.append(json.dumps(value) if value else None)
                     else:
                         values.append(value)
             
@@ -389,23 +497,38 @@ class DatabaseManager:
             self.logger.error(f"Error updating book: {e}")
             return False
 
-    def list_books(self):
+    def list_books(self, order_by: str = 'title'):
         """
         List all books in the database.
-        
+
+        Args:
+            order_by: One of 'title' (default), 'popular', or 'updated'.
+                Unknown values fall back to 'title'.
+
         Returns:
             list: List of book information dictionaries
         """
+        if self.backend.name == 'sqlite':
+            title_clause = 'title COLLATE NOCASE ASC'
+        else:
+            title_clause = 'title ASC'
+        ORDER_CLAUSES = {
+            'title':   title_clause,
+            'popular': 'view_count DESC, ' + title_clause,
+            'updated': "COALESCE(modified_date, created_date, '') DESC, " + title_clause,
+        }
+        clause = ORDER_CLAUSES.get(order_by, ORDER_CLAUSES['title'])
         try:
             conn = self.backend.get_connection()
             cursor = conn.cursor()
-            
-            cursor.execute('''
+
+            cursor.execute(f'''
             SELECT id, title, author, language, created_date, cover_image, categories,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count,
-                description, is_public, total_source_chapters, status
+                description, is_public, total_source_chapters, status, comments_enabled,
+                source_url, notes, view_count, modified_date, trad_to_simp, tags
             FROM books
-            ORDER BY title
+            ORDER BY {clause}
             ''')
 
             rows = cursor.fetchall()
@@ -413,13 +536,17 @@ class DatabaseManager:
 
             result = []
             for row in rows:
-                book_id, title, author, language, created_date, cover_image, raw_cats, chapter_count, description, is_public, total_source_chapters, status = row
+                (book_id, title, author, language, created_date, cover_image, raw_cats,
+                 chapter_count, description, is_public, total_source_chapters, status,
+                 comments_enabled, source_url, notes, view_count, modified_date,
+                 trad_to_simp, raw_tags) = row
                 result.append({
                     "id": book_id,
                     "title": title,
                     "author": author,
                     "language": language,
                     "created_date": created_date,
+                    "modified_date": modified_date,
                     "cover_image": cover_image,
                     "categories": json.loads(raw_cats) if raw_cats else None,
                     "chapter_count": chapter_count,
@@ -427,10 +554,16 @@ class DatabaseManager:
                     "is_public": bool(is_public) if is_public is not None else True,
                     "total_source_chapters": total_source_chapters,
                     "status": status or "ongoing",
+                    "comments_enabled": bool(comments_enabled) if comments_enabled is not None else True,
+                    "source_url": source_url,
+                    "notes": notes,
+                    "view_count": view_count or 0,
+                    "trad_to_simp": trad_to_simp,
+                    "tags": json.loads(raw_tags) if raw_tags else [],
                 })
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Error listing books: {e}")
             return []
@@ -524,7 +657,15 @@ class DatabaseManager:
             if not book:
                 self.logger.error(f"Book with ID {book_id} not found")
                 return None
-            
+
+            # Optional trad→simp preprocessing of source text before persistence
+            if self._should_convert_trad(book):
+                try:
+                    from trad_simp import convert_text
+                    untranslated_content = convert_text(untranslated_content)
+                except ImportError as e:
+                    self.logger.error(f"Trad→simp conversion skipped: {e}")
+
             # Serialize content if it's a list
             if isinstance(untranslated_content, list):
                 untranslated_text = json.dumps(untranslated_content, ensure_ascii=False)
@@ -729,6 +870,56 @@ class DatabaseManager:
             self.logger.error(f"Error listing chapters: {e}")
             return []
 
+    def list_recent_translated_chapters(self, limit=50, book_id=None):
+        """Return recently translated chapters from public books, joined with book info.
+
+        Ordered by translation_date DESC. If book_id is given, restricted to that book
+        (is_public gate still enforced). translation_date is ISO 8601, so lexicographic
+        DESC matches chronological DESC.
+        """
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            sql = '''
+                SELECT c.id, c.book_id, c.chapter_number, c.title, c.summary,
+                       c.translation_date, b.title AS book_title, b.author AS book_author
+                FROM chapters c
+                JOIN books b ON c.book_id = b.id
+                WHERE b.is_public = 1
+                  AND c.translation_date IS NOT NULL
+            '''
+            params = []
+            if book_id is not None:
+                sql += ' AND c.book_id = ?'
+                params.append(book_id)
+            sql += ' ORDER BY c.translation_date DESC LIMIT ?'
+            params.append(limit)
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+            return [
+                {
+                    "id": row[0],
+                    "book_id": row[1],
+                    "chapter": row[2],
+                    "title": row[3],
+                    "summary": row[4],
+                    "translation_date": row[5],
+                    "book_title": row[6],
+                    "book_author": row[7],
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            self.logger.error(f"Error listing recent translated chapters: {e}")
+            return []
+
+    # Caps to prevent runaway memory use on common-substring queries.
+    # match_count stays accurate; only the stored matches list is bounded.
+    SEARCH_MAX_MATCHES_PER_CHAPTER = 200
+    SEARCH_MAX_TOTAL_MATCHES = 2000
+    SEARCH_MAX_TEXT_LEN = 500
+
     def search_book_chapters(self, book_id, query, scope='both', is_regex=False):
         """Search all chapters of a book for a query string.
 
@@ -739,7 +930,9 @@ class DatabaseManager:
             is_regex: Whether query is a regex pattern
 
         Returns:
-            list of dicts with chapter_number, title, match_count, matches
+            list of dicts with chapter_number, title, match_count, matches.
+            match_count is the true count; matches may be truncated to bound
+            response size (truncated=True is set on the chapter dict in that case).
         """
         try:
             conn = self.backend.get_connection()
@@ -759,7 +952,18 @@ class DatabaseManager:
             else:
                 query_lower = query.lower()
 
+            per_ch_cap = self.SEARCH_MAX_MATCHES_PER_CHAPTER
+            total_cap = self.SEARCH_MAX_TOTAL_MATCHES
+            text_cap = self.SEARCH_MAX_TEXT_LEN
+
             results = []
+            total_collected = 0
+
+            def _clip(line):
+                if len(line) <= text_cap:
+                    return line
+                return line[:text_cap] + '…'
+
             for chapter_number, title, raw_untrans, raw_trans in rows:
                 try:
                     untrans_lines = json.loads(raw_untrans) if raw_untrans else []
@@ -771,17 +975,26 @@ class DatabaseManager:
                     trans_lines = raw_trans.split('\n') if raw_trans else []
 
                 matches = []
+                ch_match_count = 0
+
+                def add_match(line_idx, col, length, field, line):
+                    nonlocal ch_match_count, total_collected
+                    ch_match_count += 1
+                    if len(matches) >= per_ch_cap or total_collected >= total_cap:
+                        return
+                    matches.append({
+                        'line': line_idx, 'col': col,
+                        'length': length, 'field': field,
+                        'text': _clip(line),
+                    })
+                    total_collected += 1
 
                 # Search untranslated
                 if scope in ('untranslated', 'both'):
                     for line_idx, line in enumerate(untrans_lines):
                         if is_regex:
                             for m in pattern.finditer(line):
-                                matches.append({
-                                    'line': line_idx, 'col': m.start(),
-                                    'length': m.end() - m.start(), 'field': 'untranslated',
-                                    'text': line,
-                                })
+                                add_match(line_idx, m.start(), m.end() - m.start(), 'untranslated', line)
                         else:
                             line_lower = line.lower()
                             start = 0
@@ -789,11 +1002,7 @@ class DatabaseManager:
                                 idx = line_lower.find(query_lower, start)
                                 if idx == -1:
                                     break
-                                matches.append({
-                                    'line': line_idx, 'col': idx,
-                                    'length': len(query), 'field': 'untranslated',
-                                    'text': line,
-                                })
+                                add_match(line_idx, idx, len(query), 'untranslated', line)
                                 start = idx + 1
 
                 # Search translated
@@ -801,11 +1010,7 @@ class DatabaseManager:
                     for line_idx, line in enumerate(trans_lines):
                         if is_regex:
                             for m in pattern.finditer(line):
-                                matches.append({
-                                    'line': line_idx, 'col': m.start(),
-                                    'length': m.end() - m.start(), 'field': 'translated',
-                                    'text': line,
-                                })
+                                add_match(line_idx, m.start(), m.end() - m.start(), 'translated', line)
                         else:
                             line_lower = line.lower()
                             start = 0
@@ -813,20 +1018,19 @@ class DatabaseManager:
                                 idx = line_lower.find(query_lower, start)
                                 if idx == -1:
                                     break
-                                matches.append({
-                                    'line': line_idx, 'col': idx,
-                                    'length': len(query), 'field': 'translated',
-                                    'text': line,
-                                })
+                                add_match(line_idx, idx, len(query), 'translated', line)
                                 start = idx + 1
 
-                if matches:
-                    results.append({
+                if ch_match_count > 0:
+                    entry = {
                         'chapter_number': chapter_number,
                         'title': title or f'Chapter {chapter_number}',
-                        'match_count': len(matches),
+                        'match_count': ch_match_count,
                         'matches': matches,
-                    })
+                    }
+                    if len(matches) < ch_match_count:
+                        entry['truncated'] = True
+                    results.append(entry)
 
             return results
         except Exception as e:
@@ -1037,6 +1241,140 @@ class DatabaseManager:
             self.logger.error(f"Error deleting chapter: {e}")
             return False
 
+    def renumber_chapter(self, book_id, chapter_number, new_chapter_number):
+        """
+        Move a chapter to a new chapter_number, updating all related tables.
+
+        Returns:
+            (True, None) on success, (False, reason) on failure. Reasons:
+              - "not_found": source chapter doesn't exist
+              - "target_exists": target chapter_number already in use
+              - "invalid": new_chapter_number invalid (<1)
+        """
+        if not isinstance(new_chapter_number, int) or new_chapter_number < 1:
+            return False, "invalid"
+        if new_chapter_number == chapter_number:
+            return True, None
+
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT id FROM chapters WHERE book_id = ? AND chapter_number = ?",
+                (book_id, chapter_number),
+            )
+            if not cursor.fetchone():
+                conn.close()
+                return False, "not_found"
+
+            cursor.execute(
+                "SELECT id FROM chapters WHERE book_id = ? AND chapter_number = ?",
+                (book_id, new_chapter_number),
+            )
+            if cursor.fetchone():
+                conn.close()
+                return False, "target_exists"
+
+            cursor.execute(
+                "UPDATE chapters SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                (new_chapter_number, book_id, chapter_number),
+            )
+            cursor.execute(
+                "UPDATE wp_publish_state SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                (new_chapter_number, book_id, chapter_number),
+            )
+            cursor.execute(
+                "UPDATE comments SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                (new_chapter_number, book_id, chapter_number),
+            )
+            cursor.execute(
+                "UPDATE api_calls SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                (new_chapter_number, book_id, chapter_number),
+            )
+            cursor.execute(
+                "UPDATE reader_log SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                (new_chapter_number, book_id, chapter_number),
+            )
+            # activity_log uses column name `chapter`, not `chapter_number`
+            cursor.execute(
+                "UPDATE activity_log SET chapter = ? WHERE book_id = ? AND chapter = ?",
+                (new_chapter_number, book_id, chapter_number),
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            self.logger.error(f"Error renumbering chapter {chapter_number} -> {new_chapter_number}: {e}")
+            return False, str(e)
+        conn.close()
+        self.invalidate_epub_cache(book_id)
+        self.logger.info(f"Renumbered chapter {chapter_number} -> {new_chapter_number} for book ID {book_id}")
+        return True, None
+
+    def shift_queue_chapter_numbers(self, book_id, from_chapter, delta=1, exclude_queue_id=None):
+        """Bulk-shift queue.chapter_number for one book.
+
+        Used by the chapter-conflict 'insert_shift' resolution to make room
+        at `from_chapter` (typically existing_chapter_number + 1) for the
+        incoming item. Returns rowcount, or -1 on error.
+        """
+        if not isinstance(delta, int) or delta == 0:
+            return 0
+        if not isinstance(from_chapter, int) or from_chapter < 1:
+            return 0
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        try:
+            if exclude_queue_id is not None:
+                cursor.execute(
+                    "UPDATE queue SET chapter_number = chapter_number + ? "
+                    "WHERE book_id = ? AND chapter_number IS NOT NULL "
+                    "AND chapter_number >= ? AND id != ?",
+                    (delta, book_id, from_chapter, exclude_queue_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE queue SET chapter_number = chapter_number + ? "
+                    "WHERE book_id = ? AND chapter_number IS NOT NULL "
+                    "AND chapter_number >= ?",
+                    (delta, book_id, from_chapter),
+                )
+            affected = cursor.rowcount
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            self.logger.error(
+                f"shift_queue_chapter_numbers failed (book={book_id}, "
+                f"from={from_chapter}, delta={delta}): {e}"
+            )
+            return -1
+        conn.close()
+        return affected
+
+    def update_queue_chapter_number(self, queue_id, new_chapter_number):
+        """Update a single queue row's chapter_number. Returns True on success."""
+        if not isinstance(new_chapter_number, int) or new_chapter_number < 1:
+            return False
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE queue SET chapter_number = ? WHERE id = ?",
+                (new_chapter_number, queue_id),
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            self.logger.error(
+                f"update_queue_chapter_number failed (queue_id={queue_id}, "
+                f"new={new_chapter_number}): {e}"
+            )
+            return False
+        conn.close()
+        return True
+
     # Queue management section
     def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None, priority=False, retranslation_reason=None):
         """
@@ -1062,6 +1400,14 @@ class DatabaseManager:
             if not book:
                 self.logger.error(f"Book with ID {book_id} not found")
                 return None
+
+            # Optional trad→simp preprocessing of queued source text
+            if self._should_convert_trad(book):
+                try:
+                    from trad_simp import convert_text
+                    content = convert_text(content)
+                except ImportError as e:
+                    self.logger.error(f"Trad→simp conversion skipped: {e}")
 
             conn = self.backend.get_connection()
             cursor = conn.cursor()
@@ -1463,7 +1809,7 @@ class DatabaseManager:
     # ------------------------------------------------------------------
 
     def log_reader_view(self, book_id: int, chapter_number: int, ip: str):
-        """Record a chapter view from the public reader."""
+        """Record a chapter view from the public reader and bump the book's view_count."""
         try:
             conn = self.backend.get_connection()
             cursor = conn.cursor()
@@ -1471,10 +1817,28 @@ class DatabaseManager:
                 'INSERT INTO reader_log (book_id, chapter_number, ip, viewed_at) VALUES (?, ?, ?, ?)',
                 (book_id, chapter_number, ip, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
             )
+            cursor.execute(
+                'UPDATE books SET view_count = view_count + 1 WHERE id = ?',
+                (book_id,)
+            )
             conn.commit()
             conn.close()
         except Exception as e:
             self.logger.error(f"Error logging reader view: {e}")
+
+    def increment_book_view_count(self, book_id: int):
+        """Atomically bump books.view_count by 1. Does not write reader_log."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE books SET view_count = view_count + 1 WHERE id = ?',
+                (book_id,)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.logger.error(f"Error incrementing view_count for book {book_id}: {e}")
 
     def get_reader_log(self, book_id: int = None, limit: int = 200):
         """Return recent reader log entries, optionally filtered by book."""
@@ -1706,18 +2070,20 @@ class DatabaseManager:
     def entities_inside_text(self, text_lines, all_entities, current_chapter, do_count=True):
         """
         Extracts entities mentioned in the given text and updates their running count and last chapter.
-        
+
+        Returns a two-bucket dict per call:
+          - "exact":   entities whose full source form appears literally in the chapter text.
+          - "similar": entities (length >= 3) NOT in "exact" whose first-2 or last-2
+                      source chars appear in the chapter text. These are reference-only
+                      hints for naming-style consistency (titles, honorifics, surnames).
+                      Each carries a "match" field of "prefix", "suffix", or "prefix+suffix".
+
         Args:
             text_lines (list of str): The chapter's text content split into lines.
             all_entities (dict): The complete entities dictionary with global counts.
             current_chapter (int or str): The current chapter number.
             do_count (bool): Defaults to True. Set to False if regenerating system prompt to avoid double counting.
-        
-        Returns:
-            dict: A filtered dictionary of entities mentioned in the text with updated global counts and last chapter.
         """
-        found_entities = {}
-        
         # Ensure combined_text is a string
         if isinstance(text_lines, list):
             combined_text = ' '.join(text_lines)
@@ -1725,47 +2091,112 @@ class DatabaseManager:
             combined_text = text_lines
         else:
             self.logger.error(f"Unexpected type for text_lines: {type(text_lines)}")
-            # Convert to string as a fallback
             combined_text = str(text_lines)
-        
-        # Add debugging
+
         self.logger.debug(f"entities_inside_text: type of combined_text = {type(combined_text)}")
-        
-        # Normalize the combined text for consistent matching
+
         combined_text = self._normalize_text(combined_text)
-        # Query all entities from the database if all_entities is empty
+
         if not all_entities:
             self.logger.error("all_entities is empty, querying database... we will just return a blank dict for now")
-            return {}
-        else:
-            all_entities_dict = {}
-            for key, value in all_entities.items():
-                key_normalized = self._normalize_text(key)
-                
-                regex = re.compile(re.escape(key_normalized))
-                try:
-                    matches = regex.findall(combined_text)
-                    occurrence_count = len(matches)
-                except TypeError as e:
-                    self.logger.error(f"TypeError in regex.findall: {e}")
-                    self.logger.error(f"Key: {key}, Type of combined_text: {type(combined_text)}")
-                    occurrence_count = 0
-                
-                if occurrence_count > 0:
-                    self.logger.debug(f"'{key}' ({value['translation']}) was found {occurrence_count} times.")
-                    
-                    if key not in found_entities:
-                        # Initialize entity data
-                        found_entities[key] = {
-                            "translation": value["translation"],
-                            "last_chapter": current_chapter
-                        }
-                        if value.get("note"):
-                            found_entities[key]["note"] = value["note"]
-                    
-                    # Update global entities
-                    all_entities[key]["last_chapter"] = current_chapter
-        return found_entities
+            return {"exact": {}, "similar": {}}
+
+        exact = {}
+        similar = {}
+
+        # Pass 1: literal substring (exact) match — current behaviour.
+        for key, value in all_entities.items():
+            key_normalized = self._normalize_text(key)
+
+            regex = re.compile(re.escape(key_normalized))
+            try:
+                matches = regex.findall(combined_text)
+                occurrence_count = len(matches)
+            except TypeError as e:
+                self.logger.error(f"TypeError in regex.findall: {e}")
+                self.logger.error(f"Key: {key}, Type of combined_text: {type(combined_text)}")
+                occurrence_count = 0
+
+            if occurrence_count > 0:
+                self.logger.debug(f"'{key}' ({value['translation']}) was found {occurrence_count} times.")
+                if key not in exact:
+                    exact[key] = {
+                        "translation": value["translation"],
+                        "last_chapter": current_chapter,
+                    }
+                    if value.get("note"):
+                        exact[key]["note"] = value["note"]
+                all_entities[key]["last_chapter"] = current_chapter
+
+        # Build anchor sets from exact: each exact entity already gives the model
+        # a translation reference for its leading and trailing bigrams. Piling on
+        # other similar entries that share the same anchor is pure noise.
+        exact_prefixes = set()
+        exact_suffixes = set()
+        for ek in exact:
+            ek_norm = self._normalize_text(ek)
+            if len(ek_norm) >= 2:
+                exact_prefixes.add(ek_norm[:2])
+                exact_suffixes.add(ek_norm[-2:])
+
+        # Pass 2: prefix/suffix similarity match — reference-only consistency hints.
+        for key, value in all_entities.items():
+            if key in exact:
+                continue
+            key_normalized = self._normalize_text(key)
+            if len(key_normalized) < 3:
+                # 1- or 2-char keys collapse to the whole entity, already handled by pass 1.
+                continue
+
+            prefix = key_normalized[:2]
+            suffix = key_normalized[-2:]
+
+            prefix_in_text = prefix in combined_text
+            suffix_in_text = suffix in combined_text
+
+            if not (prefix_in_text or suffix_in_text):
+                continue
+
+            # If either of the candidate's anchors fired AND that anchor is
+            # already represented by an exact entity, drop the whole candidate.
+            # The model already has a translation reference for that anchor;
+            # piling on more entities sharing it is noise (e.g. once we have
+            # any exact ending in 真君, no other *真君 entity should appear in
+            # similar regardless of which half hit).
+            if (prefix_in_text and prefix in exact_prefixes) or (
+                suffix_in_text and suffix in exact_suffixes
+            ):
+                continue
+
+            prefix_hit = INCLUDE_SIMILAR_PREFIX and prefix_in_text
+            suffix_hit = suffix_in_text
+
+            if not (prefix_hit or suffix_hit):
+                continue
+
+            # For entities of length <= 4, prefix+suffix bigrams together cover
+            # the whole entity. If both halves appear in text but the entity
+            # itself didn't land in exact, the halves are non-contiguous — a
+            # false positive (coincidental co-occurrence of unrelated bigrams).
+            if prefix_hit and suffix_hit and len(key_normalized) <= 4:
+                continue
+
+            if prefix_hit and suffix_hit:
+                match_kind = "prefix+suffix"
+            elif suffix_hit:
+                match_kind = "suffix"
+            else:
+                match_kind = "prefix"
+
+            similar[key] = {
+                "translation": value["translation"],
+                "last_chapter": value.get("last_chapter", ""),
+                "match": match_kind,
+            }
+            if value.get("note"):
+                similar[key]["note"] = value["note"]
+
+        return {"exact": exact, "similar": similar}
     
     def find_new_entities(self, old_data, new_data):
         """
@@ -1807,19 +2238,26 @@ class DatabaseManager:
             matched_text = match.group()
             old_words = matched_text.split()
             new_words = new_translation.split()
-            
-            # Use zip_longest to handle mismatched word counts
+
             transformed_words = []
             for old_w, new_w in zip_longest(old_words, new_words, fillvalue=""):
-                if old_w.isupper():
+                if not new_w:
+                    continue
+                if not old_w:
+                    transformed_words.append(new_w)
+                    continue
+                # Preserve user-entered casing in new_w (e.g. "HeavenNet"); only
+                # adjust the first character. .capitalize()/.lower() destroy
+                # internal caps.
+                if old_w.isupper() and len(old_w) > 1:
                     transformed_words.append(new_w.upper())
-                elif old_w.istitle():
-                    transformed_words.append(new_w.capitalize())
-                elif old_w.islower():
-                    transformed_words.append(new_w.lower())
+                elif old_w[0].isupper():
+                    transformed_words.append(new_w[0].upper() + new_w[1:])
+                elif old_w[0].islower():
+                    transformed_words.append(new_w[0].lower() + new_w[1:])
                 else:
-                    transformed_words.append(new_w)  # Preserve as is for unknown cases
-            
+                    transformed_words.append(new_w)
+
             return " ".join(transformed_words).strip()
         
         # Compile pattern for case-insensitive search
@@ -1832,6 +2270,18 @@ class DatabaseManager:
     def _normalize_text(self, text):
         """Normalize text for consistent comparison"""
         return unicodedata.normalize('NFC', text)
+
+    def _should_convert_trad(self, book):
+        """Resolve effective trad→simp setting for a book row.
+
+        Per-book ``trad_to_simp`` column (NULL/0/1) overrides the global default.
+        ``book`` may be a dict-like row or None; None falls back to the global flag.
+        """
+        if book is not None:
+            override = book.get('trad_to_simp') if hasattr(book, 'get') else None
+            if override is not None:
+                return bool(override)
+        return bool(getattr(self.config, 'trad_to_simp', False))
     
     def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None, note=None):
         """
@@ -2007,7 +2457,53 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error updating entity in database: {e}")
             return False
-    
+
+    def rename_entity_untranslated(self, category, old_untranslated, new_untranslated, book_id=None):
+        """Rename an entity's `untranslated` key. Used by trad→simp key conversion.
+
+        Returns: 'renamed' on success, 'not_found' if the source row is missing,
+        'unchanged' if old == new, 'conflict' if the destination key already
+        exists for this book (caller must resolve), 'error' on DB failure.
+        """
+        if old_untranslated == new_untranslated:
+            return 'unchanged'
+
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+
+            book_clause = "book_id = ?" if book_id is not None else "book_id IS NULL"
+            book_params = (book_id,) if book_id is not None else ()
+
+            cursor.execute(
+                f"SELECT 1 FROM entities WHERE untranslated = ? AND {book_clause}",
+                (new_untranslated,) + book_params,
+            )
+            if cursor.fetchone():
+                conn.close()
+                return 'conflict'
+
+            cursor.execute(
+                f"UPDATE entities SET untranslated = ? "
+                f"WHERE category = ? AND untranslated = ? AND {book_clause}",
+                (new_untranslated, category, old_untranslated) + book_params,
+            )
+            if cursor.rowcount == 0:
+                conn.close()
+                return 'not_found'
+
+            conn.commit()
+            conn.close()
+
+            if category in self.entities and old_untranslated in self.entities[category]:
+                self.entities[category][new_untranslated] = self.entities[category].pop(old_untranslated)
+
+            return 'renamed'
+
+        except Exception as e:
+            self.logger.error(f"Error renaming entity key '{old_untranslated}' → '{new_untranslated}': {e}")
+            return 'error'
+
     def delete_entity(self, category, untranslated):
         """
         Delete an entity from the database.
@@ -2753,3 +3249,510 @@ class DatabaseManager:
         count = cursor.fetchone()[0]
         conn.close()
         return count
+
+    # ------------------------------------------------------------------
+    # Comments / commenters / bans
+    # ------------------------------------------------------------------
+
+    COMMENT_DEPTH_CAP = 5
+    COMMENT_PUBLIC_FIELDS = (
+        'id', 'book_id', 'chapter_number', 'parent_id', 'depth', 'root_id',
+        'commenter_uuid', 'display_name', 'body', 'status',
+        'edited_at', 'deleted_at', 'created_at',
+    )
+    COMMENT_ADMIN_FIELDS = COMMENT_PUBLIC_FIELDS + (
+        'email', 'ip', 'user_agent', 'automod_state', 'automod_reason',
+    )
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    def _row_to_dict(self, cursor, row):
+        if row is None:
+            return None
+        cols = [d[0] for d in cursor.description]
+        return dict(zip(cols, row))
+
+    def is_banned(self, *, uuid=None, email=None, ip=None) -> bool:
+        """Return True if any of the provided identifiers is banned."""
+        if not (uuid or email or ip):
+            return False
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        clauses, vals = [], []
+        if uuid:
+            clauses.append('(kind = ? AND value = ?)'); vals.extend(('uuid', uuid))
+        if email:
+            clauses.append('(kind = ? AND value = ?)'); vals.extend(('email', email.lower()))
+        if ip:
+            clauses.append('(kind = ? AND value = ?)'); vals.extend(('ip', ip))
+        cursor.execute(f"SELECT 1 FROM comment_bans WHERE {' OR '.join(clauses)} LIMIT 1", vals)
+        hit = cursor.fetchone() is not None
+        conn.close()
+        return hit
+
+    def is_commenter_trusted(self, uuid: str) -> bool:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT is_trusted FROM commenters WHERE uuid = ?', (uuid,))
+        row = cursor.fetchone()
+        conn.close()
+        return bool(row and row[0])
+
+    def bump_commenter(self, uuid: str, display_name: str, email: str):
+        """UPSERT a commenter row; refresh last_seen and increment comment_count."""
+        now = self._now()
+        email_norm = (email or '').strip().lower() or None
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT comment_count FROM commenters WHERE uuid = ?', (uuid,))
+        row = cursor.fetchone()
+        if row is None:
+            cursor.execute(
+                'INSERT INTO commenters (uuid, display_name, email, is_trusted, '
+                'first_seen, last_seen, comment_count) VALUES (?, ?, ?, 0, ?, ?, 1)',
+                (uuid, display_name, email_norm, now, now),
+            )
+        else:
+            cursor.execute(
+                'UPDATE commenters SET display_name = ?, email = ?, last_seen = ?, '
+                'comment_count = comment_count + 1 WHERE uuid = ?',
+                (display_name, email_norm, now, uuid),
+            )
+        conn.commit()
+        conn.close()
+
+    def get_comment(self, comment_id: int) -> Optional[dict]:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM comments WHERE id = ?', (comment_id,))
+        row = cursor.fetchone()
+        result = self._row_to_dict(cursor, row)
+        conn.close()
+        return result
+
+    def create_comment(self, data: dict) -> int:
+        """
+        Insert a new comment. Computes depth/root_id from parent, applies
+        trust + ban logic to determine initial status.
+
+        Required keys: book_id, chapter_number, commenter_uuid, display_name,
+        body, ip. Optional: parent_id, email, user_agent.
+        """
+        book_id = int(data['book_id'])
+        chapter_number = int(data['chapter_number'])
+        parent_id = data.get('parent_id')
+        uuid = data['commenter_uuid']
+        display_name = data['display_name'][:40]
+        email = (data.get('email') or '').strip().lower() or None
+        body = data['body'][:4000]
+        ip = data['ip']
+        user_agent = (data.get('user_agent') or '')[:256] or None
+        notify_replies = 1 if data.get('notify_replies') else 0
+
+        depth = 0
+        root_id = None
+        if parent_id:
+            parent = self.get_comment(int(parent_id))
+            if parent is None or parent['book_id'] != book_id or parent['chapter_number'] != chapter_number:
+                raise ValueError("parent comment not found in this chapter")
+            depth = min(int(parent['depth']) + 1, self.COMMENT_DEPTH_CAP)
+            root_id = parent['root_id'] or parent['id']
+
+        if self.is_banned(uuid=uuid, email=email, ip=ip):
+            status = 'blocked'
+        elif self.is_commenter_trusted(uuid):
+            status = 'approved'
+        else:
+            status = 'pending'
+
+        now = self._now()
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO comments (book_id, chapter_number, parent_id, depth, root_id, '
+            'commenter_uuid, display_name, email, body, status, ip, user_agent, '
+            'notify_replies, created_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (book_id, chapter_number, parent_id, depth, root_id, uuid,
+             display_name, email, body, status, ip, user_agent, notify_replies, now),
+        )
+        new_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        self.bump_commenter(uuid, display_name, email or '')
+        return new_id
+
+    def list_comments_for_chapter(self, book_id: int, chapter_number: int,
+                                  viewer_uuid: Optional[str] = None) -> list:
+        """
+        Return comments visible to the viewer:
+          - status='approved' (visible to all)
+          - status='deleted' (rendered as [removed] to preserve thread)
+          - status='pending' or 'blocked' (only if commenter_uuid == viewer_uuid)
+        """
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        if viewer_uuid:
+            cursor.execute(
+                'SELECT * FROM comments WHERE book_id = ? AND chapter_number = ? '
+                "AND (status IN ('approved', 'deleted') OR commenter_uuid = ?) "
+                'ORDER BY COALESCE(root_id, id), created_at',
+                (book_id, chapter_number, viewer_uuid),
+            )
+        else:
+            cursor.execute(
+                'SELECT * FROM comments WHERE book_id = ? AND chapter_number = ? '
+                "AND status IN ('approved', 'deleted') "
+                'ORDER BY COALESCE(root_id, id), created_at',
+                (book_id, chapter_number),
+            )
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def count_comments_visible(self, book_id: int, chapter_number: int,
+                               viewer_uuid: Optional[str] = None) -> int:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        if viewer_uuid:
+            cursor.execute(
+                'SELECT COUNT(*) FROM comments WHERE book_id = ? AND chapter_number = ? '
+                "AND status != 'deleted' "
+                "AND (status = 'approved' OR commenter_uuid = ?)",
+                (book_id, chapter_number, viewer_uuid),
+            )
+        else:
+            cursor.execute(
+                'SELECT COUNT(*) FROM comments WHERE book_id = ? AND chapter_number = ? '
+                "AND status = 'approved'",
+                (book_id, chapter_number),
+            )
+        n = cursor.fetchone()[0]
+        conn.close()
+        return n
+
+    def count_pending_comments(self, book_id: Optional[int] = None) -> int:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        if book_id is not None:
+            cursor.execute(
+                "SELECT COUNT(*) FROM comments WHERE status = 'pending' AND book_id = ?",
+                (book_id,),
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'")
+        n = cursor.fetchone()[0]
+        conn.close()
+        return n
+
+    def list_comments_admin(self, *, status: Optional[str] = None,
+                            book_id: Optional[int] = None,
+                            chapter_number: Optional[int] = None,
+                            limit: int = 200, offset: int = 0) -> list:
+        clauses, vals = [], []
+        if status:
+            clauses.append('status = ?'); vals.append(status)
+        if book_id is not None:
+            clauses.append('book_id = ?'); vals.append(book_id)
+        if chapter_number is not None:
+            clauses.append('chapter_number = ?'); vals.append(chapter_number)
+        where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+        vals.extend((int(limit), int(offset)))
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT * FROM comments{where} ORDER BY created_at DESC LIMIT ? OFFSET ?', vals)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def update_comment(self, comment_id: int, *, body: Optional[str] = None,
+                       status: Optional[str] = None, soft_delete: bool = False,
+                       automod_state: Optional[str] = None,
+                       automod_reason: Optional[str] = None) -> bool:
+        """
+        Update a comment. Returns True on success.
+
+          - body: replace body and set edited_at; if previous status was 'approved',
+                  demote to 'pending' (caller may override via explicit status).
+          - status: explicit status override.
+          - soft_delete: replace body with [removed], set deleted_at, status='deleted'.
+          - automod_state / automod_reason: record automod verdict metadata.
+
+        When status transitions to 'approved', the matching commenter is also
+        flipped to is_trusted=1 (first-comment approval grants future trust).
+        """
+        existing = self.get_comment(comment_id)
+        if existing is None:
+            return False
+
+        sets, vals = [], []
+        new_status = None
+        new_body = None
+        now = self._now()
+
+        if soft_delete:
+            sets.append('body = ?'); vals.append('[removed]')
+            sets.append('status = ?'); vals.append('deleted')
+            sets.append('deleted_at = ?'); vals.append(now)
+            new_status = 'deleted'
+        else:
+            if body is not None:
+                new_body = body[:4000]
+                sets.append('body = ?'); vals.append(new_body)
+                sets.append('edited_at = ?'); vals.append(now)
+                # Demote to pending if it was approved and caller didn't pin a status
+                if existing['status'] == 'approved' and status is None:
+                    sets.append('status = ?'); vals.append('pending')
+                    new_status = 'pending'
+            if status is not None:
+                sets.append('status = ?'); vals.append(status)
+                new_status = status
+            if automod_state is not None:
+                sets.append('automod_state = ?'); vals.append(automod_state)
+            if automod_reason is not None:
+                sets.append('automod_reason = ?'); vals.append(automod_reason[:255])
+
+        if not sets:
+            return False
+
+        vals.append(comment_id)
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE comments SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.commit()
+        conn.close()
+
+        # Trust escalation on approval
+        if new_status == 'approved':
+            self._mark_uuid_trusted(existing['commenter_uuid'])
+        return True
+
+    def set_comment_status(self, comment_id: int, status: str) -> bool:
+        return self.update_comment(comment_id, status=status)
+
+    def _mark_uuid_trusted(self, uuid: str):
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE commenters SET is_trusted = 1 WHERE uuid = ?', (uuid,))
+        conn.commit()
+        conn.close()
+
+    def hard_delete_comment(self, comment_id: int) -> bool:
+        """
+        Hard-delete a comment. Refuses if children exist (forces soft delete to
+        preserve thread integrity).
+        """
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM comments WHERE parent_id = ?', (comment_id,))
+        children = cursor.fetchone()[0]
+        if children:
+            conn.close()
+            return False
+        cursor.execute('DELETE FROM comments WHERE id = ?', (comment_id,))
+        conn.commit()
+        conn.close()
+        return True
+
+    # --- bans ---
+
+    def add_ban(self, kind: str, value: str, reason: Optional[str] = None) -> int:
+        if kind not in ('uuid', 'email', 'ip'):
+            raise ValueError(f"invalid ban kind: {kind}")
+        if kind == 'email':
+            value = value.strip().lower()
+        else:
+            value = value.strip()
+        now = self._now()
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        # Pre-check to keep behavior identical across SQLite/MySQL (avoid INSERT OR IGNORE)
+        cursor.execute('SELECT id FROM comment_bans WHERE kind = ? AND value = ?', (kind, value))
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return int(existing[0])
+        cursor.execute(
+            'INSERT INTO comment_bans (kind, value, reason, cf_pushed, created_at) '
+            'VALUES (?, ?, ?, 0, ?)',
+            (kind, value, reason, now),
+        )
+        ban_id = cursor.lastrowid
+        conn.commit()
+        # Revoke trust for any commenter matching this identifier
+        if kind == 'uuid':
+            cursor.execute('UPDATE commenters SET is_trusted = 0 WHERE uuid = ?', (value,))
+            conn.commit()
+        elif kind == 'email':
+            cursor.execute('UPDATE commenters SET is_trusted = 0 WHERE email = ?', (value,))
+            conn.commit()
+        conn.close()
+        return ban_id
+
+    def remove_ban(self, kind: str, value: str) -> bool:
+        if kind == 'email':
+            value = value.strip().lower()
+        else:
+            value = value.strip()
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM comment_bans WHERE kind = ? AND value = ?', (kind, value))
+        rc = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return rc > 0
+
+    def remove_ban_by_id(self, ban_id: int) -> Optional[dict]:
+        """Remove a ban by id, returning the row that was deleted (for CF cleanup)."""
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM comment_bans WHERE id = ?', (ban_id,))
+        row = cursor.fetchone()
+        if row is None:
+            conn.close()
+            return None
+        cols = [d[0] for d in cursor.description]
+        ban = dict(zip(cols, row))
+        cursor.execute('DELETE FROM comment_bans WHERE id = ?', (ban_id,))
+        conn.commit()
+        conn.close()
+        return ban
+
+    def list_bans(self) -> list:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM comment_bans ORDER BY created_at DESC')
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def mark_cf_pushed(self, ban_id: int):
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE comment_bans SET cf_pushed = 1 WHERE id = ?', (ban_id,))
+        conn.commit()
+        conn.close()
+
+    # --- per-book toggle ---
+
+    def get_book_comments_enabled(self, book_id: int) -> bool:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT comments_enabled FROM books WHERE id = ?', (book_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return False
+        return bool(row[0])
+
+    def set_book_comments_enabled(self, book_id: int, enabled: bool):
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE books SET comments_enabled = ? WHERE id = ?', (1 if enabled else 0, book_id))
+        conn.commit()
+        conn.close()
+
+    # --- email suppressions ---
+
+    def is_email_suppressed(self, email: str) -> bool:
+        if not email:
+            return False
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM email_suppressions WHERE email = ? LIMIT 1',
+                       (email.strip().lower(),))
+        hit = cursor.fetchone() is not None
+        conn.close()
+        return hit
+
+    def add_email_suppression(self, email: str, reason: str = 'unsubscribe') -> bool:
+        if not email:
+            return False
+        norm = email.strip().lower()
+        now = self._now()
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM email_suppressions WHERE email = ?', (norm,))
+        if cursor.fetchone():
+            conn.close()
+            return False
+        cursor.execute(
+            'INSERT INTO email_suppressions (email, reason, created_at) VALUES (?, ?, ?)',
+            (norm, reason, now),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def remove_email_suppression(self, email: str) -> bool:
+        if not email:
+            return False
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM email_suppressions WHERE email = ?', (email.strip().lower(),))
+        rc = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return rc > 0
+
+    def list_email_suppressions(self) -> list:
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM email_suppressions ORDER BY created_at DESC')
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    # --- notification idempotency log ---
+
+    def was_notified(self, comment_id: int, recipient_email: str) -> bool:
+        if not recipient_email:
+            return False
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT 1 FROM email_notifications WHERE comment_id = ? AND recipient_email = ? LIMIT 1',
+            (comment_id, recipient_email.strip().lower()),
+        )
+        hit = cursor.fetchone() is not None
+        conn.close()
+        return hit
+
+    def record_notification(self, comment_id: int, recipient_email: str) -> bool:
+        """Insert an idempotency row. Returns True on insert, False if duplicate.
+
+        The UNIQUE(comment_id, recipient_email) constraint is the actual
+        guarantee against duplicate sends — this method is the only place
+        that writes to it. Caller MUST send the email AFTER this returns
+        True; if the email send fails, the next call will see the row and
+        skip, which is the safe direction (one missed retry > duplicate).
+        Actually we send first, log second, since postfix is local and
+        reliable; see notify_reply for the ordering rationale.
+        """
+        if not recipient_email:
+            return False
+        norm = recipient_email.strip().lower()
+        now = self._now()
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'INSERT INTO email_notifications (comment_id, recipient_email, sent_at) '
+                'VALUES (?, ?, ?)',
+                (comment_id, norm, now),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            # Duplicate — UNIQUE constraint violation
+            conn.rollback()
+            return False
+        finally:
+            conn.close()

@@ -8,6 +8,13 @@
  *   { type: "progress", chunk, total, phase, token_count, expected_tokens, percent, tokens_per_second, elapsed }
  */
 export default function TranslationProgress({ progress, status }) {
+  // Defensive: if the job isn't actively running/awaiting, suppress any stale
+  // progress UI. Without this, a dropped `translation_complete` WS message can
+  // leave the bar stuck on "Repairing translation…" until the user refreshes.
+  if (status !== 'running' && status !== 'awaiting_review' && status !== 'awaiting_json_fix' && status !== 'awaiting_chapter_conflict') {
+    return null
+  }
+
   if (!progress && status === 'running') {
     // Job started but no progress message yet
     return (

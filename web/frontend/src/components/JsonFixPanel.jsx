@@ -5,7 +5,7 @@
  * User can retry the chunk, manually fix the JSON, or abort translation.
  */
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
-const CodeEditor = lazy(() => import('@uiw/react-textarea-code-editor'))
+const JsonCodeMirror = lazy(() => import('./JsonCodeMirror'))
 import { api } from '../services/api'
 import { RefreshCw, Check, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
 
@@ -98,20 +98,11 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
             <label className="label mb-1.5">AI response (edit to fix)</label>
             <div className="rounded-lg overflow-hidden border border-slate-700">
               <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor…</div>}>
-                <CodeEditor
+                <JsonCodeMirror
                   value={editedJson}
-                  language="json"
-                  onChange={(e) => setEditedJson(e.target.value)}
-                  padding={16}
-                  style={{
-                    fontSize: 13,
-                    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                    backgroundColor: '#0f172a',
-                    minHeight: 200,
-                    maxHeight: 400,
-                    overflow: 'auto',
-                  }}
-                  data-color-mode="dark"
+                  onChange={(val) => setEditedJson(val)}
+                  minHeight="200px"
+                  maxHeight="400px"
                 />
               </Suspense>
             </div>

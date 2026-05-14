@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, CheckCircle2, Search, Pencil, Globe } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, CheckCircle2, Search, Pencil, Globe, Sparkles } from 'lucide-react'
 import ComboBox from '../components/ComboBox'
 import { useSearch } from '../hooks/useSearch'
 import SearchBar from '../components/SearchBar'
@@ -380,6 +380,102 @@ function RetranslateModal({ chineseText, lineIndex, allLines, bookId, providers,
 }
 
 
+function PronounRepairModal({ bookId, chapterNumber, onResult, onClose }) {
+  const [loading, setLoading] = useState(true)
+  const [entities, setEntities] = useState([])
+  const [entityId, setEntityId] = useState('')
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setError(null)
+    api.listChapterGenderedEntities(bookId, chapterNumber)
+      .then(d => { if (!cancelled) { setEntities(d.entities || []); setLoading(false) } })
+      .catch(e => { if (!cancelled) { setError(e.message); setLoading(false) } })
+    return () => { cancelled = true }
+  }, [bookId, chapterNumber])
+
+  const handleRun = async () => {
+    if (!entityId) return
+    setRunning(true); setError(null)
+    try {
+      const res = await api.pronounRepairChapter(bookId, chapterNumber, parseInt(entityId, 10))
+      onResult(res)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles size={16} className="text-emerald-400" />
+            <h2 className="font-semibold text-slate-200">Repair pronouns in this chapter</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <X size={16} />
+          </button>
+        </div>
+
+        <p className="text-sm text-slate-400">
+          Pick a character whose pronouns are wrong in this chapter. A small model will scan
+          paragraphs mentioning them and rewrite the pronouns to match the character&rsquo;s
+          recorded gender. The entity record itself is not changed.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-slate-400 text-sm py-2">
+            <Loader2 size={14} className="animate-spin" /> Loading characters…
+          </div>
+        ) : entities.length === 0 ? (
+          <p className="text-sm text-amber-400">
+            No character entities with a defined gender appear in this chapter&rsquo;s translated text.
+            Set the gender on the relevant entity first, or check that the character&rsquo;s English name
+            is actually present in the translation.
+          </p>
+        ) : (
+          <div>
+            <label className="label">Character ({entities.length} in this chapter)</label>
+            <select
+              className="input text-sm"
+              value={entityId}
+              onChange={e => setEntityId(e.target.value)}
+              disabled={running}
+            >
+              <option value="">— Pick a character —</option>
+              {entities.map(e => (
+                <option key={e.entity_id} value={e.entity_id}>
+                  {e.translation} ({e.gender}){e.untranslated ? ` — ${e.untranslated}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {error && <p className="text-rose-400 text-sm">{error}</p>}
+
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose} disabled={running}>Cancel</button>
+          <button
+            className="btn-primary flex items-center gap-1.5"
+            onClick={handleRun}
+            disabled={running || !entityId || entities.length === 0}
+          >
+            {running ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            {running ? 'Repairing…' : 'Run repair'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 // ── Floating toolbar that appears on Chinese text selection ───────────
 function SelectionToolbar({ position, onLookup, onRetranslate }) {
   if (!position) return null
@@ -630,6 +726,9 @@ export default function ChapterEditor() {
   const [chapterList, setChapterList] = useState([])
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
+  const [editingChapterNum, setEditingChapterNum] = useState(false)
+  const [chapterNumDraft, setChapterNumDraft] = useState('')
+  const [renumberError, setRenumberError] = useState(null)
 
   // WordPress publish state
   const [wpPublishing, setWpPublishing] = useState(false)
@@ -644,19 +743,37 @@ export default function ChapterEditor() {
   const [dictPos, setDictPos] = useState(null)
   const [selToolbar, setSelToolbar] = useState(null)
 
+  const [pronounRepairOpen, setPronounRepairOpen] = useState(false)
+  const [pronounRepairToast, setPronounRepairToast] = useState(null)
+  const pronounToastTimerRef = useRef(null)
+  const handlePronounRepairResult = useCallback((res) => {
+    setPronounRepairOpen(false)
+    setPronounRepairToast(res)
+    clearTimeout(pronounToastTimerRef.current)
+    pronounToastTimerRef.current = setTimeout(() => setPronounRepairToast(null), 6000)
+    // If the chapter content changed, reload to show the fix
+    if (res?.paragraphs_changed > 0) {
+      api.getChapter(parseInt(bookId), parseInt(chapterNum))
+        .then(ch => {
+          if (Array.isArray(ch.content)) setText(ch.content.join('\n'))
+        })
+        .catch(() => {})
+    }
+  }, [bookId, chapterNum])
+
   // Retranslation state — URL flag + local payload (text+lineIndex can't live
   // in the URL because partial selections aren't reconstructable from indices)
   const retranslateModalUrl = useUrlModal('retranslate')
   const [retranslatePayload, setRetranslatePayload] = useState(null) // { text, lineIndex }
   const retranslateModal = retranslateModalUrl.isOpen ? retranslatePayload : null
-  const openRetranslateModal = (payload) => {
+  const openRetranslateModal = useCallback((payload) => {
     setRetranslatePayload(payload)
     retranslateModalUrl.open()
-  }
-  const closeRetranslateModal = () => {
+  }, [retranslateModalUrl.open])
+  const closeRetranslateModal = useCallback(() => {
     setRetranslatePayload(null)
     retranslateModalUrl.close()
-  }
+  }, [retranslateModalUrl.close])
   const [annotations, setAnnotations] = useState({})
 
   // Entity edit modal — id in URL, entity object looked up from `entities`
@@ -1126,7 +1243,7 @@ export default function ChapterEditor() {
     const pos = textareaRef.current.selectionStart
     const lineNum = textRef.current.substring(0, pos).split('\n').length - 1
     setActiveLine(lineNum)
-  }, []) // stable — reads text from ref
+  }, [setActiveLine])
 
   const handleTextareaScroll = useCallback(() => {
     const ta = textareaRef.current
@@ -1233,15 +1350,13 @@ export default function ChapterEditor() {
     const { text: selText, lineIndex } = pendingSelection.current
     setSelToolbar(null)
     openRetranslateModal({ text: selText, lineIndex })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [openRetranslateModal])
 
   const handleRetranslateLine = useCallback((lineIndex) => {
     const line = untranslatedLines[lineIndex]
     if (!line) return
     openRetranslateModal({ text: line, lineIndex })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [untranslatedLines])
+  }, [openRetranslateModal, untranslatedLines])
 
   const handleRetranslateResult = useCallback((chineseText, translation, lineIndex) => {
     if (lineIndex != null) {
@@ -1256,8 +1371,7 @@ export default function ChapterEditor() {
       e.untranslated === matcherEntity.untranslated && e.category === matcherEntity.category
     )
     if (full) entityModalUrl.open(full.id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entities])
+  }, [entityModalUrl.open, entities])
 
   const handleEntitySaved = useCallback(() => {
     entityModalUrl.close()
@@ -1265,8 +1379,7 @@ export default function ChapterEditor() {
     api.listEntities({ book_id: parseInt(bookId), include_global: true })
       .then(res => setEntities(res.entities || []))
       .catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookId])
+  }, [entityModalUrl.close, bookId])
 
   const lineCount = textLines.length
   const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0
@@ -1280,6 +1393,32 @@ export default function ChapterEditor() {
   const goToChapter = (num) => {
     if (dirty && !confirm('You have unsaved changes. Leave anyway?')) return
     navigate(`/books/${bookId}/chapters/${num}/edit`)
+  }
+
+  const commitChapterNumber = async () => {
+    const parsed = parseInt(chapterNumDraft, 10)
+    const current = parseInt(chapterNum, 10)
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setRenumberError('Chapter number must be a positive integer.')
+      return
+    }
+    if (parsed === current) {
+      setEditingChapterNum(false)
+      setRenumberError(null)
+      return
+    }
+    if (dirty) {
+      setRenumberError('Save your changes before renumbering.')
+      return
+    }
+    try {
+      await api.renumberChapter(parseInt(bookId), current, parsed)
+      setEditingChapterNum(false)
+      setRenumberError(null)
+      navigate(`/books/${bookId}/chapters/${parsed}/edit`)
+    } catch (e) {
+      setRenumberError(e.message || 'Failed to renumber chapter.')
+    }
   }
 
   // Entities first discovered in this chapter
@@ -1343,8 +1482,40 @@ export default function ChapterEditor() {
         </button>
 
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-slate-200 truncate">
-            {book?.title} — Chapter {chapterNum}
+          <div className="text-sm font-medium text-slate-200 truncate flex items-center gap-1">
+            <span className="truncate">{book?.title} — Chapter</span>
+            {editingChapterNum ? (
+              <input
+                autoFocus
+                type="number"
+                min="1"
+                className="px-1.5 py-0.5 bg-slate-800 border border-slate-600 rounded text-sm text-slate-200 outline-none focus:border-sky-500 w-20"
+                value={chapterNumDraft}
+                onChange={e => { setChapterNumDraft(e.target.value); setRenumberError(null) }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitChapterNumber()
+                  } else if (e.key === 'Escape') {
+                    setEditingChapterNum(false)
+                    setRenumberError(null)
+                  }
+                }}
+                onBlur={() => commitChapterNumber()}
+              />
+            ) : (
+              <span
+                className="cursor-pointer hover:text-sky-300 inline-flex items-center gap-1 group"
+                onClick={() => { setChapterNumDraft(String(chapterNum)); setEditingChapterNum(true); setRenumberError(null) }}
+                title="Click to change chapter number"
+              >
+                {chapterNum}
+                <Pencil size={11} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+              </span>
+            )}
+            {renumberError && (
+              <span className="text-rose-400 text-xs ml-2 font-normal">{renumberError}</span>
+            )}
           </div>
           <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
             {editingTitle ? (
@@ -1384,9 +1555,6 @@ export default function ChapterEditor() {
             {lineCount.toLocaleString()} lines · {wordCount.toLocaleString()} words
             {chapter?.model && <span> · {chapter.model}</span>}
             {dirty && <span className="text-amber-500 ml-2">· Unsaved changes</span>}
-            {hasSource && (
-              <span className="text-slate-600 ml-2">· Double-click to look up · Select to retranslate</span>
-            )}
           </div>
         </div>
 
@@ -1455,6 +1623,15 @@ export default function ChapterEditor() {
         >
           <Search size={12} />
           Find
+        </button>
+
+        <button
+          className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-500 hover:text-slate-400 hover:border-emerald-500/40 hover:text-emerald-300 transition-colors flex items-center gap-1"
+          onClick={() => setPronounRepairOpen(true)}
+          title="Repair wrong-gender pronouns for a character in this chapter"
+        >
+          <Sparkles size={12} />
+          Repair pronouns
         </button>
 
         {wpConfigured && (
@@ -1714,6 +1891,35 @@ export default function ChapterEditor() {
           onClose={entityModalUrl.close}
           onSaved={handleEntitySaved}
         />
+      )}
+
+      {pronounRepairOpen && (
+        <PronounRepairModal
+          bookId={parseInt(bookId)}
+          chapterNumber={parseInt(chapterNum)}
+          onResult={handlePronounRepairResult}
+          onClose={() => setPronounRepairOpen(false)}
+        />
+      )}
+
+      {pronounRepairToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50
+                        bg-slate-800 border border-emerald-700/50 rounded-lg shadow-xl
+                        px-4 py-3 flex items-center gap-3 text-sm text-slate-200">
+          <Sparkles size={14} className="text-emerald-400" />
+          <span>
+            {pronounRepairToast.paragraphs_changed > 0
+              ? `Repaired ${pronounRepairToast.paragraphs_changed} paragraph${pronounRepairToast.paragraphs_changed === 1 ? '' : 's'} for ${pronounRepairToast.character_name} (${pronounRepairToast.windows_examined} windows examined)`
+              : `No changes needed for ${pronounRepairToast.character_name} (${pronounRepairToast.windows_examined} windows examined)`}
+            {pronounRepairToast.errors ? ` — ${pronounRepairToast.errors} window error(s)` : ''}
+          </span>
+          <button
+            className="text-slate-500 hover:text-slate-300 transition-colors"
+            onClick={() => { clearTimeout(pronounToastTimerRef.current); setPronounRepairToast(null) }}
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
 
       {/* Replace-all undo toast */}

@@ -1,7 +1,7 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { api } from '../services/api'
 import { Check, Eye, EyeOff, Loader2, RefreshCw, Download, X, FileJson } from 'lucide-react'
-const CodeEditor = lazy(() => import('@uiw/react-textarea-code-editor'))
+const JsonCodeMirror = lazy(() => import('../components/JsonCodeMirror'))
 
 export default function Settings() {
   const [providers, setProviders] = useState([])
@@ -69,6 +69,41 @@ export default function Settings() {
         </div>
       </section>
 
+      {/* Site Branding */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Site Branding</h2>
+          <div className="card p-4 space-y-4">
+            <div>
+              <label className="label">Site name</label>
+              <input
+                className="input text-sm"
+                value={settings.site_name || ''}
+                onChange={e => setSettings(s => ({ ...s, site_name: e.target.value }))}
+                placeholder="T9"
+              />
+              <p className="text-xs text-slate-500 mt-1">Shown in the admin sidebar, login page, and EPUB intro. FastAPI title updates after a service restart.</p>
+            </div>
+            <div>
+              <label className="label">Public site name</label>
+              <input
+                className="input text-sm"
+                value={settings.public_site_name || ''}
+                onChange={e => setSettings(s => ({ ...s, public_site_name: e.target.value }))}
+                placeholder="Boonnovels"
+              />
+              <p className="text-xs text-slate-500 mt-1">Shown on the public reader (Library, book pages, RSS feed).</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                {saved ? <Check size={13} /> : <Check size={13} />}
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Model settings */}
       {settings && (
         <section>
@@ -93,6 +128,16 @@ export default function Settings() {
                 placeholder="e.g. oai:o3-mini"
               />
             </div>
+            <div>
+              <label className="label">Pronoun repair model</label>
+              <input
+                className="input font-mono text-sm"
+                value={settings.pronoun_repair_model || ''}
+                onChange={e => setSettings(s => ({ ...s, pronoun_repair_model: e.target.value }))}
+                placeholder="e.g. claude:claude-haiku-4-5"
+              />
+              <p className="text-xs text-slate-500 mt-1">Small classifier used to fix wrong-gender pronouns after entity gender changes. A fast/cheap model is recommended (default: claude:claude-haiku-4-5).</p>
+            </div>
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
@@ -110,6 +155,15 @@ export default function Settings() {
               Public library
               <span className="text-xs text-slate-500 font-normal">— allow unauthenticated access to the reader and library pages</span>
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.trad_to_simp || false}
+                onChange={e => setSettings(s => ({ ...s, trad_to_simp: e.target.checked }))}
+              />
+              Convert traditional Chinese to simplified (global default)
+              <span className="text-xs text-slate-500 font-normal">— rewrites source text on chapter save; books can override</span>
+            </label>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
                 {saved ? <Check size={13} /> : <Check size={13} />}
@@ -122,6 +176,78 @@ export default function Settings() {
 
       {/* WordPress */}
       <WordPressSection />
+
+      {/* Email Notifications */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Email Notifications</h2>
+          <div className="card p-4 space-y-4">
+            <p className="text-xs text-slate-500">
+              Used for reply-notification emails (sent via local Postfix). Leave blank to disable outgoing email.
+            </p>
+            <div>
+              <label className="label">Sender address (EMAIL_FROM)</label>
+              <input
+                className="input text-sm"
+                value={settings.email_from || ''}
+                onChange={e => setSettings(s => ({ ...s, email_from: e.target.value }))}
+                placeholder="noreply@yourdomain.com"
+              />
+              <p className="text-xs text-slate-500 mt-1">Must be a domain Postfix is authorized to send from. Notifications won't deliver if this is unset.</p>
+            </div>
+            <div>
+              <label className="label">Site base URL (SITE_BASE_URL)</label>
+              <input
+                className="input text-sm"
+                value={settings.site_base_url || ''}
+                onChange={e => setSettings(s => ({ ...s, site_base_url: e.target.value }))}
+                placeholder="https://reader.yourdomain.com"
+              />
+              <p className="text-xs text-slate-500 mt-1">Public base URL of the reader site. Used to build absolute links to chapters and unsubscribe endpoints in outgoing emails.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                <Check size={13} />
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Comment Moderation */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Comment Moderation</h2>
+          <div className="card p-4 space-y-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.comment_automod_enabled || false}
+                onChange={e => setSettings(s => ({ ...s, comment_automod_enabled: e.target.checked }))}
+              />
+              Enable AI auto-moderation of new comments
+              <span className="text-xs text-slate-500 font-normal">— flags spam / abuse asynchronously after submission</span>
+            </label>
+            <div>
+              <label className="label">Auto-moderation model</label>
+              <input
+                className="input font-mono text-sm"
+                value={settings.comment_automod_model || ''}
+                onChange={e => setSettings(s => ({ ...s, comment_automod_model: e.target.value }))}
+                placeholder="e.g. claude:claude-haiku-4-5"
+              />
+              <p className="text-xs text-slate-500 mt-1">A fast/cheap model is recommended since every new comment is scanned.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                <Check size={13} />
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Unit Conversions */}
       <UnitsSection />
@@ -223,20 +349,11 @@ function UnitsSection() {
               <>
                 <div className="rounded-lg overflow-hidden border border-slate-700">
                   <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor…</div>}>
-                    <CodeEditor
+                    <JsonCodeMirror
                       value={content}
-                      language="json"
-                      onChange={(e) => setContent(e.target.value)}
-                      padding={16}
-                      style={{
-                        fontSize: 13,
-                        fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                        backgroundColor: '#0f172a',
-                        minHeight: 200,
-                        maxHeight: 450,
-                        overflow: 'auto',
-                      }}
-                      data-color-mode="dark"
+                      onChange={(val) => setContent(val)}
+                      minHeight="200px"
+                      maxHeight="450px"
                     />
                   </Suspense>
                 </div>

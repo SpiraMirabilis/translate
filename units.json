@@ -5,6 +5,7 @@
   "cun":         { "value": 0.0333, "unit": "m",    "type": "length", "action": "annotate" },
   "jin":         { "value": 0.5,    "unit": "kg",   "type": "mass",   "action": "annotate" },
   "liang":       { "value": 0.05,   "unit": "kg",   "type": "mass",   "action": "annotate" },
+  "qian":        { "value": 0.005,  "unit": "kg",   "type": "mass",   "action": "annotate" },
   "mu":          { "value": 0.0667, "unit": "ha",   "type": "area",   "action": "annotate" },
   "qing":        { "value": 6.667,  "unit": "ha",   "type": "area",   "action": "annotate" },
   "double-hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },

@@ -78,7 +78,8 @@ class JsonFixRequest(BaseModel):
 
 
 class ChapterConflictRequest(BaseModel):
-    decision: str  # "proceed" | "cancel"
+    decision: str  # "proceed" | "cancel" | "merge" | "renumber_existing" | "renumber_new"
+    new_chapter_number: Optional[int] = None  # Required for renumber_* decisions
 
 
 # ------------------------------------------------------------------
@@ -214,19 +215,30 @@ async def submit_json_fix(req: JsonFixRequest):
 async def resolve_chapter_conflict(req: ChapterConflictRequest):
     if _job_manager.status != "awaiting_chapter_conflict":
         raise HTTPException(status_code=409, detail="Not waiting for chapter conflict resolution.")
-    if req.decision not in ("proceed", "cancel"):
-        raise HTTPException(status_code=400, detail="decision must be 'proceed' or 'cancel'.")
+    valid_decisions = ("proceed", "cancel", "merge", "renumber_existing", "renumber_new", "insert_shift")
+    if req.decision not in valid_decisions:
+        raise HTTPException(status_code=400, detail=f"decision must be one of {valid_decisions}.")
+    if req.decision in ("renumber_existing", "renumber_new"):
+        if req.new_chapter_number is None or req.new_chapter_number < 1:
+            raise HTTPException(status_code=400, detail="new_chapter_number must be a positive integer for renumber decisions.")
 
     pending = _job_manager.pending_chapter_conflict or {}
     ch = pending.get("chapter_number")
     book_name = pending.get("book_title")
-    label = "Overwriting existing chapter…" if req.decision == "proceed" else "Skipping chapter — queue item dropped."
+    label_map = {
+        "proceed":            "Overwriting existing chapter…",
+        "merge":              "Appending new source to existing chapter and retranslating…",
+        "cancel":             "Skipping chapter — queue item dropped.",
+        "renumber_existing":  f"Renumbering existing chapter to {req.new_chapter_number}…",
+        "renumber_new":       f"Renumbering incoming chapter to {req.new_chapter_number}…",
+        "insert_shift":       f"Inserting at chapter {(ch or 0) + 1} and shifting later queue items up by 1…",
+    }
     await _job_manager.log_activity_async(
-        type='info', message=f'Chapter {ch}: {label}',
+        type='info', message=f'Chapter {ch}: {label_map[req.decision]}',
         book_id=pending.get("book_id"), chapter=ch, book_name=book_name,
     )
 
-    _job_manager.submit_chapter_conflict(req.decision)
+    _job_manager.submit_chapter_conflict(req.decision, req.new_chapter_number)
     return {"status": "ok"}
 
 

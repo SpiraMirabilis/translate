@@ -40,6 +40,12 @@ Use the pre-translated entities below for consistency. If you encounter a proper
 
 Entity categories: {{ENTITY_CATEGORIES}}.
 
+The pre-translated entities block below is split per category into two sub-objects:
+- "exact": entities whose source-language form appears literally in this chapter's source text. Use these translations exactly when they appear.
+- "similar": entities NOT necessarily in this chapter, but that share their first two or last two source-language characters with text in this chapter. They are reference-only — included so that shared honorifics, titles, surnames, and place-name suffixes are translated consistently across the book. Do not assume "similar" entities appear in the chapter, and do not include them in your response unless you actually encounter them. Each "similar" entry carries a "match" field ("prefix", "suffix", or "prefix+suffix") indicating which part overlapped.
+
+In your response, do NOT use the "exact"/"similar" split — your response uses the flat per-category structure shown in the response template below.
+
 Each entity entry must include:
 - "translation": The translated English name.
 - "last_chapter": Always set to the current chapter number.

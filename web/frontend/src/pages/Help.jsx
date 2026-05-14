@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useSite } from '../App'
 
 const Section = ({ title, children, defaultOpen = false }) => {
   const [open, setOpen] = useState(defaultOpen)
@@ -34,12 +35,13 @@ const Ref = ({ to, children }) => (
 )
 
 export default function Help() {
+  const { site_name } = useSite()
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-4">
       <div className="mb-6">
         <h1 className="text-lg font-semibold text-slate-200">Help & Guide</h1>
         <p className="text-sm text-slate-400 mt-1">
-          T9 is a web novel translation tool supporting multiple source languages (Chinese, Japanese, Korean, and more). It uses AI models to translate chapters
+          {site_name} is a web novel translation tool supporting multiple source languages (Chinese, Japanese, Korean, and more). It uses AI models to translate chapters
           while maintaining consistent terminology across an entire book via an entity management system.
         </p>
       </div>
@@ -170,7 +172,7 @@ export default function Help() {
         <div className="space-y-2">
           <p className="font-medium text-slate-200">Book features</p>
           <ul className="list-disc list-inside space-y-1 text-slate-400">
-            <li><span className="text-slate-300">Create / Edit</span> &mdash; set title, author, status (ongoing/completed/hiatus/dropped), and language metadata.</li>
+            <li><span className="text-slate-300">Create / Edit</span> &mdash; set title, author, status (ongoing/ongoing-trial/completed/hiatus/dropped), and language metadata.</li>
             <li><span className="text-slate-300">Genre presets</span> &mdash; when creating a book, pick a genre (Chinese Xianxia, Japanese Light Novel, Korean Web Novel, etc.) to load an optimized system prompt and entity categories. You can customize the prompt after creation.</li>
             <li><span className="text-slate-300">Cover image</span> &mdash; upload a cover image for the book. Used in EPUB exports and the public library.</li>
             <li><span className="text-slate-300">System prompt</span> &mdash; each book can have a custom system prompt that overrides the default translation instructions. Useful for book-specific tone, style, or terminology rules.</li>
@@ -238,7 +240,7 @@ export default function Help() {
 
       <Section title="Entities">
         <p>
-          The entity system is what makes T9 produce consistent translations across hundreds of chapters.
+          The entity system is what makes {site_name} produce consistent translations across hundreds of chapters.
           Entities are proper nouns &mdash; character names, place names, organizations, abilities, titles, equipment,
           and creatures &mdash; that the translator needs to keep consistent.
         </p>
@@ -313,7 +315,7 @@ export default function Help() {
         <div className="space-y-2">
           <p className="font-medium text-slate-200">API Providers</p>
           <p className="text-slate-400">
-            T9 supports multiple AI providers: <span className="text-slate-300">OpenAI</span>,{' '}
+            {site_name} supports multiple AI providers: <span className="text-slate-300">OpenAI</span>,{' '}
             <span className="text-slate-300">DeepSeek</span>,{' '}
             <span className="text-slate-300">Anthropic Claude</span>,{' '}
             <span className="text-slate-300">Google Gemini</span>, and{' '}
@@ -409,7 +411,7 @@ export default function Help() {
       {/* ── WordPress ── */}
       <Section title="WordPress / Fictioneer Publishing (Optional)">
         <p>
-          T9 can publish translated books directly to a WordPress site running the{' '}
+          {site_name} can publish translated books directly to a WordPress site running the{' '}
           <Ref to="https://github.com/Tetrakern/fictioneer">Fictioneer</Ref> theme.
           Stories and chapters are created via the WordPress REST API, with a small companion plugin
           that handles Fictioneer-specific metadata (chapter linking, word counts, story ordering).
@@ -428,14 +430,14 @@ export default function Help() {
         </div>
 
         <div className="space-y-2">
-          <p className="font-medium text-slate-200">Step 1 &mdash; Install the T9 plugin on WordPress</p>
+          <p className="font-medium text-slate-200">Step 1 &mdash; Install the {site_name} plugin on WordPress</p>
           <p className="text-slate-400">
-            T9 ships with a small WordPress plugin at <span className="font-mono text-slate-300">deploy/fictioneer-rest-meta.php</span>.
-            This plugin adds REST endpoints that let T9 set Fictioneer-specific metadata that the standard
+            {site_name} ships with a small WordPress plugin at <span className="font-mono text-slate-300">deploy/fictioneer-rest-meta.php</span>.
+            This plugin adds REST endpoints that let {site_name} set Fictioneer-specific metadata that the standard
             WordPress API cannot handle (chapter-to-story linking, word counts, story status).
           </p>
 
-          <p className="text-amber-400/80 text-xs mt-2">Same server (T9 and WordPress on the same machine)</p>
+          <p className="text-amber-400/80 text-xs mt-2">Same server ({site_name} and WordPress on the same machine)</p>
           <pre className="bg-slate-900/70 rounded p-3 text-xs font-mono text-slate-300 overflow-x-auto whitespace-pre">
 {`cd /path/to/t9
 bash deploy/install-wp-plugin.sh /path/to/wordpress`}
@@ -445,7 +447,7 @@ bash deploy/install-wp-plugin.sh /path/to/wordpress`}
             and activates it via WP-CLI if available. Defaults to <span className="font-mono">/srv/www/wordpress</span> if no path is given.
           </p>
 
-          <p className="text-amber-400/80 text-xs mt-3">Different servers (T9 and WordPress on separate machines)</p>
+          <p className="text-amber-400/80 text-xs mt-3">Different servers ({site_name} and WordPress on separate machines)</p>
           <pre className="bg-slate-900/70 rounded p-3 text-xs font-mono text-slate-300 overflow-x-auto whitespace-pre">
 {`# Copy the plugin file to the WordPress server
 scp deploy/fictioneer-rest-meta.php user@wp-server:/tmp/
@@ -467,13 +469,13 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
         <div className="space-y-2">
           <p className="font-medium text-slate-200">Step 2 &mdash; Create a WordPress Application Password</p>
           <p className="text-slate-400">
-            T9 authenticates with WordPress using Application Passwords (not your regular login password).
+            {site_name} authenticates with WordPress using Application Passwords (not your regular login password).
           </p>
           <ol className="list-decimal list-inside space-y-1 text-slate-400">
             <li>Log in to WP Admin.</li>
             <li>Go to <span className="text-slate-300">Users &gt; Profile</span>.</li>
             <li>Scroll to <span className="text-slate-300">Application Passwords</span>.</li>
-            <li>Enter a name (e.g. "T9") and click <span className="text-slate-300">Add New Application Password</span>.</li>
+            <li>Enter a name (e.g. "{site_name}") and click <span className="text-slate-300">Add New Application Password</span>.</li>
             <li>Copy the generated password &mdash; it is only shown once.</li>
           </ol>
           <p className="text-slate-500 text-xs mt-1">
@@ -483,7 +485,7 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
         </div>
 
         <div className="space-y-2">
-          <p className="font-medium text-slate-200">Step 3 &mdash; Configure T9</p>
+          <p className="font-medium text-slate-200">Step 3 &mdash; Configure {site_name}</p>
           <p className="text-slate-400">
             Go to <Ref to="/settings">Settings</Ref> and fill in the <span className="text-slate-300">WordPress / Fictioneer</span> section:
           </p>
@@ -503,7 +505,7 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
           <p className="text-slate-400">
             Go to <Ref to="/books">Books</Ref> and click the globe icon on the book you want to publish.
             Set the story status and rating, then click <span className="text-slate-300">Publish All</span>.
-            T9 creates (or updates) a Fictioneer story post, uploads the cover image, creates chapter posts,
+            {site_name} creates (or updates) a Fictioneer story post, uploads the cover image, creates chapter posts,
             links them to the story, and sets the chapter ordering.
           </p>
           <p className="text-slate-400">

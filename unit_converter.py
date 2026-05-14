@@ -38,22 +38,48 @@ SCALE_UP = {
 }
 
 SCALE_DOWN = {
-    "m":  [(1.0, "cm", 100.0)],
-    "kg": [(1.0, "g",  1000.0)],
+    "m":    [(1.0, "cm", 100.0)],
+    "kg":   [(1.0, "g",  1000.0)],
+    "hour": [(1.0, "minute", 60.0)],
 }
 
 
-def _scale(value: float, base_unit: str) -> tuple:
-    """Scale value to the most readable unit."""
+def _round_for_readability(value: float, unit: str) -> float:
+    """Snap to a granularity that matches casual narrative phrasing.
+    Leaves small minute values alone so we don't smear precision into nothing."""
+    if unit == "minute":
+        if value < 5:
+            return value
+        if value < 30:
+            return round(value / 5) * 5
+        return round(value / 15) * 15
+    if unit == "hour":
+        return round(value * 2) / 2
+    if unit == "km" and value >= 5:
+        return round(value * 2) / 2
+    return value
+
+
+def _scale(value: float, base_unit: str, *, approximate: bool = False) -> tuple:
+    """Scale value to the most readable unit.
+
+    Returns (value, unit, was_rounded). was_rounded is True iff approximate
+    rounding actually moved the value."""
+    def _finish(v, u):
+        if not approximate:
+            return v, u, False
+        r = _round_for_readability(v, u)
+        return r, u, r != v
+
     for threshold, small_unit, factor in SCALE_DOWN.get(base_unit, []):
         if value < threshold:
-            return value * factor, small_unit
+            return _finish(value * factor, small_unit)
 
     for threshold, big_unit, factor in SCALE_UP.get(base_unit, []):
         if value >= threshold:
-            return value / factor, big_unit
+            return _finish(value / factor, big_unit)
 
-    return value, base_unit
+    return _finish(value, base_unit)
 
 
 def _format_number(value: float) -> str:
@@ -185,7 +211,7 @@ def _word_to_number(text: str) -> Optional[float]:
         if w in _VAGUE:
             return None
     # "a few", "a couple" etc
-    if words == ["a"] or (len(words) >= 2 and words[1] in ("few", "couple")):
+    if len(words) >= 2 and words[0] == "a" and words[1] in ("few", "couple"):
         return None
 
     # "a" / "an" as 1
@@ -277,7 +303,7 @@ _PATTERN = re.compile(
     r"(?<!['\w])"                       # not preceded by word char or apostrophe
     r"(?!" + _vague_prefix + r")"       # negative lookahead for vague quantifiers
     r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"  # optional fractional prefix
-    r"(?P<num>" + _numeric + r"|" + _number_words + r"|a\s+full|an\s+full|a|an)"
+    r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words + r"|a\s+full|an\s+full|full|a|an)"
     r"[\s\-]+"                          # separator
     r"(?P<unit>" + _unit_names + r")"   # unit name
     r"s?"                               # optional plural
@@ -318,6 +344,21 @@ _VAGUE_BEFORE = re.compile(
 )
 
 
+def _match_case(template: str, text: str) -> str:
+    """Mirror the casing of `template` onto `text` (UPPER / Title / lower).
+
+    "Half a shichen" -> "An hour"; "half a shichen" -> "an hour";
+    "HALF A SHICHEN" -> "AN HOUR". Only the leading character is touched.
+    """
+    if not text or not template:
+        return text
+    if len(template) > 1 and template.isupper():
+        return text.upper()
+    if template[:1].isupper():
+        return text[:1].upper() + text[1:]
+    return text
+
+
 def _lookup_unit(matched_text: str) -> tuple:
     """Look up a unit by its matched text, normalizing spaces/hyphens."""
     # Normalize the matched text to try different key forms
@@ -348,9 +389,10 @@ def _convert_match(match: re.Match) -> str:
     if _VAGUE_BEFORE.search(before):
         return full
 
-    # Handle "a"/"an"/"a full"/"an full" as 1
+    # Handle "a"/"an"/"a full"/"an full"/"a single"/"single" as 1
     normalized = re.sub(r"\s+", " ", num_str.strip().lower())
-    if normalized in ("a", "an", "a full", "an full"):
+    is_another = normalized == "another"
+    if normalized in ("a", "an", "a full", "an full", "full", "a single", "single", "another"):
         number = 1.0
     else:
         number = _word_to_number(num_str)
@@ -371,7 +413,13 @@ def _convert_match(match: re.Match) -> str:
 
     base_value, base_unit, _, action, numeral = unit_info
     raw = number * base_value
-    scaled, final_unit = _scale(raw, base_unit)
+
+    # Word-form source ("twenty ke") signals casual phrasing; numeric source
+    # ("20 ke", "20.5 ke") is treated as deliberate. Approximation only kicks
+    # in on the replace path — annotations stay literal.
+    is_word_form = not any(c.isdigit() for c in num_str)
+    approximate = is_word_form and action == "replace"
+    scaled, final_unit, was_rounded = _scale(raw, base_unit, approximate=approximate)
 
     if numeral == "english":
         formatted = _number_to_words(scaled)
@@ -380,15 +428,22 @@ def _convert_match(match: re.Match) -> str:
 
     if action == "replace":
         # Special case: "an hour" reads better than "one hour"
-        if numeral == "english" and scaled == 1.0 and final_unit == "hour":
-            return "an hour"
-        # Pluralize the unit if value != 1
-        unit_label = final_unit
-        if scaled != 1.0 and not unit_label.endswith("s"):
-            unit_label += "s"
-        return f"{formatted} {unit_label}"
+        if numeral == "english" and scaled == 1.0 and final_unit == "hour" and not is_another:
+            output = "about an hour" if was_rounded else "an hour"
+        else:
+            # Pluralize the unit if value != 1
+            unit_label = final_unit
+            if scaled != 1.0 and not unit_label.endswith("s"):
+                unit_label += "s"
+            body = f"{formatted} {unit_label}"
+            if is_another:
+                body = f"another {body}"
+            output = f"about {body}" if was_rounded else body
+        # Mirror the original phrase's casing onto the replacement so a
+        # sentence-initial "Half a shichen" yields "An hour", not "an hour".
+        return _match_case(full, output)
     else:
-        # Default: annotate
+        # Default: annotate — leaves the original phrase untouched
         return f"{full} ({formatted} {final_unit})"
 
 

@@ -160,7 +160,7 @@ class OutputFormatter:
                 <body>
                     <h1>{book_title}</h1>
                     <p>Author: {book_author}</p>
-                    <p>Translation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
+                    <p>Generation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
                     <p>{book_description}</p>
                 </body>
                 </html>
@@ -471,8 +471,8 @@ class OutputFormatter:
                     </head>
                     <body>
                         <h1>Introduction</h1>
-                        <p>This book was translated using the Translator tool.</p>
-                        <p>Translation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
+                        <p>This book was translated using the {self.config.site_name} Translator tool.</p>
+                        <p>Generation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
                     </body>
                     </html>
                 '''

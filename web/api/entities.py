@@ -4,7 +4,7 @@ Entity management endpoints.
 import json
 import re
 import sqlite3
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -76,7 +76,7 @@ class PropagateRequest(BaseModel):
     entity_id: int
     old_translation: str
     new_translation: str
-    action: str  # "substitute" | "requeue"
+    action: str  # "substitute" | "requeue" | "pronoun_repair"
     from_chapter: Optional[int] = None  # only affect chapters >= this number
     old_gender: Optional[str] = None
     new_gender: Optional[str] = None
@@ -170,17 +170,24 @@ async def update_entity(entity_id: int, req: EntityUpdate):
     conn = _entity_manager.get_connection()
     cursor = conn.cursor()
 
-    # Check exists and get book_id for category validation
-    cursor.execute("SELECT id, book_id FROM entities WHERE id = ?", (entity_id,))
+    # Check exists and get book_id and current translation
+    cursor.execute("SELECT id, book_id, translation FROM entities WHERE id = ?", (entity_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Entity not found.")
     entity_book_id = row[1]
+    current_translation = row[2]
 
     updates = {}
     if req.translation is not None:
         updates["translation"] = req.translation
+        # Auto-record the previous translation as incorrect_translation when it
+        # actually changes, so downstream tools (substitution audits, redo
+        # scripts) can find what was edited. The standalone scripts do this too.
+        # Caller may override by sending an explicit incorrect_translation.
+        if req.incorrect_translation is None and current_translation and req.translation != current_translation:
+            updates["incorrect_translation"] = current_translation
     if req.category is not None:
         valid_cats = _entity_manager.get_book_categories(entity_book_id) if entity_book_id else CATEGORIES
         if req.category not in valid_cats:
@@ -526,7 +533,7 @@ async def get_advice(req: AdviceRequest):
 # ------------------------------------------------------------------
 
 @router.post("/propagate")
-async def propagate_change(req: PropagateRequest):
+async def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
     """
     After an entity translation is edited, propagate the change across all
     chapters belonging to the same book.
@@ -583,12 +590,20 @@ async def propagate_change(req: PropagateRequest):
             new_words = req.new_translation.split()
             transformed = []
             for old_w, new_w in zip_longest(old_words, new_words, fillvalue=""):
-                if old_w.isupper():
+                if not new_w:
+                    continue
+                if not old_w:
+                    transformed.append(new_w)
+                    continue
+                # Preserve the user-entered casing in new_w (e.g. "HeavenNet")
+                # and only adjust the first character to match the surrounding
+                # context. .capitalize()/.lower() would destroy internal caps.
+                if old_w.isupper() and len(old_w) > 1:
                     transformed.append(new_w.upper())
-                elif old_w.istitle():
-                    transformed.append(new_w.capitalize())
-                elif old_w.islower():
-                    transformed.append(new_w.lower())
+                elif old_w[0].isupper():
+                    transformed.append(new_w[0].upper() + new_w[1:])
+                elif old_w[0].islower():
+                    transformed.append(new_w[0].lower() + new_w[1:])
                 else:
                     transformed.append(new_w)
             return " ".join(transformed).strip()
@@ -686,6 +701,68 @@ async def propagate_change(req: PropagateRequest):
         conn.close()
         return {"status": "ok", "affected": affected}
 
+    elif req.action == "pronoun_repair":
+        # Surgical pronoun fix: scan chapters mentioning the entity, send each
+        # paragraph context window to a small classifier model, splice corrections
+        # back into translated_content. Runs as a background task so the POST
+        # returns immediately; results are written to the activity log.
+        new_g = (req.new_gender or "").strip().lower()
+        if new_g not in ("male", "female", "neutral"):
+            conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail=f"pronoun_repair requires new_gender to be male/female/neutral; got {req.new_gender!r}",
+            )
+        translation = (req.new_translation or req.old_translation or "").strip()
+        # Quick chapter count for the response
+        candidates = _entity_manager.find_chapters_using_entity(untranslated, book_id=book_id)
+        n_candidates = len(candidates)
+        conn.close()
+
+        background_tasks.add_task(
+            _run_pronoun_repair,
+            req.entity_id,
+            new_g,
+            translation,
+            book_id,
+        )
+        return {"status": "started", "affected": n_candidates}
+
     else:
         conn.close()
         raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
+
+
+def _run_pronoun_repair(entity_id: int, target_gender: str, translation: str, book_id: int) -> None:
+    """BackgroundTasks entry point. Runs the repair, writes activity log entry."""
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        from pronoun_repair import repair_pronouns_for_entity
+        result = repair_pronouns_for_entity(_entity_manager, entity_id, target_gender)
+        msg = (
+            f"Pronoun repair: {result['paragraphs_changed']} paragraph"
+            f"{'s' if result['paragraphs_changed'] != 1 else ''} corrected across "
+            f"{result['chapters_changed']} chapter"
+            f"{'s' if result['chapters_changed'] != 1 else ''} for {translation} "
+            f"({result['windows_examined']} windows examined)"
+        )
+        if result["errors"]:
+            msg += f"; {len(result['errors'])} window error(s)"
+        _entity_manager.add_activity_log(
+            type="pronoun_repair",
+            message=msg,
+            book_id=book_id,
+            entities=[translation] if translation else None,
+        )
+    except Exception as e:
+        log.exception("pronoun_repair background task failed")
+        try:
+            _entity_manager.add_activity_log(
+                type="pronoun_repair_error",
+                message=f"Pronoun repair failed for {translation or f'entity #{entity_id}'}: {e}",
+                book_id=book_id,
+                entities=[translation] if translation else None,
+            )
+        except Exception:
+            pass

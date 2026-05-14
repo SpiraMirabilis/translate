@@ -8,7 +8,7 @@ import {
   X, Check, Loader2, Sparkles, BookOpen, Copy, Replace, RotateCcw, AlertCircle, Trash2
 } from 'lucide-react'
 
-function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, newGender, untranslated, onDone }) {
+function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, newGender, untranslated, originChapter, onDone }) {
   const [acting, setActing] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
@@ -16,7 +16,7 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
   const translationChanged = !!newTranslation && oldTranslation !== newTranslation
   const genderChanged = (oldGender || '') !== (newGender || '')
 
-  const handleAction = async (action) => {
+  const handleAction = async (action, fromChapter = null) => {
     if (action === 'nothing') { onDone(); return }
     setActing(true); setError(null)
     try {
@@ -27,10 +27,12 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
         old_gender: oldGender || null,
         new_gender: newGender || null,
         action,
+        from_chapter: fromChapter,
       })
       setResult({
         action,
         affected: res.affected,
+        fromChapter,
       })
     } catch (e) {
       setError(e.message)
@@ -87,6 +89,22 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
               </div>
             </button>
 
+            {translationChanged && originChapter && (
+              <button
+                className="w-full text-left card p-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3"
+                onClick={() => handleAction('substitute', originChapter)}
+                disabled={acting}
+              >
+                <Replace size={16} className="text-emerald-400 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-slate-200">Find and replace from chapter {originChapter} onward</p>
+                  <p className="text-xs text-slate-500">
+                    Replace &ldquo;{oldTranslation}&rdquo; with &ldquo;{newTranslation}&rdquo; only in chapters at or after the entity&rsquo;s origin chapter. Safer for generic terms.
+                  </p>
+                </div>
+              </button>
+            )}
+
             {translationChanged && (
               <button
                 className="w-full text-left card p-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3"
@@ -99,6 +117,23 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
                   <p className="text-xs text-slate-500">
                     Replace every occurrence of &ldquo;{oldTranslation}&rdquo; with &ldquo;{newTranslation}&rdquo; in translated chapter text.
                     <span className="text-amber-400"> Use with caution for generic terms — may cause unintended replacements.</span>
+                  </p>
+                </div>
+              </button>
+            )}
+
+            {genderChanged && newGender && (
+              <button
+                className="w-full text-left card p-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3"
+                onClick={() => handleAction('pronoun_repair')}
+                disabled={acting}
+              >
+                <Sparkles size={16} className="text-emerald-400 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-slate-200">Repair pronouns in existing translations</p>
+                  <p className="text-xs text-slate-500">
+                    Scan chapters mentioning this character and surgically fix wrong-gender pronouns in the existing translations.
+                    Cheaper and faster than re-translating; runs in the background and reports to the activity log when done.
                   </p>
                 </div>
               </button>
@@ -128,9 +163,11 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
           <div className="space-y-3">
             <p className="text-sm text-emerald-400">
               {result.action === 'substitute'
-                ? `Replaced text in ${result.affected} chapter${result.affected !== 1 ? 's' : ''}.`
-                : `Added ${result.affected} chapter${result.affected !== 1 ? 's' : ''} to the retranslation queue.`}
-              {result.affected === 0 && ' No chapters were affected.'}
+                ? `Replaced text in ${result.affected} chapter${result.affected !== 1 ? 's' : ''}${result.fromChapter ? ` (from chapter ${result.fromChapter} onward)` : ''}.`
+                : result.action === 'pronoun_repair'
+                  ? `Started — scanning ${result.affected} chapter${result.affected !== 1 ? 's' : ''}. See activity log for results.`
+                  : `Added ${result.affected} chapter${result.affected !== 1 ? 's' : ''} to the retranslation queue.`}
+              {result.affected === 0 && result.action !== 'pronoun_repair' && ' No chapters were affected.'}
             </p>
             <div className="flex justify-end">
               <button className="btn-primary" onClick={onDone}>Done</button>
@@ -257,6 +294,7 @@ export default function EntityFormModal({ entity, books = [], categories: parent
             newTranslation: form.translation,
             oldGender: entity.gender || '',
             newGender: form.gender || '',
+            originChapter: entity.origin_chapter || null,
           })
           return
         }

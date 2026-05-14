@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from database import DatabaseManager
 from logger import Logger
 from translation_engine import TranslationEngine
+from strip_chapter_prefix_titles import strip_chapter_prefix
 import datetime
 import json
 import re
@@ -49,6 +50,7 @@ class UserInterface(ABC):
         try:
             # Store for queue management
             self._current_queue = None
+            end_object = None
 
             # are we resuming?
             while True:
@@ -203,6 +205,11 @@ class UserInterface(ABC):
                 if not getattr(self, 'no_convert_units', False):
                     end_object['content'] = self._convert_chinese_units(end_object['content'])
 
+                # Strip "Chapter N" prefix from translated titles (raw sources usually
+                # carry it through, but we store titles bare).
+                if end_object.get('title'):
+                    end_object['title'] = strip_chapter_prefix(end_object['title'])
+
                 # Apply entity edits to the translation
                 if edited_entities:
                     # Process edited entities
@@ -210,42 +217,52 @@ class UserInterface(ABC):
                         for key, value in list(entities.items()):
                             # Ensure value is a dictionary before accessing its keys
                             if isinstance(value, dict) and value.get("deleted", False):
-                                # Remove from end_object if marked as deleted
-                                end_object['entities'][category].pop(key, None)
+                                # Remove from end_object if marked as deleted.
+                                # Deleted entries are keyed under their original category
+                                # (the frontend preserves originalCategory for deletions).
+                                end_object['entities'].get(category, {}).pop(key, None)
                             else:
+                                # If user changed the entity's category during review,
+                                # move it in end_object so the bulk save below writes
+                                # the new category instead of the original one.
+                                original_category = value.get("original_category")
+                                if original_category and original_category != category:
+                                    moved = end_object['entities'].get(original_category, {}).pop(key, None)
+                                    if moved is not None:
+                                        end_object['entities'].setdefault(category, {})[key] = moved
+
                                 # Update translations for non-deleted entities
                                 node = value.copy()
                                 end_object['content'] = self.entity_manager.update_translated_text(end_object['content'], node)
-                                
-                                # Update the entity in the SQLite database
-                                if not value.get("deleted", False):
-                                    # Update existing entity or add a new one
-                                    translation = node.get("translation", "")
-                                    last_chapter = node.get("last_chapter", current_chapter)
-                                    incorrect_translation = node.get("incorrect_translation", None)
-                                    gender = node.get("gender", None)
-                                    
-                                    # Check if this entity already exists in another category
-                                    result = self.entity_manager.add_entity(
-                                        category,
-                                        key,
-                                        translation,
-                                        book_id=getattr(self, 'book_id', None),
-                                        last_chapter=last_chapter,
-                                        incorrect_translation=incorrect_translation,
-                                        gender=gender,
-                                    )
 
-                                    # Update end_object so direct SQL save stays consistent
-                                    if category in end_object['entities'] and key in end_object['entities'][category]:
-                                        end_object['entities'][category][key]['translation'] = translation
-                                        if incorrect_translation:
-                                            end_object['entities'][category][key]['incorrect_translation'] = incorrect_translation
-                                        if gender:
-                                            end_object['entities'][category][key]['gender'] = gender
-                                    
-                                    if not result:
-                                        self.logger.warning(f"Failed to add entity '{key}' to '{category}' - may already exist elsewhere")
+                                # Update the entity in the SQLite database
+                                # Update existing entity or add a new one
+                                translation = node.get("translation", "")
+                                last_chapter = node.get("last_chapter", current_chapter)
+                                incorrect_translation = node.get("incorrect_translation", None)
+                                gender = node.get("gender", None)
+
+                                # Check if this entity already exists in another category
+                                result = self.entity_manager.add_entity(
+                                    category,
+                                    key,
+                                    translation,
+                                    book_id=getattr(self, 'book_id', None),
+                                    last_chapter=last_chapter,
+                                    incorrect_translation=incorrect_translation,
+                                    gender=gender,
+                                )
+
+                                # Update end_object so direct SQL save stays consistent
+                                if category in end_object['entities'] and key in end_object['entities'][category]:
+                                    end_object['entities'][category][key]['translation'] = translation
+                                    if incorrect_translation:
+                                        end_object['entities'][category][key]['incorrect_translation'] = incorrect_translation
+                                    if gender:
+                                        end_object['entities'][category][key]['gender'] = gender
+
+                                if not result:
+                                    self.logger.warning(f"Failed to add entity '{key}' to '{category}' - may already exist elsewhere")
                 
                 # Convert any "THIS CHAPTER" placeholder to the actual chapter number
                 for category in new_entities:

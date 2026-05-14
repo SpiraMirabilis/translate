@@ -1,13 +1,23 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus } from 'lucide-react'
+import { Link, useSearchParams, useNavigate } from 'react-router-dom'
+import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, X } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 import RecommendModal from '../components/RecommendModal'
 import { useUrlModal } from '../hooks/useUrlState'
+import { useSite } from '../App'
+import TagChips from '../components/TagChips'
+import ProtagonistBadge from '../components/ProtagonistBadge'
 
 const publicApi = {
-  listBooks: () => fetch('/api/public/books', { credentials: 'same-origin' }).then(r => r.json()),
+  listBooks: (sort) => fetch(`/api/public/books?sort=${encodeURIComponent(sort)}`, { credentials: 'same-origin' }).then(r => r.json()),
 }
+
+const SORT_OPTIONS = [
+  { id: 'popular', label: 'Most Popular' },
+  { id: 'updated', label: 'Recently Updated' },
+  { id: 'title',   label: 'Title' },
+]
 
 const THEME_TOGGLE = [
   { id: 'light', icon: Sun,    label: 'Light' },
@@ -62,21 +72,43 @@ const T = {
 export default function Library() {
   const [books, setBooks] = useState([])
   const [loading, setLoading] = useState(true)
+  const [sort, setSort] = useLocalStorage('library.sort', 'popular')
   const recommendModal = useUrlModal('recommend')
   const { prefs, setPrefs, theme } = useReaderPrefs()
+  const { site_name, public_site_name } = useSite()
   const t = T[prefs.theme] || T.light
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const activeTag = searchParams.get('tag')?.toLowerCase() || ''
 
   useEffect(() => {
-    publicApi.listBooks()
+    setLoading(true)
+    publicApi.listBooks(sort)
       .then(data => setBooks(data.books || []))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [sort])
+
+  const filteredBooks = activeTag
+    ? books.filter(b => (b.tags || []).some(t => t.toLowerCase() === activeTag))
+    : books
+
+  const clearTag = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('tag')
+    setSearchParams(next, { replace: true })
+  }
+
+  const setTag = (tag) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('tag', tag)
+    setSearchParams(next)
+  }
 
   useEffect(() => {
-    document.title = 'Boonnovels'
-    return () => { document.title = 'T9' }
-  }, [])
+    document.title = public_site_name
+    return () => { document.title = site_name }
+  }, [public_site_name, site_name])
 
   const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
 
@@ -88,95 +120,141 @@ export default function Library() {
           <div>
             <div className="flex items-center gap-3">
               <BookOpen size={28} className="text-indigo-500" />
-              <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} tracking-tight`}>Boonnovels</h1>
+              <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} tracking-tight`}>{public_site_name}</h1>
             </div>
             <p className={`mt-1 ${t.subtitle} text-sm`}>Browse and read novels. Non-wordpress version.</p>
           </div>
 
-          {/* Theme toggle */}
-          <div className={`flex items-center gap-0.5 ${t.toggleBg} rounded-lg p-1 transition-colors duration-300`}>
-            {THEME_TOGGLE.map(({ id, icon: Icon, label }) => (
-              <button
-                key={id}
-                onClick={() => cycleTheme(id)}
-                title={label}
-                className={`p-2 rounded-md transition-all duration-200 ${prefs.theme === id ? t.toggleActive : t.toggleInactive}`}
-              >
-                <Icon size={16} />
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value)}
+              aria-label="Sort books"
+              className={`text-sm rounded-md px-2 py-1.5 border-none focus:outline-none focus:ring-2 focus:ring-indigo-400 ${t.toggleBg} ${t.toggleInactive}`}
+            >
+              {SORT_OPTIONS.map(opt => (
+                <option key={opt.id} value={opt.id}>{opt.label}</option>
+              ))}
+            </select>
+            <a
+              href="/api/public/feed.rss"
+              title="RSS feed of recently translated chapters"
+              className={`p-2 rounded-md transition-all duration-200 ${t.toggleInactive}`}
+            >
+              <Rss size={16} />
+            </a>
+            {/* Theme toggle */}
+            <div className={`flex items-center gap-0.5 ${t.toggleBg} rounded-lg p-1 transition-colors duration-300`}>
+              {THEME_TOGGLE.map(({ id, icon: Icon, label }) => (
+                <button
+                  key={id}
+                  onClick={() => cycleTheme(id)}
+                  title={label}
+                  className={`p-2 rounded-md transition-all duration-200 ${prefs.theme === id ? t.toggleActive : t.toggleInactive}`}
+                >
+                  <Icon size={16} />
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </header>
 
       {/* Content */}
       <main className="max-w-6xl mx-auto px-6 py-8">
+        {activeTag && (
+          <div className={`mb-6 flex items-center gap-2 flex-wrap text-sm ${t.subtitle}`}>
+            <span>Filtering by tag:</span>
+            <span className="px-2 py-0.5 rounded font-medium bg-indigo-500/20 text-indigo-400">{activeTag}</span>
+            <span>· {filteredBooks.length} book{filteredBooks.length !== 1 ? 's' : ''}</span>
+            <button
+              onClick={clearTag}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${t.toggleBg} ${t.toggleInactive} hover:text-indigo-400`}
+            >
+              <X size={11} /> Clear
+            </button>
+          </div>
+        )}
         {loading ? (
           <div className="flex justify-center py-32">
             <Loader2 size={32} className="animate-spin text-indigo-400" />
           </div>
-        ) : books.length === 0 ? (
+        ) : filteredBooks.length === 0 ? (
           <div className="text-center py-32">
             <BookText size={48} className="mx-auto mb-4 opacity-30" />
-            <p className={`${t.subtitle} text-lg`}>No books available yet</p>
+            <p className={`${t.subtitle} text-lg`}>
+              {activeTag ? `No books tagged "${activeTag}"` : 'No books available yet'}
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-            {books.map(book => (
-              <Link
-                key={book.id}
-                to={`/library/book/${book.id}`}
-                className="group block"
-              >
-                {/* Cover */}
-                <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative`}>
-                  {book.cover_image ? (
-                    <img
-                      src={`/api/public/books/${book.id}/cover`}
-                      alt={book.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
-                  ) : (
-                    <div className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br ${t.placeholderFrom} ${t.placeholderTo} p-4`}>
-                      <BookOpen size={36} className={`${t.placeholderIcon} mb-3`} />
-                      <span className={`text-sm font-medium ${t.placeholderText} text-center leading-tight`}>
-                        {book.title}
-                      </span>
-                    </div>
-                  )}
-                  {/* Hover overlay */}
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
-                </div>
-
-                {/* Info */}
-                <div className="mt-3">
-                  <h3 className={`font-semibold ${t.title} text-sm leading-tight line-clamp-2 ${t.titleHover} transition-colors`}>
-                    {book.title}
-                  </h3>
-                  {book.author && (
-                    <p className={`flex items-center gap-1 mt-1 text-xs ${t.author}`}>
-                      <User size={11} />
-                      {book.author}
-                    </p>
-                  )}
-                  <p className={`mt-0.5 text-xs ${t.chapters} flex items-center gap-1 flex-wrap`}>
-                    <span>
-                      {book.chapter_count} chapter{book.chapter_count !== 1 ? 's' : ''}
-                      {book.total_source_chapters > 0 && (
-                        <> / {book.total_source_chapters} ({Math.round((book.chapter_count / book.total_source_chapters) * 100)}%)</>
-                      )}
-                    </span>
-                    {book.status && book.status !== 'ongoing' && (
-                      <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
-                        book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
-                        book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
-                        book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
-                        'bg-slate-500/20 text-slate-400'
-                      }`}>{book.status}</span>
+            {filteredBooks.map(book => (
+              <div key={book.id} className="group">
+                <Link to={`/library/book/${book.id}`} className="block">
+                  {/* Cover */}
+                  <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative`}>
+                    {book.cover_image ? (
+                      <img
+                        src={`/api/public/books/${book.id}/cover`}
+                        alt={book.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    ) : (
+                      <div className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br ${t.placeholderFrom} ${t.placeholderTo} p-4`}>
+                        <BookOpen size={36} className={`${t.placeholderIcon} mb-3`} />
+                        <span className={`text-sm font-medium ${t.placeholderText} text-center leading-tight`}>
+                          {book.title}
+                        </span>
+                      </div>
                     )}
-                  </p>
-                </div>
-              </Link>
+                    {/* Protagonist badge — top-right corner overlay */}
+                    {book.tags && book.tags.length > 0 && (
+                      <div className="absolute top-1.5 right-1.5">
+                        <ProtagonistBadge tags={book.tags} size="sm" showLabel={false} overlay />
+                      </div>
+                    )}
+                    {/* Hover overlay */}
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
+                  </div>
+
+                  {/* Info */}
+                  <div className="mt-3">
+                    <div className="flex items-center gap-1.5">
+                      <h3 className={`font-semibold ${t.title} text-sm leading-tight line-clamp-2 ${t.titleHover} transition-colors`}>
+                        {book.title}
+                      </h3>
+                    </div>
+                    {book.author && (
+                      <p className={`flex items-center gap-1 mt-1 text-xs ${t.author}`}>
+                        <User size={11} />
+                        {book.author}
+                      </p>
+                    )}
+                    <p className={`mt-0.5 text-xs ${t.chapters} flex items-center gap-1 flex-wrap`}>
+                      <span>
+                        {book.chapter_count} chapter{book.chapter_count !== 1 ? 's' : ''}
+                        {book.total_source_chapters > 0 && (
+                          <> / {book.total_source_chapters} ({Math.round((book.chapter_count / book.total_source_chapters) * 100)}%)</>
+                        )}
+                      </span>
+                      {book.status && book.status !== 'ongoing' && (
+                        <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
+                          book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
+                          book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
+                          book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
+                          book.status === 'ongoing-trial' ? 'bg-cyan-500/20 text-cyan-400' :
+                          'bg-slate-500/20 text-slate-400'
+                        }`}>{book.status}</span>
+                      )}
+                    </p>
+                  </div>
+                </Link>
+                {book.tags && book.tags.length > 0 && (
+                  <div className="mt-1.5">
+                    <TagChips tags={book.tags} size="sm" theme={prefs.theme} onTagClick={setTag} />
+                  </div>
+                )}
+              </div>
             ))}
 
             {/* Recommend a Novel card */}

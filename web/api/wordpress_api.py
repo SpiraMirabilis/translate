@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+import settings_store
 from web.services.wp_client import WordPressClient, content_to_html, compute_hash
 
 router = APIRouter(prefix="/api/wordpress")
@@ -82,14 +83,17 @@ class WpSettingsUpdate(BaseModel):
 
 @router.put("/settings")
 async def update_wp_settings(req: WpSettingsUpdate):
+    # Non-secret fields go through settings_store (settings.json).
+    store_updates = {}
     if req.wp_url is not None:
         _config.wp_url = req.wp_url.rstrip("/")
-        os.environ["WP_URL"] = _config.wp_url
-        _persist_env("WP_URL", _config.wp_url)
+        store_updates["wp_url"] = _config.wp_url
     if req.wp_username is not None:
         _config.wp_username = req.wp_username
-        os.environ["WP_USERNAME"] = _config.wp_username
-        _persist_env("WP_USERNAME", _config.wp_username)
+        store_updates["wp_username"] = _config.wp_username
+    if store_updates:
+        settings_store.update(store_updates)
+    # The application password is a true secret — keep it in .env.
     if req.wp_app_password is not None:
         _config.wp_app_password = req.wp_app_password
         os.environ["WP_APP_PASSWORD"] = _config.wp_app_password

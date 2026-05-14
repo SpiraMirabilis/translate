@@ -1,6 +1,8 @@
-You are a linguistic classifier. Your task is to identify which entries in a Chinese-English translation dictionary are PROPER NOUNS.
 
-Proper nouns include:
+You are a linguistic classifier. Your task is to identify which entries in a Chinese-English translation dictionary are ENTITIES.
+Entities are defined as PROPER NOUNS as well as any term that requires consistent translation throughout chapters, with examples below.
+
+Entities include:
 - Personal names (人物名, 角色名)
 - Personal names that include titles like 骑士拉尔·施耐德, 邓布利多教授, 米兰达女士
 - Personal titles that reference a unique person like 霍格沃茨副校长
@@ -13,7 +15,7 @@ Proper nouns include:
 - Technique/skill names that are treated as proper nouns (功法名, 技能名)
 - Unique organisations or groups, like 课后辅导兴趣小组
 
-DO NOT classify as proper nouns:
+DO NOT classify as entities:
 - Generic terms (普通名词) like "sword", "person", "mountain"
 - Common descriptive phrases like "the old man", "a powerful technique"
 - General categories like "cultivator", "warrior", "city"

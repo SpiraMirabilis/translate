@@ -28,14 +28,24 @@ TRANSLATION GUIDELINES:
 - Do not split a single sentence across multiple lines in the content array.
 - Separate paragraphs with an empty string ("") in the content array.
 - Retain special formatting symbols (e.g., 【】《》) as-is.
-
+- Transliterate Chinese units of measurement and time (shichen, ke) using pinyin (without tone marks) rather than converting to metric/imperial or paraphrasing. The translation pipeline handles metric conversion in a post-processing step.
 ---
 
 ENTITY RULES:
 
-Use the pre-translated entities below for consistency. If you encounter a proper noun not in this list, translate it yourself and add it to the entities output.
+Use the pre-translated entities below for consistency. If you encounter an entity not in this list, translate it yourself and add it to the entities output.
+
+An entity is defined as either a proper noun or any term that requires consistent translation throughout chapters, with examples below.
+
+Never remove or rename existing entity keys or translations.
 
 Entity categories: {{ENTITY_CATEGORIES}}.
+
+The pre-translated entities block below is split per category into two sub-objects:
+- "exact": entities whose source-language form appears literally in this chapter's source text. Use these translations exactly when they appear.
+- "similar": entities NOT necessarily in this chapter, but that share their first two or last two source-language characters with text in this chapter. They are reference-only — included so that shared honorifics, titles, surnames, and place-name suffixes are translated consistently across the book. Do not assume "similar" entities appear in the chapter, and do not include them in your response unless you actually encounter them. Each "similar" entry carries a "match" field ("prefix", "suffix", or "prefix+suffix") indicating which part overlapped.
+
+In your response, do NOT use the "exact"/"similar" split — your response uses the flat per-category structure shown in the response template below.
 
 Each entity entry must include:
 - "translation": The translated English name.
@@ -45,7 +55,7 @@ Each entity entry must include:
 
 If a category has no entities, include it as an empty object: "characters": {}
 
-What counts as an entity (proper nouns only):
+What counts as an entity:
 - Personal names (人物名, 角色名)
 - Names that include titles, like 骑士拉尔·施耐德, 邓布利多教授, 米兰达女士
 - Personal titles referencing a unique person, like 霍格沃茨副校长

@@ -6,11 +6,16 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
+import settings_store
 from providers import get_factory
 
 
 def _persist_env(key: str, value: str):
-    """Write or update a key=value in the .env file so it survives restarts."""
+    """Write or update a key=value in the .env file so it survives restarts.
+
+    Reserved for true secrets (provider API keys). All non-secret user settings
+    go through settings_store (settings.json) instead.
+    """
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
     env_path = os.path.normpath(env_path)
 
@@ -117,6 +122,14 @@ async def get_settings():
         "advice_model": _config.advice_model,
         "debug_mode": _config.debug_mode,
         "public_library": is_public_library(),
+        "site_name": _config.site_name,
+        "public_site_name": _config.public_site_name,
+        "comment_automod_enabled": getattr(_config, "comment_automod_enabled", False),
+        "comment_automod_model": getattr(_config, "comment_automod_model", "claude:claude-haiku-4-5"),
+        "pronoun_repair_model": getattr(_config, "pronoun_repair_model", "claude:claude-haiku-4-5"),
+        "email_from": getattr(_config, "email_from", ""),
+        "site_base_url": getattr(_config, "site_base_url", ""),
+        "trad_to_simp": getattr(_config, "trad_to_simp", False),
     }
 
 
@@ -125,20 +138,31 @@ class SettingsUpdate(BaseModel):
     advice_model: Optional[str] = None
     debug_mode: Optional[bool] = None
     public_library: Optional[bool] = None
+    site_name: Optional[str] = None
+    public_site_name: Optional[str] = None
+    comment_automod_enabled: Optional[bool] = None
+    comment_automod_model: Optional[str] = None
+    pronoun_repair_model: Optional[str] = None
+    email_from: Optional[str] = None
+    site_base_url: Optional[str] = None
+    trad_to_simp: Optional[bool] = None
 
 
 @router.put("")
 async def update_settings(req: SettingsUpdate):
-    if req.translation_model is not None:
-        _config.translation_model = req.translation_model
-    if req.advice_model is not None:
-        _config.advice_model = req.advice_model
-    if req.debug_mode is not None:
-        _config.debug_mode = req.debug_mode
-    if req.public_library is not None:
+    # Only forward keys the caller actually set, and only those known to the
+    # store. settings_store.update() handles JSON persistence + os.environ sync.
+    updates = {k: v for k, v in req.dict(exclude_unset=True).items() if v is not None}
+    if updates:
+        settings_store.update(updates)
+    # Mirror onto the in-memory _config object so callers reading _config.X see
+    # the new values without a restart.
+    for key, val in updates.items():
+        setattr(_config, key, val)
+    # web.auth caches public_library in a module-level variable; refresh it.
+    if "public_library" in updates:
         import web.auth as auth_mod
-        auth_mod._public_library = req.public_library
-        _persist_env("T9_PUBLIC_LIBRARY", "1" if req.public_library else "0")
+        auth_mod._public_library = updates["public_library"]
     return {"status": "ok"}
 
 

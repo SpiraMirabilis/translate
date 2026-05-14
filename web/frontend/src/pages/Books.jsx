@@ -4,11 +4,14 @@ import { api } from '../services/api'
 import { useWs } from '../App'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, SquareMinus, Code
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, SquareMinus, Code, MessageCircle, MessageCircleOff
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
+import ComboBox from '../components/ComboBox'
 import RetroactiveReviewModal from '../components/RetroactiveReviewModal'
+import TagChips from '../components/TagChips'
+import ProtagonistBadge from '../components/ProtagonistBadge'
 import { useUrlModal } from '../hooks/useUrlState'
 
 export default function Books() {
@@ -29,6 +32,7 @@ export default function Books() {
   const publishModal = useUrlModal('publish', { idKey: 'book' })
   const categoriesModal = useUrlModal('categories', { idKey: 'book' })
   const reviewModal = useUrlModal('review', { idKey: 'book' })
+  const pronounRepairModal = useUrlModal('pronounRepair', { idKey: 'book' })
 
   // Chapter selection for batch retranslate — too large to live in the URL,
   // so it's kept local and keyed by book id.
@@ -127,6 +131,16 @@ export default function Books() {
       setBooks(prev => prev.map(b => b.id === book.id ? { ...b, is_public: !book.is_public } : b))
     } catch (e) {
       alert(`Failed to update visibility: ${e.message}`)
+    }
+  }
+
+  const toggleComments = async (book) => {
+    const next = !(book.comments_enabled !== 0 && book.comments_enabled !== false)
+    try {
+      await api.setBookCommentsEnabled(book.id, next)
+      setBooks(prev => prev.map(b => b.id === book.id ? { ...b, comments_enabled: next ? 1 : 0 } : b))
+    } catch (e) {
+      alert(`Failed to update comments setting: ${e.message}`)
     }
   }
 
@@ -253,8 +267,9 @@ export default function Books() {
                   />
                 )}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-slate-200 truncate">{book.title}</span>
+                    <ProtagonistBadge tags={book.tags} size="sm" />
                     <span className="badge-slate text-xs">ID: {book.id}</span>
                   </div>
                   <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1 flex-wrap">
@@ -271,10 +286,16 @@ export default function Books() {
                         book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
                         book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
                         book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
+                        book.status === 'ongoing-trial' ? 'bg-cyan-500/20 text-cyan-400' :
                         'bg-slate-500/20 text-slate-400'
                       }`}>{book.status}</span>
                     )}
                   </div>
+                  {book.tags && book.tags.length > 0 && (
+                    <div className="mt-1">
+                      <TagChips tags={book.tags} size="sm" />
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   {/* Read */}
@@ -289,6 +310,14 @@ export default function Books() {
                   >
                     {book.is_public === false ? <EyeOff size={14} /> : <Eye size={14} className="text-emerald-400" />}
                   </button>
+                  {/* Comments toggle */}
+                  <button
+                    className={`btn-ghost p-1.5 ${(book.comments_enabled === 0 || book.comments_enabled === false) ? 'text-rose-400/60' : 'text-indigo-400/70'}`}
+                    title={(book.comments_enabled === 0 || book.comments_enabled === false) ? 'Comments disabled (click to enable)' : 'Comments enabled (click to disable)'}
+                    onClick={() => toggleComments(book)}
+                  >
+                    {(book.comments_enabled === 0 || book.comments_enabled === false) ? <MessageCircleOff size={14} /> : <MessageCircle size={14} />}
+                  </button>
                   {/* Actions dropdown */}
                   <BookActionsMenu
                     book={book}
@@ -301,6 +330,7 @@ export default function Books() {
                     onApiLogs={() => navigate(`/books/${book.id}/api-calls`)}
                     onEdit={() => editBookModal.open(book.id)}
                     onDelete={() => handleDelete(book.id)}
+                    onPronounRepair={() => pronounRepairModal.open(book.id)}
                   />
                 </div>
               </div>
@@ -505,6 +535,12 @@ export default function Books() {
         return <RetroactiveReviewModal book={book} onClose={reviewModal.close} />
       })()}
 
+      {pronounRepairModal.isOpen && (() => {
+        const book = books.find(b => b.id === parseInt(pronounRepairModal.id, 10))
+        if (!book) return null
+        return <PronounRepairBookModal book={book} onClose={pronounRepairModal.close} />
+      })()}
+
       {/* Global search modal */}
       {searchModal.isOpen && (
         <GlobalSearchModal
@@ -516,7 +552,7 @@ export default function Books() {
   )
 }
 
-function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs }) {
+function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -574,6 +610,9 @@ function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, o
           {item(<Tags size={12} />, 'Categories', onCategories)}
           {item(<ListChecks size={12} />, 'Review Entities', onReview)}
           <div className="border-t border-slate-700 my-1" />
+          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Chapters</div>
+          {item(<Sparkles size={12} />, 'Repair Chapter Pronouns', onPronounRepair)}
+          <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
           {item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
           {item(<Code size={12} />, 'API Logs', onApiLogs)}
@@ -595,6 +634,10 @@ function BookFormModal({ book, onClose, onSaved }) {
     genre: '',
     total_source_chapters: book?.total_source_chapters || '',
     status: book?.status || 'ongoing',
+    source_url: book?.source_url || '',
+    notes: book?.notes || '',
+    trad_to_simp: book?.trad_to_simp ?? null,
+    tags: Array.isArray(book?.tags) ? book.tags : [],
   })
   const [genres, setGenres] = useState([])
   const [saving, setSaving] = useState(false)
@@ -603,12 +646,45 @@ function BookFormModal({ book, onClose, onSaved }) {
   const [uploadingCover, setUploadingCover] = useState(false)
   const fileInputRef = useRef(null)
 
+  // Tag autocomplete
+  const [allTags, setAllTags] = useState([])
+  const [tagInput, setTagInput] = useState('')
+  const [tagFocused, setTagFocused] = useState(false)
+
   // Fetch genres on mount (new books only)
   useEffect(() => {
     if (!book) {
       api.listGenres().then(d => setGenres(d.genres || [])).catch(() => {})
     }
   }, [book])
+
+  // Fetch existing tags once for autocomplete
+  useEffect(() => {
+    api.getAllTags().then(d => setAllTags(d.tags || [])).catch(() => {})
+  }, [])
+
+  const addTag = (raw) => {
+    const t = (raw || '').trim().toLowerCase()
+    if (!t) return
+    setForm(f => f.tags.includes(t) ? f : { ...f, tags: [...f.tags, t] })
+    setTagInput('')
+  }
+  const removeTag = (t) => {
+    setForm(f => ({ ...f, tags: f.tags.filter(x => x !== t) }))
+  }
+  const onTagKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault()
+      addTag(tagInput)
+    } else if (e.key === 'Backspace' && !tagInput && form.tags.length > 0) {
+      removeTag(form.tags[form.tags.length - 1])
+    }
+  }
+  const tagSuggestions = tagInput.trim()
+    ? allTags
+        .filter(t => t.includes(tagInput.trim().toLowerCase()) && !form.tags.includes(t))
+        .slice(0, 8)
+    : []
 
   const handleGenreChange = (genreId) => {
     setForm(f => ({ ...f, genre: genreId }))
@@ -665,17 +741,17 @@ function BookFormModal({ book, onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
-        <div className="flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="card w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/60 shrink-0">
           <h2 className="font-semibold text-slate-200">{book ? 'Edit Book' : 'New Book'}</h2>
           <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
         </div>
 
-        <div className="space-y-3">
+        <div className="px-6 py-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3">
           {/* Genre selector — new books only */}
           {!book && genres.length > 0 && (
-            <div>
+            <div className="md:col-span-2">
               <label className="label">Genre Preset</label>
               <select
                 className="input"
@@ -695,30 +771,83 @@ function BookFormModal({ book, onClose, onSaved }) {
 
           <div><label className="label">Title *</label><input className="input" value={form.title} onChange={e => setForm(f => ({...f, title: e.target.value}))} /></div>
           <div><label className="label">Author</label><input className="input" value={form.author} onChange={e => setForm(f => ({...f, author: e.target.value}))} /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="label">Source Language</label><input className="input" value={form.source_language} onChange={e => setForm(f => ({...f, source_language: e.target.value}))} placeholder="zh" /></div>
-            <div><label className="label">Target Language</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
+          <div><label className="label">Source Language</label><input className="input" value={form.source_language} onChange={e => setForm(f => ({...f, source_language: e.target.value}))} placeholder="zh" /></div>
+          <div><label className="label">Target Language</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
+          <div><label className="label">Source URL</label><input className="input" value={form.source_url} onChange={e => setForm(f => ({...f, source_url: e.target.value}))} placeholder="https://..." /></div>
+          <div>
+            <label className="label">Status</label>
+            <select className="input" value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}>
+              <option value="ongoing">Ongoing</option>
+              <option value="ongoing-trial">Ongoing (Trial)</option>
+              <option value="hiatus">Hiatus</option>
+              <option value="completed">Completed</option>
+              <option value="dropped">Dropped</option>
+            </select>
           </div>
-          <div><label className="label">Description</label><textarea className="input h-20 resize-none" value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} /></div>
-          <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label">Total Source Chapters</label>
+            <input className="input" type="number" min="0" placeholder="Optional" value={form.total_source_chapters} onChange={e => setForm(f => ({...f, total_source_chapters: e.target.value}))} />
+          </div>
+          {book && (
             <div>
-              <label className="label">Total Source Chapters</label>
-              <input className="input" type="number" min="0" placeholder="Optional" value={form.total_source_chapters} onChange={e => setForm(f => ({...f, total_source_chapters: e.target.value}))} />
-            </div>
-            <div>
-              <label className="label">Status</label>
-              <select className="input" value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}>
-                <option value="ongoing">Ongoing</option>
-                <option value="hiatus">Hiatus</option>
-                <option value="completed">Completed</option>
-                <option value="dropped">Dropped</option>
+              <label className="label">Traditional → Simplified Chinese</label>
+              <select
+                className="input"
+                value={form.trad_to_simp === null || form.trad_to_simp === undefined ? '' : String(form.trad_to_simp)}
+                onChange={e => setForm(f => ({ ...f, trad_to_simp: e.target.value === '' ? null : parseInt(e.target.value, 10) }))}
+              >
+                <option value="">Inherit global default</option>
+                <option value="0">Off</option>
+                <option value="1">On — convert source on save</option>
               </select>
+              <p className="text-xs text-slate-500 mt-1">Retrofit existing: <code className="text-slate-400">bulk_convert_trad_to_simp.py --book-id {book.id}</code></p>
             </div>
-          </div>
+          )}
+          <div><label className="label">Description</label><textarea className="input h-24 resize-none" value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} /></div>
+          <div><label className="label">Notes</label><textarea className="input h-24 resize-none" value={form.notes} onChange={e => setForm(f => ({...f, notes: e.target.value}))} /></div>
+          {book && (
+            <div className="relative md:col-span-2">
+              <label className="label">Tags</label>
+              <div className="input flex flex-wrap items-center gap-1 min-h-[2.25rem] py-1.5">
+                {form.tags.map(t => (
+                  <span key={t} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-200">
+                    {t}
+                    <button type="button" className="text-slate-400 hover:text-rose-400" onClick={() => removeTag(t)} title="Remove tag">
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  className="flex-1 min-w-[8rem] bg-transparent outline-none text-sm text-slate-200 placeholder:text-slate-500"
+                  value={tagInput}
+                  onChange={e => setTagInput(e.target.value)}
+                  onKeyDown={onTagKeyDown}
+                  onFocus={() => setTagFocused(true)}
+                  onBlur={() => setTimeout(() => setTagFocused(false), 150)}
+                  placeholder={form.tags.length === 0 ? 'e.g. xianxia, female protagonist' : ''}
+                />
+              </div>
+              {tagFocused && tagSuggestions.length > 0 && (
+                <div className="absolute z-10 left-0 right-0 mt-1 max-h-48 overflow-auto rounded border border-slate-700 bg-slate-800 shadow-lg">
+                  {tagSuggestions.map(s => (
+                    <button
+                      key={s}
+                      type="button"
+                      className="block w-full text-left px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"
+                      onMouseDown={(e) => { e.preventDefault(); addTag(s) }}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-slate-500 mt-1">Press <kbd className="px-1 bg-slate-800 rounded">Enter</kbd> or <kbd className="px-1 bg-slate-800 rounded">,</kbd> to add. Lowercased on save. <code className="text-slate-400">female protagonist</code> / <code className="text-slate-400">male protagonist</code> render a prominent badge.</p>
+            </div>
+          )}
 
           {/* Cover image */}
           {book && (
-            <div>
+            <div className="md:col-span-2">
               <label className="label">Cover Image</label>
               <div className="flex items-start gap-3">
                 {coverPreview ? (
@@ -759,14 +888,15 @@ function BookFormModal({ book, onClose, onSaved }) {
           )}
         </div>
 
-        {error && <p className="text-rose-400 text-sm">{error}</p>}
-
-        <div className="flex justify-end gap-2">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving}>
-            {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-            Save
-          </button>
+        <div className="px-6 py-3 border-t border-slate-700/60 flex items-center justify-between gap-2 shrink-0">
+          {error ? <p className="text-rose-400 text-sm">{error}</p> : <span />}
+          <div className="flex gap-2">
+            <button className="btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+              Save
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1455,6 +1585,181 @@ function CategoryManagerModal({ book, onClose }) {
             </div>
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+
+function PronounRepairBookModal({ book, onClose }) {
+  const [chapters, setChapters] = useState([])
+  const [chaptersLoading, setChaptersLoading] = useState(true)
+  const [chapterQuery, setChapterQuery] = useState('')
+  const [chapterNum, setChapterNum] = useState(null)
+  const [chapterEntities, setChapterEntities] = useState([])
+  const [entitiesLoading, setEntitiesLoading] = useState(false)
+  const [characterQuery, setCharacterQuery] = useState('')
+  const [entityId, setEntityId] = useState(null)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setChaptersLoading(true); setError(null)
+    api.listChapters(book.id)
+      .then(d => { if (!cancelled) { setChapters(d.chapters || []); setChaptersLoading(false) } })
+      .catch(e => { if (!cancelled) { setError(e.message); setChaptersLoading(false) } })
+    return () => { cancelled = true }
+  }, [book.id])
+
+  const chapterOptionMap = new Map()
+  const chapterOptions = chapters.map(ch => {
+    const label = `${ch.chapter}: ${ch.title || '(untitled)'}`
+    chapterOptionMap.set(label, ch.chapter)
+    return label
+  })
+
+  const handleChapterChange = (str) => {
+    setChapterQuery(str)
+    let num = chapterOptionMap.get(str)
+    if (num === undefined) {
+      const m = String(str).trim().match(/^(\d+)\b/)
+      const parsed = m ? parseInt(m[1], 10) : NaN
+      num = chapters.some(c => c.chapter === parsed) ? parsed : null
+    }
+    const resolved = num || null
+    // ComboBox calls onChange on every outside-click commit (including clicking
+    // into the character combobox). Bail out if the chapter didn't actually change
+    // so we don't wipe the character list mid-pick.
+    if (resolved === chapterNum) return
+
+    setResult(null)
+    setError(null)
+    setChapterNum(resolved)
+    setCharacterQuery('')
+    setEntityId(null)
+    setChapterEntities([])
+    if (resolved) {
+      setEntitiesLoading(true)
+      api.listChapterGenderedEntities(book.id, resolved)
+        .then(d => setChapterEntities(d.entities || []))
+        .catch(e => setError(e.message))
+        .finally(() => setEntitiesLoading(false))
+    }
+  }
+
+  const entityOptionMap = new Map()
+  const entityOptions = chapterEntities.map(e => {
+    const label = `${e.translation} (${e.gender})${e.untranslated ? ` — ${e.untranslated}` : ''}`
+    entityOptionMap.set(label, e.entity_id)
+    return label
+  })
+
+  const handleCharacterChange = (str) => {
+    setCharacterQuery(str)
+    const id = entityOptionMap.get(str) || null
+    if (id === entityId) return
+    setResult(null)
+    setEntityId(id)
+  }
+
+  const handleRun = async () => {
+    if (!chapterNum || !entityId) return
+    setRunning(true); setError(null); setResult(null)
+    try {
+      const res = await api.pronounRepairChapter(book.id, chapterNum, entityId)
+      setResult(res)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles size={16} className="text-emerald-400" />
+            <h2 className="font-semibold text-slate-200">Repair Chapter Pronouns</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <X size={16} />
+          </button>
+        </div>
+
+        <p className="text-sm text-slate-400">
+          Run a surgical pronoun fix on a single chapter of <span className="text-slate-300">{book.title}</span>.
+          A small model scans paragraphs mentioning the chosen character and rewrites pronouns to match their recorded gender.
+        </p>
+
+        <div>
+          <label className="label">Chapter</label>
+          {chaptersLoading ? (
+            <div className="flex items-center gap-2 text-slate-400 text-sm py-2">
+              <Loader2 size={14} className="animate-spin" /> Loading chapters…
+            </div>
+          ) : (
+            <ComboBox
+              value={chapterQuery}
+              onChange={handleChapterChange}
+              options={chapterOptions}
+              placeholder="Type a chapter number or title…"
+            />
+          )}
+        </div>
+
+        <div>
+          <label className="label">Character</label>
+          {!chapterNum ? (
+            <p className="text-xs text-slate-500">Pick a chapter first.</p>
+          ) : entitiesLoading ? (
+            <div className="flex items-center gap-2 text-slate-400 text-sm py-2">
+              <Loader2 size={14} className="animate-spin" /> Loading characters in chapter {chapterNum}…
+            </div>
+          ) : chapterEntities.length === 0 ? (
+            <p className="text-xs text-amber-400">
+              No character entities with a defined gender appear in this chapter&rsquo;s translated text.
+            </p>
+          ) : (
+            <ComboBox
+              value={characterQuery}
+              onChange={handleCharacterChange}
+              options={entityOptions}
+              placeholder={`Type a name… (${chapterEntities.length} in chapter ${chapterNum})`}
+            />
+          )}
+        </div>
+
+        {error && <p className="text-rose-400 text-sm">{error}</p>}
+
+        {result && (
+          <div className="card p-3 bg-emerald-950/40 border-emerald-700/50 text-sm text-emerald-200 flex items-start gap-2">
+            <Sparkles size={14} className="text-emerald-400 mt-0.5 shrink-0" />
+            <span>
+              {result.paragraphs_changed > 0
+                ? `Repaired ${result.paragraphs_changed} paragraph${result.paragraphs_changed === 1 ? '' : 's'} for ${result.character_name} in chapter ${chapterNum} (${result.windows_examined} windows examined).`
+                : `No changes needed for ${result.character_name} in chapter ${chapterNum} (${result.windows_examined} windows examined).`}
+              {result.errors ? ` ${result.errors} window error(s).` : ''}
+            </span>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose} disabled={running}>
+            {result ? 'Close' : 'Cancel'}
+          </button>
+          <button
+            className="btn-primary flex items-center gap-1.5"
+            onClick={handleRun}
+            disabled={running || !chapterNum || !entityId}
+          >
+            {running ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            {running ? 'Repairing…' : 'Run repair'}
+          </button>
+        </div>
       </div>
     </div>
   )

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { MessageSquarePlus, Trash2, ExternalLink, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { api } from '../services/api'
+import { useSite } from '../App'
 
 const STATUS_OPTIONS = ['new', 'reviewed', 'accepted', 'dismissed']
 const STATUS_COLORS = {
@@ -20,6 +21,7 @@ const TABS = [
 ]
 
 export default function Recommendations() {
+  const { site_name } = useSite()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState(null)
@@ -37,9 +39,9 @@ export default function Recommendations() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    document.title = 'Recommendations | T9'
-    return () => { document.title = 'T9' }
-  }, [])
+    document.title = `Recommendations | ${site_name}`
+    return () => { document.title = site_name }
+  }, [site_name])
 
   const handleStatusChange = async (id, newStatus) => {
     await api.updateRecommendation(id, { status: newStatus })

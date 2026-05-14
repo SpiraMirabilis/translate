@@ -167,9 +167,12 @@ class JobManager:
         self._chapter_conflict_result = None
         return result
 
-    def submit_chapter_conflict(self, decision: str):
+    def submit_chapter_conflict(self, decision: str, new_chapter_number: Optional[int] = None):
         """Called from the API endpoint when the user resolves the conflict."""
-        self._chapter_conflict_result = {"decision": decision}
+        self._chapter_conflict_result = {
+            "decision": decision,
+            "new_chapter_number": new_chapter_number,
+        }
         self.pending_chapter_conflict = None
         self._chapter_conflict_event.set()
 

@@ -8,7 +8,13 @@ class TranslationConfig:
     
     def __init__(self):
         load_dotenv()
-        
+        # Load JSON-backed settings store and mirror its values into os.environ
+        # so the existing os.getenv() reads below pick up persisted user settings.
+        # Must run after load_dotenv (so first-run migration can seed from .env)
+        # and before any os.getenv() call for a managed key.
+        import settings_store
+        settings_store.load()
+
         # API credentials
         self.deepseek_key = os.getenv("DEEPSEEK_KEY")
         self.openai_key = os.getenv("OPENAI_KEY")
@@ -28,6 +34,10 @@ class TranslationConfig:
         self.wp_username = os.getenv("WP_USERNAME", "")
         self.wp_app_password = os.getenv("WP_APP_PASSWORD", "")
 
+        # Site branding
+        self.site_name = os.getenv("SITE_NAME", "T9")
+        self.public_site_name = os.getenv("PUBLIC_SITE_NAME", "Boonnovels")
+
         # Database backend: "sqlite" (default) or "mysql"
         self.db_backend = os.getenv("DB_BACKEND", "sqlite")
         self.mysql_host = os.getenv("MYSQL_HOST", "localhost")
@@ -35,6 +45,26 @@ class TranslationConfig:
         self.mysql_pass = os.getenv("MYSQL_PASS", "")
         self.mysql_db = os.getenv("MYSQL_DB", "t9")
         self.mysql_port = int(os.getenv("MYSQL_PORT", "3306"))
+
+        # Cloudflare (Turnstile + user-firewall API for comment IP bans)
+        self.cf_turnstile_site_key = os.getenv("CF_TURNSTILE_SITE_KEY", "")
+        self.cf_turnstile_secret_key = os.getenv("CF_TURNSTILE_SECRET_KEY", "")
+        self.cf_api_email = os.getenv("CF_API_EMAIL", "")
+        self.cf_api_key = os.getenv("CF_API_KEY", "")
+
+        # Comment auto-moderation
+        self.comment_automod_enabled = os.getenv("COMMENT_AUTOMOD_ENABLED", "0").lower() in ("1", "true", "yes")
+        self.comment_automod_model = os.getenv("COMMENT_AUTOMOD_MODEL", "claude:claude-haiku-4-5")
+
+        # Pronoun repair model — used by pronoun_repair.py to fix wrong-gender pronouns
+        self.pronoun_repair_model = os.getenv("PRONOUN_REPAIR_MODEL", "claude:claude-haiku-4-5")
+
+        # Traditional → Simplified Chinese preprocessing (global default; per-book overrides via books.trad_to_simp)
+        self.trad_to_simp = os.getenv("TRAD_TO_SIMP", "0").lower() in ("1", "true", "yes")
+
+        # Reply-notification emails (sent via local Postfix)
+        self.email_from = os.getenv("EMAIL_FROM", "")        # e.g. noreply@boondollars.com
+        self.site_base_url = os.getenv("SITE_BASE_URL", "")  # e.g. https://reader.boondollars.com
 
         # Translation settings (now per-provider via models.json)
         # Legacy fallback for MAX_CHARS env var if needed

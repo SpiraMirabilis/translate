@@ -9,14 +9,30 @@ import Queue from './pages/Queue'
 import Settings from './pages/Settings'
 import Help from './pages/Help'
 import Recommendations from './pages/Recommendations'
+import CommentsAdmin from './pages/CommentsAdmin'
 import ApiCalls from './pages/ApiCalls'
 import ApiLogPage from './pages/ApiLogPage'
+import ReaderStats from './pages/ReaderStats'
 import Reader from './pages/Reader'
 import Library from './pages/Library'
 import BookDetail from './pages/BookDetail'
 import Login from './pages/Login'
 import NotFound from './pages/NotFound'
 import { api } from './services/api'
+
+// ------------------------------------------------------------------
+// Site context — branding strings (site_name, public_site_name) shared app-wide
+// ------------------------------------------------------------------
+const SiteContext = createContext({ site_name: 'T9', public_site_name: 'Boonnovels' })
+export const useSite = () => useContext(SiteContext)
+
+function SiteProvider({ children }) {
+  const [info, setInfo] = useState({ site_name: 'T9', public_site_name: 'Boonnovels' })
+  useEffect(() => {
+    api.getSiteInfo().then(setInfo).catch(() => {})
+  }, [])
+  return <SiteContext.Provider value={info}>{children}</SiteContext.Provider>
+}
 
 // ------------------------------------------------------------------
 // WebSocket context — single connection, all pages share it
@@ -117,6 +133,7 @@ export default function App() {
   const handleLoginSuccess = () => setAuthState({ ...authState, authenticated: true })
 
   return (
+    <SiteProvider>
     <BrowserRouter>
       <Routes>
         {/* Public routes — gated server-side via auth middleware when public library is off */}
@@ -137,9 +154,11 @@ export default function App() {
             <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
             <Route path="books/:bookId/api-calls" element={<ApiCalls />} />
             <Route path="api-logs" element={<ApiLogPage />} />
+            <Route path="reader-stats" element={<ReaderStats />} />
             <Route path="entities" element={<Entities />} />
             <Route path="queue" element={<Queue />} />
             <Route path="recommendations" element={<Recommendations />} />
+            <Route path="comments" element={<CommentsAdmin />} />
             <Route path="settings" element={<Settings />} />
             <Route path="help" element={<Help />} />
           </Route>
@@ -148,5 +167,6 @@ export default function App() {
         <Route path="*" element={<UnknownRoute authState={authState} />} />
       </Routes>
     </BrowserRouter>
+    </SiteProvider>
   )
 }

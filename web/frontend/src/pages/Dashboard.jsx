@@ -31,14 +31,14 @@ export default function Dashboard() {
   // pollute the back-button history.
   const [selectedBook, setSelectedBook] = useUrlState('book', '')
   const [chapterNum, setChapterNum] = useUrlState('chapter', '')
-  const [modelOverride, setModelOverride] = useState('')
+  const [modelOverride, setModelOverride] = useLocalStorage('dashboard.modelOverride', '')
   const [adviceModel, setAdviceModel]     = useLocalStorage('shared.adviceModel', '')
   const [cleaningModel, setCleaningModel] = useLocalStorage('shared.cleaningModel', '')
-  const [noReview, setNoReview] = useState(false)
-  const [noClean, setNoClean] = useState(false)
-  const [noRepair, setNoRepair] = useState(false)
-  const [noConvertUnits, setNoConvertUnits] = useState(false)
-  const [noStream, setNoStream] = useState(false)
+  const [noReview, setNoReview] = useLocalStorage('dashboard.noReview', false)
+  const [noClean, setNoClean] = useLocalStorage('dashboard.noClean', false)
+  const [noRepair, setNoRepair] = useLocalStorage('dashboard.noRepair', false)
+  const [noConvertUnits, setNoConvertUnits] = useLocalStorage('dashboard.noConvertUnits', false)
+  const [noStream, setNoStream] = useLocalStorage('dashboard.noStream', false)
 
   const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
   const [chunkProgress, setChunkProgress] = useState(null)
@@ -104,6 +104,16 @@ export default function Dashboard() {
           setJobStatus('awaiting_chapter_conflict')
           setChapterConflict(d.pending_chapter_conflict)
         }
+        // Translation finished but the WS `translation_complete`/`error` message
+        // was dropped (React 18 batching) — catch up here so the UI doesn't get
+        // stuck on "Repairing translation…" or similar in-progress UI.
+        if (d.status === 'complete' || d.status === 'error' || d.status === 'idle') {
+          setJobStatus(d.status)
+          setChunkProgress(null)
+          setEntityReview(null)
+          setJsonFix(null)
+          setChapterConflict(null)
+        }
       }).catch(() => {})
       // Sync activity log to pick up entries missed by WS batching
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
@@ -136,6 +146,7 @@ export default function Dashboard() {
         existing_untranslated: lastMessage.existing_untranslated,
         new_title: lastMessage.new_title,
         new_untranslated: lastMessage.new_untranslated,
+        error: lastMessage.error,
       })
     }
 
@@ -153,6 +164,7 @@ export default function Dashboard() {
 
     if (type === 'error') {
       setJobStatus('error')
+      setChunkProgress(null)
       setEntityReview(null)
       setJsonFix(null)
       setChapterConflict(null)
@@ -504,6 +516,7 @@ export default function Dashboard() {
           existingUntranslated={chapterConflict.existing_untranslated}
           newTitle={chapterConflict.new_title}
           newUntranslated={chapterConflict.new_untranslated}
+          errorMessage={chapterConflict.error}
           onDone={handleChapterConflictDone}
         />
       )}

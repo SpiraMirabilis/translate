@@ -61,11 +61,14 @@ export const api = {
   listChapters:        (bookId)       => get(`/api/books/${bookId}/chapters`),
   getChapter:          (bookId, num)  => get(`/api/books/${bookId}/chapters/${num}`),
   updateChapter:       (bookId, num, body) => put(`/api/books/${bookId}/chapters/${num}`, body),
+  renumberChapter:     (bookId, num, newNum) => post(`/api/books/${bookId}/chapters/${num}/renumber`, { new_chapter_number: newNum }),
   deleteChapter:       (bookId, num)  => del(`/api/books/${bookId}/chapters/${num}`),
   setProofread:        (bookId, num, isProofread) => put(`/api/books/${bookId}/chapters/${num}/proofread`, { is_proofread: isProofread }),
   batchDeleteChapters: (bookId, chapters) => post(`/api/books/${bookId}/chapters/batch-delete`, { chapters }),
   batchProofread:      (bookId, chapters, isProofread) => post(`/api/books/${bookId}/chapters/batch-proofread`, { chapters, is_proofread: isProofread }),
   batchRequeue:        (bookId, chapters, retranslationReason = null) => post(`/api/books/${bookId}/chapters/batch-requeue`, { chapters, retranslation_reason: retranslationReason }),
+  listChapterGenderedEntities: (bookId, num) => get(`/api/books/${bookId}/chapters/${num}/gendered-entities`),
+  pronounRepairChapter: (bookId, num, entityId) => post(`/api/books/${bookId}/chapters/${num}/pronoun-repair`, { entity_id: entityId }),
 
   // Genres
   listGenres:    ()              => get('/api/books/genres'),
@@ -81,6 +84,9 @@ export const api = {
   setBookCategories:   (bookId, body) => put(`/api/books/${bookId}/categories`, body),
   resetBookCategories: (bookId)       => del(`/api/books/${bookId}/categories`),
   getCategoryEntityCounts: (bookId)   => get(`/api/books/${bookId}/categories/entity-counts`),
+
+  // All tags used across the library (for autocomplete)
+  getAllTags:    ()                   => get('/api/books/tags'),
 
   // Entities
   listEntities:   (params = {}) => {
@@ -117,6 +123,9 @@ export const api = {
   uploadEpub:       (formData)   => postForm('/api/queue/upload-epub', formData),
   processNext:      (body = {})  => post('/api/queue/process-next', body),
   stopAutoProcess:  ()           => post('/api/queue/stop-auto', {}),
+
+  // Site info (public, unauthenticated)
+  getSiteInfo:      ()           => get('/api/public/site_info'),
 
   // Settings
   getSettings:      ()           => get('/api/settings'),
@@ -156,6 +165,34 @@ export const api = {
   countRecommendations: (status) => get(`/api/recommendations/count${status ? '?status=' + status : ''}`),
   updateRecommendation: (id, body) => put(`/api/recommendations/${id}`, body),
   deleteRecommendation: (id) => del(`/api/recommendations/${id}`),
+
+  // Comments (admin moderation)
+  listComments:    (params = {}) => {
+    const q = new URLSearchParams()
+    if (params.status)         q.set('status', params.status)
+    if (params.book_id != null)         q.set('book_id', params.book_id)
+    if (params.chapter_number != null)  q.set('chapter_number', params.chapter_number)
+    if (params.limit != null)  q.set('limit', params.limit)
+    if (params.offset != null) q.set('offset', params.offset)
+    return get(`/api/comments${q.toString() ? '?' + q : ''}`)
+  },
+  countCommentsAdmin: (status = 'pending') => get(`/api/comments/count?status=${encodeURIComponent(status)}`),
+  getCommentAdmin:    (id)        => get(`/api/comments/${id}`),
+  updateCommentAdmin: (id, body)  => put(`/api/comments/${id}`, body),
+  deleteCommentAdmin: (id, soft = true) => del(`/api/comments/${id}?soft=${soft ? 'true' : 'false'}`),
+  rerunAutomod:       (id)        => post(`/api/comments/${id}/automod-rerun`, {}),
+
+  // Comment bans (uuid/email/ip)
+  listCommentBans:  ()      => get('/api/comments/bans/list'),
+  createCommentBan: (body)  => post('/api/comments/bans', body),
+  removeCommentBan: (id)    => del(`/api/comments/bans/${id}`),
+
+  // Per-book comments toggle
+  setBookCommentsEnabled: (bookId, enabled) => put(`/api/comments/book/${bookId}/comments_enabled`, { enabled }),
+
+  // Reader stats
+  getReaderStats:   (duration, groupBy = 'ip') =>
+    get(`/api/reader-stats?duration=${encodeURIComponent(duration)}&group_by=${encodeURIComponent(groupBy)}`),
 
   // Auth
   authStatus:       ()           => get('/api/auth/status'),

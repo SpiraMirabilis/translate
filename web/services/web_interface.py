@@ -187,44 +187,28 @@ class WebInterface(UserInterface):
     def check_chapter_conflict(self, chapter_text):
         """
         If a chapter with this (book_id, chapter_number) already exists and
-        its source text differs, pause translation and ask the user whether
-        to overwrite or skip.
+        its source text differs, pause translation and ask the user how to
+        resolve. Supported decisions: overwrite, append-and-retranslate, skip,
+        renumber_existing (move existing chapter aside), renumber_new (move
+        the incoming chapter to a different number).
 
-        Returns True to proceed (no conflict, identical retranslation, or user
-        accepted), False if the user cancelled.
+        On "merge", `chapter_text` is mutated in place to be
+        existing_untranslated + new_untranslated so the translation thread
+        retranslates the combined source and overwrites the existing chapter.
+
+        Renumber decisions cascade: if the chosen target number itself
+        conflicts (renumber_new) the panel re-opens for the new number; if
+        the renumber_existing target is occupied with different content the
+        panel re-opens with an inline error so the user can pick again.
+
+        Returns True to proceed, False if the user cancelled.
         """
         book_id = getattr(self, 'book_id', None)
         chapter_number = getattr(self, 'chapter_number', None)
         if not book_id or not isinstance(chapter_number, int) or chapter_number <= 0:
             return True
 
-        try:
-            existing = self.entity_manager.get_chapter(
-                book_id=book_id, chapter_number=chapter_number
-            )
-        except Exception as e:
-            self.logger.error(f"Chapter conflict check — get_chapter failed: {e}")
-            return True
-
-        if not existing:
-            return True
-
-        existing_untranslated = existing.get('untranslated') or []
-        if isinstance(existing_untranslated, str):
-            existing_untranslated = existing_untranslated.splitlines()
-
-        new_untranslated = chapter_text or []
-        if isinstance(new_untranslated, str):
-            new_untranslated = new_untranslated.splitlines()
-
-        def _normalise(lines):
-            return [str(line).strip() for line in lines if str(line).strip()]
-
-        if _normalise(existing_untranslated) == _normalise(new_untranslated):
-            # Same source — legitimate retranslation, proceed silently.
-            return True
-
-        # Resolve book title for display
+        # Resolve book title once for display
         book_title = None
         try:
             book = self.entity_manager.get_book(book_id=book_id)
@@ -233,37 +217,152 @@ class WebInterface(UserInterface):
         except Exception:
             pass
 
-        new_title = ''
-        if isinstance(chapter_text, list) and chapter_text:
-            first = str(chapter_text[0]).strip()
-            new_title = first.lstrip('#').strip() if first.startswith('#') else first
+        def _normalise(lines):
+            return [str(line).strip() for line in lines if str(line).strip()]
 
-        payload = {
-            "book_id": book_id,
-            "chapter_number": chapter_number,
-            "book_title": book_title,
-            "existing_title": existing.get('title') or '',
-            "existing_untranslated": existing_untranslated,
-            "new_title": new_title,
-            "new_untranslated": new_untranslated,
-        }
-        self.job_manager.pending_chapter_conflict = payload
-        self.job_manager.send_message_sync({
-            "type": "chapter_conflict_needed",
-            **payload,
-        })
-        self.job_manager.log_activity(
-            type='info',
-            message=(
-                f'Chapter {chapter_number} of "{book_title or book_id}" already exists with different '
-                f'source text — awaiting user decision.'
-            ),
-            book_id=book_id, chapter=chapter_number, book_name=book_title,
-        )
+        error_message = None
 
-        result = self.job_manager.wait_for_chapter_conflict()
-        decision = (result or {}).get("decision", "cancel")
-        return decision == "proceed"
+        while True:
+            try:
+                existing = self.entity_manager.get_chapter(
+                    book_id=book_id, chapter_number=chapter_number
+                )
+            except Exception as e:
+                self.logger.error(f"Chapter conflict check — get_chapter failed: {e}")
+                return True
+
+            if not existing:
+                return True
+
+            existing_untranslated = existing.get('untranslated') or []
+            if isinstance(existing_untranslated, str):
+                existing_untranslated = existing_untranslated.splitlines()
+
+            new_untranslated = chapter_text or []
+            if isinstance(new_untranslated, str):
+                new_untranslated = new_untranslated.splitlines()
+
+            if _normalise(existing_untranslated) == _normalise(new_untranslated):
+                # Same source — legitimate retranslation, proceed silently.
+                return True
+
+            new_title = ''
+            if isinstance(chapter_text, list) and chapter_text:
+                first = str(chapter_text[0]).strip()
+                new_title = first.lstrip('#').strip() if first.startswith('#') else first
+
+            payload = {
+                "book_id": book_id,
+                "chapter_number": chapter_number,
+                "book_title": book_title,
+                "existing_title": existing.get('title') or '',
+                "existing_untranslated": existing_untranslated,
+                "new_title": new_title,
+                "new_untranslated": new_untranslated,
+            }
+            if error_message:
+                payload["error"] = error_message
+                error_message = None
+
+            self.job_manager.pending_chapter_conflict = payload
+            self.job_manager.send_message_sync({
+                "type": "chapter_conflict_needed",
+                **payload,
+            })
+            self.job_manager.log_activity(
+                type='info',
+                message=(
+                    f'Chapter {chapter_number} of "{book_title or book_id}" already exists with different '
+                    f'source text — awaiting user decision.'
+                ),
+                book_id=book_id, chapter=chapter_number, book_name=book_title,
+            )
+
+            result = self.job_manager.wait_for_chapter_conflict()
+            decision = (result or {}).get("decision", "cancel")
+            new_num = (result or {}).get("new_chapter_number")
+
+            if decision == "merge":
+                merged = list(existing_untranslated) + list(new_untranslated)
+                if isinstance(chapter_text, list):
+                    chapter_text[:] = merged
+                return True
+
+            if decision == "renumber_new":
+                if not isinstance(new_num, int) or new_num < 1 or new_num == chapter_number:
+                    error_message = "Pick a different positive chapter number."
+                    continue
+                # Move the incoming queue item to the new number and re-check.
+                self.chapter_number = new_num
+                try:
+                    self.job_manager.chapter_number = new_num
+                except Exception:
+                    pass
+                cqi = getattr(self, '_current_queue_item', None)
+                if isinstance(cqi, dict) and cqi.get('id') is not None:
+                    self.entity_manager.update_queue_chapter_number(cqi['id'], new_num)
+                    cqi['chapter_number'] = new_num
+                chapter_number = new_num
+                continue
+
+            if decision == "insert_shift":
+                target = chapter_number + 1
+                # Exclude the in-flight queue row by id — at this point in the
+                # call (ui.py:95) the row is still in `queue`; it's only removed
+                # after the function returns. Without the exclusion the bulk
+                # UPDATE would also bump it and we'd lose the slot we opened.
+                current_qid = None
+                cqi = getattr(self, '_current_queue_item', None) or {}
+                if isinstance(cqi, dict):
+                    current_qid = cqi.get('id')
+                try:
+                    shifted = self.entity_manager.shift_queue_chapter_numbers(
+                        book_id, target, delta=1, exclude_queue_id=current_qid,
+                    )
+                except Exception as e:
+                    error_message = f"Could not shift queue: {e}"
+                    continue
+                self.job_manager.log_activity(
+                    type='info',
+                    message=(
+                        f'Shifted {shifted} queue item(s) up by 1 to make room at '
+                        f'chapter {target}.'
+                    ),
+                    book_id=book_id, chapter=chapter_number, book_name=book_title,
+                )
+                self.chapter_number = target
+                try:
+                    self.job_manager.chapter_number = target
+                except Exception:
+                    pass
+                if current_qid is not None:
+                    self.entity_manager.update_queue_chapter_number(current_qid, target)
+                    if isinstance(cqi, dict):
+                        cqi['chapter_number'] = target
+                chapter_number = target
+                continue
+
+            if decision == "renumber_existing":
+                if not isinstance(new_num, int) or new_num < 1 or new_num == chapter_number:
+                    error_message = "Pick a different positive chapter number."
+                    continue
+                ok, reason = self.entity_manager.renumber_chapter(
+                    book_id, chapter_number, new_num
+                )
+                if ok:
+                    # Existing chapter is out of the way; the queue item can
+                    # proceed at the original chapter_number with no conflict.
+                    return True
+                if reason == "target_exists":
+                    error_message = (
+                        f"Chapter {new_num} already exists. Pick a different number "
+                        f"or a different option."
+                    )
+                    continue
+                error_message = f"Could not renumber existing chapter: {reason}"
+                continue
+
+            return decision == "proceed"
 
     def _handle_json_fix(self, raw_response, chunk_index, total_chunks, chunk_text):
         """Pause translation and send malformed JSON to the frontend for fixing."""

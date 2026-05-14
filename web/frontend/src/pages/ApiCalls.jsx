@@ -6,7 +6,7 @@ import {
   AlertTriangle, Cpu, Hash
 } from 'lucide-react'
 
-const CodeEditor = lazy(() => import('@uiw/react-textarea-code-editor'))
+const JsonCodeMirror = lazy(() => import('../components/JsonCodeMirror'))
 
 export default function ApiCalls() {
   const { bookId } = useParams()
@@ -293,20 +293,11 @@ export default function ApiCalls() {
                           {editingCall === call.id ? (
                             <div className="rounded-lg overflow-hidden border border-slate-700">
                               <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor...</div>}>
-                                <CodeEditor
+                                <JsonCodeMirror
                                   value={editedText}
-                                  language="json"
-                                  onChange={(e) => setEditedText(e.target.value)}
-                                  padding={16}
-                                  style={{
-                                    fontSize: 13,
-                                    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                                    backgroundColor: '#0f172a',
-                                    minHeight: 200,
-                                    maxHeight: 500,
-                                    overflow: 'auto',
-                                  }}
-                                  data-color-mode="dark"
+                                  onChange={(val) => setEditedText(val)}
+                                  minHeight="200px"
+                                  maxHeight="500px"
                                 />
                               </Suspense>
                             </div>

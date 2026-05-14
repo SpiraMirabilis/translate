@@ -1,8 +1,19 @@
-import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useUrlModal } from '../hooks/useUrlState'
+import { useSite } from '../App'
+import ReaderComments from '../components/ReaderComments'
+import { loadIdentity } from '../components/CommentForm'
+import TagChips from '../components/TagChips'
+import ProtagonistBadge from '../components/ProtagonistBadge'
+
+// Sentinel chapter_number for book-level discussions. Translated novels
+// don't have a real "chapter 0" (prologues are conventionally Chapter 1
+// with a Prologue title), so we overload it as the book-page target.
+const BOOK_DISCUSSION_CH = 0
 
 const publicApi = {
   getBook: (id) => fetch(`/api/public/books/${id}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
@@ -79,6 +90,7 @@ const INITIAL_CHAPTERS = 50
 
 export default function BookDetail() {
   const { bookId } = useParams()
+  const navigate = useNavigate()
   const [book, setBook] = useState(null)
   const [chapters, setChapters] = useState([])
   const [loading, setLoading] = useState(true)
@@ -86,7 +98,31 @@ export default function BookDetail() {
   const [showAll, setShowAll] = useState(false)
   const { prefs, setPrefs, theme } = useReaderPrefs()
   const [progress] = useLocalStorage('reader-progress', {})
+  const { site_name, public_site_name } = useSite()
   const t = T[prefs.theme] || T.light
+
+  const commentsModal = useUrlModal('comments')
+  const commentsOpen = commentsModal.isOpen
+  const [commentCount, setCommentCount] = useState(0)
+  const [commentsEnabled, setCommentsEnabled] = useState(true)
+
+  const refreshCommentCount = useCallback(() => {
+    if (!bookId) return
+    const identity = loadIdentity()
+    const headers = identity?.uuid ? { 'X-Commenter-UUID': identity.uuid } : {}
+    fetch(`/api/public/comments/chapter/${bookId}/${BOOK_DISCUSSION_CH}/count`, {
+      credentials: 'same-origin',
+      headers,
+    })
+      .then(r => r.ok ? r.json() : { count: 0, enabled: true })
+      .then(data => {
+        setCommentCount(data.count || 0)
+        setCommentsEnabled(data.enabled !== false)
+      })
+      .catch(() => {})
+  }, [bookId])
+
+  useEffect(() => { refreshCommentCount() }, [refreshCommentCount])
 
   useEffect(() => {
     Promise.all([
@@ -102,9 +138,9 @@ export default function BookDetail() {
   }, [bookId])
 
   useEffect(() => {
-    if (book) document.title = `${book.title} — Boonnovels`
-    return () => { document.title = 'T9' }
-  }, [book])
+    if (book) document.title = `${book.title} — ${public_site_name}`
+    return () => { document.title = site_name }
+  }, [book, public_site_name, site_name])
 
   const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
 
@@ -169,7 +205,7 @@ export default function BookDetail() {
           </Link>
           <Link to="/library" className="flex items-center gap-2">
             <BookOpen size={22} className="text-indigo-500" />
-            <span className={`text-lg font-bold ${t.title} tracking-tight hidden sm:inline`}>Boonnovels</span>
+            <span className={`text-lg font-bold ${t.title} tracking-tight hidden sm:inline`}>{public_site_name}</span>
           </Link>
           <div className={`flex items-center gap-0.5 ${t.toggleBg} rounded-lg p-1 transition-colors duration-300`}>
             {THEME_TOGGLE.map(({ id, icon: Icon, label }) => (
@@ -209,7 +245,10 @@ export default function BookDetail() {
 
           {/* Metadata */}
           <div className="flex flex-col justify-center text-center sm:text-left">
-            <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} leading-tight`}>{book.title}</h1>
+            <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
+              <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} leading-tight`}>{book.title}</h1>
+              <ProtagonistBadge tags={book.tags} size="md" theme={prefs.theme} />
+            </div>
             {book.author && (
               <p className={`flex items-center gap-1.5 mt-2 ${t.author} justify-center sm:justify-start`}>
                 <User size={14} />
@@ -229,10 +268,21 @@ export default function BookDetail() {
                   book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
                   book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
                   book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
+                  book.status === 'ongoing-trial' ? 'bg-cyan-500/20 text-cyan-400' :
                   'bg-slate-500/20 text-slate-400'
                 }`}>{book.status}</span>
               )}
             </p>
+            {book.tags && book.tags.length > 0 && (
+              <div className="mt-2 flex justify-center sm:justify-start">
+                <TagChips
+                  tags={book.tags}
+                  size="md"
+                  theme={prefs.theme}
+                  onTagClick={(tag) => navigate(`/library?tag=${encodeURIComponent(tag)}`)}
+                />
+              </div>
+            )}
 
             {/* Action buttons */}
             <div className="flex items-center gap-3 mt-5 justify-center sm:justify-start flex-wrap">
@@ -258,6 +308,29 @@ export default function BookDetail() {
                 {epubLoading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
                 {epubLoading ? 'Preparing...' : 'EPUB'}
               </button>
+              <a
+                href={`/api/public/books/${bookId}/feed.rss`}
+                title="RSS feed of newly translated chapters for this book"
+                className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2`}
+              >
+                <Rss size={16} />
+                RSS
+              </a>
+              {commentsEnabled && (
+                <button
+                  onClick={() => commentsModal.open()}
+                  title="Discussion"
+                  className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2`}
+                >
+                  <MessageCircle size={16} />
+                  Comments
+                  {commentCount > 0 && (
+                    <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-indigo-600 text-white text-[10px] font-medium flex items-center justify-center">
+                      {commentCount > 99 ? '99+' : commentCount}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -307,6 +380,14 @@ export default function BookDetail() {
           </section>
         )}
       </main>
+
+      <ReaderComments
+        open={commentsOpen}
+        onClose={() => { commentsModal.close(); refreshCommentCount() }}
+        bookId={Number(bookId)}
+        chapterNumber={BOOK_DISCUSSION_CH}
+        themeMode={prefs.theme}
+      />
     </div>
   )
 }

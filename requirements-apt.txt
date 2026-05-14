@@ -6,7 +6,7 @@
 #
 # Tested against: Ubuntu 24.04 LTS (Noble)
 #
-# NOTE: The AI provider SDKs (openai, anthropic, google-generativeai) are NOT
+# NOTE: The AI provider SDKs (openai, anthropic, google-genai) are NOT
 # available as apt packages. They must be installed via pip in a virtual
 # environment — see the note at the bottom of this file.
 
@@ -35,12 +35,12 @@ python3-itsdangerous
 #
 #   python3 -m venv --system-site-packages .venv
 #   source .venv/bin/activate
-#   pip install anthropic google-generativeai
+#   pip install anthropic google-genai
 #
 # The --system-site-packages flag lets the venv see the apt-installed
 # packages above, so you only need pip for the two missing SDKs.
 #
 # Packages not in Ubuntu/Debian repositories:
-#   - anthropic          (Anthropic Claude SDK)
-#   - google-generativeai (Google Gemini SDK)
+#   - anthropic   (Anthropic Claude SDK)
+#   - google-genai (Google Gemini SDK)
 # --------------------------------------------------------------------------

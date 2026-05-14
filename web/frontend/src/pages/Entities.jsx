@@ -3,7 +3,7 @@ import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, AlertTriangle,
   X, Check, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
-  Pin, CheckSquare, Square, FolderInput, ArrowRightLeft
+  Pin, CheckSquare, Square, FolderInput, ArrowRightLeft, Download
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import DeleteEntityModal from '../components/DeleteEntityModal'
@@ -13,21 +13,39 @@ import { useUrlState, useUrlModal } from '../hooks/useUrlState'
 const TRUNCATE_LIMIT = 25
 
 /**
- * Parse special filter prefixes from a search string.
- * Supported: origin_chapter:N or origin_chapter:N-M
- * Returns { textSearch, originChapterRange: null | [min, max] }
+ * Parse origin_chapter filter expression.
+ * Supports: ">N", ">=N", "<N", "<=N", "N-M", "N"
+ * Returns null if input is empty or unparseable.
  */
-function parseSearchFilters(raw) {
-  let textSearch = raw
-  let originChapterRange = null
-  const m = raw.match(/\borigin_chapter:(\d+)(?:-(\d+))?\b/i)
-  if (m) {
-    const min = parseInt(m[1])
-    const max = m[2] ? parseInt(m[2]) : min
-    originChapterRange = [Math.min(min, max), Math.max(min, max)]
-    textSearch = raw.replace(m[0], '').trim()
+function parseOriginChapterFilter(raw) {
+  const s = (raw || '').trim()
+  if (!s) return null
+  let m
+  if ((m = s.match(/^>=\s*(\d+)$/))) return { type: 'gte', value: parseInt(m[1]) }
+  if ((m = s.match(/^<=\s*(\d+)$/))) return { type: 'lte', value: parseInt(m[1]) }
+  if ((m = s.match(/^>\s*(\d+)$/)))  return { type: 'gt',  value: parseInt(m[1]) }
+  if ((m = s.match(/^<\s*(\d+)$/)))  return { type: 'lt',  value: parseInt(m[1]) }
+  if ((m = s.match(/^(\d+)\s*-\s*(\d+)$/))) {
+    const a = parseInt(m[1]), b = parseInt(m[2])
+    return { type: 'range', min: Math.min(a, b), max: Math.max(a, b) }
   }
-  return { textSearch, originChapterRange }
+  if ((m = s.match(/^(\d+)$/))) return { type: 'eq', value: parseInt(m[1]) }
+  return null
+}
+
+function matchesOriginChapter(entity, filter) {
+  if (!filter) return true
+  const v = entity.origin_chapter
+  if (v == null) return false
+  switch (filter.type) {
+    case 'gt':    return v >  filter.value
+    case 'lt':    return v <  filter.value
+    case 'gte':   return v >= filter.value
+    case 'lte':   return v <= filter.value
+    case 'eq':    return v === filter.value
+    case 'range': return v >= filter.min && v <= filter.max
+    default:      return true
+  }
 }
 
 export default function Entities() {
@@ -40,7 +58,9 @@ export default function Entities() {
   const [search, setSearch] = useUrlState('search', '')
   const [filterBook, setFilterBook] = useUrlState('book', '')
   const [filterCat, setFilterCat] = useUrlState('cat', '')
+  const [filterChapter, setFilterChapter] = useUrlState('chapter', '')
   const [debouncedSearch, setDebouncedSearch] = useState(search)
+  const [debouncedChapter, setDebouncedChapter] = useState(filterChapter)
 
   // If URL filters are empty on first render but localStorage has a remembered
   // value, block the initial load until the URL has been seeded. Without this
@@ -141,13 +161,20 @@ export default function Entities() {
     return () => clearTimeout(timer)
   }, [search])
 
+  // Debounce chapter filter input
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedChapter(filterChapter), 300)
+    return () => clearTimeout(timer)
+  }, [filterChapter])
+
   // Auto-focus search on mount
   useEffect(() => { searchRef.current?.focus() }, [])
 
-  const { textSearch: apiSearch, originChapterRange } = useMemo(
-    () => parseSearchFilters(debouncedSearch),
-    [debouncedSearch]
+  const chapterFilter = useMemo(
+    () => parseOriginChapterFilter(debouncedChapter),
+    [debouncedChapter]
   )
+  const chapterFilterInvalid = debouncedChapter.trim() !== '' && chapterFilter === null
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -155,12 +182,11 @@ export default function Entities() {
       const params = {}
       if (filterBook) params.book_id = parseInt(filterBook)
       if (filterCat)  params.category = filterCat
-      if (apiSearch) params.search = apiSearch
+      if (debouncedSearch) params.search = debouncedSearch
       const d = await api.listEntities(params)
       let results = d.entities || []
-      if (originChapterRange) {
-        const [min, max] = originChapterRange
-        results = results.filter(e => e.origin_chapter != null && e.origin_chapter >= min && e.origin_chapter <= max)
+      if (chapterFilter) {
+        results = results.filter(e => matchesOriginChapter(e, chapterFilter))
       }
       setEntities(results)
     } catch (e) {
@@ -168,7 +194,7 @@ export default function Entities() {
     } finally {
       setLoading(false)
     }
-  }, [filterBook, filterCat, apiSearch, originChapterRange])
+  }, [filterBook, filterCat, debouncedSearch, chapterFilter])
 
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
@@ -245,6 +271,36 @@ export default function Entities() {
     } catch (e) { setError(e.message) }
   }
 
+  const handleExportJson = () => {
+    const grouped = {}
+    for (const e of entities) {
+      if (!grouped[e.category]) grouped[e.category] = {}
+      const data = {
+        translation: e.translation || '',
+        last_chapter: e.last_chapter || '',
+        origin_chapter: e.origin_chapter || '',
+      }
+      if (e.incorrect_translation) data.incorrect_translation = e.incorrect_translation
+      if (e.gender) data.gender = e.gender
+      if (e.book_id) data.book_id = e.book_id
+      if (e.note) data.note = e.note
+      grouped[e.category][e.untranslated] = data
+    }
+    let fname = 'entities'
+    if (filterBook === 'global') fname += '-global'
+    else if (filterBook) {
+      const b = books.find(b => String(b.id) === String(filterBook))
+      fname += b ? `-book${b.id}` : `-book${filterBook}`
+    }
+    if (filterCat) fname += `-${filterCat}`
+    fname += '.json'
+    const blob = new Blob([JSON.stringify(grouped, null, 4)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = fname; a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const handleCheckDuplicates = async () => {
     const params = {}
     if (filterBook === 'global') params.scope = 'global'
@@ -279,6 +335,14 @@ export default function Entities() {
       <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
         <h1 className="text-lg font-semibold text-slate-200">Entities</h1>
         <div className="flex gap-2 flex-wrap">
+          <button
+            className="btn-secondary flex items-center gap-1.5 text-xs disabled:opacity-50"
+            onClick={handleExportJson}
+            disabled={entities.length === 0}
+            title="Export currently filtered entities as JSON"
+          >
+            <Download size={13} /> Export JSON
+          </button>
           <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={handleCheckDuplicates}>
             <AlertTriangle size={13} /> Check Duplicates
           </button>
@@ -295,7 +359,7 @@ export default function Entities() {
           <input
             ref={searchRef}
             className="input pl-8"
-            placeholder="Search… (origin_chapter:N-M)"
+            placeholder="Search…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -303,14 +367,21 @@ export default function Entities() {
         <select className="input w-full sm:w-52" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
           <option value="">All Books</option>
           <option value="global">Global Entities</option>
-          {books.map((b, i) => (
-            <option key={b.id} value={b.id}>{i + 1}. {b.title}</option>
+          {books.map(b => (
+            <option key={b.id} value={b.id}>{b.id}: {b.title}</option>
           ))}
         </select>
         <select className="input w-full sm:w-44" value={filterCat} onChange={e => setFilterCat(e.target.value)}>
           <option value="">All categories</option>
           {activeCategories.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
+        <input
+          className={`input w-full sm:w-40${chapterFilterInvalid ? ' !border-rose-700' : ''}`}
+          placeholder="Origin ch. (>5, <10, 5-15)"
+          title="Filter by origin chapter. Examples: >5, <=10, 5-15, 7"
+          value={filterChapter}
+          onChange={e => setFilterChapter(e.target.value)}
+        />
       </div>
 
       {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
@@ -369,7 +440,7 @@ export default function Entities() {
               entities={catEntities}
               onEdit={(ent) => editEntityModal.open(ent.id)}
               onDelete={handleDelete}
-              defaultOpen={!!debouncedSearch || !!filterCat}
+              defaultOpen={!!debouncedSearch || !!filterCat || !!chapterFilter}
               selected={selected}
               onToggleSelect={toggleSelect}
               onSetSelected={setSelected}
@@ -384,8 +455,8 @@ export default function Entities() {
           entity={editingEntity || prefillEntity}
           books={books}
           categories={activeCategories}
-          onClose={() => { addModal.close(); editEntityModal.close() }}
-          onSaved={() => { addModal.close(); editEntityModal.close(); load() }}
+          onClose={() => { (addModal.isOpen ? addModal : editEntityModal).close() }}
+          onSaved={() => { (addModal.isOpen ? addModal : editEntityModal).close(); load() }}
         />
       )}
 

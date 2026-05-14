@@ -9,11 +9,17 @@ import os
 import re
 import time
 import threading
+import logging
 from collections import defaultdict
+from datetime import datetime, timezone
+from email.utils import format_datetime
+from xml.etree import ElementTree as ET
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -21,8 +27,8 @@ from typing import Optional
 # ------------------------------------------------------------------
 
 _CACHE_SHORT   = 5 * 60       # 5 min  — book list, chapter list, book metadata
-_CACHE_LONG    = 60 * 60      # 1 hour — individual chapter content
-_CACHE_STATIC  = 24 * 60 * 60 # 1 day  — cover images
+_CACHE_LONG    = 60 * 60 * 24     # 1 day — individual chapter content
+_CACHE_STATIC  = 24 * 60 * 60 * 30  # 30 day  — cover images
 
 
 def _cache(response: Response, max_age: int):
@@ -31,11 +37,22 @@ def _cache(response: Response, max_age: int):
 router = APIRouter(prefix="/api/public")
 
 _db = None
+_config = None
 
 
-def init(db_manager):
-    global _db
+def init(db_manager, config=None):
+    global _db, _config
     _db = db_manager
+    _config = config
+
+
+@router.get("/site_info")
+async def site_info(response: Response):
+    _cache(response, _CACHE_SHORT)
+    return {
+        "site_name": _config.site_name if _config else "T9",
+        "public_site_name": _config.public_site_name if _config else "Boonnovels",
+    }
 
 
 # ------------------------------------------------------------------
@@ -113,11 +130,16 @@ def _guard(request: Request):
 # Endpoints
 # ------------------------------------------------------------------
 
+_VALID_SORTS = {'popular', 'title', 'updated'}
+
+
 @router.get("/books")
-async def list_books(request: Request, response: Response):
+async def list_books(request: Request, response: Response, sort: str = 'popular'):
     _guard(request)
     _cache(response, _CACHE_SHORT)
-    books = _db.list_books()
+    if sort not in _VALID_SORTS:
+        sort = 'popular'
+    books = _db.list_books(order_by=sort)
     # Return only public-facing fields, filtered to public books
     return {"books": [
         {
@@ -129,6 +151,7 @@ async def list_books(request: Request, response: Response):
             "chapter_count": b.get("chapter_count", 0),
             "total_source_chapters": b.get("total_source_chapters"),
             "status": b.get("status", "ongoing"),
+            "tags": b.get("tags") or [],
         }
         for b in books if b.get("is_public", True)
     ]}
@@ -147,6 +170,7 @@ async def get_book(book_id: int, request: Request, response: Response):
     _guard(request)
     _cache(response, _CACHE_SHORT)
     book = _get_public_book(book_id)
+    _db.increment_book_view_count(book_id)
     return {
         "id": book["id"],
         "title": book["title"],
@@ -156,6 +180,8 @@ async def get_book(book_id: int, request: Request, response: Response):
         "source_language": book.get("source_language"),
         "total_source_chapters": book.get("total_source_chapters"),
         "status": book.get("status", "ongoing"),
+        "view_count": book.get("view_count", 0),
+        "tags": book.get("tags") or [],
     }
 
 
@@ -313,3 +339,140 @@ async def search_book(book_id: int, req: PublicSearchRequest, request: Request):
     results = _db.search_book_chapters(book_id, req.query, scope="translated", is_regex=False)
     total = sum(r["match_count"] for r in results)
     return {"results": results, "total_matches": total}
+
+
+# ------------------------------------------------------------------
+# RSS feed — recently translated chapters
+# ------------------------------------------------------------------
+
+_FEED_DEFAULT_LIMIT = 100
+_FEED_MAX_LIMIT = 400
+_ATOM_NS = "http://www.w3.org/2005/Atom"
+ET.register_namespace("atom", _ATOM_NS)
+
+
+def _reader_base_url(request: Request) -> str:
+    """Base URL for links pointing at the reader SPA.
+
+    READER_BASE_URL env var wins; else falls back to the request scheme+host
+    (for deployments where the API and reader share a domain)."""
+    env = os.getenv("READER_BASE_URL")
+    if env:
+        return env.rstrip("/")
+    return f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+
+
+def _chapter_link(base: str, book_id: int, chapter_number: int) -> str:
+    return f"{base}/read/{book_id}/{chapter_number}"
+
+
+def _rfc822(iso_str: Optional[str]) -> str:
+    """Convert an ISO-8601-ish translation_date to an RFC 822 string.
+
+    translation_date in the DB looks like '2026-04-23T20:19:46.844657' (naive).
+    We treat naive timestamps as UTC for feed purposes. Falls back to 'now'
+    on parse failure rather than 500-ing the whole feed."""
+    if iso_str:
+        try:
+            s = iso_str.strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return format_datetime(dt)
+        except (ValueError, TypeError) as e:
+            _log.warning("Could not parse translation_date %r: %s", iso_str, e)
+    return format_datetime(datetime.now(timezone.utc))
+
+
+def _item_description(row: dict) -> str:
+    parts = [f"{row['book_title']} — Chapter {row['chapter']}"]
+    if row.get("title"):
+        parts[0] += f": {row['title']}"
+    if row.get("summary"):
+        parts.append(row["summary"].strip())
+    return "\n\n".join(parts)
+
+
+def _build_rss(channel_title: str,
+               channel_link: str,
+               channel_desc: str,
+               self_href: str,
+               items: list[dict]) -> bytes:
+    """Assemble an RSS 2.0 document. items is a list of dicts from
+    list_recent_translated_chapters + a precomputed 'link' key."""
+    rss = ET.Element("rss", {"version": "2.0"})
+    channel = ET.SubElement(rss, "channel")
+    ET.SubElement(channel, "title").text = channel_title
+    ET.SubElement(channel, "link").text = channel_link
+    ET.SubElement(channel, "description").text = channel_desc
+    ET.SubElement(channel, "language").text = "en"
+    ET.SubElement(channel, "lastBuildDate").text = format_datetime(datetime.now(timezone.utc))
+    ET.SubElement(channel, f"{{{_ATOM_NS}}}link", {
+        "rel": "self",
+        "type": "application/rss+xml",
+        "href": self_href,
+    })
+
+    for row in items:
+        item = ET.SubElement(channel, "item")
+        title = f"{row['book_title']} — Chapter {row['chapter']}"
+        if row.get("title"):
+            title += f": {row['title']}"
+        ET.SubElement(item, "title").text = title
+        ET.SubElement(item, "link").text = row["link"]
+        ET.SubElement(item, "guid", {"isPermaLink": "true"}).text = row["link"]
+        ET.SubElement(item, "pubDate").text = _rfc822(row.get("translation_date"))
+        ET.SubElement(item, "description").text = _item_description(row)
+        if row.get("book_title"):
+            ET.SubElement(item, "category").text = row["book_title"]
+
+    return b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(rss, encoding="utf-8")
+
+
+def _feed_response(xml_bytes: bytes) -> Response:
+    resp = Response(content=xml_bytes, media_type="application/rss+xml; charset=utf-8")
+    _cache(resp, _CACHE_SHORT)
+    return resp
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(limit, _FEED_MAX_LIMIT))
+
+
+@router.get("/feed.rss")
+async def global_feed(request: Request, limit: int = _FEED_DEFAULT_LIMIT):
+    _guard(request)
+    limit = _clamp_limit(limit)
+    rows = _db.list_recent_translated_chapters(limit=limit)
+    base = _reader_base_url(request)
+    for r in rows:
+        r["link"] = _chapter_link(base, r["book_id"], r["chapter"])
+    site = _config.public_site_name if _config else "Boonnovels"
+    xml = _build_rss(
+        channel_title=f"{site} — Recently Translated Chapters",
+        channel_link=base,
+        channel_desc=f"Latest chapters translated on {site}.",
+        self_href=str(request.url),
+        items=rows,
+    )
+    return _feed_response(xml)
+
+
+@router.get("/books/{book_id}/feed.rss")
+async def book_feed(book_id: int, request: Request, limit: int = _FEED_DEFAULT_LIMIT):
+    _guard(request)
+    book = _get_public_book(book_id)
+    limit = _clamp_limit(limit)
+    rows = _db.list_recent_translated_chapters(limit=limit, book_id=book_id)
+    base = _reader_base_url(request)
+    for r in rows:
+        r["link"] = _chapter_link(base, r["book_id"], r["chapter"])
+    site = _config.public_site_name if _config else "Boonnovels"
+    xml = _build_rss(
+        channel_title=f"{site} — {book['title']}",
+        channel_link=f"{base}/read/{book_id}/1",
+        channel_desc=f"Latest translated chapters of {book['title']}.",
+        self_href=str(request.url),
+        items=rows,
+    )
+    return _feed_response(xml)
