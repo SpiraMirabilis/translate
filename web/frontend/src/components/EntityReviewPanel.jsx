@@ -9,6 +9,7 @@ import { useState } from 'react'
 import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen, Copy } from 'lucide-react'
 import { api } from '../services/api'
 import { copyToClipboard } from '../utils/clipboard'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 import { DictResult, useDictLookup } from './DictLookup'
 import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps } from '../utils/categories'
 
@@ -236,7 +237,7 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
 
 function EntityRow({ row, categories, gendered, onUpdate, onDelete, onAdvice, onCopyContext, hasContext }) {
   const [showAdvice, setShowAdvice] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copied, flashCopied] = useTransientFlag(1500)
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
 
   return (
@@ -310,8 +311,7 @@ function EntityRow({ row, categories, gendered, onUpdate, onDelete, onAdvice, on
             title="Copy entity + context to clipboard"
             onClick={() => {
               onCopyContext()
-              setCopied(true)
-              setTimeout(() => setCopied(false), 1500)
+              flashCopied()
             }}
           >
             <Copy size={14} className={copied ? 'text-emerald-400' : 'text-slate-400'} />

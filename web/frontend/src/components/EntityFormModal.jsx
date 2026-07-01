@@ -3,6 +3,7 @@ import { api } from '../services/api'
 import { DEFAULT_CATEGORIES, isGenderedCategory } from '../utils/categories'
 import { DictResult, useDictLookup } from './DictLookup'
 import { copyToClipboard } from '../utils/clipboard'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 import DeleteEntityModal from './DeleteEntityModal'
 import {
   X, Check, Loader2, Sparkles, BookOpen, Copy, Replace, RotateCcw, AlertCircle, Trash2
@@ -218,7 +219,7 @@ export default function EntityFormModal({ entity, books = [], categories: parent
   const [adviceLoading, setAdviceLoading] = useState(false)
   const [adviceData, setAdviceData] = useState(null)
   // Copy context — pre-fetch on modal open so the copy is synchronous (iOS requires user-gesture)
-  const [contextCopied, setContextCopied] = useState(false)
+  const [contextCopied, flashContextCopied] = useTransientFlag(1500)
   const [contextLoading, setContextLoading] = useState(true)
   const [contextText, setContextText] = useState(null)
   // Delete confirmation
@@ -265,8 +266,7 @@ export default function EntityFormModal({ entity, books = [], categories: parent
     lines.push(ctxPart)
     copyToClipboard(lines.join('\n'))
       .then(() => {
-        setContextCopied(true)
-        setTimeout(() => setContextCopied(false), 1500)
+        flashContextCopied()
       })
       .catch(e => setError(`Copy failed: ${e.message}`))
   }

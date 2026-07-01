@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { X, ChevronLeft, ChevronRight, Save, Sparkles, BookOpen, Copy, Replace, RotateCcw, Loader2, AlertCircle, Trash2 } from 'lucide-react'
 import { api } from '../services/api'
 import { copyToClipboard } from '../utils/clipboard'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 import { DictResult, useDictLookup } from './DictLookup'
 import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps, isGenderedCategory } from '../utils/categories'
 
@@ -239,7 +240,7 @@ export default function RetroactiveReviewModal({ book, onClose }) {
 
 function EntityRow({ row, categories, categoryAttributes, onUpdate, onSave, onAdvice, onDelete }) {
   const [showAdvice, setShowAdvice] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copied, flashCopied, clearCopied] = useTransientFlag(1500)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
@@ -260,10 +261,9 @@ function EntityRow({ row, categories, categoryAttributes, onUpdate, onSave, onAd
         res.context ? `Context:\n${res.context}` : '(no context available)',
       ]
       copyToClipboard(lines.join('\n'))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      flashCopied()
     } catch {
-      setCopied(false)
+      clearCopied()
     }
   }
 

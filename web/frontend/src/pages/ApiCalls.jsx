@@ -2,6 +2,7 @@ import { useState, lazy, Suspense } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 import {
   ChevronDown, ChevronRight, ArrowLeft, Clock, Loader2, Save, Check,
   AlertTriangle, Cpu, Hash
@@ -21,7 +22,7 @@ export default function ApiCalls() {
   const [editingCall, setEditingCall] = useState(null)
   const [editedText, setEditedText] = useState('')
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saved, flashSaved, clearSaved] = useTransientFlag(800)
 
   const bookQuery = useQuery({
     queryKey: ['books', 'detail', bookId],
@@ -71,14 +72,14 @@ export default function ApiCalls() {
   const startEdit = (call) => {
     setEditingCall(call.id)
     setEditedText(call.response_text || '')
-    setSaved(false)
+    clearSaved()
   }
 
   const saveEdit = async () => {
     setSaving(true)
     try {
       await api.updateApiCall(editingCall, { response_text: editedText })
-      setSaved(true)
+      flashSaved()
       // Update the cached list in place (no refetch needed)
       queryClient.setQueryData(callsKey, prev => prev ? {
         ...prev,
@@ -87,7 +88,7 @@ export default function ApiCalls() {
           calls: s.calls.map(c => c.id === editingCall ? { ...c, response_text: editedText } : c)
         })),
       } : prev)
-      setTimeout(() => { setEditingCall(null); setSaved(false) }, 800)
+      setTimeout(() => setEditingCall(null), 800)
     } catch (e) {
       console.error('Failed to save:', e)
     }
@@ -97,7 +98,7 @@ export default function ApiCalls() {
   const cancelEdit = () => {
     setEditingCall(null)
     setEditedText('')
-    setSaved(false)
+    clearSaved()
   }
 
   const formatDuration = (ms) => {

@@ -1,6 +1,7 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { api } from '../services/api'
 import { isNoCache, setNoCache } from '../services/cacheBust'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 import { Check, Eye, EyeOff, Loader2, RefreshCw, Download, X, FileJson } from 'lucide-react'
 const JsonCodeMirror = lazy(() => import('../components/JsonCodeMirror'))
 
@@ -8,7 +9,7 @@ export default function Settings() {
   const [providers, setProviders] = useState([])
   const [settings, setSettings] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [saved, setSaved] = useState(false)
+  const [saved, flashSaved] = useTransientFlag(2000)
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -24,8 +25,7 @@ export default function Settings() {
   const handleSaveSettings = async () => {
     try {
       await api.updateSettings(settings)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      flashSaved()
     } catch (e) {
       setError(e.message)
     }
@@ -330,7 +330,7 @@ function UnitsSection() {
   const [original, setOriginal] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saved, flashSaved] = useTransientFlag(2000)
   const [error, setError] = useState(null)
   const [validationError, setValidationError] = useState('')
 
@@ -370,8 +370,7 @@ function UnitsSection() {
     try {
       await api.updateUnits({ content })
       setOriginal(content)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      flashSaved()
     } catch (e) {
       setError(e.message)
     } finally {
@@ -548,7 +547,7 @@ function WordPressSection() {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
   const [error, setError] = useState(null)
-  const [saved, setSaved] = useState(false)
+  const [saved, flashSaved] = useTransientFlag(2000)
 
   useEffect(() => {
     api.wpGetSettings()
@@ -565,8 +564,7 @@ function WordPressSection() {
       const body = { wp_url: wp.wp_url, wp_username: wp.wp_username }
       if (wp.wp_app_password) body.wp_app_password = wp.wp_app_password
       await api.wpUpdateSettings(body)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      flashSaved()
     } catch (e) {
       setError(e.message)
     } finally {

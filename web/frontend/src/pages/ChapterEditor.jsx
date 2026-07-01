@@ -20,6 +20,7 @@ import { CATEGORY_COLORS } from '../utils/categories'
 import { useUrlState, useUrlModal } from '../hooks/useUrlState'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 
 // ── Trim empty lines from start/end of an array ─────────────────────
 function trimEmptyLines(lines) {
@@ -686,7 +687,7 @@ export default function ChapterEditor() {
   const [untranslatedLines, setUntranslatedLines] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saved, flashSaved, clearSaved] = useTransientFlag(3000)
   const [error, setError] = useState(null)
   const [dirty, setDirty] = useState(false)
   // Local draft recovery — while dirty, the edited text+title is autosaved to
@@ -719,7 +720,7 @@ export default function ChapterEditor() {
   // WordPress publish state
   const [wpPublishing, setWpPublishing] = useState(false)
   const [wpStatus, setWpStatus] = useState(null) // null | 'new' | 'published' | 'changed'
-  const [wpMessage, setWpMessage] = useState(null) // { type: 'success'|'error', text }
+  const [wpMessage, flashWpMessage, clearWpMessage] = useTransientFlag(5000) // { type: 'success'|'error', text }
 
   // Dictionary state
   const [dictQuery, setDictQuery] = useState(null)
@@ -730,13 +731,10 @@ export default function ChapterEditor() {
   const [selToolbar, setSelToolbar] = useState(null)
 
   const [pronounRepairOpen, setPronounRepairOpen] = useState(false)
-  const [pronounRepairToast, setPronounRepairToast] = useState(null)
-  const pronounToastTimerRef = useRef(null)
+  const [pronounRepairToast, flashPronounToast, clearPronounToast] = useTransientFlag(6000)
   const handlePronounRepairResult = useCallback((res) => {
     setPronounRepairOpen(false)
-    setPronounRepairToast(res)
-    clearTimeout(pronounToastTimerRef.current)
-    pronounToastTimerRef.current = setTimeout(() => setPronounRepairToast(null), 6000)
+    flashPronounToast(res)
     // If the chapter content changed, reload to show the fix
     if (res?.paragraphs_changed > 0) {
       api.getChapter(parseInt(bookId), parseInt(chapterNum))
@@ -745,7 +743,7 @@ export default function ChapterEditor() {
         })
         .catch(() => {})
     }
-  }, [bookId, chapterNum])
+  }, [bookId, chapterNum, flashPronounToast])
 
   // Retranslation state — URL flag + local payload (text+lineIndex can't live
   // in the URL because partial selections aren't reconstructable from indices)
@@ -772,8 +770,7 @@ export default function ChapterEditor() {
   const search = useSearch()
 
   // Replace-all undo state
-  const [undoInfo, setUndoInfo] = useState(null) // { type: 'local'|'book', prevText?, count }
-  const undoTimerRef = useRef(null)
+  const [undoInfo, flashUndoInfo, clearUndoInfo] = useTransientFlag(15000) // { type: 'local'|'book', prevText?, count }
 
   // Overlay scroll sync
   const [overlayScrollTop, setOverlayScrollTop] = useState(0)
@@ -939,9 +936,9 @@ export default function ChapterEditor() {
       setChapter(prev => (prev ? { ...prev, title: draftOffer.title } : prev))
     }
     setDirty(true)
-    setSaved(false)
+    clearSaved()
     setDraftOffer(null)
-  }, [draftOffer])
+  }, [draftOffer, clearSaved])
 
   const discardDraft = useCallback(() => {
     localStorage.removeItem(draftKey)
@@ -1067,26 +1064,19 @@ export default function ChapterEditor() {
     const newText = search.replaceCurrentMatch(text, match)
     setText(newText)
     setDirty(true)
-    setSaved(false)
+    clearSaved()
     // Advance to next match
     setTimeout(() => handleSearchNext(), 10)
-  }, [search, text, handleSearchNext])
-
-  const showUndoToast = useCallback(function showUndo(info) {
-    clearTimeout(undoTimerRef.current)
-    setUndoInfo(info)
-    undoTimerRef.current = setTimeout(function hideUndo() { setUndoInfo(null) }, 15000)
-  }, [])
+  }, [search, text, handleSearchNext, clearSaved])
 
   const handleUndo = useCallback(async function doUndo() {
     if (!undoInfo) return
-    clearTimeout(undoTimerRef.current)
     if (undoInfo.type === 'local') {
       // Restore local text
       if (undoInfo.prevText != null) {
         setText(undoInfo.prevText)
         setDirty(true)
-        setSaved(false)
+        clearSaved()
       }
     } else if (undoInfo.type === 'book') {
       // Undo server-side replacements
@@ -1099,12 +1089,12 @@ export default function ChapterEditor() {
       if (undoInfo.prevText != null) {
         setText(undoInfo.prevText)
         setDirty(true)
-        setSaved(false)
+        clearSaved()
       }
       search.searchBook(bookId, search.query, search.scope, search.isRegex)
     }
-    setUndoInfo(null)
-  }, [undoInfo, bookId, search])
+    clearUndoInfo()
+  }, [undoInfo, bookId, search, clearUndoInfo, clearSaved])
 
   const handleSearchReplaceAll = useCallback(async function doReplaceAll() {
     if (!search.query) return
@@ -1117,7 +1107,7 @@ export default function ChapterEditor() {
       if (newText !== text) {
         setText(newText)
         setDirty(true)
-        setSaved(false)
+        clearSaved()
       }
       // Replace in other chapters via API
       var otherChapters = (search.bookResults?.results || [])
@@ -1137,18 +1127,18 @@ export default function ChapterEditor() {
         }
       }
       search.searchBook(bookId, search.query, search.scope, search.isRegex)
-      showUndoToast({ type: 'book', prevText: prevText, count: totalBookMatches })
+      flashUndoInfo({ type: 'book', prevText: prevText, count: totalBookMatches })
     } else {
       var replaced = search.replaceAllInChapter(text)
       if (replaced !== text) {
         setText(replaced)
         setDirty(true)
-        setSaved(false)
+        clearSaved()
         var chCount = search.chapterMatches.filter(function onlyTrans(m) { return m.field === 'translated' }).length
-        showUndoToast({ type: 'local', prevText: prevText, count: chCount })
+        flashUndoInfo({ type: 'local', prevText: prevText, count: chCount })
       }
     }
-  }, [search, text, bookId, chapterNum, showUndoToast])
+  }, [search, text, bookId, chapterNum, flashUndoInfo, clearSaved])
 
   const handleSearchClose = useCallback(() => {
     search.close()
@@ -1207,7 +1197,7 @@ export default function ChapterEditor() {
   const handleChange = (e) => {
     setText(e.target.value)
     setDirty(true)
-    setSaved(false)
+    clearSaved()
   }
 
   // Wrap/prefix the current textarea selection with Markdown syntax.
@@ -1260,12 +1250,12 @@ export default function ChapterEditor() {
 
     setText(newValue)
     setDirty(true)
-    setSaved(false)
+    clearSaved()
     requestAnimationFrame(() => {
       el.focus()
       el.setSelectionRange(selStart, selEnd)
     })
-  }, [])
+  }, [clearSaved])
 
   // Illustration URL for the preview pane — prefer the CDN URL on the payload,
   // else the admin serve route (mirrors Reader.illustrationSrc).
@@ -1281,11 +1271,10 @@ export default function ChapterEditor() {
         payload.title = chapter.title
       }
       await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
-      setSaved(true)
+      flashSaved()
       setDirty(false)
       localStorage.removeItem(draftKey)  // saved — draft no longer needed
       setDraftOffer(null)
-      setTimeout(() => setSaved(false), 3000)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -1308,16 +1297,14 @@ export default function ChapterEditor() {
       await handleSave()
     }
     setWpPublishing(true)
-    setWpMessage(null)
+    clearWpMessage()
     try {
       const res = await api.wpPublishChapter(parseInt(bookId), parseInt(chapterNum))
       const actionText = res.action === 'created' ? 'Published' : res.action === 'updated' ? 'Updated' : 'Already up to date'
-      setWpMessage({ type: 'success', text: actionText })
+      flashWpMessage({ type: 'success', text: actionText })
       setWpStatus('published')
-      setTimeout(() => setWpMessage(null), 5000)
     } catch (e) {
-      setWpMessage({ type: 'error', text: e.message })
-      setTimeout(() => setWpMessage(null), 8000)
+      flashWpMessage({ type: 'error', text: e.message }, 8000)
     } finally {
       setWpPublishing(false)
     }
@@ -2105,7 +2092,7 @@ export default function ChapterEditor() {
           </span>
           <button
             className="text-slate-500 hover:text-slate-300 transition-colors"
-            onClick={() => { clearTimeout(pronounToastTimerRef.current); setPronounRepairToast(null) }}
+            onClick={() => clearPronounToast()}
           >
             <X size={14} />
           </button>
@@ -2130,7 +2117,7 @@ export default function ChapterEditor() {
           </button>
           <button
             className="text-slate-500 hover:text-slate-300 transition-colors"
-            onClick={() => { clearTimeout(undoTimerRef.current); setUndoInfo(null) }}
+            onClick={() => clearUndoInfo()}
           >
             <X size={14} />
           </button>

@@ -15,6 +15,7 @@ import RetroactiveReviewModal from '../components/RetroactiveReviewModal'
 import TagChips from '../components/TagChips'
 import ProtagonistBadge from '../components/ProtagonistBadge'
 import { useUrlModal } from '../hooks/useUrlState'
+import { useTransientFlag } from '../hooks/useTransientFlag'
 
 export default function Books() {
   const { bookId: bookIdParam } = useParams()
@@ -898,7 +899,7 @@ function PromptEditorModal({ book, onClose }) {
   const [saving, setSaving] = useState(false)
   const [hasCustom, setHasCustom] = useState(false)
   const [error, setError] = useState(null)
-  const [successMsg, setSuccessMsg] = useState(null)
+  const [successMsg, flashSuccessMsg, clearSuccessMsg] = useTransientFlag(3000)
 
   useEffect(() => {
     (async () => {
@@ -927,12 +928,11 @@ function PromptEditorModal({ book, onClose }) {
       setError('Template must contain the {{ENTITIES_JSON}} placeholder.')
       return
     }
-    setSaving(true); setError(null); setSuccessMsg(null)
+    setSaving(true); setError(null); clearSuccessMsg()
     try {
       await api.setPrompt(book.id, { template })
       setHasCustom(true)
-      setSuccessMsg('Prompt saved.')
-      setTimeout(() => setSuccessMsg(null), 3000)
+      flashSuccessMsg('Prompt saved.')
     } catch (e) {
       setError(e.message)
     } finally {
@@ -942,14 +942,13 @@ function PromptEditorModal({ book, onClose }) {
 
   const handleReset = async () => {
     if (!confirm('Reset to the default system prompt? Your custom prompt for this book will be deleted.')) return
-    setError(null); setSuccessMsg(null)
+    setError(null); clearSuccessMsg()
     try {
       await api.resetPrompt(book.id)
       const def = await api.getDefaultPrompt()
       setTemplate(def.template || '')
       setHasCustom(false)
-      setSuccessMsg('Reset to default.')
-      setTimeout(() => setSuccessMsg(null), 3000)
+      flashSuccessMsg('Reset to default.')
     } catch (e) {
       setError(e.message)
     }
@@ -1701,7 +1700,7 @@ function CategoryManagerModal({ book, onClose }) {
   const [entityCounts, setEntityCounts] = useState({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
-  const [successMsg, setSuccessMsg] = useState(null)
+  const [successMsg, flashSuccessMsg, clearSuccessMsg] = useTransientFlag(3000)
 
   useEffect(() => {
     (async () => {
@@ -1724,14 +1723,13 @@ function CategoryManagerModal({ book, onClose }) {
   }, [book.id])
 
   const handleSave = async (cats, attrs) => {
-    setSaving(true); setError(null); setSuccessMsg(null)
+    setSaving(true); setError(null); clearSuccessMsg()
     try {
       const res = await api.setBookCategories(book.id, { categories: cats, attributes: attrs })
       setCategories(res.categories)
       setAttributes(res.attributes || {})
       setIsDefault(false)
-      setSuccessMsg('Categories saved.')
-      setTimeout(() => setSuccessMsg(null), 3000)
+      flashSuccessMsg('Categories saved.')
     } catch (e) {
       setError(e.message)
     } finally {
@@ -1773,14 +1771,13 @@ function CategoryManagerModal({ book, onClose }) {
 
   const handleReset = async () => {
     if (!confirm('Reset to default categories? Custom categories will be removed (entities are preserved).')) return
-    setSaving(true); setError(null); setSuccessMsg(null)
+    setSaving(true); setError(null); clearSuccessMsg()
     try {
       await api.resetBookCategories(book.id)
       setCategories([...DEFAULT_CATEGORIES])
       setAttributes({ characters: ['gender'] })
       setIsDefault(true)
-      setSuccessMsg('Reset to defaults.')
-      setTimeout(() => setSuccessMsg(null), 3000)
+      flashSuccessMsg('Reset to defaults.')
     } catch (e) {
       setError(e.message)
     } finally {
