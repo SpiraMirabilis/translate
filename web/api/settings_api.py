@@ -138,7 +138,7 @@ class SettingsUpdate(BaseModel):
 async def update_settings(req: SettingsUpdate):
     # Only forward keys the caller actually set, and only those known to the
     # store. settings_store.update() handles JSON persistence + os.environ sync.
-    updates = {k: v for k, v in req.dict(exclude_unset=True).items() if v is not None}
+    updates = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
     if updates:
         settings_store.update(updates)
     # Mirror onto the in-memory _config object so callers reading _config.X see

@@ -282,7 +282,7 @@ async def update_book(book_id: int, req: BookUpdate):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
-    dump = req.model_dump() if hasattr(req, 'model_dump') else req.dict()
+    dump = req.model_dump()
     # Allow total_source_chapters=null to clear the value
     nullable_fields = {'total_source_chapters', 'trad_to_simp', 'modules'}
     kwargs = {k: v for k, v in dump.items() if v is not None or k in nullable_fields}

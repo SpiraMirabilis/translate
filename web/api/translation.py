@@ -4,7 +4,7 @@ Translation API endpoints + WebSocket.
 import asyncio
 import threading
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 
 from translation_engine import TranslationCancelled
@@ -78,11 +78,14 @@ class ReviewSubmitRequest(BaseModel):
 
 
 class JsonFixRequest(BaseModel):
-    action: str  # "retry" | "fix" | "abort"
-    fixed_json: Optional[str] = None  # Only for "fix" action
+    # The frontend posts the edited JSON under the key "json" (JsonFixPanel.jsx).
+    # The old pydantic-v1 `class Config: fields` alias was silently ignored by
+    # pydantic v2, so hand-fixed JSON never reached the engine — this Field
+    # alias is the v2-correct (and working) form.
+    model_config = ConfigDict(populate_by_name=True)
 
-    class Config:
-        fields = {'fixed_json': {'alias': 'json'}}
+    action: str  # "retry" | "fix" | "abort"
+    fixed_json: Optional[str] = Field(default=None, alias="json")  # Only for "fix" action
 
 
 class ChapterConflictRequest(BaseModel):
