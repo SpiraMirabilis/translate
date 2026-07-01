@@ -7,12 +7,9 @@ import RecommendModal from '../components/RecommendModal'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
 import { bustUrl } from '../services/cacheBust'
+import { publicApi } from '../services/api'
 import TagChips from '../components/TagChips'
 import ProtagonistBadge from '../components/ProtagonistBadge'
-
-const publicApi = {
-  listBooks: (sort) => fetch(`/api/public/books?sort=${encodeURIComponent(sort)}`, { credentials: 'same-origin' }).then(r => r.json()),
-}
 
 const SORT_OPTIONS = [
   { id: 'popular',     label: 'Most Popular' },

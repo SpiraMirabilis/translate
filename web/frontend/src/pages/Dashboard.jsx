@@ -5,10 +5,11 @@
  * Right panel: persistent activity log + progress
  * Bottom:      entity review panel (modal overlay when entities need review)
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { useWsEvent } from '../hooks/useWsEvent'
+import ErrorState from '../components/ErrorState'
 import EntityReviewPanel from '../components/EntityReviewPanel'
 import JsonFixPanel from '../components/JsonFixPanel'
 import ChapterConflictPanel from '../components/ChapterConflictPanel'
@@ -50,26 +51,34 @@ export default function Dashboard() {
   const [chapterConflict, setChapterConflict] = useState(null) // { book_id, chapter_number, ... } or null
 
   const logRef = useRef(null)
+  const [loadError, setLoadError] = useState(null)
 
-  // Load books + providers + activity log + restore state on mount
-  useEffect(() => {
-    api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
-    api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
-    api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
-    // Restore job state (e.g. entity review panel if awaiting review)
-    api.getJobStatus().then(d => {
-      if (d.status && d.status !== 'idle') setJobStatus(d.status)
-      if (d.status === 'awaiting_review' && d.pending_review) {
-        setEntityReview(d.pending_review)
-      }
-      if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
-        setJsonFix(d.pending_json_fix)
-      }
-      if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
-        setChapterConflict(d.pending_chapter_conflict)
-      }
-    }).catch(() => {})
+  // Load books + providers + activity log + restore state on mount.
+  // Failures surface as a retryable banner instead of a silently empty
+  // workspace.
+  const loadInitial = useCallback(() => {
+    setLoadError(null)
+    Promise.all([
+      api.listBooks().then(d => setBooks(d.books || [])),
+      api.listProviders().then(d => setProviders(d.providers || [])),
+      api.getActivityLog().then(d => setActivityLog(d.entries || [])),
+      // Restore job state (e.g. entity review panel if awaiting review)
+      api.getJobStatus().then(d => {
+        if (d.status && d.status !== 'idle') setJobStatus(d.status)
+        if (d.status === 'awaiting_review' && d.pending_review) {
+          setEntityReview(d.pending_review)
+        }
+        if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
+          setJsonFix(d.pending_json_fix)
+        }
+        if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
+          setChapterConflict(d.pending_chapter_conflict)
+        }
+      }),
+    ]).catch(e => setLoadError(e.message || 'Request failed'))
   }, [])
+
+  useEffect(() => { loadInitial() }, [loadInitial])
 
   // Handle WebSocket messages — every message is delivered via the WS fan-out
   // (useWsEvent), so nothing is lost to React 18 batching. Missed events are
@@ -268,6 +277,17 @@ export default function Dashboard() {
         <h1 className="text-sm font-semibold text-slate-300">Translation Workspace</h1>
         <StatusBadge status={jobStatus} />
       </div>
+
+      {/* Initial-load failure banner */}
+      {loadError && (
+        <div className="px-5 py-3 shrink-0">
+          <ErrorState
+            message="Failed to load workspace data"
+            detail={loadError}
+            onRetry={loadInitial}
+          />
+        </div>
+      )}
 
       {/* Main split */}
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden">

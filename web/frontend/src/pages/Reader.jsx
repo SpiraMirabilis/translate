@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { api } from '../services/api'
+import { api, publicApi } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
@@ -14,20 +14,11 @@ import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
 import { renderBlock, renderInline, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes } from '../lib/chapterMarkdown'
 import FootnotePopover from '../components/FootnotePopover'
+import ErrorState from '../components/ErrorState'
 import { useSite } from '../App'
 import {
   ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle
 } from 'lucide-react'
-
-// Public API for unauthenticated access — mirrors the shape of the
-// authenticated api object but hits /api/public/* endpoints.
-const publicApi = {
-  getBook:       (id)         => fetch(`/api/public/books/${id}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
-  listChapters:  (bookId)     => fetch(`/api/public/books/${bookId}/chapters`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
-  getChapter:    (bookId, n)  => fetch(`/api/public/books/${bookId}/chapters/${n}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
-  getChaptersBatch: (bookId, nums) => fetch(`/api/public/books/${bookId}/chapters/batch?nums=${nums.join(',')}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
-  searchBook:    (bookId, b)  => fetch(`/api/public/books/${bookId}/search`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
-}
 
 // In-chapter illustrations are stored in content as a line ⟦IMG:<id>⟧.
 const IMG_MARKER_RE = /^\s*⟦IMG:([0-9a-f]{4,})⟧\s*$/
@@ -57,6 +48,8 @@ export default function Reader({ isPublic = false }) {
   const [chapter, setChapter] = useState(null)
   const [chapterError, setChapterError] = useState(null)
   const [reloadTick, setReloadTick] = useState(0)
+  const [bookError, setBookError] = useState(null)
+  const [bookReloadTick, setBookReloadTick] = useState(0)
   const [loading, setLoading] = useState(true)
   const [chapterLoading, setChapterLoading] = useState(false)
   // Drawer overlays — URL-driven so the browser back button closes them
@@ -90,6 +83,8 @@ export default function Reader({ isPublic = false }) {
   // Load book + chapter list
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
+    setBookError(null)
     async function load() {
       try {
         const [bookData, chData] = await Promise.all([
@@ -107,15 +102,16 @@ export default function Reader({ isPublic = false }) {
         const fromStorage = progress[bookId]
         const initial = fromRoute || fromQuery || fromStorage || sorted[0]?.chapter || 1
         setCurrentNum(initial)
-      } catch {
-        // book not found or error
+      } catch (e) {
+        // book not found, public library off, or connection error
+        if (!cancelled) setBookError(e)
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
     load()
     return () => { cancelled = true }
-  }, [bookId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bookId, bookReloadTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check if user can edit entities (authenticated or auth disabled)
   useEffect(() => {
@@ -126,36 +122,35 @@ export default function Reader({ isPublic = false }) {
       .catch(() => setCanEdit(false))
   }, [])
 
-  // Load entities when authenticated
+  // Load entities when authenticated (decorative for reading — warn only)
   useEffect(() => {
     if (!canEdit || !bookId) return
     api.listEntities({ book_id: parseInt(bookId), include_global: true })
       .then(res => setEntities(res.entities || []))
-      .catch(() => setEntities([]))
+      .catch(e => { console.warn('Failed to load entities:', e); setEntities([]) })
   }, [canEdit, bookId])
 
   const reloadEntities = useCallback(() => {
     if (!canEdit || !bookId) return
     api.listEntities({ book_id: parseInt(bookId), include_global: true })
       .then(res => setEntities(res.entities || []))
-      .catch(() => {})
+      .catch(e => console.warn('Failed to reload entities:', e))
   }, [canEdit, bookId])
 
   // Comment count + per-book toggle (refreshed on chapter change and after drawer close)
   const refreshCommentCount = useCallback(() => {
     if (!bookId || currentNum == null) return
     const identity = loadIdentity()
-    const headers = identity?.uuid ? { 'X-Commenter-UUID': identity.uuid } : {}
-    fetch(`/api/public/comments/chapter/${bookId}/${currentNum}/count`, {
-      credentials: 'same-origin',
-      headers,
-    })
-      .then(r => r.ok ? r.json() : { count: 0, enabled: true })
+    publicApi.getChapterCommentCount(bookId, currentNum, identity?.uuid)
       .then(data => {
         setCommentCount(data.count || 0)
         setCommentsEnabled(data.enabled !== false)
       })
-      .catch(() => {})
+      .catch(e => {
+        console.warn('Failed to load comment count:', e)
+        setCommentCount(0)
+        setCommentsEnabled(true)
+      })
   }, [bookId, currentNum])
 
   useEffect(() => {
@@ -387,6 +382,24 @@ export default function Reader({ isPublic = false }) {
     )
   }
 
+  if (bookError) {
+    return (
+      <div className={`min-h-screen ${theme.bg}`}>
+        <ErrorState
+          size="page"
+          className={theme.text}
+          message="Couldn't load this book"
+          detail={bookError.message || 'The connection may have dropped. Try again.'}
+          onRetry={() => setBookReloadTick(t => t + 1)}
+          buttonClassName={navBtnClass}
+        />
+        <div className="text-center -mt-24">
+          <Link to={backPath} className="text-indigo-400 hover:underline inline-block">{isPublic ? 'Back to Library' : 'Back to Books'}</Link>
+        </div>
+      </div>
+    )
+  }
+
   if (!book) {
     return (
       <div className={`min-h-screen ${theme.bg} flex items-center justify-center`}>
@@ -469,18 +482,14 @@ export default function Reader({ isPublic = false }) {
             <Loader2 size={28} className="animate-spin text-indigo-400" />
           </div>
         ) : chapterError || !chapter ? (
-          <div className="flex flex-col items-center justify-center py-32 text-center px-6">
-            <p className={`${theme.text} text-lg mb-2`}>Couldn&apos;t load this chapter</p>
-            <p className={`text-sm opacity-70 ${theme.text} mb-6`}>
-              The connection may have dropped. Try again, or use Previous/Next to reload.
-            </p>
-            <button
-              onClick={() => setReloadTick(t => t + 1)}
-              className={`px-4 py-2 rounded-lg border text-sm ${navBtnClass}`}
-            >
-              Retry
-            </button>
-          </div>
+          <ErrorState
+            size="page"
+            className={theme.text}
+            message="Couldn't load this chapter"
+            detail="The connection may have dropped. Try again, or use Previous/Next to reload."
+            onRetry={() => setReloadTick(t => t + 1)}
+            buttonClassName={navBtnClass}
+          />
         ) : (
           <article className={`${marginClass} mx-auto px-6 py-8 sm:px-8 transition-all duration-300`}>
             {/* Chapter heading */}

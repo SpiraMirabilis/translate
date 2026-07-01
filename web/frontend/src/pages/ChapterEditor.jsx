@@ -7,7 +7,7 @@
  * Reached via /books/:bookId/chapters/:chapterNum/edit
  */
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
-import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, useBlocker, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, CheckCircle2, Search, Pencil, Globe, Sparkles, Bold, Italic, Code, Link2, Heading, List, Quote, Minus, Eye } from 'lucide-react'
@@ -712,6 +712,12 @@ export default function ChapterEditor() {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState(null)
   const [dirty, setDirty] = useState(false)
+  // Local draft recovery — while dirty, the edited text+title is autosaved to
+  // localStorage (debounced); on mount a newer-than-saved draft is offered
+  // back via a restore banner. Survives session expiry, crashes, and
+  // accidental navigation.
+  const draftKey = `chapterDraft:${bookId}:${chapterNum}`
+  const [draftOffer, setDraftOffer] = useState(null) // { text, title, savedAt } or null
   // activeLine tracked in URL (replace mode — rapid clicks shouldn't flood history)
   const [activeLine, setActiveLine] = useUrlState('line', 0, {
     serialize: String,
@@ -821,6 +827,7 @@ export default function ChapterEditor() {
   )
 
   useEffect(() => {
+    setDraftOffer(null)
     Promise.all([
       api.getChapter(parseInt(bookId), parseInt(chapterNum)),
       api.getBook(parseInt(bookId)),
@@ -836,11 +843,30 @@ export default function ChapterEditor() {
         setChapterList((chaps.chapters || []).map(c => c.chapter).sort((a, b) => a - b))
         setIsProofread(!!ch.is_proofread)
         const content = Array.isArray(ch.content) ? ch.content : []
-        setText(trimEmptyLines(content).join('\n'))
+        const loadedText = trimEmptyLines(content).join('\n')
+        setText(loadedText)
         const untrans = Array.isArray(ch.untranslated) ? ch.untranslated : []
         const filtered = untrans.filter(l => !l.startsWith('#'))
         const skipped = filtered.length > 0 ? filtered.slice(1) : filtered
         setUntranslatedLines(trimEmptyLines(skipped))
+
+        // Offer to restore an unsaved local draft, unless the stored chapter
+        // was (re)translated after the draft was written (draft is stale) or
+        // the draft matches what's already saved.
+        try {
+          const raw = localStorage.getItem(`chapterDraft:${bookId}:${chapterNum}`)
+          if (raw) {
+            const d = JSON.parse(raw)
+            const translatedAt = ch.translation_date ? Date.parse(ch.translation_date) : NaN
+            const stale = Number.isFinite(translatedAt) && d.savedAt <= translatedAt
+            const differs = d.text !== loadedText || (d.title != null && d.title !== ch.title)
+            if (!stale && differs && typeof d.text === 'string') {
+              setDraftOffer(d)
+            } else {
+              localStorage.removeItem(`chapterDraft:${bookId}:${chapterNum}`)
+            }
+          }
+        } catch { /* corrupt draft — ignore */ }
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
@@ -895,6 +921,55 @@ export default function ChapterEditor() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
+
+  // In-app navigation guard (data router). Only blocks when leaving this
+  // editor path with unsaved changes — same-path query-param changes
+  // (active line, modals, search) are never blocked.
+  const shouldBlock = useCallback(
+    ({ currentLocation, nextLocation }) =>
+      dirty && currentLocation.pathname !== nextLocation.pathname,
+    [dirty]
+  )
+  const blocker = useBlocker(shouldBlock)
+  useEffect(() => {
+    if (blocker.state === 'blocked') {
+      if (window.confirm('Discard unsaved changes?')) blocker.proceed()
+      else blocker.reset()
+    }
+  }, [blocker])
+
+  // Draft autosave — while dirty, persist edited text + title (debounced 2s)
+  // so session expiry or an accidental exit can be recovered.
+  const chapterTitle = chapter?.title ?? null
+  useEffect(() => {
+    if (!dirty) return
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(draftKey, JSON.stringify({
+          text,
+          title: chapterTitle,
+          savedAt: Date.now(),
+        }))
+      } catch { /* quota exceeded — ignore */ }
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [dirty, text, chapterTitle, draftKey])
+
+  const restoreDraft = useCallback(() => {
+    if (!draftOffer) return
+    setText(draftOffer.text)
+    if (draftOffer.title != null) {
+      setChapter(prev => (prev ? { ...prev, title: draftOffer.title } : prev))
+    }
+    setDirty(true)
+    setSaved(false)
+    setDraftOffer(null)
+  }, [draftOffer])
+
+  const discardDraft = useCallback(() => {
+    localStorage.removeItem(draftKey)
+    setDraftOffer(null)
+  }, [draftKey])
 
   // Global keyboard shortcut for search (Ctrl+F / Ctrl+H)
   useEffect(() => {
@@ -1231,6 +1306,8 @@ export default function ChapterEditor() {
       await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
       setSaved(true)
       setDirty(false)
+      localStorage.removeItem(draftKey)  // saved — draft no longer needed
+      setDraftOffer(null)
       setTimeout(() => setSaved(false), 3000)
     } catch (e) {
       setError(e.message)
@@ -1455,8 +1532,8 @@ export default function ChapterEditor() {
   const prevChapter = chapterIdx > 0 ? chapterList[chapterIdx - 1] : null
   const nextChapter = chapterIdx >= 0 && chapterIdx < chapterList.length - 1 ? chapterList[chapterIdx + 1] : null
 
+  // Unsaved-changes confirmation is handled by the useBlocker guard above.
   const goToChapter = (num) => {
-    if (dirty && !confirm('You have unsaved changes. Leave anyway?')) return
     navigate(`/books/${bookId}/chapters/${num}/edit`)
   }
 
@@ -1521,10 +1598,7 @@ export default function ChapterEditor() {
       <div className="flex items-center gap-2 md:gap-3 px-3 md:px-5 py-2 md:py-3 border-b border-slate-800 bg-slate-900/50 shrink-0 flex-wrap">
         <button
           className="btn-ghost p-1.5"
-          onClick={() => {
-            if (dirty && !confirm('You have unsaved changes. Leave anyway?')) return
-            navigate('/books')
-          }}
+          onClick={() => navigate('/books')}
         >
           <ArrowLeft size={16} />
         </button>
@@ -1779,6 +1853,28 @@ export default function ChapterEditor() {
           <span className="text-indigo-300 text-xs ml-0.5">&#8984;S</span>
         </button>
       </div>
+
+      {/* Unsaved-draft restore banner */}
+      {draftOffer && (
+        <div className="flex items-center gap-3 px-5 py-2 bg-amber-950/40 border-b border-amber-900/60 text-xs shrink-0">
+          <AlertCircle size={14} className="text-amber-400 shrink-0" />
+          <span className="text-amber-300 flex-1 min-w-0 truncate">
+            Unsaved draft from {new Date(draftOffer.savedAt).toLocaleString()} found for this chapter.
+          </span>
+          <button
+            className="px-2.5 py-1 rounded border border-amber-700 text-amber-200 hover:bg-amber-900/50 shrink-0"
+            onClick={restoreDraft}
+          >
+            Restore
+          </button>
+          <button
+            className="px-2.5 py-1 rounded border border-slate-700 text-slate-400 hover:bg-slate-800 shrink-0"
+            onClick={discardDraft}
+          >
+            Discard
+          </button>
+        </div>
+      )}
 
       {/* Search bar */}
       <SearchBar

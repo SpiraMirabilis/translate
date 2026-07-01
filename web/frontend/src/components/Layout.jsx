@@ -30,10 +30,10 @@ export default function Layout() {
     const fetchCounts = () => {
       api.countRecommendations('new')
         .then(data => setNewRecsCount(data.count || 0))
-        .catch(() => {})
+        .catch(e => console.warn('Failed to load recommendations badge count:', e))
       api.countCommentsAdmin('pending')
         .then(data => setPendingCommentsCount(data.count || 0))
-        .catch(() => {})
+        .catch(e => console.warn('Failed to load comments badge count:', e))
     }
     fetchCounts()
     const interval = setInterval(fetchCounts, 5 * 60 * 1000)

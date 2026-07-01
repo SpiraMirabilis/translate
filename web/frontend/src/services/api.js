@@ -2,11 +2,14 @@ import { isNoCache } from './cacheBust'
 
 const BASE = ''  // same origin via Vite proxy
 
-async function request(method, path, body, isFormData = false) {
+async function request(method, path, body, isFormData = false, extraHeaders = undefined) {
   const opts = {
     method,
     credentials: 'same-origin',
-    headers: isFormData ? {} : { 'Content-Type': 'application/json' },
+    headers: {
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(extraHeaders || {}),
+    },
     body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
   }
   let url = BASE + path
@@ -17,10 +20,14 @@ async function request(method, path, body, isFormData = false) {
     }
   }
   const res = await fetch(url, opts)
-  if (res.status === 401 && !path.startsWith('/api/auth/')) {
-    // Session expired or invalid — reload to trigger auth check
-    window.location.reload()
-    return
+  // 401 = session expired/invalid. Tell the app shell to swap in the login
+  // screen in place (no page reload — unsaved editor work stays recoverable)
+  // and fail this call. Skipped for auth endpoints (401 is a normal outcome
+  // there) and public endpoints (they legitimately 401 when the public
+  // library is toggled off).
+  if (res.status === 401 && !path.startsWith('/api/auth/') && !path.startsWith('/api/public/')) {
+    window.dispatchEvent(new CustomEvent('api:unauthorized'))
+    throw new Error('Session expired — please log in again')
   }
   if (!res.ok) {
     let msg
@@ -215,4 +222,26 @@ export const api = {
   authStatus:       ()           => get('/api/auth/status'),
   login:            (body)       => post('/api/auth/login', body),
   logout:           ()           => post('/api/auth/logout', {}),
+}
+
+// ------------------------------------------------------------------
+// Public (unauthenticated) API — the /api/public/* endpoints used by the
+// Library / BookDetail / Reader pages. These bypass the 401 session-expiry
+// handling in request() (see above): public endpoints legitimately return
+// 401 when the public library is toggled off, and that must not kick the
+// SPA to the login screen.
+// ------------------------------------------------------------------
+export const publicApi = {
+  listBooks:        (sort)         => get(`/api/public/books${sort ? `?sort=${encodeURIComponent(sort)}` : ''}`),
+  getBook:          (id)           => get(`/api/public/books/${id}`),
+  listChapters:     (bookId)       => get(`/api/public/books/${bookId}/chapters`),
+  getChapter:       (bookId, num)  => get(`/api/public/books/${bookId}/chapters/${num}`),
+  getChaptersBatch: (bookId, nums) => get(`/api/public/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
+  searchBook:       (bookId, body) => post(`/api/public/books/${bookId}/search`, body),
+
+  // Comment count for a chapter. The optional commenter UUID header lets the
+  // API include the caller's own pending comments in the count.
+  getChapterCommentCount: (bookId, num, commenterUuid) =>
+    request('GET', `/api/public/comments/chapter/${bookId}/${num}/count`, undefined, false,
+            commenterUuid ? { 'X-Commenter-UUID': commenterUuid } : undefined),
 }

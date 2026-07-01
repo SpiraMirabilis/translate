@@ -1,4 +1,7 @@
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
+import {
+  createBrowserRouter, createRoutesFromElements, RouterProvider,
+  Route, Navigate, Outlet,
+} from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
@@ -29,10 +32,16 @@ export const useSite = () => useContext(SiteContext)
 function SiteProvider({ children }) {
   const [info, setInfo] = useState({ site_name: 'T9', public_site_name: 'Boonnovels' })
   useEffect(() => {
-    api.getSiteInfo().then(setInfo).catch(() => {})
+    api.getSiteInfo().then(setInfo).catch(e => console.warn('Failed to load site info:', e))
   }, [])
   return <SiteContext.Provider value={info}>{children}</SiteContext.Provider>
 }
+
+// ------------------------------------------------------------------
+// Auth context — lets route elements (created once at module scope for the
+// data router) read live auth state without the router being rebuilt.
+// ------------------------------------------------------------------
+const AuthContext = createContext({ authState: null, onLoginSuccess: () => {} })
 
 // ------------------------------------------------------------------
 // WebSocket context — single connection, all pages share it
@@ -106,7 +115,8 @@ function WsProvider({ children }) {
 // ------------------------------------------------------------------
 // Auth gate — pathless layout route that guards all admin routes
 // ------------------------------------------------------------------
-function AdminGate({ authState, onLoginSuccess }) {
+function AdminGate() {
+  const { authState, onLoginSuccess } = useContext(AuthContext)
   const needsLogin = authState.auth_required && !authState.authenticated
   if (needsLogin) {
     return <Login onSuccess={onLoginSuccess} />
@@ -121,7 +131,8 @@ function AdminGate({ authState, onLoginSuccess }) {
 // Catch-all for unknown top-level URIs: send unauthenticated users to the
 // public library (when enabled) instead of exposing the admin shell; show a
 // 404 otherwise.
-function UnknownRoute({ authState }) {
+function UnknownRoute() {
+  const { authState } = useContext(AuthContext)
   const needsLogin = authState.auth_required && !authState.authenticated
   if (needsLogin && authState.public_library) {
     return <Navigate to="/library" replace />
@@ -130,8 +141,46 @@ function UnknownRoute({ authState }) {
 }
 
 // ------------------------------------------------------------------
-// App — public routes are outside the auth gate (when enabled)
+// Route tree — public routes are outside the auth gate (when enabled).
+// Data router (createBrowserRouter) so ChapterEditor can use useBlocker for
+// its unsaved-changes navigation guard. Built once at module scope; route
+// elements read live auth state via AuthContext (context flows through
+// RouterProvider), so the router never needs rebuilding.
 // ------------------------------------------------------------------
+const router = createBrowserRouter(createRoutesFromElements(
+  <>
+    {/* Public routes — gated server-side via auth middleware when public library is off */}
+    <Route path="/library" element={<Library />} />
+    <Route path="/library/book/:bookId" element={<BookDetail />} />
+    <Route path="/library/read/:bookId/:chapterNum" element={<Reader isPublic />} />
+    <Route path="/library/read/:bookId" element={<BookDetail />} />
+    <Route path="/read/:bookId/:chapterNum" element={<Reader isPublic />} />
+    <Route path="/read/:bookId" element={<Reader isPublic />} />
+    {/* Admin routes — auth gated. Only specific paths are listed, so
+        unknown URIs fall through to the catch-all below rather than
+        resolving to the Dashboard. */}
+    <Route element={<AdminGate />}>
+      <Route path="/" element={<Layout />}>
+        <Route index element={<Dashboard />} />
+        <Route path="books" element={<Books />} />
+        <Route path="books/:bookId" element={<Books />} />
+        <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
+        <Route path="books/:bookId/api-calls" element={<ApiCalls />} />
+        <Route path="api-logs" element={<ApiLogPage />} />
+        <Route path="reader-stats" element={<ReaderStats />} />
+        <Route path="entities" element={<Entities />} />
+        <Route path="queue" element={<Queue />} />
+        <Route path="recommendations" element={<Recommendations />} />
+        <Route path="comments" element={<CommentsAdmin />} />
+        <Route path="settings" element={<Settings />} />
+        <Route path="help" element={<Help />} />
+      </Route>
+    </Route>
+    {/* Unknown URIs — redirect unauthenticated users to /library, else 404 */}
+    <Route path="*" element={<UnknownRoute />} />
+  </>
+))
+
 export default function App() {
   const [authState, setAuthState] = useState(null)
 
@@ -139,6 +188,18 @@ export default function App() {
     api.authStatus()
       .then(setAuthState)
       .catch(() => setAuthState({ auth_required: false, authenticated: true, public_library: true }))
+  }, [])
+
+  // Session expiry: any authenticated API call that gets a 401 dispatches
+  // this event (see services/api.js). Flip to unauthenticated so the Login
+  // screen renders in place — the SPA is never unloaded, so ChapterEditor's
+  // localStorage draft survives for restore after re-login.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setAuthState(prev => (prev ? { ...prev, auth_required: true, authenticated: false } : prev))
+    }
+    window.addEventListener('api:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('api:unauthorized', onUnauthorized)
   }, [])
 
   if (!authState) {
@@ -149,39 +210,9 @@ export default function App() {
 
   return (
     <SiteProvider>
-    <BrowserRouter>
-      <Routes>
-        {/* Public routes — gated server-side via auth middleware when public library is off */}
-        <Route path="/library" element={<Library />} />
-        <Route path="/library/book/:bookId" element={<BookDetail />} />
-        <Route path="/library/read/:bookId/:chapterNum" element={<Reader isPublic />} />
-        <Route path="/library/read/:bookId" element={<BookDetail />} />
-        <Route path="/read/:bookId/:chapterNum" element={<Reader isPublic />} />
-        <Route path="/read/:bookId" element={<Reader isPublic />} />
-        {/* Admin routes — auth gated. Only specific paths are listed, so
-            unknown URIs fall through to the catch-all below rather than
-            resolving to the Dashboard. */}
-        <Route element={<AdminGate authState={authState} onLoginSuccess={handleLoginSuccess} />}>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="books" element={<Books />} />
-            <Route path="books/:bookId" element={<Books />} />
-            <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
-            <Route path="books/:bookId/api-calls" element={<ApiCalls />} />
-            <Route path="api-logs" element={<ApiLogPage />} />
-            <Route path="reader-stats" element={<ReaderStats />} />
-            <Route path="entities" element={<Entities />} />
-            <Route path="queue" element={<Queue />} />
-            <Route path="recommendations" element={<Recommendations />} />
-            <Route path="comments" element={<CommentsAdmin />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="help" element={<Help />} />
-          </Route>
-        </Route>
-        {/* Unknown URIs — redirect unauthenticated users to /library, else 404 */}
-        <Route path="*" element={<UnknownRoute authState={authState} />} />
-      </Routes>
-    </BrowserRouter>
+      <AuthContext.Provider value={{ authState, onLoginSuccess: handleLoginSuccess }}>
+        <RouterProvider router={router} />
+      </AuthContext.Provider>
     </SiteProvider>
   )
 }

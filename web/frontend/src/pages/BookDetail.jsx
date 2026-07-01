@@ -6,6 +6,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
 import { bustUrl } from '../services/cacheBust'
+import { publicApi } from '../services/api'
 import ReaderComments from '../components/ReaderComments'
 import { loadIdentity } from '../components/CommentForm'
 import TagChips from '../components/TagChips'
@@ -15,11 +16,6 @@ import ProtagonistBadge from '../components/ProtagonistBadge'
 // don't have a real "chapter 0" (prologues are conventionally Chapter 1
 // with a Prologue title), so we overload it as the book-page target.
 const BOOK_DISCUSSION_CH = 0
-
-const publicApi = {
-  getBook: (id) => fetch(`/api/public/books/${id}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
-  listChapters: (id) => fetch(`/api/public/books/${id}/chapters`, { credentials: 'same-origin' }).then(r => r.json()),
-}
 
 const THEME_TOGGLE = [
   { id: 'light', icon: Sun,    label: 'Light' },
@@ -110,17 +106,16 @@ export default function BookDetail() {
   const refreshCommentCount = useCallback(() => {
     if (!bookId) return
     const identity = loadIdentity()
-    const headers = identity?.uuid ? { 'X-Commenter-UUID': identity.uuid } : {}
-    fetch(`/api/public/comments/chapter/${bookId}/${BOOK_DISCUSSION_CH}/count`, {
-      credentials: 'same-origin',
-      headers,
-    })
-      .then(r => r.ok ? r.json() : { count: 0, enabled: true })
+    publicApi.getChapterCommentCount(bookId, BOOK_DISCUSSION_CH, identity?.uuid)
       .then(data => {
         setCommentCount(data.count || 0)
         setCommentsEnabled(data.enabled !== false)
       })
-      .catch(() => {})
+      .catch(e => {
+        console.warn('Failed to load comment count:', e)
+        setCommentCount(0)
+        setCommentsEnabled(true)
+      })
   }, [bookId])
 
   useEffect(() => { refreshCommentCount() }, [refreshCommentCount])
