@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
@@ -19,10 +20,7 @@ export default function Books() {
   const { bookId: bookIdParam } = useParams()
   const expandedBook = bookIdParam ? parseInt(bookIdParam, 10) : null
   const navigate = useNavigate()
-
-  const [books, setBooks] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [chapters, setChapters] = useState({})
+  const queryClient = useQueryClient()
 
   // URL-driven modals (push history — back button closes them)
   const searchModal = useUrlModal('search')
@@ -44,21 +42,27 @@ export default function Books() {
   const [selected, setSelected] = useState({})    // { bookId: Set of chapter numbers }
   const [lastChecked, setLastChecked] = useState({}) // { bookId: chapter number }
   const [batchBusy, setBatchBusy] = useState(false)
-  const [error, setError] = useState(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const d = await api.listBooks()
-      setBooks(d.books || [])
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  // Book list + expanded book's chapter list are react-query queries.
+  // WsQueryBridge invalidates ['books'] / ['chapters'] on translation events,
+  // so no manual reload chains are needed here.
+  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  const books = booksQuery.data?.books || []
+  const loading = booksQuery.isPending
+  const invalidateBooks = () => queryClient.invalidateQueries({ queryKey: ['books'] })
 
-  useEffect(() => { load() }, [load])
+  const chaptersQuery = useQuery({
+    queryKey: ['chapters', expandedBook],
+    queryFn: () => api.listChapters(expandedBook),
+    enabled: expandedBook != null,
+  })
+  // Keyed-by-book shape kept so the render code below reads naturally; only
+  // the expanded book's chapters are ever displayed.
+  const chapters = expandedBook != null && chaptersQuery.data
+    ? { [expandedBook]: chaptersQuery.data.chapters || [] }
+    : {}
+  const invalidateChapters = (bookId) =>
+    queryClient.invalidateQueries({ queryKey: ['chapters', bookId] })
 
   // Ctrl+F opens global search
   useEffect(() => {
@@ -72,12 +76,6 @@ export default function Books() {
     return () => window.removeEventListener('keydown', onKey)
   }, [searchModal])
 
-  const loadChapters = async (bookId) => {
-    if (chapters[bookId]) return
-    const d = await api.listChapters(bookId)
-    setChapters(prev => ({ ...prev, [bookId]: d.chapters || [] }))
-  }
-
   const toggleExpand = (bookId) => {
     if (expandedBook === bookId) {
       navigate('/books')
@@ -87,26 +85,16 @@ export default function Books() {
     }
   }
 
-  // Load chapters when the expanded-book URL param changes — covers both
-  // clicks and direct URL entry / back-forward navigation.
-  useEffect(() => {
-    if (expandedBook != null) loadChapters(expandedBook)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedBook])
-
   const handleDelete = async (id) => {
     if (!confirm('Delete this book and all its chapters?')) return
     await api.deleteBook(id)
-    load()
+    invalidateBooks()
   }
 
   const handleDeleteChapter = async (bookId, num) => {
     if (!confirm(`Delete chapter ${num}?`)) return
     await api.deleteChapter(bookId, num)
-    setChapters(prev => ({
-      ...prev,
-      [bookId]: (prev[bookId] || []).filter(c => c.chapter !== num)
-    }))
+    invalidateChapters(bookId)
   }
 
   const handleExport = async (bookId, format) => {
@@ -140,7 +128,7 @@ export default function Books() {
   const togglePublic = async (book) => {
     try {
       await api.updateBook(book.id, { is_public: !book.is_public })
-      setBooks(prev => prev.map(b => b.id === book.id ? { ...b, is_public: !book.is_public } : b))
+      invalidateBooks()
     } catch (e) {
       alert(`Failed to update visibility: ${e.message}`)
     }
@@ -150,7 +138,7 @@ export default function Books() {
     const next = !(book.comments_enabled !== 0 && book.comments_enabled !== false)
     try {
       await api.setBookCommentsEnabled(book.id, next)
-      setBooks(prev => prev.map(b => b.id === book.id ? { ...b, comments_enabled: next ? 1 : 0 } : b))
+      invalidateBooks()
     } catch (e) {
       alert(`Failed to update comments setting: ${e.message}`)
     }
@@ -195,10 +183,7 @@ export default function Books() {
     setBatchBusy(true)
     try {
       await api.batchDeleteChapters(bookId, nums)
-      setChapters(prev => ({
-        ...prev,
-        [bookId]: (prev[bookId] || []).filter(c => !getSelected(bookId).has(c.chapter))
-      }))
+      invalidateChapters(bookId)
       unselectAll(bookId)
     } catch (e) { alert(e.message) }
     finally { setBatchBusy(false) }
@@ -210,12 +195,7 @@ export default function Books() {
     setBatchBusy(true)
     try {
       await api.batchProofread(bookId, nums, true)
-      setChapters(prev => ({
-        ...prev,
-        [bookId]: (prev[bookId] || []).map(c =>
-          getSelected(bookId).has(c.chapter) ? { ...c, is_proofread: new Date().toISOString() } : c
-        )
-      }))
+      invalidateChapters(bookId)
       unselectAll(bookId)
     } catch (e) { alert(e.message) }
     finally { setBatchBusy(false) }
@@ -246,7 +226,9 @@ export default function Books() {
         </div>
       </div>
 
-      {error && <div className="badge-rose mb-4 px-3 py-2 text-sm rounded">{error}</div>}
+      {booksQuery.error && (
+        <div className="badge-rose mb-4 px-3 py-2 text-sm rounded">{booksQuery.error.message}</div>
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 text-slate-400 text-sm">
@@ -487,7 +469,7 @@ export default function Books() {
         <BookFormModal
           book={editBookModal.id === 'new' ? null : books.find(b => b.id === parseInt(editBookModal.id, 10))}
           onClose={editBookModal.close}
-          onSaved={() => { editBookModal.close(); load() }}
+          onSaved={() => { editBookModal.close(); invalidateBooks() }}
         />
       )}
 
@@ -502,7 +484,7 @@ export default function Books() {
       {modulesModal.isOpen && (() => {
         const book = books.find(b => b.id === parseInt(modulesModal.id, 10))
         if (!book) return null
-        return <BookModulesModal book={book} onClose={modulesModal.close} onSaved={() => { modulesModal.close(); load() }} />
+        return <BookModulesModal book={book} onClose={modulesModal.close} onSaved={() => { modulesModal.close(); invalidateBooks() }} />
       })()}
 
       {/* Retranslate modal */}
