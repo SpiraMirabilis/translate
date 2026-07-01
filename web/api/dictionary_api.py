@@ -107,7 +107,7 @@ def _ensure_dict_loaded():
 
 
 @router.get("/lookup")
-async def lookup(q: str = Query(..., min_length=1, max_length=50)):
+def lookup(q: str = Query(..., min_length=1, max_length=50)):
     """
     Look up a Chinese string. Returns:
     - Exact matches (simplified or traditional)
@@ -208,7 +208,7 @@ class RetranslateRequest(BaseModel):
 
 
 @router.post("/retranslate")
-async def retranslate(req: RetranslateRequest):
+def retranslate(req: RetranslateRequest):
     """
     Retranslate a small selection of Chinese text using the specified model.
     Returns plain English text (not the full structured translation output).

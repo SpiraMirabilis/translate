@@ -43,7 +43,7 @@ def _get_client() -> WordPressClient:
 # ------------------------------------------------------------------
 
 @router.get("/settings")
-async def get_wp_settings():
+def get_wp_settings():
     return {
         "wp_url": _config.wp_url,
         "wp_username": _config.wp_username,
@@ -58,7 +58,7 @@ class WpSettingsUpdate(BaseModel):
 
 
 @router.put("/settings")
-async def update_wp_settings(req: WpSettingsUpdate):
+def update_wp_settings(req: WpSettingsUpdate):
     # Non-secret fields go through settings_store (settings.json).
     store_updates = {}
     if req.wp_url is not None:
@@ -82,7 +82,7 @@ async def update_wp_settings(req: WpSettingsUpdate):
 # ------------------------------------------------------------------
 
 @router.post("/test")
-async def test_wp_connection():
+def test_wp_connection():
     try:
         client = _get_client()
         info = client.test_connection()
@@ -98,7 +98,7 @@ async def test_wp_connection():
 # ------------------------------------------------------------------
 
 @router.get("/books/{book_id}/status")
-async def get_book_publish_status(book_id: int):
+def get_book_publish_status(book_id: int):
     book = _db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -154,7 +154,7 @@ class PublishChapterRequest(BaseModel):
 
 
 @router.post("/books/{book_id}/chapters/{chapter_number}/publish")
-async def publish_single_chapter(book_id: int, chapter_number: int, req: PublishChapterRequest):
+def publish_single_chapter(book_id: int, chapter_number: int, req: PublishChapterRequest):
     """Publish or update a single chapter to WordPress."""
     book = _db.get_book(book_id)
     if not book:
@@ -244,7 +244,7 @@ class PublishRequest(BaseModel):
 
 
 @router.post("/books/{book_id}/publish")
-async def publish_book(book_id: int, req: PublishRequest):
+def publish_book(book_id: int, req: PublishRequest):
     global _publish_thread
 
     if _publish_thread is not None and _publish_thread.is_alive():
@@ -266,7 +266,7 @@ async def publish_book(book_id: int, req: PublishRequest):
 
 
 @router.post("/books/{book_id}/cancel")
-async def cancel_publish(book_id: int):
+def cancel_publish(book_id: int):
     _publish_cancel.set()
     return {"status": "cancelled"}
 

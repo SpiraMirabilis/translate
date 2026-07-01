@@ -24,19 +24,19 @@ class RecommendationUpdate(BaseModel):
 
 
 @router.get("")
-async def list_recommendations(status: Optional[str] = None):
+def list_recommendations(status: Optional[str] = None):
     recs = _db.list_recommendations(status=status)
     return {"items": recs, "count": len(recs)}
 
 
 @router.get("/count")
-async def count_recommendations(status: Optional[str] = None):
+def count_recommendations(status: Optional[str] = None):
     count = _db.count_recommendations(status=status)
     return {"count": count}
 
 
 @router.get("/{rec_id}")
-async def get_recommendation(rec_id: int):
+def get_recommendation(rec_id: int):
     rec = _db.get_recommendation(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
@@ -44,7 +44,7 @@ async def get_recommendation(rec_id: int):
 
 
 @router.put("/{rec_id}")
-async def update_recommendation(rec_id: int, req: RecommendationUpdate):
+def update_recommendation(rec_id: int, req: RecommendationUpdate):
     rec = _db.get_recommendation(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
@@ -66,7 +66,7 @@ async def update_recommendation(rec_id: int, req: RecommendationUpdate):
 
 
 @router.delete("/{rec_id}")
-async def delete_recommendation(rec_id: int):
+def delete_recommendation(rec_id: int):
     rec = _db.get_recommendation(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")

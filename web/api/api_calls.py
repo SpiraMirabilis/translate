@@ -19,7 +19,7 @@ class ApiCallUpdate(BaseModel):
 
 
 @router.get("/api/api-calls")
-async def list_all_api_calls(book_id: Optional[int] = Query(None),
+def list_all_api_calls(book_id: Optional[int] = Query(None),
                              limit: int = Query(500, ge=1, le=1000)):
     rows = _entity_manager.get_all_api_calls(book_id=book_id, limit=limit)
     sessions = []
@@ -44,7 +44,7 @@ async def list_all_api_calls(book_id: Optional[int] = Query(None),
 
 
 @router.get("/api/api-calls/{book_id}")
-async def list_api_calls(book_id: int, chapter_number: Optional[int] = Query(None),
+def list_api_calls(book_id: int, chapter_number: Optional[int] = Query(None),
                          limit: int = Query(500, ge=1, le=1000)):
     rows = _entity_manager.get_api_calls(book_id, chapter_number=chapter_number, limit=limit)
     # Group by session_id, preserving the DB ordering (newest sessions first)
@@ -68,7 +68,7 @@ async def list_api_calls(book_id: int, chapter_number: Optional[int] = Query(Non
 
 
 @router.get("/api/api-calls/detail/{call_id}")
-async def get_api_call(call_id: int):
+def get_api_call(call_id: int):
     row = _entity_manager.get_api_call(call_id)
     if not row:
         raise HTTPException(status_code=404, detail="API call not found")
@@ -76,7 +76,7 @@ async def get_api_call(call_id: int):
 
 
 @router.put("/api/api-calls/detail/{call_id}")
-async def update_api_call(call_id: int, body: ApiCallUpdate):
+def update_api_call(call_id: int, body: ApiCallUpdate):
     ok = _entity_manager.update_api_call_response(call_id, body.response_text)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to update")

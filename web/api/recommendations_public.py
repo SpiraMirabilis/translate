@@ -77,7 +77,7 @@ async def submit_recommendation(req: RecommendationRequest, request: Request):
 
 
 @router.get("/turnstile-site-key")
-async def get_turnstile_site_key():
+def get_turnstile_site_key():
     """Return the Cloudflare Turnstile site key for the frontend widget."""
     key = os.getenv("CF_TURNSTILE_SITE_KEY", "")
     return {"site_key": key}

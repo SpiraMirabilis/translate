@@ -69,7 +69,7 @@ async def _bg_remove_cf(ip: str):
 # ------------------------------------------------------------------
 
 @router.get("")
-async def list_comments(
+def list_comments(
     status: Optional[str] = Query(default=None),
     book_id: Optional[int] = Query(default=None),
     chapter_number: Optional[int] = Query(default=None),
@@ -84,7 +84,7 @@ async def list_comments(
 
 
 @router.get("/count")
-async def count_comments(
+def count_comments(
     status: Optional[str] = Query(default="pending"),
     book_id: Optional[int] = Query(default=None),
 ):
@@ -98,7 +98,7 @@ async def count_comments(
 
 
 @router.get("/{comment_id}")
-async def get_comment(comment_id: int):
+def get_comment(comment_id: int):
     row = _db.get_comment(comment_id)
     if not row:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -106,7 +106,7 @@ async def get_comment(comment_id: int):
 
 
 @router.put("/{comment_id}")
-async def update_comment(comment_id: int, req: CommentUpdate, background: BackgroundTasks):
+def update_comment(comment_id: int, req: CommentUpdate, background: BackgroundTasks):
     existing = _db.get_comment(comment_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -124,7 +124,7 @@ async def update_comment(comment_id: int, req: CommentUpdate, background: Backgr
 
 
 @router.delete("/{comment_id}")
-async def delete_comment(comment_id: int, soft: bool = Query(default=True)):
+def delete_comment(comment_id: int, soft: bool = Query(default=True)):
     existing = _db.get_comment(comment_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -140,7 +140,7 @@ async def delete_comment(comment_id: int, soft: bool = Query(default=True)):
 
 
 @router.post("/{comment_id}/automod-rerun")
-async def rerun_automod(comment_id: int):
+def rerun_automod(comment_id: int):
     """Synchronously re-run automod against an existing comment (testing/debug)."""
     existing = _db.get_comment(comment_id)
     if not existing:
@@ -164,13 +164,13 @@ async def rerun_automod(comment_id: int):
 # ------------------------------------------------------------------
 
 @router.get("/bans/list")
-async def list_bans():
+def list_bans():
     rows = _db.list_bans()
     return {"items": rows, "count": len(rows)}
 
 
 @router.post("/bans")
-async def create_ban(req: CreateBanReq, background: BackgroundTasks):
+def create_ban(req: CreateBanReq, background: BackgroundTasks):
     try:
         ban_id = _db.add_ban(req.kind, req.value, req.reason)
     except ValueError as e:
@@ -182,7 +182,7 @@ async def create_ban(req: CreateBanReq, background: BackgroundTasks):
 
 
 @router.delete("/bans/{ban_id}")
-async def delete_ban(ban_id: int, background: BackgroundTasks):
+def delete_ban(ban_id: int, background: BackgroundTasks):
     ban = _db.remove_ban_by_id(ban_id)
     if ban is None:
         raise HTTPException(status_code=404, detail="Ban not found")
@@ -196,7 +196,7 @@ async def delete_ban(ban_id: int, background: BackgroundTasks):
 # ------------------------------------------------------------------
 
 @router.put("/book/{book_id}/comments_enabled")
-async def set_book_comments_enabled(book_id: int, req: BookCommentsToggle):
+def set_book_comments_enabled(book_id: int, req: BookCommentsToggle):
     book = _db.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")

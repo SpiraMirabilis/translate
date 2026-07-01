@@ -24,7 +24,7 @@ def init(config):
 # ------------------------------------------------------------------
 
 @router.get("/providers")
-async def list_providers():
+def list_providers():
     factory = get_factory()
     providers = []
     for name, cfg in factory.config["providers"].items():
@@ -46,7 +46,7 @@ class ApiKeyRequest(BaseModel):
 
 
 @router.post("/providers/{provider_name}/key")
-async def set_api_key(provider_name: str, req: ApiKeyRequest):
+def set_api_key(provider_name: str, req: ApiKeyRequest):
     factory = get_factory()
     resolved = factory._resolve_provider_name(provider_name)
     if resolved not in factory.config["providers"]:
@@ -62,7 +62,7 @@ async def set_api_key(provider_name: str, req: ApiKeyRequest):
 
 
 @router.post("/providers/{provider_name}/test")
-async def test_api_key(provider_name: str):
+def test_api_key(provider_name: str):
     """Quick test: try to instantiate the provider (checks key format / connectivity)."""
     try:
         factory = get_factory()
@@ -87,7 +87,7 @@ async def test_api_key(provider_name: str):
 # ------------------------------------------------------------------
 
 @router.get("")
-async def get_settings():
+def get_settings():
     from web.auth import is_public_library
     return {
         "translation_model": _config.translation_model,
@@ -135,7 +135,7 @@ class SettingsUpdate(BaseModel):
 
 
 @router.put("")
-async def update_settings(req: SettingsUpdate):
+def update_settings(req: SettingsUpdate):
     # Only forward keys the caller actually set, and only those known to the
     # store. settings_store.update() handles JSON persistence + os.environ sync.
     updates = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
@@ -168,7 +168,7 @@ _UNITS_PATH = os.path.normpath(
 
 
 @router.get("/units")
-async def get_units():
+def get_units():
     import json
     if not os.path.exists(_UNITS_PATH):
         return {"content": "{}"}
@@ -181,7 +181,7 @@ class UnitsUpdate(BaseModel):
 
 
 @router.put("/units")
-async def update_units(req: UnitsUpdate):
+def update_units(req: UnitsUpdate):
     import json
     # Validate JSON before saving
     try:
@@ -199,7 +199,7 @@ def init_db(entity_manager):
 
 
 @router.get("/db/export-json")
-async def export_json():
+def export_json():
     from fastapi.responses import StreamingResponse
     import io, json, tempfile, os
 

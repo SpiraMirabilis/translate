@@ -92,7 +92,7 @@ class PropagateRequest(BaseModel):
 # ------------------------------------------------------------------
 
 @router.get("")
-async def list_entities(
+def list_entities(
     book_id: Optional[int] = Query(None),
     global_only: bool = Query(False),
     include_global: bool = Query(False),
@@ -144,7 +144,7 @@ async def list_entities(
 
 
 @router.get("/origin-chapters")
-async def list_origin_chapters(book_id: int = Query(...)):
+def list_origin_chapters(book_id: int = Query(...)):
     """Return distinct origin_chapter values that have entities for this book."""
     with _entity_manager._conn() as conn:
         cursor = conn.cursor()
@@ -161,7 +161,7 @@ async def list_origin_chapters(book_id: int = Query(...)):
 # ------------------------------------------------------------------
 
 @router.post("")
-async def create_entity(req: EntityCreate):
+def create_entity(req: EntityCreate):
     valid_cats = _entity_manager.get_book_categories(req.book_id) if req.book_id else CATEGORIES
     if req.category not in valid_cats:
         raise HTTPException(status_code=400, detail=f"Invalid category: {req.category}")
@@ -180,7 +180,7 @@ async def create_entity(req: EntityCreate):
 
 
 @router.put("/{entity_id}")
-async def update_entity(entity_id: int, req: EntityUpdate):
+def update_entity(entity_id: int, req: EntityUpdate):
     with _entity_manager._conn() as conn:
         cursor = conn.cursor()
 
@@ -227,7 +227,7 @@ class DecaseRequest(BaseModel):
 
 
 @router.post("/decase")
-async def decase_entity(req: DecaseRequest):
+def decase_entity(req: DecaseRequest):
     """
     Lowercase all mid-sentence occurrences of a capitalised translation
     in the translated content of every chapter in the given book.
@@ -314,7 +314,7 @@ async def decase_entity(req: DecaseRequest):
 
 
 @router.delete("/{entity_id}")
-async def delete_entity(entity_id: int):
+def delete_entity(entity_id: int):
     with _entity_manager._conn() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM entities WHERE id = ?", (entity_id,))
@@ -329,7 +329,7 @@ async def delete_entity(entity_id: int):
 # ------------------------------------------------------------------
 
 @router.post("/batch")
-async def batch_operation(req: BatchRequest):
+def batch_operation(req: BatchRequest):
     if not req.ids:
         raise HTTPException(status_code=400, detail="No entity IDs provided.")
 
@@ -377,7 +377,7 @@ async def batch_operation(req: BatchRequest):
 # ------------------------------------------------------------------
 
 @router.get("/{entity_id}/context")
-async def get_entity_context(entity_id: int, radius: int = Query(100)):
+def get_entity_context(entity_id: int, radius: int = Query(100)):
     """Get surrounding context for an entity from its origin chapter."""
     import json
 
@@ -424,7 +424,7 @@ async def get_entity_context(entity_id: int, radius: int = Query(100)):
 # ------------------------------------------------------------------
 
 @router.get("/duplicates")
-async def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[str] = Query(None)):
+def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[str] = Query(None)):
     with _entity_manager._conn(dict_rows=True) as conn:
         cursor = conn.cursor()
 
@@ -489,7 +489,7 @@ async def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[s
 
 
 @router.post("/resolve-duplicate")
-async def resolve_duplicate(req: DuplicateResolveRequest):
+def resolve_duplicate(req: DuplicateResolveRequest):
     with _entity_manager._conn() as conn:
         cursor = conn.cursor()
 
@@ -528,7 +528,7 @@ async def resolve_duplicate(req: DuplicateResolveRequest):
 # ------------------------------------------------------------------
 
 @router.post("/advice")
-async def get_advice(req: AdviceRequest):
+def get_advice(req: AdviceRequest):
     node = {
         "untranslated": req.untranslated,
         "translation": req.translation,
@@ -546,7 +546,7 @@ async def get_advice(req: AdviceRequest):
 # ------------------------------------------------------------------
 
 @router.post("/propagate")
-async def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
+def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
     """
     After an entity translation is edited, propagate the change across all
     chapters belonging to the same book.

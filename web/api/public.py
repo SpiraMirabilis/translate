@@ -152,7 +152,7 @@ def _cdn_redirect_or_file(rel_path, local_filepath, headers=None):
 
 
 @router.get("/site_info")
-async def site_info(response: Response):
+def site_info(response: Response):
     _cache(response, _CACHE_SHORT)
     return {
         "site_name": _config.site_name if _config else "T9",
@@ -179,7 +179,7 @@ _VALID_SORTS = {'popular', 'title', 'updated', 'newly_added'}
 
 
 @router.get("/books")
-async def list_books(request: Request, response: Response, sort: str = 'popular'):
+def list_books(request: Request, response: Response, sort: str = 'popular'):
     _guard(request)
     _cache(response, _CACHE_SHORT)
     if sort not in _VALID_SORTS:
@@ -220,7 +220,7 @@ def _get_public_book(book_id: int):
 
 
 @router.get("/books/{book_id}")
-async def get_book(book_id: int, request: Request, response: Response):
+def get_book(book_id: int, request: Request, response: Response):
     _guard(request)
     _cache(response, _CACHE_SHORT)
     book = _get_public_book(book_id)
@@ -244,7 +244,7 @@ async def get_book(book_id: int, request: Request, response: Response):
 
 
 @router.get("/books/{book_id}/chapters")
-async def list_chapters(book_id: int, request: Request, response: Response,
+def list_chapters(book_id: int, request: Request, response: Response,
                         limit: Optional[int] = None, offset: int = 0):
     _guard(request)
     _cache(response, _CACHE_SHORT)
@@ -285,7 +285,7 @@ _BATCH_MAX = 10
 
 
 @router.get("/books/{book_id}/chapters/batch")
-async def get_chapters_batch(book_id: int, nums: str, request: Request, response: Response):
+def get_chapters_batch(book_id: int, nums: str, request: Request, response: Response):
     _guard(request)
     _cache(response, _CACHE_LONG)
     _get_public_book(book_id)
@@ -306,7 +306,7 @@ async def get_chapters_batch(book_id: int, nums: str, request: Request, response
 
 
 @router.get("/books/{book_id}/chapters/{chapter_number}")
-async def get_chapter(book_id: int, chapter_number: int, request: Request, response: Response):
+def get_chapter(book_id: int, chapter_number: int, request: Request, response: Response):
     _guard(request)
     _cache(response, _CACHE_LONG)
     _get_public_book(book_id)
@@ -319,7 +319,7 @@ async def get_chapter(book_id: int, chapter_number: int, request: Request, respo
 
 
 @router.get("/books/{book_id}/cover")
-async def get_cover(book_id: int, request: Request):
+def get_cover(book_id: int, request: Request):
     _guard(request)
     book = _get_public_book(book_id)
     if not book.get("cover_image"):
@@ -345,19 +345,19 @@ def _serve_cover_derivative(book_id, kind):
 
 
 @router.get("/books/{book_id}/cover/thumb")
-async def get_cover_thumb(book_id: int, request: Request):
+def get_cover_thumb(book_id: int, request: Request):
     _guard(request)
     return _serve_cover_derivative(book_id, "thumb")
 
 
 @router.get("/books/{book_id}/cover/medium")
-async def get_cover_medium(book_id: int, request: Request):
+def get_cover_medium(book_id: int, request: Request):
     _guard(request)
     return _serve_cover_derivative(book_id, "medium")
 
 
 @router.get("/books/{book_id}/illustration/{marker_id}")
-async def get_illustration(book_id: int, marker_id: str, request: Request):
+def get_illustration(book_id: int, marker_id: str, request: Request):
     """Serve an in-chapter illustration referenced by ⟦IMG:<marker_id>⟧."""
     _guard(request)
     if not re.fullmatch(r"[0-9a-f]{4,}", marker_id or ""):
@@ -371,7 +371,7 @@ async def get_illustration(book_id: int, marker_id: str, request: Request):
 
 
 @router.get("/books/{book_id}/epub")
-async def download_epub(book_id: int, request: Request):
+def download_epub(book_id: int, request: Request):
     """Download the cached EPUB for a public book, generating it if needed."""
     _guard(request)
     book = _get_public_book(book_id)
@@ -462,7 +462,7 @@ class PublicSearchRequest(BaseModel):
 
 
 @router.post("/books/{book_id}/search")
-async def search_book(book_id: int, req: PublicSearchRequest, request: Request):
+def search_book(book_id: int, req: PublicSearchRequest, request: Request):
     _guard(request)
     _get_public_book(book_id)
     if not req.query or len(req.query) < 2:
@@ -571,7 +571,7 @@ def _clamp_limit(limit: int) -> int:
 
 
 @router.get("/feed.rss")
-async def global_feed(request: Request, limit: int = _FEED_DEFAULT_LIMIT):
+def global_feed(request: Request, limit: int = _FEED_DEFAULT_LIMIT):
     _guard(request)
     limit = _clamp_limit(limit)
     rows = _db.list_recent_translated_chapters(limit=limit)
@@ -590,7 +590,7 @@ async def global_feed(request: Request, limit: int = _FEED_DEFAULT_LIMIT):
 
 
 @router.get("/books/{book_id}/feed.rss")
-async def book_feed(book_id: int, request: Request, limit: int = _FEED_DEFAULT_LIMIT):
+def book_feed(book_id: int, request: Request, limit: int = _FEED_DEFAULT_LIMIT):
     _guard(request)
     book = _get_public_book(book_id)
     limit = _clamp_limit(limit)

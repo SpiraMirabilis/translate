@@ -127,7 +127,7 @@ class BookReplaceRequest(BaseModel):
 # ------------------------------------------------------------------
 
 @router.get("")
-async def list_books():
+def list_books():
     books = _entity_manager.list_books()
     for b in (books or []):
         _attach_cover_urls(b)
@@ -135,7 +135,7 @@ async def list_books():
 
 
 @router.post("")
-async def create_book(req: BookCreate):
+def create_book(req: BookCreate):
     source_lang = req.source_language or "zh"
 
     # If a genre is specified, use its source_language as default
@@ -179,13 +179,13 @@ async def create_book(req: BookCreate):
 # ------------------------------------------------------------------
 
 @router.get("/tags")
-async def list_all_tags():
+def list_all_tags():
     """Return the deduped, sorted union of tags across all books (for autocomplete)."""
     return {"tags": _entity_manager.get_all_tags()}
 
 
 @router.get("/genres")
-async def list_genres():
+def list_genres():
     """Return available genre presets."""
     from genres import load_genres
     genres = load_genres(_entity_manager.config.script_dir)
@@ -202,7 +202,7 @@ async def list_genres():
 
 
 @router.get("/modules")
-async def list_modules(book_id: Optional[int] = None):
+def list_modules(book_id: Optional[int] = None):
     """Return the registered per-book modules (for the book edit UI).
 
     When ``book_id`` is supplied, each module also reports ``auto_enabled`` —
@@ -240,7 +240,7 @@ async def list_modules(book_id: Optional[int] = None):
 
 
 @router.get("/default-prompt")
-async def get_default_prompt():
+def get_default_prompt():
     """Return the default system prompt template with {{ENTITIES_JSON}} and {{CHAPTER_NUMBER}} placeholders."""
     import json
 
@@ -270,7 +270,7 @@ async def get_default_prompt():
 # ------------------------------------------------------------------
 
 @router.get("/{book_id}")
-async def get_book(book_id: int):
+def get_book(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -278,7 +278,7 @@ async def get_book(book_id: int):
 
 
 @router.put("/{book_id}")
-async def update_book(book_id: int, req: BookUpdate):
+def update_book(book_id: int, req: BookUpdate):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -339,7 +339,7 @@ def _normalize_module_settings(module, settings):
 
 
 @router.put("/{book_id}/modules/{module_id}/settings")
-async def set_module_settings(book_id: int, module_id: str, req: ModuleSettingsUpdate):
+def set_module_settings(book_id: int, module_id: str, req: ModuleSettingsUpdate):
     """Authoritatively replace a book's stored settings for one module.
 
     Unknown keys (not in the module's ``settings_schema``) are dropped. Returns
@@ -368,7 +368,7 @@ async def set_module_settings(book_id: int, module_id: str, req: ModuleSettingsU
 
 
 @router.delete("/{book_id}")
-async def delete_book(book_id: int):
+def delete_book(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -533,7 +533,7 @@ async def upload_cover(book_id: int, file: UploadFile = File(...)):
 
 
 @router.get("/{book_id}/cover")
-async def get_cover(book_id: int):
+def get_cover(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -563,19 +563,19 @@ def _serve_cover_derivative(book_id, kind):
 
 
 @router.get("/{book_id}/cover/thumb")
-async def get_cover_thumb(book_id: int):
+def get_cover_thumb(book_id: int):
     """Serve the small webp thumbnail (admin list rows / Reader TOC)."""
     return _serve_cover_derivative(book_id, "thumb")
 
 
 @router.get("/{book_id}/cover/medium")
-async def get_cover_medium(book_id: int):
+def get_cover_medium(book_id: int):
     """Serve the medium webp derivative (Library grid / detail hero)."""
     return _serve_cover_derivative(book_id, "medium")
 
 
 @router.delete("/{book_id}/cover")
-async def delete_cover(book_id: int):
+def delete_cover(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -585,7 +585,7 @@ async def delete_cover(book_id: int):
 
 
 @router.get("/{book_id}/illustration/{marker_id}")
-async def get_illustration(book_id: int, marker_id: str):
+def get_illustration(book_id: int, marker_id: str):
     """Serve an in-chapter illustration image by its opaque marker id.
 
     The marker id is the value embedded in chapter content as ⟦IMG:<marker_id>⟧
@@ -605,7 +605,7 @@ async def get_illustration(book_id: int, marker_id: str):
 # ------------------------------------------------------------------
 
 @router.get("/{book_id}/prompt")
-async def get_prompt(book_id: int):
+def get_prompt(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -614,7 +614,7 @@ async def get_prompt(book_id: int):
 
 
 @router.put("/{book_id}/prompt")
-async def set_prompt(book_id: int, req: PromptUpdate):
+def set_prompt(book_id: int, req: PromptUpdate):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -625,7 +625,7 @@ async def set_prompt(book_id: int, req: PromptUpdate):
 
 
 @router.delete("/{book_id}/prompt")
-async def reset_prompt(book_id: int):
+def reset_prompt(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -638,7 +638,7 @@ async def reset_prompt(book_id: int):
 # ------------------------------------------------------------------
 
 @router.get("/{book_id}/categories")
-async def get_categories(book_id: int):
+def get_categories(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -652,7 +652,7 @@ async def get_categories(book_id: int):
 
 
 @router.put("/{book_id}/categories")
-async def set_categories(book_id: int, req: CategoriesUpdate):
+def set_categories(book_id: int, req: CategoriesUpdate):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -685,7 +685,7 @@ async def set_categories(book_id: int, req: CategoriesUpdate):
 
 
 @router.delete("/{book_id}/categories")
-async def reset_categories(book_id: int):
+def reset_categories(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -694,7 +694,7 @@ async def reset_categories(book_id: int):
 
 
 @router.get("/{book_id}/categories/entity-counts")
-async def category_entity_counts(book_id: int):
+def category_entity_counts(book_id: int):
     """Return the count of entities per category for a book (includes global)."""
     with _entity_manager._conn() as conn:
         cursor = conn.cursor()
@@ -711,7 +711,7 @@ async def category_entity_counts(book_id: int):
 # ------------------------------------------------------------------
 
 @router.post("/{book_id}/search")
-async def search_book(book_id: int, req: BookSearchRequest):
+def search_book(book_id: int, req: BookSearchRequest):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -725,7 +725,7 @@ async def search_book(book_id: int, req: BookSearchRequest):
 
 
 @router.post("/{book_id}/replace")
-async def replace_in_book(book_id: int, req: BookReplaceRequest):
+def replace_in_book(book_id: int, req: BookReplaceRequest):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -739,7 +739,7 @@ async def replace_in_book(book_id: int, req: BookReplaceRequest):
 
 
 @router.post("/{book_id}/undo-replace")
-async def undo_replace(book_id: int):
+def undo_replace(book_id: int):
     if not _entity_manager.has_replace_undo(book_id):
         raise HTTPException(status_code=404, detail="Nothing to undo.")
     result = _entity_manager.undo_replace(book_id)
@@ -753,7 +753,7 @@ async def undo_replace(book_id: int):
 # ------------------------------------------------------------------
 
 @router.get("/{book_id}/chapters")
-async def list_chapters(book_id: int):
+def list_chapters(book_id: int):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -765,7 +765,7 @@ _BATCH_CHAPTER_MAX = 10
 
 
 @router.get("/{book_id}/chapters/batch")
-async def get_chapters_batch(book_id: int, nums: str):
+def get_chapters_batch(book_id: int, nums: str):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -786,7 +786,7 @@ async def get_chapters_batch(book_id: int, nums: str):
 
 
 @router.get("/{book_id}/chapters/{chapter_number}")
-async def get_chapter(book_id: int, chapter_number: int):
+def get_chapter(book_id: int, chapter_number: int):
     chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found.")
@@ -794,7 +794,7 @@ async def get_chapter(book_id: int, chapter_number: int):
 
 
 @router.put("/{book_id}/chapters/{chapter_number}")
-async def update_chapter_translation(book_id: int, chapter_number: int, req: ChapterContentUpdate):
+def update_chapter_translation(book_id: int, chapter_number: int, req: ChapterContentUpdate):
     chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found.")
@@ -813,7 +813,7 @@ async def update_chapter_translation(book_id: int, chapter_number: int, req: Cha
 
 
 @router.put("/{book_id}/chapters/{chapter_number}/proofread")
-async def set_proofread(book_id: int, chapter_number: int, req: ChapterProofreadUpdate):
+def set_proofread(book_id: int, chapter_number: int, req: ChapterProofreadUpdate):
     fmt = '%Y-%m-%d %H:%M:%S' if _entity_manager.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
     now = datetime.datetime.utcnow().strftime(fmt) if req.is_proofread else None
     with _entity_manager._conn() as conn:
@@ -828,7 +828,7 @@ async def set_proofread(book_id: int, chapter_number: int, req: ChapterProofread
 
 
 @router.delete("/{book_id}/chapters/{chapter_number}")
-async def delete_chapter(book_id: int, chapter_number: int):
+def delete_chapter(book_id: int, chapter_number: int):
     success = _entity_manager.delete_chapter(book_id=book_id, chapter_number=chapter_number)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete chapter.")
@@ -836,7 +836,7 @@ async def delete_chapter(book_id: int, chapter_number: int):
 
 
 @router.post("/{book_id}/chapters/{chapter_number}/renumber")
-async def renumber_chapter(book_id: int, chapter_number: int, req: ChapterRenumber):
+def renumber_chapter(book_id: int, chapter_number: int, req: ChapterRenumber):
     ok, reason = _entity_manager.renumber_chapter(book_id, chapter_number, req.new_chapter_number)
     if not ok:
         if reason == "invalid":
@@ -853,7 +853,7 @@ async def renumber_chapter(book_id: int, chapter_number: int, req: ChapterRenumb
 
 
 @router.post("/{book_id}/chapters/batch-delete")
-async def batch_delete_chapters(book_id: int, req: BatchChapterAction):
+def batch_delete_chapters(book_id: int, req: BatchChapterAction):
     deleted = 0
     for num in req.chapters:
         if _entity_manager.delete_chapter(book_id=book_id, chapter_number=num):
@@ -862,7 +862,7 @@ async def batch_delete_chapters(book_id: int, req: BatchChapterAction):
 
 
 @router.post("/{book_id}/chapters/batch-proofread")
-async def batch_proofread_chapters(book_id: int, req: BatchProofreadAction):
+def batch_proofread_chapters(book_id: int, req: BatchProofreadAction):
     fmt = '%Y-%m-%d %H:%M:%S' if _entity_manager.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
     now = datetime.datetime.utcnow().strftime(fmt) if req.is_proofread else None
     with _entity_manager._conn() as conn:
@@ -878,7 +878,7 @@ async def batch_proofread_chapters(book_id: int, req: BatchProofreadAction):
 
 
 @router.post("/{book_id}/chapters/batch-requeue")
-async def batch_requeue_chapters(book_id: int, req: BatchRequeueAction):
+def batch_requeue_chapters(book_id: int, req: BatchRequeueAction):
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -922,7 +922,7 @@ class PronounRepairRequest(BaseModel):
 
 
 @router.get("/{book_id}/chapters/{chapter_number}/gendered-entities")
-async def list_gendered_entities_in_chapter(book_id: int, chapter_number: int):
+def list_gendered_entities_in_chapter(book_id: int, chapter_number: int):
     """Return character entities (with defined gender) whose English name appears in
     this chapter's translated text. Used to populate the per-chapter pronoun-repair picker.
     """
@@ -969,7 +969,7 @@ async def list_gendered_entities_in_chapter(book_id: int, chapter_number: int):
 
 
 @router.post("/{book_id}/chapters/{chapter_number}/pronoun-repair")
-async def pronoun_repair_chapter(book_id: int, chapter_number: int, req: PronounRepairRequest):
+def pronoun_repair_chapter(book_id: int, chapter_number: int, req: PronounRepairRequest):
     """Run pronoun_repair scoped to a single chapter for one entity. Synchronous —
     one chapter is fast enough that we return the result inline."""
     chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
@@ -1041,7 +1041,7 @@ async def pronoun_repair_chapter(book_id: int, chapter_number: int, req: Pronoun
 # ------------------------------------------------------------------
 
 @router.get("/{book_id}/export")
-async def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", "markdown", "html"])):
+def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", "markdown", "html"])):
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from output_formatter import OutputFormatter
@@ -1191,7 +1191,7 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
 
 
 @router.post("/{book_id}/invalidate-epub-cache")
-async def invalidate_epub_cache(book_id: int):
+def invalidate_epub_cache(book_id: int):
     """Drop the cached EPUB for a book — local disk file and Spaces blob(s) —
     so the next export regenerates it from scratch."""
     book = _entity_manager.get_book(book_id=book_id)

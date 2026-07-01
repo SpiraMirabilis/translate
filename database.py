@@ -1,4 +1,5 @@
 import json
+import threading
 import traceback
 import unicodedata
 import sqlite3
@@ -80,6 +81,11 @@ class DatabaseManager:
         self.backend = create_backend(config)
         self.db_path = self.backend.db_path  # backward compat for external callers
         self.entities = {}  # Cached entities
+        # Guards self.entities against concurrent mutation: the cache is
+        # shared between the translation thread, the WP publish thread, and
+        # (since handlers moved to the threadpool) request workers. Reentrant
+        # because CRUD methods may call _load_entities under the lock.
+        self._entities_lock = threading.RLock()
         self._initialize_database()
         self._load_entities()
         self._check_legacy_queue()
@@ -2455,14 +2461,16 @@ class DatabaseManager:
                     
                     # Add to our entities dictionary
                     entities[category][untranslated] = entity_data
-            self.entities = entities
+            with self._entities_lock:
+                self.entities = entities
             self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities from database")
             return entities
-                
+
         except Exception as e:
             self.logger.error(f"Error loading entities from database: {e}")
             # Return default empty structure on error
-            self.entities = default_entities
+            with self._entities_lock:
+                self.entities = default_entities
             return default_entities
     
     def _load_json_file(self, filepath, default=None):
@@ -2512,15 +2520,19 @@ class DatabaseManager:
     
     def save_entities(self):
         """Save the current entities cache to the SQLite database"""
+        # Iterate a shallow snapshot so the translation thread mutating the
+        # cache mid-save can't raise "dictionary changed size during iteration".
+        with self._entities_lock:
+            snapshot = {cat: dict(ents) for cat, ents in self.entities.items()}
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
+
                 # Track which entities we've already saved to avoid duplicates
                 processed_entities = set()
-                
+
                 # For each category and entity in memory cache
-                for category, entities in self.entities.items():
+                for category, entities in snapshot.items():
                     for untranslated, entity_data in entities.items():
                         translation = entity_data.get('translation', '')
                         last_chapter = entity_data.get('last_chapter', '')
@@ -2572,7 +2584,7 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error saving entities to database: {e}\n{traceback.format_exc()}")
             # Consider creating a backup JSON in this case
-            self.save_json_file("entities_backup.json", self.entities)
+            self.save_json_file("entities_backup.json", snapshot)
             self.logger.info("Created backup of entities in entities_backup.json")
             if self.strict_writes:
                 raise
@@ -2839,7 +2851,6 @@ class DatabaseManager:
                 ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, effective_origin, note))
             
             # Update the in-memory cache
-            self.entities.setdefault(category, {})
             entity_data = {"translation": translation}
             if last_chapter:
                 entity_data["last_chapter"] = last_chapter
@@ -2851,8 +2862,10 @@ class DatabaseManager:
                 entity_data["book_id"] = book_id
             if note:
                 entity_data["note"] = note
-                    
-            self.entities[category][untranslated] = entity_data
+
+            with self._entities_lock:
+                self.entities.setdefault(category, {})
+                self.entities[category][untranslated] = entity_data
             return True
                 
         except Exception as e:
@@ -2927,23 +2940,24 @@ class DatabaseManager:
                     return False
 
             # Update the in-memory cache
-            if category in self.entities and untranslated in self.entities[category]:
-                new_category = kwargs.get('category')
-                for key, value in kwargs.items():
-                    if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
-                        self.entities[category][untranslated][key] = value
-                    elif key == 'book_id':
-                        if is_only_book_id:
-                            # Changing book assignment
-                            if value is None:
-                                if 'book_id' in self.entities[category][untranslated]:
-                                    del self.entities[category][untranslated]['book_id']
-                            else:
-                                self.entities[category][untranslated]['book_id'] = value
-                # If category is changing, move the entity in the cache
-                if new_category and new_category != category:
-                    entity_data = self.entities[category].pop(untranslated)
-                    self.entities.setdefault(new_category, {})[untranslated] = entity_data
+            with self._entities_lock:
+                if category in self.entities and untranslated in self.entities[category]:
+                    new_category = kwargs.get('category')
+                    for key, value in kwargs.items():
+                        if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
+                            self.entities[category][untranslated][key] = value
+                        elif key == 'book_id':
+                            if is_only_book_id:
+                                # Changing book assignment
+                                if value is None:
+                                    if 'book_id' in self.entities[category][untranslated]:
+                                        del self.entities[category][untranslated]['book_id']
+                                else:
+                                    self.entities[category][untranslated]['book_id'] = value
+                    # If category is changing, move the entity in the cache
+                    if new_category and new_category != category:
+                        entity_data = self.entities[category].pop(untranslated)
+                        self.entities.setdefault(new_category, {})[untranslated] = entity_data
 
             return True
             
@@ -2985,8 +2999,9 @@ class DatabaseManager:
                 if cursor.rowcount == 0:
                     return 'not_found'
 
-            if category in self.entities and old_untranslated in self.entities[category]:
-                self.entities[category][new_untranslated] = self.entities[category].pop(old_untranslated)
+            with self._entities_lock:
+                if category in self.entities and old_untranslated in self.entities[category]:
+                    self.entities[category][new_untranslated] = self.entities[category].pop(old_untranslated)
 
             return 'renamed'
 
@@ -3015,9 +3030,10 @@ class DatabaseManager:
                     return False
             
             # Update the in-memory cache
-            if category in self.entities and untranslated in self.entities[category]:
-                del self.entities[category][untranslated]
-            
+            with self._entities_lock:
+                if category in self.entities and untranslated in self.entities[category]:
+                    del self.entities[category][untranslated]
+
             return True
             
         except Exception as e:
@@ -3065,13 +3081,14 @@ class DatabaseManager:
             ''', (new_category, old_category, untranslated))
             
             # Update the in-memory cache
-            if old_category in self.entities and untranslated in self.entities[old_category]:
-                entity_data_dict = self.entities[old_category][untranslated]
-                del self.entities[old_category][untranslated]
-                
-                self.entities.setdefault(new_category, {})
-                self.entities[new_category][untranslated] = entity_data_dict
-            
+            with self._entities_lock:
+                if old_category in self.entities and untranslated in self.entities[old_category]:
+                    entity_data_dict = self.entities[old_category][untranslated]
+                    del self.entities[old_category][untranslated]
+
+                    self.entities.setdefault(new_category, {})
+                    self.entities[new_category][untranslated] = entity_data_dict
+
             return True
             
         except Exception as e:

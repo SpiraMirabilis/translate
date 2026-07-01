@@ -29,7 +29,7 @@ def init(entity_manager, job_manager, web_interface):
 # ------------------------------------------------------------------
 
 @router.get("")
-async def list_queue(book_id: Optional[int] = Query(None)):
+def list_queue(book_id: Optional[int] = Query(None)):
     items = _entity_manager.list_queue(book_id=book_id)
     count = _entity_manager.get_queue_count(book_id=book_id)
     book_ids = _entity_manager.get_queued_book_ids()
@@ -37,7 +37,7 @@ async def list_queue(book_id: Optional[int] = Query(None)):
 
 
 @router.delete("/{item_id}")
-async def remove_queue_item(item_id: int):
+def remove_queue_item(item_id: int):
     success = _entity_manager.remove_from_queue(item_id)
     if not success:
         raise HTTPException(status_code=404, detail="Queue item not found.")
@@ -45,7 +45,7 @@ async def remove_queue_item(item_id: int):
 
 
 @router.delete("")
-async def clear_queue(book_id: Optional[int] = Query(None)):
+def clear_queue(book_id: Optional[int] = Query(None)):
     try:
         count = _entity_manager.clear_queue(book_id=book_id)
     except Exception as e:
@@ -67,7 +67,7 @@ class QueueAddRequest(BaseModel):
 
 
 @router.post("/add")
-async def add_to_queue(req: QueueAddRequest):
+def add_to_queue(req: QueueAddRequest):
     book = _entity_manager.get_book(book_id=req.book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
