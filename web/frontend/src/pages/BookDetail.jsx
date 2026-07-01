@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
@@ -88,10 +89,7 @@ const INITIAL_CHAPTERS = 50
 export default function BookDetail() {
   const { bookId } = useParams()
   const navigate = useNavigate()
-  const [book, setBook] = useState(null)
-  const [chapters, setChapters] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const queryClient = useQueryClient()
   const [showAll, setShowAll] = useState(false)
   const { prefs, setPrefs, theme } = useReaderPrefs()
   const [progress] = useLocalStorage('reader-progress', {})
@@ -100,38 +98,30 @@ export default function BookDetail() {
 
   const commentsModal = useUrlModal('comments')
   const commentsOpen = commentsModal.isOpen
-  const [commentCount, setCommentCount] = useState(0)
-  const [commentsEnabled, setCommentsEnabled] = useState(true)
 
-  const refreshCommentCount = useCallback(() => {
-    if (!bookId) return
-    const identity = loadIdentity()
-    publicApi.getChapterCommentCount(bookId, BOOK_DISCUSSION_CH, identity?.uuid)
-      .then(data => {
-        setCommentCount(data.count || 0)
-        setCommentsEnabled(data.enabled !== false)
-      })
-      .catch(e => {
-        console.warn('Failed to load comment count:', e)
-        setCommentCount(0)
-        setCommentsEnabled(true)
-      })
-  }, [bookId])
+  // Identity header lets the API include the caller's own pending comments.
+  const commentCountQuery = useQuery({
+    queryKey: ['public', 'comment-count', bookId, BOOK_DISCUSSION_CH],
+    queryFn: () => publicApi.getChapterCommentCount(bookId, BOOK_DISCUSSION_CH, loadIdentity()?.uuid),
+    enabled: !!bookId,
+  })
+  const commentCount = commentCountQuery.data?.count || 0
+  const commentsEnabled = commentCountQuery.data ? commentCountQuery.data.enabled !== false : true
+  const refreshCommentCount = () =>
+    queryClient.invalidateQueries({ queryKey: ['public', 'comment-count', bookId, BOOK_DISCUSSION_CH] })
 
-  useEffect(() => { refreshCommentCount() }, [refreshCommentCount])
-
-  useEffect(() => {
-    Promise.all([
-      publicApi.getBook(bookId),
-      publicApi.listChapters(bookId),
-    ])
-      .then(([bookData, chapData]) => {
-        setBook(bookData)
-        setChapters(chapData.chapters || [])
-      })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false))
-  }, [bookId])
+  const bookQuery = useQuery({
+    queryKey: ['public', 'books', 'detail', bookId],
+    queryFn: () => publicApi.getBook(bookId),
+  })
+  const chaptersQuery = useQuery({
+    queryKey: ['public', 'books', 'detail', bookId, 'chapters'],
+    queryFn: () => publicApi.listChapters(bookId),
+  })
+  const book = bookQuery.data ?? null
+  const chapters = chaptersQuery.data?.chapters || []
+  const loading = bookQuery.isPending || chaptersQuery.isPending
+  const error = bookQuery.isError || chaptersQuery.isError
 
   useEffect(() => {
     if (book) document.title = `${book.title} — ${public_site_name}`

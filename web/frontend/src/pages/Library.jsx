@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, X } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
@@ -109,8 +110,6 @@ const T = {
 }
 
 export default function Library() {
-  const [books, setBooks] = useState([])
-  const [loading, setLoading] = useState(true)
   const [sort, setSort] = useLocalStorage('library.sort', 'popular')
   const recommendModal = useUrlModal('recommend')
   const { prefs, setPrefs, theme } = useReaderPrefs()
@@ -119,13 +118,11 @@ export default function Library() {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTag = searchParams.get('tag')?.toLowerCase() || ''
 
-  useEffect(() => {
-    setLoading(true)
-    publicApi.listBooks(sort)
-      .then(data => setBooks(data.books || []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [sort])
+  const { data, isPending: loading } = useQuery({
+    queryKey: ['public', 'books', sort],
+    queryFn: () => publicApi.listBooks(sort),
+  })
+  const books = data?.books || []
 
   const filteredBooks = activeTag
     ? books.filter(b => tagsWithLanguage(b).some(t => t.toLowerCase() === activeTag))
