@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { api } from '../services/api'
 import {
   ChevronDown, ChevronRight, Loader2, RefreshCw, Globe, Server, Eye, Download, BookOpen
@@ -28,40 +29,30 @@ export default function ReaderStats() {
   const [groupBy, setGroupBy] = useState('ip')
   const [customInput, setCustomInput] = useState('')
   const [customError, setCustomError] = useState('')
-  const [data, setData] = useState(null)
-  const [ipInfo, setIpInfo] = useState({})
-  const [enriching, setEnriching] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(new Set())
 
-  const load = useCallback(async (d, g) => {
-    setLoading(true)
-    setError('')
-    setIpInfo({})
-    try {
-      const resp = await api.getReaderStats(d, g)
-      setData(resp)
-      setLoading(false)
+  const statsQuery = useQuery({
+    queryKey: ['reader-stats', duration, groupBy],
+    queryFn: () => api.getReaderStats(duration, groupBy),
+    // Match the old behavior: keep showing the previous window's table while
+    // the new window loads (the header says "Loading activity…" via !data).
+    placeholderData: keepPreviousData,
+  })
+  const data = statsQuery.data ?? null
+  const loading = statsQuery.isFetching
+  const error = statsQuery.error ? (statsQuery.error.message || 'Failed to load reader stats') : ''
 
-      // Paint the table immediately, then fill in hostname/geo as the
-      // (parallelized, server-cached) reverse-DNS + IPInfo lookups return.
-      const ips = collectIps(resp)
-      if (ips.length) {
-        setEnriching(true)
-        api.getReaderStatsIpInfo(ips)
-          .then(info => setIpInfo(info || {}))
-          .catch(() => {})
-          .finally(() => setEnriching(false))
-      }
-    } catch (e) {
-      setError(e.message || 'Failed to load reader stats')
-      setData(null)
-      setLoading(false)
-    }
-  }, [])
+  // Paint the table immediately, then fill in hostname/geo as the
+  // (parallelized, server-cached) reverse-DNS + IPInfo lookups return.
+  const ips = useMemo(() => collectIps(data), [data])
+  const ipInfoQuery = useQuery({
+    queryKey: ['reader-stats', 'ip-info', ips],
+    queryFn: () => api.getReaderStatsIpInfo(ips),
+    enabled: ips.length > 0,
+  })
+  const ipInfo = ipInfoQuery.data || {}
+  const enriching = ipInfoQuery.isFetching
 
-  useEffect(() => { load(duration, groupBy) }, [duration, groupBy, load])
   useEffect(() => { setExpanded(new Set()) }, [groupBy])
 
   const toggle = (key) => {
@@ -113,7 +104,7 @@ export default function ReaderStats() {
         </div>
         <button
           className="btn-ghost flex items-center gap-1 text-xs"
-          onClick={() => load(duration, groupBy)}
+          onClick={() => statsQuery.refetch()}
           disabled={loading}
           title="Refresh"
         >

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquare, Trash2, Check, X, Ban, Sparkles, Loader2, ChevronDown, ChevronUp, Shield } from 'lucide-react'
 import { api } from '../services/api'
 import { useSite } from '../App'
@@ -24,30 +25,26 @@ function relTime(iso) {
 
 export default function CommentsAdmin() {
   const { site_name } = useSite()
+  const queryClient = useQueryClient()
   const [filter, setFilter] = useState('pending')
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(null)
   const [busy, setBusy] = useState({})
-  const [bans, setBans] = useState([])
   const [showBans, setShowBans] = useState(false)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    api.listComments({ status: filter, limit: 200 })
-      .then(data => setItems(data.items || []))
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false))
-  }, [filter])
+  const { data: commentsData, isPending: loading } = useQuery({
+    queryKey: ['comments', filter],
+    queryFn: () => api.listComments({ status: filter, limit: 200 }),
+  })
+  const items = commentsData?.items || []
 
-  const loadBans = useCallback(() => {
-    api.listCommentBans()
-      .then(data => setBans(data.items || []))
-      .catch(() => setBans([]))
-  }, [])
+  const { data: bansData } = useQuery({
+    queryKey: ['comment-bans'],
+    queryFn: () => api.listCommentBans(),
+  })
+  const bans = bansData?.items || []
 
-  useEffect(() => { load() }, [load])
-  useEffect(() => { loadBans() }, [loadBans])
+  const invalidateComments = () => queryClient.invalidateQueries({ queryKey: ['comments'] })
+  const invalidateBans = () => queryClient.invalidateQueries({ queryKey: ['comment-bans'] })
 
   useEffect(() => {
     document.title = `Comments | ${site_name}`
@@ -60,7 +57,7 @@ export default function CommentsAdmin() {
     setItemBusy(id, true)
     try {
       await api.updateCommentAdmin(id, { status: newStatus })
-      setItems(prev => prev.filter(c => c.id !== id))
+      invalidateComments()
     } finally { setItemBusy(id, false) }
   }
 
@@ -69,7 +66,7 @@ export default function CommentsAdmin() {
     setItemBusy(id, true)
     try {
       await api.deleteCommentAdmin(id, true)
-      setItems(prev => prev.filter(c => c.id !== id))
+      invalidateComments()
     } finally { setItemBusy(id, false) }
   }
 
@@ -78,7 +75,7 @@ export default function CommentsAdmin() {
     setItemBusy(id, true)
     try {
       await api.deleteCommentAdmin(id, false)
-      setItems(prev => prev.filter(c => c.id !== id))
+      invalidateComments()
     } catch (e) {
       alert(e.message || 'Hard delete failed.')
     } finally { setItemBusy(id, false) }
@@ -89,7 +86,7 @@ export default function CommentsAdmin() {
     if (!confirm(`Ban ${kind} = ${value}? ${kind === 'ip' ? 'IP will also be pushed to Cloudflare edge.' : ''}`)) return
     try {
       await api.createCommentBan({ kind, value, reason: reason || `via comments-admin` })
-      loadBans()
+      invalidateBans()
       alert(`Banned ${kind}: ${value}`)
     } catch (e) {
       alert(e.message || 'Ban failed.')
@@ -101,7 +98,7 @@ export default function CommentsAdmin() {
     try {
       const result = await api.rerunAutomod(id)
       alert(`Verdict: ${result.verdict}\nReason: ${result.reason}`)
-      load()
+      invalidateComments()
     } catch (e) {
       alert(e.message || 'Automod failed.')
     } finally { setItemBusy(id, false) }
@@ -111,7 +108,7 @@ export default function CommentsAdmin() {
     if (!confirm('Remove this ban?')) return
     try {
       await api.removeCommentBan(id)
-      loadBans()
+      invalidateBans()
     } catch (e) {
       alert(e.message || 'Unban failed.')
     }

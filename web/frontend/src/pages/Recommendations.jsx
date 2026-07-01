@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquarePlus, Trash2, ExternalLink, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { api } from '../services/api'
 import { useSite } from '../App'
@@ -22,21 +23,17 @@ const TABS = [
 
 export default function Recommendations() {
   const { site_name } = useSite()
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [filter, setFilter] = useState(null)
   const [expanded, setExpanded] = useState(null)
   const [editingNotes, setEditingNotes] = useState({})
 
-  const load = useCallback(() => {
-    setLoading(true)
-    api.listRecommendations(filter)
-      .then(data => setItems(data.items || []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [filter])
-
-  useEffect(() => { load() }, [load])
+  const { data, isPending: loading } = useQuery({
+    queryKey: ['recommendations', filter],
+    queryFn: () => api.listRecommendations(filter),
+  })
+  const items = data?.items || []
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['recommendations'] })
 
   useEffect(() => {
     document.title = `Recommendations | ${site_name}`
@@ -45,23 +42,19 @@ export default function Recommendations() {
 
   const handleStatusChange = async (id, newStatus) => {
     await api.updateRecommendation(id, { status: newStatus })
-    setItems(prev => prev.map(r =>
-      r.id === id ? { ...r, status: newStatus } : r
-    ))
+    invalidate()
   }
 
   const handleSaveNotes = async (id) => {
     const notes = editingNotes[id] ?? ''
     await api.updateRecommendation(id, { admin_notes: notes })
-    setItems(prev => prev.map(r =>
-      r.id === id ? { ...r, admin_notes: notes } : r
-    ))
+    invalidate()
   }
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this recommendation?')) return
     await api.deleteRecommendation(id)
-    setItems(prev => prev.filter(r => r.id !== id))
+    invalidate()
   }
 
   const toggleExpand = (id) => {

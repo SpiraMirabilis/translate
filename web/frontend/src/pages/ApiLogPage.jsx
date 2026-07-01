@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, lazy, Suspense } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
 import {
@@ -9,9 +10,7 @@ import {
 const JsonCodeMirror = lazy(() => import('../components/JsonCodeMirror'))
 
 export default function ApiLogPage() {
-  const [sessions, setSessions] = useState([])
-  const [books, setBooks] = useState([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [bookFilter, setBookFilter] = useState('')
   const [expandedSessions, setExpandedSessions] = useState(new Set())
   const [expandedPrompts, setExpandedPrompts] = useState(new Set())
@@ -21,22 +20,19 @@ export default function ApiLogPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [callsData, booksData] = await Promise.all([
-        api.listAllApiCalls(bookFilter || null),
-        api.listBooks(),
-      ])
-      setSessions(callsData.sessions || [])
-      setBooks(booksData.books || [])
-    } catch (e) {
-      console.error('Failed to load API calls:', e)
-    }
-    setLoading(false)
-  }, [bookFilter])
+  const callsKey = ['api-calls', 'all', bookFilter || null]
+  const callsQuery = useQuery({
+    queryKey: callsKey,
+    queryFn: () => api.listAllApiCalls(bookFilter || null),
+  })
+  const booksQuery = useQuery({
+    queryKey: ['books'],
+    queryFn: () => api.listBooks(),
+  })
 
-  useEffect(() => { load() }, [load])
+  const sessions = callsQuery.data?.sessions || []
+  const books = booksQuery.data?.books || []
+  const loading = callsQuery.isPending || booksQuery.isPending
 
   const toggleSession = (sid) => {
     setExpandedSessions(prev => {
@@ -73,10 +69,14 @@ export default function ApiLogPage() {
     try {
       await api.updateApiCall(editingCall, { response_text: editedText })
       setSaved(true)
-      setSessions(prev => prev.map(s => ({
-        ...s,
-        calls: s.calls.map(c => c.id === editingCall ? { ...c, response_text: editedText } : c)
-      })))
+      // Update the cached list in place (no refetch needed)
+      queryClient.setQueryData(callsKey, prev => prev ? {
+        ...prev,
+        sessions: (prev.sessions || []).map(s => ({
+          ...s,
+          calls: s.calls.map(c => c.id === editingCall ? { ...c, response_text: editedText } : c)
+        })),
+      } : prev)
       setTimeout(() => { setEditingCall(null); setSaved(false) }, 800)
     } catch (e) {
       console.error('Failed to save:', e)

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, lazy, Suspense } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import {
@@ -13,9 +14,7 @@ export default function ApiCalls() {
   const [searchParams, setSearchParams] = useSearchParams()
   const chapterFilter = searchParams.get('chapter') != null ? Number(searchParams.get('chapter')) : null
 
-  const [book, setBook] = useState(null)
-  const [sessions, setSessions] = useState([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [expandedSessions, setExpandedSessions] = useState(new Set())
   const [expandedPrompts, setExpandedPrompts] = useState(new Set())
   const [expandedSource, setExpandedSource] = useState(new Set())
@@ -23,28 +22,27 @@ export default function ApiCalls() {
   const [editedText, setEditedText] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [chapters, setChapters] = useState([])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [bookData, callsData, chaptersData] = await Promise.all([
-        api.getBook(bookId),
-        api.listApiCalls(bookId, chapterFilter),
-        api.listChapters(bookId),
-      ])
-      setBook(bookData)
-      setSessions(callsData.sessions || [])
-      // Build unique chapter numbers from sessions for the filter dropdown
-      const chList = (chaptersData.chapters || []).map(c => c.chapter_number)
-      setChapters([...new Set(chList)].sort((a, b) => a - b))
-    } catch (e) {
-      console.error('Failed to load API calls:', e)
-    }
-    setLoading(false)
-  }, [bookId, chapterFilter])
+  const bookQuery = useQuery({
+    queryKey: ['books', 'detail', bookId],
+    queryFn: () => api.getBook(bookId),
+  })
+  const callsKey = ['api-calls', bookId, chapterFilter]
+  const callsQuery = useQuery({
+    queryKey: callsKey,
+    queryFn: () => api.listApiCalls(bookId, chapterFilter),
+  })
+  const chaptersQuery = useQuery({
+    queryKey: ['chapters', bookId],
+    queryFn: () => api.listChapters(bookId),
+  })
 
-  useEffect(() => { load() }, [load])
+  const book = bookQuery.data ?? null
+  const sessions = callsQuery.data?.sessions || []
+  // Build unique chapter numbers for the filter dropdown
+  const chList = (chaptersQuery.data?.chapters || []).map(c => c.chapter_number)
+  const chapters = [...new Set(chList)].sort((a, b) => a - b)
+  const loading = bookQuery.isPending || callsQuery.isPending || chaptersQuery.isPending
 
   const toggleSession = (sid) => {
     setExpandedSessions(prev => {
@@ -81,11 +79,14 @@ export default function ApiCalls() {
     try {
       await api.updateApiCall(editingCall, { response_text: editedText })
       setSaved(true)
-      // Update local state
-      setSessions(prev => prev.map(s => ({
-        ...s,
-        calls: s.calls.map(c => c.id === editingCall ? { ...c, response_text: editedText } : c)
-      })))
+      // Update the cached list in place (no refetch needed)
+      queryClient.setQueryData(callsKey, prev => prev ? {
+        ...prev,
+        sessions: (prev.sessions || []).map(s => ({
+          ...s,
+          calls: s.calls.map(c => c.id === editingCall ? { ...c, response_text: editedText } : c)
+        })),
+      } : prev)
       setTimeout(() => { setEditingCall(null); setSaved(false) }, 800)
     } catch (e) {
       console.error('Failed to save:', e)
