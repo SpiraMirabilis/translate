@@ -18,6 +18,8 @@ import SearchBar from '../components/SearchBar'
 import EntityFormModal from '../components/EntityFormModal'
 import { CATEGORY_COLORS } from '../utils/categories'
 import { useUrlState, useUrlModal } from '../hooks/useUrlState'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 
 // ── Trim empty lines from start/end of an array ─────────────────────
 function trimEmptyLines(lines) {
@@ -26,31 +28,6 @@ function trimEmptyLines(lines) {
   let end = lines.length
   while (end > start && !lines[end - 1].trim()) end--
   return lines.slice(start, end)
-}
-
-// ── Debounced value hook ─────────────────────────────────────────────
-function useDebouncedValue(value, delay) {
-  const [debounced, setDebounced] = useState(value)
-  const isFirst = useRef(true)
-  useEffect(() => {
-    if (isFirst.current) { isFirst.current = false; setDebounced(value); return }
-    const timer = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(timer)
-  }, [value, delay])
-  return debounced
-}
-
-// ── localStorage helper ──────────────────────────────────────────────
-function useLocalStorage(key, defaultValue) {
-  const [value, setValue] = useState(() => {
-    try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : defaultValue }
-    catch { return defaultValue }
-  })
-  const set = useCallback((v) => {
-    setValue(v)
-    localStorage.setItem(key, JSON.stringify(v))
-  }, [key])
-  return [value, set]
 }
 
 // ── Pinyin tone number → tone mark conversion ───────────────────────

@@ -10,6 +10,7 @@ import { DEFAULT_CATEGORIES, catBadgeProps, isGenderedCategory } from '../utils/
 import DeleteEntityModal from '../components/DeleteEntityModal'
 import EntityFormModal from '../components/EntityFormModal'
 import { useUrlState, useUrlModal } from '../hooks/useUrlState'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 
 const TRUNCATE_LIMIT = 25
 
@@ -58,8 +59,8 @@ export default function Entities() {
   const [filterBook, setFilterBook] = useUrlState('book', '')
   const [filterCat, setFilterCat] = useUrlState('cat', '')
   const [filterChapter, setFilterChapter] = useUrlState('chapter', '')
-  const [debouncedSearch, setDebouncedSearch] = useState(search)
-  const [debouncedChapter, setDebouncedChapter] = useState(filterChapter)
+  const debouncedSearch = useDebouncedValue(search, 300)
+  const debouncedChapter = useDebouncedValue(filterChapter, 300)
 
   // If URL filters are empty on first render but localStorage has a remembered
   // value, block the initial fetch (query `enabled`) until the URL has been
@@ -145,18 +146,6 @@ export default function Entities() {
   }, [])
 
   const clearSelection = useCallback(() => setSelected(new Set()), [])
-
-  // Debounce search input
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300)
-    return () => clearTimeout(timer)
-  }, [search])
-
-  // Debounce chapter filter input
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedChapter(filterChapter), 300)
-    return () => clearTimeout(timer)
-  }, [filterChapter])
 
   // Auto-focus search on mount
   useEffect(() => { searchRef.current?.focus() }, [])
