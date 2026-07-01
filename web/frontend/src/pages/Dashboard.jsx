@@ -5,7 +5,8 @@
  * Right panel: persistent activity log + progress
  * Bottom:      entity review panel (modal overlay when entities need review)
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { useWsEvent } from '../hooks/useWsEvent'
@@ -21,8 +22,7 @@ import {
 } from 'lucide-react'
 
 export default function Dashboard() {
-  const [books, setBooks] = useState([])
-  const [providers, setProviders] = useState([])
+  const queryClient = useQueryClient()
   const [inputText, setInputText] = useState('')
   // Book + chapter selection persist in localStorage so the paste→translate
   // workflow survives reloads. The chapter number auto-increments after each
@@ -44,41 +44,50 @@ export default function Dashboard() {
 
   const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
   const [chunkProgress, setChunkProgress] = useState(null)
-  const [activityLog, setActivityLog] = useState([])
   const [hideSynopses, setHideSynopses] = useLocalStorage('dashboard.hideSynopses', false)
   const [entityReview, setEntityReview] = useState(null) // { entities, context } or null
   const [jsonFix, setJsonFix] = useState(null) // { raw_response, chunk_index, total_chunks, chunk_text } or null
   const [chapterConflict, setChapterConflict] = useState(null) // { book_id, chapter_number, ... } or null
 
   const logRef = useRef(null)
-  const [loadError, setLoadError] = useState(null)
 
-  // Load books + providers + activity log + restore state on mount.
-  // Failures surface as a retryable banner instead of a silently empty
-  // workspace.
-  const loadInitial = useCallback(() => {
-    setLoadError(null)
-    Promise.all([
-      api.listBooks().then(d => setBooks(d.books || [])),
-      api.listProviders().then(d => setProviders(d.providers || [])),
-      api.getActivityLog().then(d => setActivityLog(d.entries || [])),
-      // Restore job state (e.g. entity review panel if awaiting review)
-      api.getJobStatus().then(d => {
-        if (d.status && d.status !== 'idle') setJobStatus(d.status)
-        if (d.status === 'awaiting_review' && d.pending_review) {
-          setEntityReview(d.pending_review)
-        }
-        if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
-          setJsonFix(d.pending_json_fix)
-        }
-        if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
-          setChapterConflict(d.pending_chapter_conflict)
-        }
-      }),
-    ]).catch(e => setLoadError(e.message || 'Request failed'))
-  }, [])
+  // Books + providers + activity log + job status as queries. Failures
+  // surface as a retryable banner instead of a silently empty workspace.
+  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => api.listProviders() })
+  const activityLogQuery = useQuery({ queryKey: ['activity-log'], queryFn: () => api.getActivityLog() })
+  const jobStatusQuery = useQuery({ queryKey: ['job-status'], queryFn: () => api.getJobStatus() })
 
-  useEffect(() => { loadInitial() }, [loadInitial])
+  const books = booksQuery.data?.books || []
+  const providers = providersQuery.data?.providers || []
+  const activityLogData = activityLogQuery.data
+  const activityLog = useMemo(() => activityLogData?.entries || [], [activityLogData])
+
+  const initialQueries = [booksQuery, providersQuery, activityLogQuery, jobStatusQuery]
+  const loadErrorObj = initialQueries.find(q => q.error)?.error
+  const loadError = loadErrorObj ? (loadErrorObj.message || 'Request failed') : null
+  const loadInitial = () => initialQueries.forEach(q => q.refetch())
+
+  // Restore job state on the first successful status fetch only (e.g. reopen
+  // the entity-review panel if a job is awaiting review). Later refetches —
+  // WsQueryBridge invalidates ['job-status'] on translation events — must not
+  // re-apply, since the WS handler below owns live status transitions.
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    const d = jobStatusQuery.data
+    if (!d || restoredRef.current) return
+    restoredRef.current = true
+    if (d.status && d.status !== 'idle') setJobStatus(d.status)
+    if (d.status === 'awaiting_review' && d.pending_review) {
+      setEntityReview(d.pending_review)
+    }
+    if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
+      setJsonFix(d.pending_json_fix)
+    }
+    if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
+      setChapterConflict(d.pending_chapter_conflict)
+    }
+  }, [jobStatusQuery.data])
 
   // Handle WebSocket messages — every message is delivered via the WS fan-out
   // (useWsEvent), so nothing is lost to React 18 batching. Missed events are
@@ -118,7 +127,7 @@ export default function Dashboard() {
           setChapterConflict(null)
         }
       }).catch(() => {})
-      api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
+      queryClient.invalidateQueries({ queryKey: ['activity-log'] })
     }
 
     if (type === 'progress') {
@@ -178,7 +187,7 @@ export default function Dashboard() {
         setChapterNum(String(msg.chapter + 1))
       }
       // Re-fetch full log so late/backfilled entries are reflected
-      api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
+      queryClient.invalidateQueries({ queryKey: ['activity-log'] })
     }
 
     if (type === 'error') {
@@ -187,7 +196,7 @@ export default function Dashboard() {
       setEntityReview(null)
       setJsonFix(null)
       setChapterConflict(null)
-      api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
+      queryClient.invalidateQueries({ queryKey: ['activity-log'] })
     }
 
     // The engine actually stopped after a cancel — clear any transient progress
@@ -200,12 +209,14 @@ export default function Dashboard() {
       setChapterConflict(null)
     }
 
-    // Append activity log entries from the backend (dedup by id, so a re-synced
-    // full-log fetch racing an incoming entry can't double-append)
+    // Append activity log entries from the backend straight into the query
+    // cache (dedup by id, so a re-synced full-log fetch racing an incoming
+    // entry can't double-append)
     if (type === 'activity_log' && msg.entry) {
-      setActivityLog(prev => {
-        if (prev.some(e => e.id === msg.entry.id)) return prev
-        return [...prev, msg.entry]
+      queryClient.setQueryData(['activity-log'], (old) => {
+        const entries = old?.entries || []
+        if (entries.some(e => e.id === msg.entry.id)) return old
+        return { ...(old || {}), entries: [...entries, msg.entry] }
       })
     }
   })
@@ -260,7 +271,7 @@ export default function Dashboard() {
 
   const clearLog = async () => {
     try { await api.clearActivityLog() } catch { /* ignore */ }
-    setActivityLog([])
+    queryClient.setQueryData(['activity-log'], { entries: [] })
   }
 
   // Build model list from providers
