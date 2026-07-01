@@ -72,6 +72,11 @@ exclude = ["tests*", "output*"]
 [tool.setuptools.package-data]
 "*" = ["*.json", "*.txt", "*.md"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
 [tool.black]
 line-length = 88
 target-version = ['py38']
