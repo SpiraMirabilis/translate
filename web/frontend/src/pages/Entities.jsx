@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, AlertTriangle,
@@ -49,9 +50,7 @@ function matchesOriginChapter(entity, filter) {
 }
 
 export default function Entities() {
-  const [books, setBooks] = useState([])
-  const [entities, setEntities] = useState([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
 
   // Filter/search state lives in the URL as query params so the view is
   // shareable. Replace mode — avoids polluting history with every keystroke.
@@ -63,10 +62,11 @@ export default function Entities() {
   const [debouncedChapter, setDebouncedChapter] = useState(filterChapter)
 
   // If URL filters are empty on first render but localStorage has a remembered
-  // value, block the initial load until the URL has been seeded. Without this
-  // gate two loads would fire (empty → all entities, then seeded → filtered),
-  // and the slower unfiltered fetch can resolve last and overwrite the correct
-  // result.
+  // value, block the initial fetch (query `enabled`) until the URL has been
+  // seeded. React-query's per-key caching already prevents the old
+  // stale-response overwrite race, but without the gate a wasteful unfiltered
+  // fetch would still fire and flash "all entities" before the seeded key
+  // takes over.
   const [filtersReady, setFiltersReady] = useState(() => {
     const url = new URLSearchParams(window.location.search)
     const needsBookSeed = !url.get('book') && !!localStorage.getItem('entities_filterBook')
@@ -128,14 +128,8 @@ export default function Entities() {
     return Object.keys(p).length ? p : null
   }, [addModal.isOpen, addModal.params])
 
-  const editingEntity = editEntityModal.isOpen
-    ? entities.find(e => String(e.id) === editEntityModal.id) || null
-    : null
-
   const [duplicates, setDuplicates] = useState(null)
   const [error, setError] = useState(null)
-  const [activeCategories, setActiveCategories] = useState(DEFAULT_CATEGORIES)
-  const [categoryAttributes, setCategoryAttributes] = useState(null)
   const [selected, setSelected] = useState(new Set())
   // Local payload for the delete modal (list of entities can't live in URL)
   const [pendingDeletePayload, setPendingDeletePayload] = useState(null)
@@ -173,50 +167,51 @@ export default function Entities() {
   )
   const chapterFilterInvalid = debouncedChapter.trim() !== '' && chapterFilter === null
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
+  // Server-filtered entity list. The origin-chapter filter stays client-side
+  // (applied below), so it doesn't refetch — matching the old load() which
+  // filtered the response in place.
+  const entitiesQuery = useQuery({
+    queryKey: ['entities', { book: filterBook, cat: filterCat, search: debouncedSearch }],
+    queryFn: () => {
       const params = {}
       if (filterBook) params.book_id = parseInt(filterBook)
       if (filterCat)  params.category = filterCat
       if (debouncedSearch) params.search = debouncedSearch
-      const d = await api.listEntities(params)
-      let results = d.entities || []
-      if (chapterFilter) {
-        results = results.filter(e => matchesOriginChapter(e, chapterFilter))
-      }
-      setEntities(results)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
+      return api.listEntities(params)
+    },
+    enabled: filtersReady,
+  })
+  const loading = entitiesQuery.isPending
+  const entities = useMemo(() => {
+    let results = entitiesQuery.data?.entities || []
+    if (chapterFilter) {
+      results = results.filter(e => matchesOriginChapter(e, chapterFilter))
     }
-  }, [filterBook, filterCat, debouncedSearch, chapterFilter])
+    return results
+  }, [entitiesQuery.data, chapterFilter])
+  const invalidateEntities = () => queryClient.invalidateQueries({ queryKey: ['entities'] })
 
-  useEffect(() => {
-    api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
-  }, [])
+  const editingEntity = editEntityModal.isOpen
+    ? entities.find(e => String(e.id) === editEntityModal.id) || null
+    : null
 
-  // Fetch book-specific categories when filter changes
-  useEffect(() => {
-    if (filterBook && filterBook !== 'global') {
-      api.getBookCategories(parseInt(filterBook))
-        .then(d => {
-          setActiveCategories(d.categories || DEFAULT_CATEGORIES)
-          setCategoryAttributes(d.attributes || null)
-        })
-        .catch(() => { setActiveCategories(DEFAULT_CATEGORIES); setCategoryAttributes(null) })
-    } else {
-      setActiveCategories(DEFAULT_CATEGORIES)
-      setCategoryAttributes(null)
-    }
-  }, [filterBook])
+  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  const books = booksQuery.data?.books || []
 
+  // Book-specific categories when a (non-global) book filter is active
+  const bookCatsQuery = useQuery({
+    queryKey: ['book-categories', filterBook],
+    queryFn: () => api.getBookCategories(parseInt(filterBook)),
+    enabled: !!filterBook && filterBook !== 'global',
+  })
+  const bookCatsActive = filterBook && filterBook !== 'global'
+  const activeCategories = (bookCatsActive && bookCatsQuery.data?.categories) || DEFAULT_CATEGORIES
+  const categoryAttributes = (bookCatsActive && bookCatsQuery.data?.attributes) || null
+
+  // Clear the selection whenever the visible result set changes shape
   useEffect(() => {
-    if (!filtersReady) return
-    load()
     clearSelection()
-  }, [load, filtersReady])
+  }, [filterBook, filterCat, debouncedSearch, chapterFilter, clearSelection])
 
   const openDeleteModal = (payload) => {
     setPendingDeletePayload(payload)
@@ -259,7 +254,7 @@ export default function Entities() {
         await api.batchEntities({ ids: ents.map(e => e.id), action: 'delete' })
         clearSelection()
       }
-      load()
+      invalidateEntities()
     } catch (e) { setError(e.message) }
   }
 
@@ -268,7 +263,7 @@ export default function Entities() {
       await api.batchEntities({ ids: [...selected], action, ...params })
       clearSelection()
       batchModal.close()
-      load()
+      invalidateEntities()
     } catch (e) { setError(e.message) }
   }
 
@@ -385,7 +380,9 @@ export default function Entities() {
         />
       </div>
 
-      {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
+      {(error || entitiesQuery.error) && (
+        <p className="text-rose-400 text-sm mb-4">{error || entitiesQuery.error.message}</p>
+      )}
 
       {/* Summary bar */}
       {!loading && entities.length > 0 && (
@@ -458,7 +455,7 @@ export default function Entities() {
           books={books}
           categories={activeCategories}
           onClose={() => { (addModal.isOpen ? addModal : editEntityModal).close() }}
-          onSaved={() => { (addModal.isOpen ? addModal : editEntityModal).close(); load() }}
+          onSaved={() => { (addModal.isOpen ? addModal : editEntityModal).close(); invalidateEntities() }}
         />
       )}
 
@@ -467,7 +464,7 @@ export default function Entities() {
           duplicates={duplicates}
           books={books}
           onClose={duplicatesModal.close}
-          onResolved={load}
+          onResolved={invalidateEntities}
         />
       )}
 
