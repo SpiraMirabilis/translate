@@ -1082,15 +1082,14 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
         filename = f"{book['title'].replace(' ', '_')}.epub"
 
         if not os.path.exists(cached_path):
-            all_chapters = []
-            for ch_meta in chapters:
-                ch = _entity_manager.get_chapter(book_id=book_id, chapter_number=ch_meta["chapter"])
-                if ch:
-                    all_chapters.append({
-                        "chapter": ch_meta["chapter"],
-                        "title": ch.get("title", f"Chapter {ch_meta['chapter']}"),
-                        "content": ch.get("content", []),
-                    })
+            all_chapters = [
+                {
+                    "chapter": ch["chapter"],
+                    "title": ch.get("title") or f"Chapter {ch['chapter']}",
+                    "content": ch.get("content", []),
+                }
+                for ch in _entity_manager.get_chapters_bulk(book_id)
+            ]
 
             output_path = formatter.save_book_as_epub(all_chapters, book_info)
             if not output_path or not os.path.exists(output_path):
@@ -1123,16 +1122,14 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
     # HTML — generate a proper HTML document with chapter structure
     if format == "html":
         # Build chapter list for TOC
-        ch_list = []
-        for ch_meta in chapters:
-            ch = _entity_manager.get_chapter(book_id=book_id, chapter_number=ch_meta["chapter"])
-            if not ch:
-                continue
-            ch_list.append({
-                "number": ch_meta["chapter"],
-                "title": ch.get("title", f"Chapter {ch_meta['chapter']}"),
+        ch_list = [
+            {
+                "number": ch["chapter"],
+                "title": ch.get("title") or f"Chapter {ch['chapter']}",
                 "content": ch.get("content", []),
-            })
+            }
+            for ch in _entity_manager.get_chapters_bulk(book_id)
+        ]
 
         html_parts = [
             '<!DOCTYPE html>',
@@ -1185,11 +1182,9 @@ async def export_book(book_id: int, format: str = Query("text", enum=["text", "e
 
     # Text / markdown — return as plain text file
     all_lines = []
-    for ch_meta in chapters:
-        ch = _entity_manager.get_chapter(book_id=book_id, chapter_number=ch_meta["chapter"])
-        if ch:
-            all_lines.extend(ch.get("content", []))
-            all_lines.append("")
+    for ch in _entity_manager.get_chapters_bulk(book_id):
+        all_lines.extend(ch.get("content", []))
+        all_lines.append("")
 
     ext_map = {"text": "txt", "markdown": "md"}
     ext = ext_map.get(format, "txt")

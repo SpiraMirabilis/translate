@@ -26,6 +26,7 @@ from database import DatabaseManager
 from translation_engine import TranslationEngine
 
 from web.services.job_manager import job_manager
+from web.services.view_logger import ViewLogger
 from web.services.web_interface import WebInterface
 from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public, recommendations_public, recommendations_admin, reader_stats_api, comments_public, comments_admin
 from web.auth import configure_auth, AuthMiddleware, router as auth_router
@@ -54,7 +55,9 @@ def create_app() -> FastAPI:
     api_calls.init(entity_manager)
     wordpress_api.init(config, entity_manager, job_manager)
     health.init(entity_manager)
-    public.init(entity_manager, config)
+    view_logger = ViewLogger(entity_manager)
+    view_logger.start()
+    public.init(entity_manager, config, view_logger)
     recommendations_public.init(entity_manager)
     recommendations_admin.init(entity_manager)
     reader_stats_api.init(entity_manager)
@@ -62,6 +65,10 @@ def create_app() -> FastAPI:
     comments_admin.init(entity_manager)
 
     app = FastAPI(title=f"{config.site_name} Translation GUI", version="1.0.0")
+
+    # Flush buffered reader views on clean shutdown (best-effort; up to a few
+    # seconds of views are accepted-lost on a hard kill).
+    app.add_event_handler("shutdown", view_logger.stop)
 
     app.add_middleware(
         CORSMiddleware,

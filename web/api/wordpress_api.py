@@ -103,7 +103,6 @@ async def get_book_publish_status(book_id: int):
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
 
-    chapters = _db.list_chapters(book_id)
     wp_states = _db.get_all_wp_states(book_id)
 
     # Index states by chapter_number (None = story)
@@ -113,15 +112,13 @@ async def get_book_publish_status(book_id: int):
 
     story_state = state_map.get(None)
     chapter_statuses = []
-    for ch in chapters:
+    for ch in _db.get_chapters_bulk(book_id):
         num = ch["chapter"]
         st = state_map.get(num)
-        # Fetch full chapter to get content for hash
-        full_ch = _db.get_chapter(book_id=book_id, chapter_number=num)
-        content_lines = (full_ch.get("content") or []) if full_ch else []
+        content_lines = ch.get("content") or []
         if isinstance(content_lines, str):
             content_lines = content_lines.split("\n")
-        ch_title = ch.get("title") or (full_ch.get("title") if full_ch else "") or f"Chapter {num}"
+        ch_title = ch.get("title") or f"Chapter {num}"
         current_hash = compute_hash(content_lines, title=ch_title)
 
         if st is None:
@@ -359,6 +356,8 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
 
         # --- Chapters ---
         print(f"[WP Publish] Processing {len(chapter_list)} chapters...")
+        # One bulk fetch instead of one query per chapter
+        full_by_num = {c["chapter"]: c for c in _db.get_chapters_bulk(book_id)}
         chapter_wp_ids = []
         for i, ch_meta in enumerate(chapter_list):
             if _publish_cancel.is_set():
@@ -367,7 +366,7 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
 
             num = ch_meta["chapter"]
             title = ch_meta.get("title") or f"Chapter {num}"
-            full_ch = _db.get_chapter(book_id=book_id, chapter_number=num)
+            full_ch = full_by_num.get(num)
             content_lines = (full_ch.get("content") or []) if full_ch else []
             if isinstance(content_lines, str):
                 content_lines = content_lines.split("\n")
