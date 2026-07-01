@@ -1,4 +1,5 @@
 import json
+import traceback
 import unicodedata
 import sqlite3
 import os
@@ -71,9 +72,10 @@ INCLUDE_SIMILAR_PREFIX = True
 class DatabaseManager:
     """Class to manage database operations including entities, books, and chapters using SQLite"""
     
-    def __init__(self, config: 'TranslationConfig', logger: 'Logger'):
+    def __init__(self, config: 'TranslationConfig', logger: 'Logger', *, strict_writes: bool = False):
         self.config = config
         self.logger = logger
+        self.strict_writes = strict_writes
         self.backend = create_backend(config)
         self.db_path = self.backend.db_path  # backward compat for external callers
         self.entities = {}  # Cached entities
@@ -271,7 +273,9 @@ class DatabaseManager:
             return book_id
             
         except Exception as e:
-            self.logger.error(f"Error creating book: {e}")
+            self.logger.error(f"Error creating book: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return None
     
 
@@ -318,7 +322,9 @@ class DatabaseManager:
             
             return True
         except Exception as e:
-            self.logger.error(f"Error setting book prompt template: {e}")
+            self.logger.error(f"Error setting book prompt template: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def _get_raw_book_categories(self, book_id):
@@ -381,7 +387,9 @@ class DatabaseManager:
             conn.close()
             return True
         except Exception as e:
-            self.logger.error(f"Error setting book categories: {e}")
+            self.logger.error(f"Error setting book categories: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def get_book_tags(self, book_id):
@@ -410,7 +418,9 @@ class DatabaseManager:
             conn.close()
             return True
         except Exception as e:
-            self.logger.error(f"Error setting book tags: {e}")
+            self.logger.error(f"Error setting book tags: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def get_all_tags(self):
@@ -606,7 +616,9 @@ class DatabaseManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error updating book: {e}")
+            self.logger.error(f"Error updating book: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def get_module_settings(self, book_id, module_id=None):
@@ -675,7 +687,9 @@ class DatabaseManager:
             return True
         except Exception as e:
             self.logger.error(
-                f"Error saving module settings for book {book_id}/{module_id}: {e}")
+                f"Error saving module settings for book {book_id}/{module_id}: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def list_books(self, order_by: str = 'title'):
@@ -727,6 +741,14 @@ class DatabaseManager:
                     modules = json.loads(raw_modules) if raw_modules else None
                 except (json.JSONDecodeError, TypeError):
                     modules = None
+                try:
+                    categories = json.loads(raw_cats) if raw_cats else None
+                except (json.JSONDecodeError, TypeError):
+                    categories = None
+                try:
+                    tags = json.loads(raw_tags) if raw_tags else []
+                except (json.JSONDecodeError, TypeError):
+                    tags = []
                 result.append({
                     "id": book_id,
                     "title": title,
@@ -736,7 +758,7 @@ class DatabaseManager:
                     "modified_date": modified_date,
                     "last_chapter_date": last_chapter_date,
                     "cover_image": cover_image,
-                    "categories": json.loads(raw_cats) if raw_cats else None,
+                    "categories": categories,
                     "chapter_count": chapter_count,
                     "description": description,
                     "is_public": bool(is_public) if is_public is not None else True,
@@ -747,7 +769,7 @@ class DatabaseManager:
                     "notes": notes,
                     "view_count": view_count or 0,
                     "trad_to_simp": trad_to_simp,
-                    "tags": json.loads(raw_tags) if raw_tags else [],
+                    "tags": tags,
                     "modules": modules,
                 })
 
@@ -799,7 +821,9 @@ class DatabaseManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error deleting book: {e}")
+            self.logger.error(f"Error deleting book: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
         
     # Private Book methods
@@ -965,7 +989,9 @@ class DatabaseManager:
             return chapter_id
 
         except Exception as e:
-            self.logger.error(f"Error saving chapter: {e}")
+            self.logger.error(f"Error saving chapter: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return None
 
     def get_chapter(self, chapter_id=None, book_id=None, chapter_number=None):
@@ -1358,7 +1384,9 @@ class DatabaseManager:
             return {'affected_chapters': affected, 'total_replacements': total, 'can_undo': len(snapshots) > 0}
 
         except Exception as e:
-            self.logger.error(f"Error replacing in chapters: {e}")
+            self.logger.error(f"Error replacing in chapters: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
 
     def undo_replace(self, book_id):
@@ -1460,7 +1488,9 @@ class DatabaseManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error deleting chapter: {e}")
+            self.logger.error(f"Error deleting chapter: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def renumber_chapter(self, book_id, chapter_number, new_chapter_number):
@@ -1526,7 +1556,9 @@ class DatabaseManager:
         except Exception as e:
             conn.rollback()
             conn.close()
-            self.logger.error(f"Error renumbering chapter {chapter_number} -> {new_chapter_number}: {e}")
+            self.logger.error(f"Error renumbering chapter {chapter_number} -> {new_chapter_number}: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False, str(e)
         conn.close()
         self.invalidate_epub_cache(book_id)
@@ -1981,7 +2013,9 @@ class DatabaseManager:
             return queue_id
 
         except Exception as e:
-            self.logger.error(f"Error adding to queue: {e}")
+            self.logger.error(f"Error adding to queue: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return None
 
     def get_next_queue_item(self, book_id=None):
@@ -2031,7 +2065,7 @@ class DatabaseManager:
             content_json = row[5]
             try:
                 content = json.loads(content_json)
-            except:
+            except (json.JSONDecodeError, TypeError):
                 content = content_json  # Fallback to string if not valid JSON
 
             # Deserialize metadata if present
@@ -2040,7 +2074,7 @@ class DatabaseManager:
             if metadata_json:
                 try:
                     metadata = json.loads(metadata_json)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     pass
 
             return {
@@ -2096,7 +2130,9 @@ class DatabaseManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error removing from queue: {e}")
+            self.logger.error(f"Error removing from queue: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def list_queue(self, book_id=None, include_content=False):
@@ -2151,7 +2187,7 @@ class DatabaseManager:
                     content_json = row[5]
                     try:
                         content = json.loads(content_json)
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         content = content_json
 
                     # Deserialize metadata if present
@@ -2160,7 +2196,7 @@ class DatabaseManager:
                     if metadata_json:
                         try:
                             metadata = json.loads(metadata_json)
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             pass
                     tail = row[7:]
                 else:
@@ -2622,10 +2658,12 @@ class DatabaseManager:
             conn.close()
             self.logger.info("Entities saved to database successfully")
         except Exception as e:
-            self.logger.error(f"Error saving entities to database: {e}")
+            self.logger.error(f"Error saving entities to database: {e}\n{traceback.format_exc()}")
             # Consider creating a backup JSON in this case
             self.save_json_file("entities_backup.json", self.entities)
             self.logger.info("Created backup of entities in entities_backup.json")
+            if self.strict_writes:
+                raise
 
     
     def entities_inside_text(self, text_lines, all_entities, current_chapter, do_count=True):
@@ -2909,7 +2947,9 @@ class DatabaseManager:
             return True
                 
         except Exception as e:
-            self.logger.error(f"Error adding entity to database: {e}")
+            self.logger.error(f"Error adding entity to database: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
     
     def update_entity(self, category, untranslated, **kwargs):
@@ -3004,7 +3044,9 @@ class DatabaseManager:
             return True
             
         except Exception as e:
-            self.logger.error(f"Error updating entity in database: {e}")
+            self.logger.error(f"Error updating entity in database: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def rename_entity_untranslated(self, category, old_untranslated, new_untranslated, book_id=None):
@@ -3050,7 +3092,9 @@ class DatabaseManager:
             return 'renamed'
 
         except Exception as e:
-            self.logger.error(f"Error renaming entity key '{old_untranslated}' → '{new_untranslated}': {e}")
+            self.logger.error(f"Error renaming entity key '{old_untranslated}' → '{new_untranslated}': {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return 'error'
 
     def delete_entity(self, category, untranslated):
@@ -3082,7 +3126,9 @@ class DatabaseManager:
             return True
             
         except Exception as e:
-            self.logger.error(f"Error deleting entity from database: {e}")
+            self.logger.error(f"Error deleting entity from database: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
     
     def change_entity_category(self, old_category, untranslated, new_category):
@@ -3139,7 +3185,9 @@ class DatabaseManager:
             return True
             
         except Exception as e:
-            self.logger.error(f"Error changing entity category in database: {e}")
+            self.logger.error(f"Error changing entity category in database: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
     
     def get_entity_by_translation(self, translation):
@@ -3233,7 +3281,9 @@ class DatabaseManager:
             return True
             
         except Exception as e:
-            self.logger.error(f"Error importing entities from JSON: {e}")
+            self.logger.error(f"Error importing entities from JSON: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     def get_all_entities_for_review(self, book_id=None, category=None):
@@ -3385,7 +3435,9 @@ class DatabaseManager:
                 avg = row[1] / row[0]
                 self.logger.info(f"Updated token ratio - average: {avg:.2f} over {row[2]} chapter(s)")
         except Exception as e:
-            self.logger.error(f"Failed to update token ratio: {e}")
+            self.logger.error(f"Failed to update token ratio: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
 
     def find_chapters_using_entity(self, untranslated_text, book_id=None):
         """
@@ -3486,7 +3538,9 @@ class DatabaseManager:
             conn.commit()
             conn.close()
         except Exception as e:
-            self.logger.error(f"Error saving wp state: {e}")
+            self.logger.error(f"Error saving wp state: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
 
     def get_all_wp_states(self, book_id):
         """Get all wp_publish_state records for a book."""
@@ -3701,7 +3755,9 @@ class DatabaseManager:
             conn.close()
             return True
         except Exception as e:
-            self.logger.error(f"Error updating API call response: {e}")
+            self.logger.error(f"Error updating API call response: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
             return False
 
     # ------------------------------------------------------------------

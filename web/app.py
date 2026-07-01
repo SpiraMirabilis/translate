@@ -37,7 +37,7 @@ from web.auth import configure_auth, AuthMiddleware, router as auth_router
 def create_app() -> FastAPI:
     config = TranslationConfig()
     logger = Logger(config)
-    entity_manager = DatabaseManager(config, logger)
+    entity_manager = DatabaseManager(config, logger, strict_writes=True)
     translator = TranslationEngine(config, logger, entity_manager)
     web_interface = WebInterface(translator, entity_manager, logger, job_manager)
     job_manager.db_manager = entity_manager

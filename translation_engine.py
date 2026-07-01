@@ -1094,7 +1094,7 @@ class TranslationEngine:
                 try:
                     import shutil
                     terminal_width = shutil.get_terminal_size().columns
-                except:
+                except Exception:
                     pass
                 progress_width = min(50, terminal_width - 30)
 
