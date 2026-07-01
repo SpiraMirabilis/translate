@@ -18,6 +18,217 @@ import subprocess
 import platform
 import threading
 import time
+from collections import namedtuple
+
+
+def build_arg_parser():
+    """Build the CLI argument parser (extracted from CommandLineInterface.get_input)."""
+    import argparse
+
+    # Create the parser
+    parser = argparse.ArgumentParser(description="Process input from clipboard, file, or manual entry.")
+
+    # Create a mutually exclusive group, this is for the input option
+    group = parser.add_mutually_exclusive_group()
+
+    # Add arguments to the group
+    group.add_argument("--clipboard", action="store_true", help="Process input from the clipboard")
+    group.add_argument("--resume", action="store_true", help="Take input from the queue and translate sequentially (optional: --book-id to process specific book)")
+    group.add_argument("--file", type=str, help="Process input from a specified file")
+    group.add_argument("--epub", type=str, help="Process an EPUB file and add chapters to the queue")
+    group.add_argument("--fb2", type=str, help="Process an FB2 (FictionBook 2.0) file and add chapters to the queue")
+    parser.add_argument("--create-book-from-epub", action="store_true",
+                    help="Create a new book from the imported file's metadata when processing/queuing an EPUB or FB2 file")
+
+
+    # directory input and options
+    group.add_argument("--dir", type=str, help="Process all text files in a directory and add to queue")
+    parser.add_argument("--sort", type=str, choices=["auto", "name", "modified", "none"], default="auto",
+                help="Sorting strategy for directory files (default: auto)")
+    parser.add_argument("--pattern", type=str, default="*.txt",
+                help="File pattern for directory processing (default: *.txt)")
+
+    # Book management
+    book_group = parser.add_argument_group('Book Management')
+    book_group.add_argument("--create-book", type=str, help="Create a new book with the specified title")
+    book_group.add_argument("--book-author", type=str, help="Specify author when creating a book")
+    book_group.add_argument("--book-language", type=str, help="Specify language code when creating a book")
+    book_group.add_argument("--book-description", type=str, help="Specify description when creating a book")
+    book_group.add_argument("--genre", type=str, help="Genre preset to apply when creating a book (e.g. chinese_xianxia, japanese_light_novel)")
+    book_group.add_argument("--list-genres", action="store_true", help="List available genre presets")
+
+    book_group.add_argument("--list-books", action="store_true", help="List all books in the database")
+    book_group.add_argument("--book-info", type=int, help="Get detailed information about a book by ID")
+    book_group.add_argument("--edit-book", type=int, help="Edit book information by ID")
+    book_group.add_argument("--delete-book", type=int, help="Delete a book and all its chapters by ID")
+
+    # Category management (requires --book-id)
+    book_group.add_argument("--list-categories", action="store_true", help="List entity categories for a book (requires --book-id)")
+    book_group.add_argument("--add-category", type=str, help="Add a custom entity category to a book (requires --book-id)")
+    book_group.add_argument("--remove-category", type=str, help="Remove an entity category from a book (requires --book-id)")
+    book_group.add_argument("--reset-categories", action="store_true", help="Reset entity categories to defaults for a book (requires --book-id)")
+
+    # book specific model group
+    parser.add_argument("--show-prompt-template", type=int, help="Show the current prompt template for a book (by ID)")
+    parser.add_argument("--set-prompt-template", type=int, help="Set a custom prompt template for a book (by ID)")
+    parser.add_argument("--prompt-file", type=str, help="Load prompt template from a file")
+    parser.add_argument("--export-default-prompt", type=str, help="Export the default prompt template to a file")
+    parser.add_argument("--edit-prompt", type=int, help="Edit the prompt template for a book using your system editor")
+    parser.add_argument("--no-review", action="store_true",
+                        help="Disable the entity review process at end of each translated chapter" )
+    parser.add_argument("--silent-notifications", action="store_true",
+                        help="Disable audio notifications when new entities are found for review")
+
+    # Chapter management
+    chapter_group = parser.add_argument_group('Chapter Management')
+    chapter_group.add_argument("--book-id", type=int, help="Specify book ID for translation or chapter operations")
+    chapter_group.add_argument("--chapter-number", type=int, help="Specify chapter number for translation or retrieval")
+    chapter_group.add_argument("--list-chapters", type=int, help="List all chapters for a book by ID")
+    chapter_group.add_argument("--get-chapter", action="store_true",
+                            help="Get a specific chapter (requires --book-id and --chapter-number)")
+    chapter_group.add_argument("--delete-chapter", action="store_true",
+                            help="Delete a specific chapter (requires --book-id and --chapter-number)")
+    chapter_group.add_argument("--export-book", type=int,
+                            help="Export all chapters of a book (book ID) to specified format")
+    chapter_group.add_argument("--retranslate", action="store_true",
+                help="Retranslate a chapter (requires --book-id and --chapter-number)")
+    chapter_group.add_argument("--edit-chapter-translation", action="store_true",
+                help="Edit the translation of a chapter using your system editor (requires --book-id and --chapter-number)")
+
+
+    # output options
+    parser.add_argument("--format", type=str, choices=["text", "html", "markdown", "epub"], default="text",
+               help="Output format for translation results (default: text)")
+    parser.add_argument("--epub-title", type=str, help="Book title for EPUB output")
+    parser.add_argument("--epub-author", type=str, help="Book author for EPUB output")
+    parser.add_argument("--epub-language", type=str, default="en", help="Book language code for EPUB output (default: en)")
+    parser.add_argument("--edit-epub-info", action="store_true", help="Edit book information for EPUB output")
+
+    # Queue argument and manipulation
+    parser.add_argument("--queue", action="store_true", help="Add a chapter to the queue for later sequential translation (requires --book-id)")
+    parser.add_argument("--list-queue", action="store_true",
+                    help="List all items in the translation queue (optional: --book-id to filter)")
+    parser.add_argument("--clear-queue", action="store_true",
+                    help="Clear the translation queue (optional: --book-id to clear for specific book only)")
+
+    # SQLite arguments
+    parser.add_argument("--export-json", type=str, help="Export SQLite database to JSON file")
+    parser.add_argument("--import-json", type=str, help="Import entities from JSON file to SQLite database")
+    parser.add_argument("--check-duplicates", action="store_true", help="Check for duplicate entities in the database")
+
+    # Entity review
+    parser.add_argument("--review-entities", action="store_true",
+                        help="Review all entities in the database interactively")
+    parser.add_argument("--entity-book-id", type=int,
+                        help="Filter entities by book ID (use with --review-entities)")
+    parser.add_argument("--entity-category", type=str,
+                        help="Filter entities by category (use with --review-entities)")
+
+    # Model arguments
+    try:
+        factory = get_factory()
+        supported_providers = ', '.join(factory.get_supported_providers())
+        model_help = f"Specify model for translation (format: [provider:]model). Supported providers: {supported_providers}"
+        advice_help = f"Specify model for entity translation advice (format: [provider:]model). Supported providers: {supported_providers}"
+    except:
+        model_help = "Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or claude:claude-3-5-sonnet)"
+        advice_help = "Specify model for entity translation advice (format: [provider:]model)"
+
+    parser.add_argument("--model", type=str, help=model_help)
+    parser.add_argument("--advice-model", type=str, help=advice_help)
+    parser.add_argument("--cleaning-model", type=str, help="Specify model for entity cleaning/classification (format: [provider:]model). Uses --model if not specified.")
+    parser.add_argument("--key", type=str,
+                help="Specify API key (for the provider specified in --model)")
+    parser.add_argument("--list-providers", action="store_true",
+                help="List all supported model providers and their default models")
+
+    parser.add_argument("--no-stream", action="store_true",
+                help="Disable streaming API and progress tracking (slightly faster for very short texts)")
+    parser.add_argument("--no-clean", action="store_true",
+                help="Disable automatic cleaning of generic nouns from new entities during post-translation review")
+
+    return parser
+
+
+# Table-driven CLI command dispatch (see CommandLineInterface._dispatch_commands).
+#
+# attr:     args attribute checked for truthiness (all blocks in the original
+#           chain used plain `if args.X:` truthiness — no `is not None` checks).
+# requires: ordered (attr, error_message) pairs; the first missing one prints
+#           its message and exits 1, exactly like the original per-command
+#           validation blocks.
+# handler:  callable (self, args) -> None; after it runs, the process exits 0.
+Command = namedtuple("Command", "attr requires handler")
+
+# Order copied EXACTLY from the original if-chain — order is semantically
+# load-bearing (when several flags are combined, the first match wins).
+# The chain is split into three segments because stateful, non-exiting code
+# (book-id validation, --retranslate, API key/model overrides, output-format
+# setup) runs between them in get_input().
+
+# Segment 1: book / category / prompt / provider / chapter management.
+_BOOK_COMMANDS = (
+    Command("list_genres", (), lambda self, args: self._list_genres()),
+    Command("create_book", (),
+            lambda self, args: self._create_book(args.create_book, args.book_author, args.book_language, args.book_description, genre=args.genre)),
+    Command("list_books", (), lambda self, args: self._list_books()),
+    Command("book_info", (), lambda self, args: self._show_book_info(args.book_info)),
+    Command("edit_book", (), lambda self, args: self._edit_book(args.edit_book)),
+    Command("delete_book", (), lambda self, args: self._delete_book(args.delete_book)),
+    Command("list_categories",
+            (("book_id", "Error: --list-categories requires --book-id"),),
+            lambda self, args: self._list_categories(args.book_id)),
+    Command("add_category",
+            (("book_id", "Error: --add-category requires --book-id"),),
+            lambda self, args: self._add_category(args.book_id, args.add_category)),
+    Command("remove_category",
+            (("book_id", "Error: --remove-category requires --book-id"),),
+            lambda self, args: self._remove_category(args.book_id, args.remove_category)),
+    Command("reset_categories",
+            (("book_id", "Error: --reset-categories requires --book-id"),),
+            lambda self, args: self._reset_categories(args.book_id)),
+    Command("edit_prompt", (), lambda self, args: self._edit_prompt_template(args.edit_prompt)),
+    Command("show_prompt_template", (), lambda self, args: self._show_prompt_template(args.show_prompt_template)),
+    Command("set_prompt_template",
+            (("prompt_file", "Error: --set-prompt-template requires --prompt-file"),),
+            lambda self, args: self._set_prompt_template(args.set_prompt_template, args.prompt_file)),
+    Command("export_default_prompt", (), lambda self, args: self._export_default_prompt(args.export_default_prompt)),
+    Command("list_providers", (), lambda self, args: self._list_providers()),
+    Command("list_chapters", (), lambda self, args: self._list_chapters(args.list_chapters)),
+    Command("get_chapter",
+            (("book_id", "Error: --get-chapter requires --book-id and --chapter-number"),
+             ("chapter_number", "Error: --get-chapter requires --book-id and --chapter-number")),
+            lambda self, args: self._get_chapter(args.book_id, args.chapter_number, args.format or "text")),
+    Command("delete_chapter",
+            (("book_id", "Error: --delete-chapter requires --book-id and --chapter-number"),
+             ("chapter_number", "Error: --delete-chapter requires --book-id and --chapter-number")),
+            lambda self, args: self._delete_chapter(args.book_id, args.chapter_number)),
+    Command("edit_chapter_translation",
+            (("book_id", "Error: --edit-chapter-translation requires --book-id and --chapter-number"),
+             ("chapter_number", "Error: --edit-chapter-translation requires --book-id and --chapter-number")),
+            lambda self, args: self._edit_chapter_translation(args.book_id, args.chapter_number)),
+    Command("export_book", (), lambda self, args: self._export_book(args.export_book, args.format or "text")),
+)
+
+# Segment 2: runs after book-id validation and key/model overrides.
+_POST_MODEL_COMMANDS = (
+    Command("dir",
+            (("book_id", "Error: --dir requires --book-id to associate chapters with a book\n"
+                         "Use --list-books to see available books or --create-book to create a new one"),),
+            lambda self, args: self._process_directory(args.dir, args.book_id, args.sort, args.pattern)),
+    Command("edit_epub_info", (), lambda self, args: self._edit_book_info()),
+    Command("list_queue", (), lambda self, args: self._list_queue_contents(book_id=args.book_id)),
+    Command("clear_queue", (), lambda self, args: self._clear_queue(book_id=args.book_id)),
+)
+
+# Segment 3: database management and entity review (runs after output-format setup).
+_DB_COMMANDS = (
+    Command("export_json", (), lambda self, args: self._export_json_command(args.export_json)),
+    Command("import_json", (), lambda self, args: self._import_json_command(args.import_json)),
+    Command("check_duplicates", (), lambda self, args: self.check_database_duplicates()),
+    Command("review_entities", (), lambda self, args: self._review_entities_command(args)),
+)
+
 
 class CommandLineInterface(UserInterface):
     """Command-line interface implementation"""
@@ -78,132 +289,61 @@ class CommandLineInterface(UserInterface):
         sound_thread = threading.Thread(target=play_sound, daemon=True)
         sound_thread.start()
     
+    def _dispatch_commands(self, args, commands) -> None:
+        """Run the first command in `commands` whose flag is set on `args`.
+
+        Mirrors the original ordered if-chain exactly: for the first entry
+        whose args attribute is truthy, each required argument is validated
+        (a missing one prints its per-command error message and exits 1),
+        the handler runs, and the process exits 0. If no entry matches,
+        control returns to the caller.
+        """
+        for command in commands:
+            if not getattr(args, command.attr):
+                continue
+            for required_attr, message in command.requires:
+                if not getattr(args, required_attr):
+                    print(message)
+                    exit(1)
+            command.handler(self, args)
+            exit(0)
+
+    def _export_json_command(self, path):
+        """Handle --export-json: export the SQLite database to a JSON file."""
+        self.logger.info(f"Exporting SQLite database to {path}")
+        if self.entity_manager.export_to_json(path):
+            print(f"Database successfully exported to {path}")
+        else:
+            print("Export failed. Check logs for details.")
+
+    def _import_json_command(self, path):
+        """Handle --import-json: import entities from a JSON file."""
+        self.logger.info(f"Importing entities from {path} to SQLite database")
+        if self.entity_manager.import_from_json(path):
+            print(f"Successfully imported entities from {path}")
+        else:
+            print("Import failed. Check logs for details.")
+
+    def _review_entities_command(self, args):
+        """Handle --review-entities, including its rich-UI and book-id checks."""
+        if not self.has_rich_ui:
+            print("Error: Entity review requires questionary. Install: pip install questionary rich")
+            exit(1)
+
+        if args.entity_book_id:
+            book = self.entity_manager.get_book(book_id=args.entity_book_id)
+            if not book:
+                print(f"Error: Book with ID {args.entity_book_id} not found")
+                exit(1)
+
+        self._review_all_entities(
+            book_id=args.entity_book_id,
+            category_filter=args.entity_category
+        )
+
     def get_input(self) -> List[str]:
         """Get input text from CLI - clipboard, file, or manual entry"""
-        import argparse
-        
-        # Create the parser
-        parser = argparse.ArgumentParser(description="Process input from clipboard, file, or manual entry.")
-        
-        # Create a mutually exclusive group, this is for the input option
-        group = parser.add_mutually_exclusive_group()
-        
-        # Add arguments to the group
-        group.add_argument("--clipboard", action="store_true", help="Process input from the clipboard")
-        group.add_argument("--resume", action="store_true", help="Take input from the queue and translate sequentially (optional: --book-id to process specific book)")
-        group.add_argument("--file", type=str, help="Process input from a specified file")
-        group.add_argument("--epub", type=str, help="Process an EPUB file and add chapters to the queue")
-        group.add_argument("--fb2", type=str, help="Process an FB2 (FictionBook 2.0) file and add chapters to the queue")
-        parser.add_argument("--create-book-from-epub", action="store_true",
-                        help="Create a new book from the imported file's metadata when processing/queuing an EPUB or FB2 file")
-        
-
-        # directory input and options
-        group.add_argument("--dir", type=str, help="Process all text files in a directory and add to queue")
-        parser.add_argument("--sort", type=str, choices=["auto", "name", "modified", "none"], default="auto",
-                    help="Sorting strategy for directory files (default: auto)")
-        parser.add_argument("--pattern", type=str, default="*.txt",
-                    help="File pattern for directory processing (default: *.txt)")
-        
-        # Book management
-        book_group = parser.add_argument_group('Book Management')
-        book_group.add_argument("--create-book", type=str, help="Create a new book with the specified title")
-        book_group.add_argument("--book-author", type=str, help="Specify author when creating a book")
-        book_group.add_argument("--book-language", type=str, help="Specify language code when creating a book")
-        book_group.add_argument("--book-description", type=str, help="Specify description when creating a book")
-        book_group.add_argument("--genre", type=str, help="Genre preset to apply when creating a book (e.g. chinese_xianxia, japanese_light_novel)")
-        book_group.add_argument("--list-genres", action="store_true", help="List available genre presets")
-
-        book_group.add_argument("--list-books", action="store_true", help="List all books in the database")
-        book_group.add_argument("--book-info", type=int, help="Get detailed information about a book by ID")
-        book_group.add_argument("--edit-book", type=int, help="Edit book information by ID")
-        book_group.add_argument("--delete-book", type=int, help="Delete a book and all its chapters by ID")
-
-        # Category management (requires --book-id)
-        book_group.add_argument("--list-categories", action="store_true", help="List entity categories for a book (requires --book-id)")
-        book_group.add_argument("--add-category", type=str, help="Add a custom entity category to a book (requires --book-id)")
-        book_group.add_argument("--remove-category", type=str, help="Remove an entity category from a book (requires --book-id)")
-        book_group.add_argument("--reset-categories", action="store_true", help="Reset entity categories to defaults for a book (requires --book-id)")
-
-        # book specific model group
-        parser.add_argument("--show-prompt-template", type=int, help="Show the current prompt template for a book (by ID)")
-        parser.add_argument("--set-prompt-template", type=int, help="Set a custom prompt template for a book (by ID)")
-        parser.add_argument("--prompt-file", type=str, help="Load prompt template from a file")
-        parser.add_argument("--export-default-prompt", type=str, help="Export the default prompt template to a file")
-        parser.add_argument("--edit-prompt", type=int, help="Edit the prompt template for a book using your system editor")
-        parser.add_argument("--no-review", action="store_true",
-                            help="Disable the entity review process at end of each translated chapter" )
-        parser.add_argument("--silent-notifications", action="store_true",
-                            help="Disable audio notifications when new entities are found for review")
-        
-        # Chapter management
-        chapter_group = parser.add_argument_group('Chapter Management')
-        chapter_group.add_argument("--book-id", type=int, help="Specify book ID for translation or chapter operations")
-        chapter_group.add_argument("--chapter-number", type=int, help="Specify chapter number for translation or retrieval")
-        chapter_group.add_argument("--list-chapters", type=int, help="List all chapters for a book by ID")
-        chapter_group.add_argument("--get-chapter", action="store_true", 
-                                help="Get a specific chapter (requires --book-id and --chapter-number)")
-        chapter_group.add_argument("--delete-chapter", action="store_true", 
-                                help="Delete a specific chapter (requires --book-id and --chapter-number)")
-        chapter_group.add_argument("--export-book", type=int, 
-                                help="Export all chapters of a book (book ID) to specified format")
-        chapter_group.add_argument("--retranslate", action="store_true",
-                    help="Retranslate a chapter (requires --book-id and --chapter-number)")
-        chapter_group.add_argument("--edit-chapter-translation", action="store_true",
-                    help="Edit the translation of a chapter using your system editor (requires --book-id and --chapter-number)")
-
-
-        # output options
-        parser.add_argument("--format", type=str, choices=["text", "html", "markdown", "epub"], default="text",
-                   help="Output format for translation results (default: text)")
-        parser.add_argument("--epub-title", type=str, help="Book title for EPUB output")
-        parser.add_argument("--epub-author", type=str, help="Book author for EPUB output")
-        parser.add_argument("--epub-language", type=str, default="en", help="Book language code for EPUB output (default: en)")
-        parser.add_argument("--edit-epub-info", action="store_true", help="Edit book information for EPUB output")
-        
-        # Queue argument and manipulation
-        parser.add_argument("--queue", action="store_true", help="Add a chapter to the queue for later sequential translation (requires --book-id)")
-        parser.add_argument("--list-queue", action="store_true",
-                        help="List all items in the translation queue (optional: --book-id to filter)")
-        parser.add_argument("--clear-queue", action="store_true",
-                        help="Clear the translation queue (optional: --book-id to clear for specific book only)")
-        
-        # SQLite arguments
-        parser.add_argument("--export-json", type=str, help="Export SQLite database to JSON file")
-        parser.add_argument("--import-json", type=str, help="Import entities from JSON file to SQLite database")
-        parser.add_argument("--check-duplicates", action="store_true", help="Check for duplicate entities in the database")
-
-        # Entity review
-        parser.add_argument("--review-entities", action="store_true",
-                            help="Review all entities in the database interactively")
-        parser.add_argument("--entity-book-id", type=int,
-                            help="Filter entities by book ID (use with --review-entities)")
-        parser.add_argument("--entity-category", type=str,
-                            help="Filter entities by category (use with --review-entities)")
-        
-        # Model arguments
-        try:
-            factory = get_factory()
-            supported_providers = ', '.join(factory.get_supported_providers())
-            model_help = f"Specify model for translation (format: [provider:]model). Supported providers: {supported_providers}"
-            advice_help = f"Specify model for entity translation advice (format: [provider:]model). Supported providers: {supported_providers}"
-        except:
-            model_help = "Specify model for translation (format: [provider:]model, e.g., oai:gpt-4 or claude:claude-3-5-sonnet)"
-            advice_help = "Specify model for entity translation advice (format: [provider:]model)"
-        
-        parser.add_argument("--model", type=str, help=model_help)
-        parser.add_argument("--advice-model", type=str, help=advice_help)
-        parser.add_argument("--cleaning-model", type=str, help="Specify model for entity cleaning/classification (format: [provider:]model). Uses --model if not specified.")
-        parser.add_argument("--key", type=str,
-                    help="Specify API key (for the provider specified in --model)")
-        parser.add_argument("--list-providers", action="store_true",
-                    help="List all supported model providers and their default models")
-
-        parser.add_argument("--no-stream", action="store_true",
-                    help="Disable streaming API and progress tracking (slightly faster for very short texts)")
-        parser.add_argument("--no-clean", action="store_true",
-                    help="Disable automatic cleaning of generic nouns from new entities during post-translation review")
-
+        parser = build_arg_parser()
         args = parser.parse_args()
    
         if args.no_review:
@@ -229,115 +369,9 @@ class CommandLineInterface(UserInterface):
         else:
             self.silent_notifications = False
 
-        # Book management
-        if args.list_genres:
-            self._list_genres()
-            exit(0)
+        # Book / category / prompt / provider / chapter management commands
+        self._dispatch_commands(args, _BOOK_COMMANDS)
 
-        if args.create_book:
-            self._create_book(args.create_book, args.book_author, args.book_language, args.book_description, genre=args.genre)
-            exit(0)
-
-        if args.list_books:
-            self._list_books()
-            exit(0)
-            
-        if args.book_info:
-            self._show_book_info(args.book_info)
-            exit(0)
-            
-        if args.edit_book:
-            self._edit_book(args.edit_book)
-            exit(0)
-            
-        if args.delete_book:
-            self._delete_book(args.delete_book)
-            exit(0)
-
-        # Category management (requires --book-id)
-        if args.list_categories:
-            if not args.book_id:
-                print("Error: --list-categories requires --book-id")
-                exit(1)
-            self._list_categories(args.book_id)
-            exit(0)
-
-        if args.add_category:
-            if not args.book_id:
-                print("Error: --add-category requires --book-id")
-                exit(1)
-            self._add_category(args.book_id, args.add_category)
-            exit(0)
-
-        if args.remove_category:
-            if not args.book_id:
-                print("Error: --remove-category requires --book-id")
-                exit(1)
-            self._remove_category(args.book_id, args.remove_category)
-            exit(0)
-
-        if args.reset_categories:
-            if not args.book_id:
-                print("Error: --reset-categories requires --book-id")
-                exit(1)
-            self._reset_categories(args.book_id)
-            exit(0)
-
-        # Book specific prompt section
-        if args.edit_prompt:
-            self._edit_prompt_template(args.edit_prompt)
-            exit(0)
-
-        if args.show_prompt_template:
-            self._show_prompt_template(args.show_prompt_template)
-            exit(0)
-
-        if args.set_prompt_template:
-            if not args.prompt_file:
-                print("Error: --set-prompt-template requires --prompt-file")
-                exit(1)
-            self._set_prompt_template(args.set_prompt_template, args.prompt_file)
-            exit(0)
-
-        if args.export_default_prompt:
-            self._export_default_prompt(args.export_default_prompt)
-            exit(0)
-        
-        # List providers
-        if args.list_providers:
-            self._list_providers()
-            exit(0)
-        
-        # Chapter management
-        if args.list_chapters:
-            self._list_chapters(args.list_chapters)
-            exit(0)
-            
-        if args.get_chapter:
-            if not args.book_id or not args.chapter_number:
-                print("Error: --get-chapter requires --book-id and --chapter-number")
-                exit(1)
-            self._get_chapter(args.book_id, args.chapter_number, args.format or "text")
-            exit(0)
-            
-        if args.delete_chapter:
-            if not args.book_id or not args.chapter_number:
-                print("Error: --delete-chapter requires --book-id and --chapter-number")
-                exit(1)
-            self._delete_chapter(args.book_id, args.chapter_number)
-            exit(0)
-
-        if args.edit_chapter_translation:
-            if not args.book_id or not args.chapter_number:
-                print("Error: --edit-chapter-translation requires --book-id and --chapter-number")
-                exit(1)
-            self._edit_chapter_translation(args.book_id, args.chapter_number)
-            exit(0)
-
-        if args.export_book:
-            self._export_book(args.export_book, args.format or "text")
-            exit(0)
-        
         # Store book_id if specified
         if args.book_id:
             # Verify book exists
@@ -400,30 +434,9 @@ class CommandLineInterface(UserInterface):
         if args.advice_model:
             self.translator.config.advice_model = args.advice_model
 
-        # Process directory
-        if args.dir:
-            if not args.book_id:
-                print("Error: --dir requires --book-id to associate chapters with a book")
-                print("Use --list-books to see available books or --create-book to create a new one")
-                exit(1)
-            self._process_directory(args.dir, args.book_id, args.sort, args.pattern)
-            exit(0)  # Exit after processing directory
+        # Directory processing, EPUB info editing, and queue listing/clearing
+        self._dispatch_commands(args, _POST_MODEL_COMMANDS)
 
-        # edit epub info from --edit-book-info
-        if args.edit_epub_info:
-            self._edit_book_info()
-            exit(0)
-
-        # List queue contents
-        if args.list_queue:
-            self._list_queue_contents(book_id=args.book_id)
-            exit(0)
-
-        # Clear queue
-        if args.clear_queue:
-            self._clear_queue(book_id=args.book_id)
-            exit(0)
-        
         # Store the format in a class variable
         self.output_format = args.format
 
@@ -442,44 +455,8 @@ class CommandLineInterface(UserInterface):
             self.book_info = None
 
         
-        # Handle SQLite database management commands
-        if args.export_json:
-            self.logger.info(f"Exporting SQLite database to {args.export_json}")
-            if self.entity_manager.export_to_json(args.export_json):
-                print(f"Database successfully exported to {args.export_json}")
-            else:
-                print("Export failed. Check logs for details.")
-            exit(0)
-            
-        if args.import_json:
-            self.logger.info(f"Importing entities from {args.import_json} to SQLite database")
-            if self.entity_manager.import_from_json(args.import_json):
-                print(f"Successfully imported entities from {args.import_json}")
-            else:
-                print("Import failed. Check logs for details.")
-            exit(0)
-            
-        if args.check_duplicates:
-            self.check_database_duplicates()
-            exit(0)
-
-        # Handle entity review
-        if args.review_entities:
-            if not self.has_rich_ui:
-                print("Error: Entity review requires questionary. Install: pip install questionary rich")
-                exit(1)
-
-            if args.entity_book_id:
-                book = self.entity_manager.get_book(book_id=args.entity_book_id)
-                if not book:
-                    print(f"Error: Book with ID {args.entity_book_id} not found")
-                    exit(1)
-
-            self._review_all_entities(
-                book_id=args.entity_book_id,
-                category_filter=args.entity_category
-            )
-            exit(0)
+        # Database management (JSON export/import, duplicates) and entity review
+        self._dispatch_commands(args, _DB_COMMANDS)
 
         # Get the input based on the arguments
         if args.clipboard:
