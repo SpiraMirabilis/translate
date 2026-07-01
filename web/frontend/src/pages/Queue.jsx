@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../services/api'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -11,17 +12,13 @@ import ComboBox from '../components/ComboBox'
 
 export default function Queue() {
   const navigate = useNavigate()
-  const [books, setBooks] = useState([])
-  const [queue, setQueue] = useState([])
-  const [queuedBookIds, setQueuedBookIds] = useState([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [filterBook, setFilterBook] = useLocalStorage('queue.filterBook', '')
   const [processing, setProcessing] = useState(false)
   const [jobStatus, setJobStatus] = useState('idle')
   const [showUpload, setShowUpload] = useState(false)
   const [error, setError] = useState(null)
   const [chunkProgress, setChunkProgress] = useState(null)
-  const [providers, setProviders] = useState([])
   const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
   const [adviceModel, setAdviceModel]             = useLocalStorage('shared.adviceModel', '')
   const [cleaningModel, setCleaningModel]         = useLocalStorage('shared.cleaningModel', '')
@@ -39,34 +36,32 @@ export default function Queue() {
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
   const [maxChapters, setMaxChapters]             = useLocalStorage('queue.maxChapters', '')
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const d = await api.listQueue(filterBook ? parseInt(filterBook) : undefined)
-      setQueue(d.items || [])
-      // Which books currently have queued chapters — the response includes the
-      // full distinct set (independent of the active filter), so the drop-down
-      // stays correct without a second unfiltered fetch. Fall back to deriving
-      // it from items in case an older backend doesn't send book_ids.
-      setQueuedBookIds(d.book_ids || [...new Set((d.items || []).map(it => it.book_id))])
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [filterBook])
+  const queueQuery = useQuery({
+    queryKey: ['queue', filterBook || null],
+    queryFn: () => api.listQueue(filterBook ? parseInt(filterBook) : undefined),
+  })
+  const queue = queueQuery.data?.items || []
+  // Which books currently have queued chapters — the response includes the
+  // full distinct set (independent of the active filter), so the drop-down
+  // stays correct without a second unfiltered fetch. Fall back to deriving
+  // it from items in case an older backend doesn't send book_ids.
+  const queuedBookIds = queueQuery.data?.book_ids || [...new Set(queue.map(it => it.book_id))]
+  const loading = queueQuery.isPending
+  const invalidateQueue = () => queryClient.invalidateQueries({ queryKey: ['queue'] })
+
+  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  const books = booksQuery.data?.books || []
+
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => api.listProviders() })
+  const providers = providersQuery.data?.providers || []
 
   useEffect(() => {
-    api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
     api.getJobStatus().then(d => {
       setJobStatus(d.status)
       if (d.is_running) setProcessing(true)
       if (d.auto_process) setAutoProcess(true)
     }).catch(() => {})
-    api.listProviders().then(d => setProviders(d.providers || [])).catch(() => {})
   }, [])
-
-  useEffect(() => { load() }, [load])
 
   // Watch for job events to update UI. useWsEvent delivers every message via
   // the WS fan-out (no lastMessage state, no missed/replayed-stale messages);
@@ -74,8 +69,8 @@ export default function Queue() {
   // read fresh without ref plumbing or dedup.
   useWsEvent((msg) => {
     if (msg.type === 'ws_reconnected') {
-      // One-shot catch-up after a reconnect: refresh the queue list + job status.
-      load()
+      // One-shot catch-up after a reconnect: WsQueryBridge refetches the queue
+      // list (blanket invalidation); refresh local job status here.
       api.getJobStatus().then(d => {
         setJobStatus(d.status)
         setProcessing(!!d.is_running)
@@ -88,7 +83,7 @@ export default function Queue() {
     }
     if (msg.type === 'translation_complete') {
       setChunkProgress(null)
-      load()
+      // Queue list refetch is handled by WsQueryBridge's invalidation.
       // During auto-process the backend drives the loop, so stay in "running".
       // For single-shot, mark complete.
       if (!autoProcess) {
@@ -101,7 +96,7 @@ export default function Queue() {
       setProcessing(false)
       setJobStatus('complete')
       setAutoProcess(false)
-      load()
+      // Queue list refetch is handled by WsQueryBridge's invalidation.
     }
     if (msg.type === 'auto_process_stopping') {
       // Visual feedback — backend acknowledged, will stop after current chapter
@@ -147,7 +142,7 @@ export default function Queue() {
 
   const handleRemove = async (id) => {
     await api.removeQueueItem(id)
-    load()
+    invalidateQueue()
   }
 
   const handleClear = async () => {
@@ -159,7 +154,7 @@ export default function Queue() {
       setError(e.message)
       return
     }
-    load()
+    invalidateQueue()
   }
 
   const isJobRunning = processing || jobStatus === 'running' || jobStatus === 'waiting' || jobStatus === 'awaiting_review'
@@ -374,7 +369,9 @@ export default function Queue() {
         </select>
       </div>
 
-      {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
+      {(error || queueQuery.error) && (
+        <p className="text-rose-400 text-sm mb-4">{error || queueQuery.error.message}</p>
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 text-slate-400 text-sm"><Loader2 size={14} className="animate-spin" /> Loading…</div>
@@ -409,7 +406,7 @@ export default function Queue() {
       )}
 
       {showUpload && (
-        <UploadModal books={books} onClose={() => setShowUpload(false)} onDone={() => { setShowUpload(false); load() }} />
+        <UploadModal books={books} onClose={() => setShowUpload(false)} onDone={() => { setShowUpload(false); invalidateQueue() }} />
       )}
     </div>
   )
