@@ -38,13 +38,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     loop = asyncio.get_event_loop()
-    _job_manager.set_websocket(websocket, loop)
+    backlog = _job_manager.add_websocket(websocket, loop)
     try:
+        # Catch-up replay: events (completion, errors, review prompts) that
+        # fired while no tab was open. Flagged so the client can dedupe.
+        for msg in backlog:
+            await websocket.send_json({**msg, "replayed": True})
         while True:
             # Keep connection alive; all communication is server→client
             await websocket.receive_text()
     except WebSocketDisconnect:
-        _job_manager.websocket = None
+        pass
+    finally:
+        # Remove exactly this socket — a stale disconnect can't kill a live one.
+        _job_manager.remove_websocket(websocket)
 
 
 # ------------------------------------------------------------------

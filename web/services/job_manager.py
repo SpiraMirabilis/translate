@@ -4,6 +4,7 @@ Bridges the synchronous translation thread with the async FastAPI/WebSocket laye
 """
 import asyncio
 import threading
+from collections import deque
 from typing import Optional, Any
 
 
@@ -13,12 +14,31 @@ class JobManager:
 
     Translation runs in a background thread (because it makes blocking HTTP calls).
     This class bridges that thread with the async FastAPI event loop via:
-    - asyncio.run_coroutine_threadsafe() to send WebSocket messages from the thread
+    - asyncio.run_coroutine_threadsafe() to broadcast WebSocket messages from the thread
     - threading.Event to pause the thread during entity review
     """
 
+    # Message types NOT kept in the replay buffer: activity_log entries are
+    # persisted in the DB and refetched by the frontend on load, and progress
+    # ticks are high-frequency transient state that the status endpoint
+    # already restores — replaying stale ones would just flicker the UI.
+    _NO_REPLAY_TYPES = {"activity_log", "progress"}
+
     def __init__(self):
         self.db_manager = None  # Set by app.py after DatabaseManager is created
+
+        # WebSocket connection state — lives for the process, not per job,
+        # so it is deliberately NOT part of reset(): a future reset() caller
+        # must not orphan connected clients.
+        self.websockets: set = set()
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_lock = threading.Lock()
+        # Recent low-frequency events (completion, errors, review prompts),
+        # replayed to reconnecting clients so e.g. a translation_complete
+        # fired with no tab open isn't lost.
+        self._replay: deque = deque(maxlen=100)
+        self._seq = 0
+
         self.reset()
 
     def reset(self):
@@ -32,10 +52,6 @@ class JobManager:
         self.book_id: Optional[int] = None
         self.chapter_number: Optional[int] = None
         self.chapter_title: Optional[str] = None
-
-        # WebSocket connection — set when client connects
-        self.websocket = None
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Entity review synchronisation
         self._review_event = threading.Event()
@@ -84,34 +100,80 @@ class JobManager:
     # WebSocket helpers
     # ------------------------------------------------------------------
 
+    def add_websocket(self, websocket, loop: asyncio.AbstractEventLoop) -> list:
+        """Register a client socket. Returns buffered messages for catch-up replay."""
+        with self._ws_lock:
+            self.websockets.add(websocket)
+            self.loop = loop
+            return list(self._replay)
+
+    def remove_websocket(self, websocket):
+        """Deregister exactly this socket (no-op if already gone).
+
+        A stale disconnect can only remove itself — it can never silence a
+        newer live connection, and a second tab never overwrites the first.
+        """
+        with self._ws_lock:
+            self.websockets.discard(websocket)
+
     def set_websocket(self, websocket, loop: asyncio.AbstractEventLoop):
-        self.websocket = websocket
-        self.loop = loop
+        """Legacy alias for add_websocket (kept for compatibility)."""
+        self.add_websocket(websocket, loop)
+
+    def _buffer(self, message: dict):
+        """Retain low-frequency events for replay to (re)connecting clients."""
+        if message.get("type") in self._NO_REPLAY_TYPES:
+            return
+        with self._ws_lock:
+            self._seq += 1
+            self._replay.append({**message, "seq": self._seq})
+
+    def _drop_replay(self, *types: str):
+        """Remove buffered messages of the given types.
+
+        Called when an interactive prompt (entity review, JSON fix, chapter
+        conflict) is resolved, so a reconnecting client isn't shown a stale
+        modal for a question that has already been answered.
+        """
+        with self._ws_lock:
+            keep = [m for m in self._replay if m.get("type") not in types]
+            self._replay.clear()
+            self._replay.extend(keep)
 
     def send_message_sync(self, message: dict):
-        """Send a JSON message to the frontend from the background translation thread."""
-        if not self.loop or not self.websocket:
-            print(f"[JobManager] No WebSocket connected, dropping message: {message.get('type')}:{message.get('step', '')}")
+        """Broadcast a JSON message to all clients from the background translation thread."""
+        self._buffer(message)
+        loop = self.loop
+        with self._ws_lock:
+            has_sockets = bool(self.websockets)
+        if not loop or not has_sockets:
+            # Buffered above; a reconnecting client will receive it as replay.
             return
-        if self.loop and self.websocket:
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self._send(message), self.loop
-                )
-                future.result(timeout=10)
-            except Exception as e:
-                print(f"[JobManager] WebSocket send error: {e}")
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._broadcast(message), loop
+            )
+            future.result(timeout=10)
+        except Exception as e:
+            print(f"[JobManager] WebSocket send error: {e}")
 
     async def send_message_async(self, message: dict):
-        """Send a JSON message from an async context (e.g. API endpoints)."""
-        await self._send(message)
+        """Broadcast a JSON message from an async context (e.g. API endpoints)."""
+        self._buffer(message)
+        await self._broadcast(message)
 
-    async def _send(self, message: dict):
-        if self.websocket:
+    async def _broadcast(self, message: dict):
+        with self._ws_lock:
+            sockets = list(self.websockets)
+        dead = []
+        for ws in sockets:
             try:
-                await self.websocket.send_json(message)
+                await ws.send_json(message)
             except Exception as e:
-                print(f"[JobManager] WebSocket error: {e}")
+                print(f"[JobManager] WebSocket send failed, dropping socket: {e}")
+                dead.append(ws)
+        for ws in dead:
+            self.remove_websocket(ws)
 
     # ------------------------------------------------------------------
     # Progress callback (called from TranslationEngine)
@@ -167,12 +229,14 @@ class JobManager:
         """Called from the API endpoint when user submits entity review."""
         self._review_result = result
         self.pending_review = None
+        self._drop_replay("entity_review_needed")
         self._review_event.set()
 
     def skip_review(self):
         """Skip entity review — accept AI translations as-is."""
         self._review_result = {}
         self.pending_review = None
+        self._drop_replay("entity_review_needed")
         self._review_event.set()
 
     # ------------------------------------------------------------------
@@ -195,6 +259,7 @@ class JobManager:
             # No human responded in time — fall back to retrying the chunk.
             self.pending_json_fix = None
             self._json_fix_result = None
+            self._drop_replay("json_fix_needed")
             return {"action": "retry", "timed_out": True}
         result = self._json_fix_result or {}
         self._json_fix_result = None
@@ -204,6 +269,7 @@ class JobManager:
         """Called from the API endpoint when user submits a JSON fix action."""
         self._json_fix_result = result
         self.pending_json_fix = None
+        self._drop_replay("json_fix_needed")
         self._json_fix_event.set()
 
     # ------------------------------------------------------------------
@@ -231,6 +297,7 @@ class JobManager:
             "new_chapter_number": new_chapter_number,
         }
         self.pending_chapter_conflict = None
+        self._drop_replay("chapter_conflict_needed")
         self._chapter_conflict_event.set()
 
     # ------------------------------------------------------------------
