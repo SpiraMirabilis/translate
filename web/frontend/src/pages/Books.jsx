@@ -5,8 +5,8 @@ import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { useWs } from '../App'
 import {
-  Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, Code, MessageCircle, MessageCircleOff, Boxes, RefreshCw, Settings
+  Plus, Trash2, Edit2, ChevronDown, ChevronRight,
+  BookOpen, X, Check, Loader2, CheckCircle2, Sparkles, Globe, Search, Eye, EyeOff, Square, CheckSquare, Code, MessageCircle, MessageCircleOff, Settings
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -15,6 +15,9 @@ import RetroactiveReviewModal from '../components/RetroactiveReviewModal'
 import TagChips from '../components/TagChips'
 import ProtagonistBadge from '../components/ProtagonistBadge'
 import { useUrlModal } from '../hooks/useUrlState'
+import BookActionsMenu from '../components/books/BookActionsMenu'
+import RetranslateModal from '../components/books/RetranslateModal'
+import BatchRetranslateModal from '../components/books/BatchRetranslateModal'
 import { useTransientFlag } from '../hooks/useTransientFlag'
 
 export default function Books() {
@@ -551,80 +554,6 @@ export default function Books() {
           books={books}
           onClose={searchModal.close}
         />
-      )}
-    </div>
-  )
-}
-
-function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-
-  useEffect(() => {
-    if (!open) return
-    const handleClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [open])
-
-  const item = (icon, label, onClick, className = '') => (
-    <button
-      className={`text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-2 w-full ${className}`}
-      onClick={() => { setOpen(false); onClick() }}
-    >
-      {icon} {label}
-    </button>
-  )
-
-  const isExporting = exporting && exporting.startsWith(`${book.id}-`)
-  const exportFormat = isExporting ? exporting.split('-').pop().toUpperCase() : null
-
-  return (
-    <div className="relative" ref={ref}>
-      <button className="btn-ghost p-1.5 flex items-center gap-0.5 text-xs" onClick={() => setOpen(v => !v)}>
-        {isExporting ? (
-          <>
-            <Loader2 size={12} className="animate-spin" />
-            <span className="text-indigo-400">Preparing {exportFormat}...</span>
-          </>
-        ) : (
-          <>Actions <ChevronDown size={12} /></>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] bg-slate-800 border border-slate-700 rounded shadow-xl flex flex-col py-1">
-          {/* Export submenu */}
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Export</div>
-          {['text', 'markdown', 'html', 'epub'].map(fmt => (
-            <button
-              key={fmt}
-              className="text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-2 disabled:opacity-50"
-              onClick={() => { setOpen(false); onExport(book.id, fmt) }}
-              disabled={!!exporting}
-            >
-              {exporting === `${book.id}-${fmt}` ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-              {fmt.toUpperCase()}
-            </button>
-          ))}
-          {item(<RefreshCw size={12} />, 'Clear EPUB Cache', onInvalidateCache)}
-          <div className="border-t border-slate-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Publish</div>
-          {item(<Globe size={12} />, 'WordPress', onPublish)}
-          <div className="border-t border-slate-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Entities</div>
-          {item(<Tags size={12} />, 'Categories', onCategories)}
-          {item(<ListChecks size={12} />, 'Review Entities', onReview)}
-          <div className="border-t border-slate-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Chapters</div>
-          {item(<Sparkles size={12} />, 'Repair Chapter Pronouns', onPronounRepair)}
-          <div className="border-t border-slate-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
-          {item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
-          {item(<Boxes size={12} />, 'Modules', onModules)}
-          {item(<Code size={12} />, 'API Logs', onApiLogs)}
-          {item(<Edit2 size={12} />, 'Edit Book', onEdit)}
-          {item(<Trash2 size={12} />, 'Delete', onDelete, 'text-rose-400 hover:text-rose-300')}
-        </div>
       )}
     </div>
   )
@@ -1301,195 +1230,6 @@ function ModuleSettingsModal({ book, module, onClose, onSaved }) {
             Save
           </button>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function RetranslateModal({ bookId, chapterNum, chapterTitle, onClose }) {
-  const [reason, setReason] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
-  const [done, setDone] = useState(false)
-
-  const handleSubmit = async () => {
-    setSubmitting(true)
-    setError(null)
-    try {
-      // Fetch the chapter's original Chinese text
-      const chapter = await api.getChapter(bookId, chapterNum)
-      const untranslated = chapter.untranslated || []
-      if (!untranslated.length) {
-        setError('No source text found for this chapter.')
-        setSubmitting(false)
-        return
-      }
-      // Add to queue
-      await api.addToQueue({
-        text: untranslated.join('\n'),
-        book_id: bookId,
-        chapter_number: chapterNum,
-        title: chapterTitle,
-        priority: true,
-        retranslation_reason: reason.trim() || null,
-      })
-      setDone(true)
-    } catch (e) {
-      setError(e.message)
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-200">Retranslate Chapter</h2>
-          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
-        </div>
-
-        <p className="text-sm text-slate-400">
-          Queue <span className="text-slate-200">Ch. {chapterNum}</span>
-          {chapterTitle && <> — <span className="text-slate-300">{chapterTitle}</span></>}
-          {' '}for retranslation. The existing translation will be overwritten when the queue item is processed.
-        </p>
-
-        {!done ? (
-          <>
-            <div className="space-y-3">
-              <div>
-                <label className="label">Reason for retranslation <span className="text-slate-500 font-normal">(optional)</span></label>
-                <textarea
-                  className="input w-full resize-y min-h-[72px]"
-                  rows={3}
-                  value={reason}
-                  onChange={e => setReason(e.target.value)}
-                  placeholder="e.g. Previous version garbled cultivation terminology; keep honorifics."
-                  disabled={submitting}
-                />
-                <p className="text-xs text-slate-500 mt-1">
-                  Appended to the system prompt so the model knows what to fix.
-                </p>
-              </div>
-            </div>
-
-            {error && <p className="text-rose-400 text-sm">{error}</p>}
-
-            <div className="flex justify-end gap-2">
-              <button className="btn-secondary" onClick={onClose}>Cancel</button>
-              <button
-                className="btn-primary flex items-center gap-1.5"
-                onClick={handleSubmit}
-                disabled={submitting}
-              >
-                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-                Queue for Retranslation
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-sm text-emerald-400">
-              Chapter {chapterNum} has been added to the translation queue. Go to the Queue page to process it.
-            </p>
-            <div className="flex justify-end">
-              <button className="btn-primary" onClick={onClose}>Done</button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function BatchRetranslateModal({ bookId, chapters, onClose, onDone }) {
-  const [reason, setReason] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
-  const [result, setResult] = useState(null) // { queued, errors }
-
-  const sorted = [...chapters].sort((a, b) => a - b)
-  const firstCh = sorted[0]
-  const lastCh = sorted[sorted.length - 1]
-  const rangeLabel = sorted.length === 1
-    ? `Ch. ${firstCh}`
-    : (sorted.length === (lastCh - firstCh + 1) && sorted.every((n, i) => n === firstCh + i))
-      ? `Chs. ${firstCh}–${lastCh}`
-      : `${sorted.length} chapters`
-
-  const handleSubmit = async () => {
-    setSubmitting(true)
-    setError(null)
-    try {
-      const res = await api.batchRequeue(bookId, sorted, reason.trim() || null)
-      setResult({ queued: res.queued || 0, errors: res.errors || [] })
-    } catch (e) {
-      setError(e.message)
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="card w-full max-w-md p-6 space-y-4 shadow-2xl">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-200">Retranslate Chapters</h2>
-          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
-        </div>
-
-        <p className="text-sm text-slate-400">
-          Queue <span className="text-slate-200">{rangeLabel}</span>
-          {' '}for retranslation. Chapters will be processed in ascending order. Existing translations will be overwritten.
-        </p>
-
-        {!result ? (
-          <>
-            <div className="space-y-3">
-              <div>
-                <label className="label">Reason for retranslation <span className="text-slate-500 font-normal">(optional)</span></label>
-                <textarea
-                  className="input w-full resize-y min-h-[72px]"
-                  rows={3}
-                  value={reason}
-                  onChange={e => setReason(e.target.value)}
-                  placeholder="e.g. Previous version garbled cultivation terminology; keep honorifics."
-                  disabled={submitting}
-                />
-                <p className="text-xs text-slate-500 mt-1">
-                  Applied to every chapter in this batch. Appended to the system prompt so the model knows what to fix.
-                </p>
-              </div>
-            </div>
-
-            {error && <p className="text-rose-400 text-sm">{error}</p>}
-
-            <div className="flex justify-end gap-2">
-              <button className="btn-secondary" onClick={onClose} disabled={submitting}>Cancel</button>
-              <button
-                className="btn-primary flex items-center gap-1.5"
-                onClick={handleSubmit}
-                disabled={submitting}
-              >
-                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-                Queue {sorted.length} for Retranslation
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-sm text-emerald-400">
-              Queued {result.queued} chapter(s) for retranslation.
-            </p>
-            {result.errors.length > 0 && (
-              <div className="text-xs text-amber-400 space-y-1">
-                {result.errors.map((err, i) => <p key={i}>• {err}</p>)}
-              </div>
-            )}
-            <div className="flex justify-end">
-              <button className="btn-primary" onClick={onDone}>Done</button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )
