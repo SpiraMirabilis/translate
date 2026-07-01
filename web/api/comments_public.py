@@ -423,12 +423,6 @@ async def delete_comment(
     return {"status": "ok"}
 
 
-@router.get("/turnstile-site-key")
-async def get_turnstile_site_key():
-    """Sibling endpoint to /api/public/turnstile-site-key for symmetry."""
-    return {"site_key": os.getenv("CF_TURNSTILE_SITE_KEY", "")}
-
-
 @router.get("/unsubscribe", include_in_schema=False)
 async def unsubscribe(token: str = ""):
     """One-click unsubscribe from reply notifications.

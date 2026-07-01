@@ -106,6 +106,15 @@ def create_app() -> FastAPI:
     configure_auth()
     app.add_middleware(AuthMiddleware)
 
+    if not os.getenv("CF_TURNSTILE_SECRET_KEY", "").strip():
+        logger.warning(
+            "=" * 62 + "\n"
+            "TURNSTILE DISABLED — CF_TURNSTILE_SECRET_KEY is not set.\n"
+            "Comment/recommendation spam protection is limited to rate\n"
+            "limiting only. Set TURNSTILE_REQUIRED=1 to fail closed instead.\n"
+            + "=" * 62
+        )
+
     # Auth routes (login/logout/status) — before other API routes
     app.include_router(auth_router)
 

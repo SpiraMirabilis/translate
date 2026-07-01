@@ -2,13 +2,13 @@
 WordPress / Fictioneer publishing endpoints.
 """
 import os
-import re
 import threading
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
 import settings_store
+from settings_store import persist_env
 from web.services.wp_client import WordPressClient, content_to_html, compute_hash
 
 router = APIRouter(prefix="/api/wordpress")
@@ -16,30 +16,6 @@ router = APIRouter(prefix="/api/wordpress")
 _config = None
 _db = None
 _job_manager = None
-
-
-def _persist_env(key: str, value: str):
-    """Write or update a key=value in the .env file so it survives restarts."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
-    env_path = os.path.normpath(env_path)
-
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            lines = f.readlines()
-
-    pattern = re.compile(rf"^{re.escape(key)}=")
-    found = False
-    for i, line in enumerate(lines):
-        if pattern.match(line):
-            lines[i] = f"{key}={value}\n"
-            found = True
-            break
-    if not found:
-        lines.append(f"{key}={value}\n")
-
-    with open(env_path, "w") as f:
-        f.writelines(lines)
 
 # In-progress publish state
 _publish_thread: Optional[threading.Thread] = None
@@ -97,7 +73,7 @@ async def update_wp_settings(req: WpSettingsUpdate):
     if req.wp_app_password is not None:
         _config.wp_app_password = req.wp_app_password
         os.environ["WP_APP_PASSWORD"] = _config.wp_app_password
-        _persist_env("WP_APP_PASSWORD", _config.wp_app_password)
+        persist_env("WP_APP_PASSWORD", _config.wp_app_password)
     return {"status": "ok"}
 
 

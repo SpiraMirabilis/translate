@@ -50,7 +50,33 @@ SCHEMA = {
 # config.py reads the SPACES_* vars directly via os.getenv with defaults.
 
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 _data = None  # cached dict; populated lazily by load()
+
+
+def persist_env(key, value):
+    """Write or update a key=value in the project .env file so it survives restarts.
+
+    Reserved for true secrets (provider API keys, WP app password). All
+    non-secret user settings go through settings.json via update() instead.
+    """
+    import re
+    with _lock:
+        lines = []
+        if os.path.exists(_ENV_PATH):
+            with open(_ENV_PATH, "r") as f:
+                lines = f.readlines()
+
+        pattern = re.compile(rf"^{re.escape(key)}=")
+        for i, line in enumerate(lines):
+            if pattern.match(line):
+                lines[i] = f"{key}={value}\n"
+                break
+        else:
+            lines.append(f"{key}={value}\n")
+
+        with open(_ENV_PATH, "w") as f:
+            f.writelines(lines)
 
 
 def _coerce_from_env(raw, t):
