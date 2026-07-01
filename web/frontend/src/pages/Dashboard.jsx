@@ -7,8 +7,8 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { useWs } from '../App'
 import { api } from '../services/api'
+import { useWsEvent } from '../hooks/useWsEvent'
 import EntityReviewPanel from '../components/EntityReviewPanel'
 import JsonFixPanel from '../components/JsonFixPanel'
 import ChapterConflictPanel from '../components/ChapterConflictPanel'
@@ -20,8 +20,6 @@ import {
 } from 'lucide-react'
 
 export default function Dashboard() {
-  const { lastMessage, subscribe } = useWs()
-
   const [books, setBooks] = useState([])
   const [providers, setProviders] = useState([])
   const [inputText, setInputText] = useState('')
@@ -53,29 +51,6 @@ export default function Dashboard() {
 
   const logRef = useRef(null)
 
-  // Direct WS subscriber for json_fix_needed — bypasses React 18 state batching
-  // which can drop the message when activity_log arrives in the same frame.
-  useEffect(() => {
-    return subscribe((msg) => {
-      if (msg.type === 'json_fix_needed') {
-        setJobStatus('awaiting_json_fix')
-        setJsonFix({
-          raw_response: msg.raw_response,
-          chunk_index: msg.chunk_index,
-          total_chunks: msg.total_chunks,
-          chunk_text: msg.chunk_text,
-          is_empty: msg.is_empty,
-          timeout_seconds: msg.timeout_seconds,
-        })
-      }
-      // Backend auto-resolved the JSON fix (timed out → retry); dismiss modal.
-      if (msg.type === 'json_fix_resolved') {
-        setJsonFix(null)
-        setJobStatus('running')
-      }
-    })
-  }, [subscribe])
-
   // Load books + providers + activity log + restore state on mount
   useEffect(() => {
     api.listBooks().then(d => setBooks(d.books || [])).catch(() => {})
@@ -96,14 +71,19 @@ export default function Dashboard() {
     }).catch(() => {})
   }, [])
 
-  // Poll job status + activity log as fallback for missed WebSocket messages
-  // (React 18 batching can drop messages when multiple arrive in the same frame).
-  useEffect(() => {
-    if (jobStatus !== 'running' && jobStatus !== 'waiting') return
-    const interval = setInterval(() => {
+  // Handle WebSocket messages — every message is delivered via the WS fan-out
+  // (useWsEvent), so nothing is lost to React 18 batching. Missed events are
+  // replayed by the backend on connect (flagged `replayed: true`); they're
+  // handled identically since all effects here are idempotent. The backend
+  // does NOT replay activity_log/progress — the ws_reconnected catch-up below
+  // re-syncs those from the REST API instead.
+  useWsEvent((msg) => {
+    const { type } = msg
+
+    if (type === 'ws_reconnected') {
+      // One-shot catch-up after the socket re-opens: restore job status and
+      // any pending modal, and re-sync the activity log.
       api.getJobStatus().then(d => {
-        // Recover the running/waiting status if the WS progress message that
-        // would have flipped it was dropped (e.g. the session-limit resume).
         if (d.status === 'running' || d.status === 'waiting') {
           setJobStatus(d.status)
         }
@@ -119,9 +99,8 @@ export default function Dashboard() {
           setJobStatus('awaiting_chapter_conflict')
           setChapterConflict(d.pending_chapter_conflict)
         }
-        // Translation finished but the WS `translation_complete`/`error` message
-        // was dropped (React 18 batching) — catch up here so the UI doesn't get
-        // stuck on "Repairing translation…" or similar in-progress UI.
+        // Translation finished while disconnected — catch up so the UI doesn't
+        // get stuck on "Repairing translation…" or similar in-progress UI.
         if (d.status === 'complete' || d.status === 'error' || d.status === 'idle') {
           setJobStatus(d.status)
           setChunkProgress(null)
@@ -130,42 +109,50 @@ export default function Dashboard() {
           setChapterConflict(null)
         }
       }).catch(() => {})
-      // Sync activity log to pick up entries missed by WS batching
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [jobStatus])
-
-  // Handle WebSocket messages
-  useEffect(() => {
-    if (!lastMessage) return
-    const { type } = lastMessage
+    }
 
     if (type === 'progress') {
-      setChunkProgress(lastMessage)
-      setJobStatus(lastMessage.phase === 'session_limit' ? 'waiting' : 'running')
+      setChunkProgress(msg)
+      setJobStatus(msg.phase === 'session_limit' ? 'waiting' : 'running')
     }
 
     if (type === 'entity_review_needed') {
       setJobStatus('awaiting_review')
-      setEntityReview({ entities: lastMessage.entities, context: lastMessage.context, phase: lastMessage.phase || 'post' })
+      setEntityReview({ entities: msg.entities, context: msg.context, phase: msg.phase || 'post' })
     }
 
     if (type === 'chapter_conflict_needed') {
       setJobStatus('awaiting_chapter_conflict')
       setChapterConflict({
-        book_id: lastMessage.book_id,
-        chapter_number: lastMessage.chapter_number,
-        book_title: lastMessage.book_title,
-        existing_title: lastMessage.existing_title,
-        existing_untranslated: lastMessage.existing_untranslated,
-        new_title: lastMessage.new_title,
-        new_untranslated: lastMessage.new_untranslated,
-        error: lastMessage.error,
+        book_id: msg.book_id,
+        chapter_number: msg.chapter_number,
+        book_title: msg.book_title,
+        existing_title: msg.existing_title,
+        existing_untranslated: msg.existing_untranslated,
+        new_title: msg.new_title,
+        new_untranslated: msg.new_untranslated,
+        error: msg.error,
       })
     }
 
-    // json_fix_needed is handled by the direct subscribe() listener above
+    if (type === 'json_fix_needed') {
+      setJobStatus('awaiting_json_fix')
+      setJsonFix({
+        raw_response: msg.raw_response,
+        chunk_index: msg.chunk_index,
+        total_chunks: msg.total_chunks,
+        chunk_text: msg.chunk_text,
+        is_empty: msg.is_empty,
+        timeout_seconds: msg.timeout_seconds,
+      })
+    }
+
+    // Backend auto-resolved the JSON fix (timed out → retry); dismiss modal.
+    if (type === 'json_fix_resolved') {
+      setJsonFix(null)
+      setJobStatus('running')
+    }
 
     if (type === 'translation_complete') {
       setJobStatus('complete')
@@ -178,10 +165,10 @@ export default function Dashboard() {
       // (completed chapter + 1) rather than incrementing, so it's idempotent if
       // the message is somehow delivered twice. `chapter` is whatever the backend
       // actually used, including auto-assigned numbers when the field was blank.
-      if (Number.isFinite(lastMessage.chapter)) {
-        setChapterNum(String(lastMessage.chapter + 1))
+      if (Number.isFinite(msg.chapter)) {
+        setChapterNum(String(msg.chapter + 1))
       }
-      // Re-fetch full log to catch any entries dropped by React 18 batching
+      // Re-fetch full log so late/backfilled entries are reflected
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
     }
 
@@ -204,14 +191,15 @@ export default function Dashboard() {
       setChapterConflict(null)
     }
 
-    // Append activity log entries from the backend
-    if (type === 'activity_log' && lastMessage.entry) {
+    // Append activity log entries from the backend (dedup by id, so a re-synced
+    // full-log fetch racing an incoming entry can't double-append)
+    if (type === 'activity_log' && msg.entry) {
       setActivityLog(prev => {
-        if (prev.some(e => e.id === lastMessage.entry.id)) return prev
-        return [...prev, lastMessage.entry]
+        if (prev.some(e => e.id === msg.entry.id)) return prev
+        return [...prev, msg.entry]
       })
     }
-  }, [lastMessage])
+  })
 
   // Auto-scroll log
   useEffect(() => {

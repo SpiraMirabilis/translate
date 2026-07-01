@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useWs } from '../App'
 import { api } from '../services/api'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useWsEvent } from '../hooks/useWsEvent'
 import {
   Play, Trash2, Upload, FileText, Loader2, ListChecks, X, StopCircle, RefreshCw, Info
 } from 'lucide-react'
@@ -10,7 +10,6 @@ import TranslationProgress from '../components/TranslationProgress'
 import ComboBox from '../components/ComboBox'
 
 export default function Queue() {
-  const { lastMessage } = useWs()
   const navigate = useNavigate()
   const [books, setBooks] = useState([])
   const [queue, setQueue] = useState([])
@@ -69,60 +68,59 @@ export default function Queue() {
 
   useEffect(() => { load() }, [load])
 
-  // Read autoProcess inside the WS handler via a ref so it doesn't need to be
-  // an effect dependency. Listing it caused the handler to re-run on every
-  // checkbox toggle and replay the persisted (possibly stale) lastMessage.
-  const autoProcessRef = useRef(autoProcess)
-  useEffect(() => { autoProcessRef.current = autoProcess }, [autoProcess])
-
-  // Watch for job events to update UI. `lastMessage` persists in the WS context
-  // (it holds the last message ever received), so only act on a genuinely new
-  // message — otherwise an effect re-run from an unrelated dependency change
-  // (e.g. the book filter) would replay a stale `progress` event and falsely
-  // flip the UI into the "running" state.
-  const processedMsgRef = useRef(null)
-  useEffect(() => {
-    if (!lastMessage || lastMessage === processedMsgRef.current) return
-    processedMsgRef.current = lastMessage
-    if (lastMessage.type === 'progress') {
-      setChunkProgress(lastMessage)
-      setJobStatus(lastMessage.phase === 'session_limit' ? 'waiting' : 'running')
+  // Watch for job events to update UI. useWsEvent delivers every message via
+  // the WS fan-out (no lastMessage state, no missed/replayed-stale messages);
+  // the handler closure is always the latest render's, so autoProcess/load are
+  // read fresh without ref plumbing or dedup.
+  useWsEvent((msg) => {
+    if (msg.type === 'ws_reconnected') {
+      // One-shot catch-up after a reconnect: refresh the queue list + job status.
+      load()
+      api.getJobStatus().then(d => {
+        setJobStatus(d.status)
+        setProcessing(!!d.is_running)
+        if (d.auto_process) setAutoProcess(true)
+      }).catch(() => {})
     }
-    if (lastMessage.type === 'translation_complete') {
+    if (msg.type === 'progress') {
+      setChunkProgress(msg)
+      setJobStatus(msg.phase === 'session_limit' ? 'waiting' : 'running')
+    }
+    if (msg.type === 'translation_complete') {
       setChunkProgress(null)
       load()
       // During auto-process the backend drives the loop, so stay in "running".
       // For single-shot, mark complete.
-      if (!autoProcessRef.current) {
+      if (!autoProcess) {
         setJobStatus('complete')
         setProcessing(false)
       }
     }
-    if (lastMessage.type === 'auto_process_done') {
+    if (msg.type === 'auto_process_done') {
       setChunkProgress(null)
       setProcessing(false)
       setJobStatus('complete')
       setAutoProcess(false)
       load()
     }
-    if (lastMessage.type === 'auto_process_stopping') {
+    if (msg.type === 'auto_process_stopping') {
       // Visual feedback — backend acknowledged, will stop after current chapter
     }
-    if (lastMessage.type === 'error') {
+    if (msg.type === 'error') {
       setProcessing(false)
       setJobStatus('error')
       setChunkProgress(null)
       setAutoProcess(false)
     }
-    if (lastMessage.type === 'entity_review_needed') {
+    if (msg.type === 'entity_review_needed') {
       setJobStatus('awaiting_review')
       navigate('/')
     }
-    if (lastMessage.type === 'json_fix_needed') {
+    if (msg.type === 'json_fix_needed') {
       setJobStatus('awaiting_json_fix')
       navigate('/')
     }
-  }, [lastMessage, load])
+  })
 
   const handleProcessNext = async () => {
     setProcessing(true)

@@ -41,15 +41,23 @@ const WsContext = createContext(null)
 export const useWs = () => useContext(WsContext)
 
 function WsProvider({ children }) {
-  const [lastMessage, setLastMessage] = useState(null)
   const [connected, setConnected] = useState(false)
   const wsRef = useRef(null)
   const reconnectTimer = useRef(null)
   const listenersRef = useRef(new Set())
+  const everConnectedRef = useRef(false)
 
   const subscribe = useCallback((fn) => {
     listenersRef.current.add(fn)
     return () => listenersRef.current.delete(fn)
+  }, [])
+
+  // Deliver a message to every listener. Each call is isolated so one bad
+  // listener can't prevent the rest from receiving the message.
+  const deliver = useCallback((msg) => {
+    listenersRef.current.forEach(fn => {
+      try { fn(msg) } catch { /* ignore listener errors */ }
+    })
   }, [])
 
   const connect = useCallback(() => {
@@ -58,20 +66,27 @@ function WsProvider({ children }) {
     const ws = new WebSocket(`${protocol}//${location.host}/ws`)
     wsRef.current = ws
 
-    ws.onopen    = () => { setConnected(true); clearTimeout(reconnectTimer.current) }
+    ws.onopen    = () => {
+      setConnected(true)
+      clearTimeout(reconnectTimer.current)
+      // Synthetic event on RE-connect (not the first open) so consumers can
+      // run one-shot catch-up (refetch status/lists missed while offline).
+      if (everConnectedRef.current) deliver({ type: 'ws_reconnected' })
+      everConnectedRef.current = true
+    }
     ws.onclose   = () => {
       setConnected(false)
       reconnectTimer.current = setTimeout(connect, 2000)
     }
     ws.onerror   = () => ws.close()
     ws.onmessage = (e) => {
+      let msg
       try {
-        const msg = JSON.parse(e.data)
-        setLastMessage(msg)
-        listenersRef.current.forEach(fn => fn(msg))
-      } catch { /* ignore */ }
+        msg = JSON.parse(e.data)
+      } catch { return /* ignore malformed frames */ }
+      deliver(msg)
     }
-  }, [])
+  }, [deliver])
 
   useEffect(() => {
     connect()
@@ -82,7 +97,7 @@ function WsProvider({ children }) {
   }, [connect])
 
   return (
-    <WsContext.Provider value={{ lastMessage, connected, subscribe }}>
+    <WsContext.Provider value={{ connected, subscribe }}>
       {children}
     </WsContext.Provider>
   )
