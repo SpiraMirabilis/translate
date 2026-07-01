@@ -785,3 +785,51 @@ class ChaptersRepo:
         self.invalidate_epub_cache(book_id)
         self.logger.info(f"Renumbered chapter {chapter_number} -> {new_chapter_number} for book ID {book_id}")
         return True, None
+
+    # ------------------------------------------------------------------
+    # Proofread flag (added in B4 for the web layer; additive only)
+    # ------------------------------------------------------------------
+
+    def _proofread_timestamp(self, is_proofread):
+        """Timestamp to store in chapters.is_proofread — owns the MySQL
+        (DATETIME literal) vs SQLite (ISO-8601 Z suffix) format branch."""
+        if not is_proofread:
+            return None
+        fmt = '%Y-%m-%d %H:%M:%S' if self.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
+        return datetime.datetime.utcnow().strftime(fmt)
+
+    def set_chapter_proofread(self, book_id, chapter_number, is_proofread):
+        """Set (True) or clear (False) a chapter's proofread timestamp.
+
+        Returns the stored timestamp string, or None when clearing.
+        Raises LookupError when the chapter doesn't exist.
+        """
+        now = self._proofread_timestamp(is_proofread)
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
+                (now, book_id, chapter_number),
+            )
+            if cursor.rowcount == 0:
+                raise LookupError(
+                    f"Chapter {chapter_number} not found for book {book_id}")
+        return now
+
+    def set_chapters_proofread(self, book_id, chapter_numbers, is_proofread):
+        """Bulk variant of set_chapter_proofread (single transaction).
+
+        Chapters that don't exist contribute 0 to the count (no error).
+        Returns (updated_count, timestamp_or_None).
+        """
+        now = self._proofread_timestamp(is_proofread)
+        updated = 0
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            for num in chapter_numbers:
+                cursor.execute(
+                    "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
+                    (now, book_id, num),
+                )
+                updated += cursor.rowcount
+        return updated, now

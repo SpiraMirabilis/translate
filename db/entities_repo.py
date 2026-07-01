@@ -899,3 +899,94 @@ class EntitiesRepo:
         except Exception as e:
             self.logger.error(f"Error finding chapters using entity: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # ID-based accessors (added in B4 for the web layer; additive only —
+    # root scripts keep using the category/untranslated-keyed methods above)
+    # ------------------------------------------------------------------
+
+    _ENTITY_COLUMNS = ("id", "category", "untranslated", "translation",
+                       "last_chapter", "gender", "incorrect_translation",
+                       "book_id", "origin_chapter", "note")
+
+    def get_entity_by_id(self, entity_id):
+        """Return a single entity row as a dict, or None if it doesn't exist."""
+        with self._conn(dict_rows=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT " + ", ".join(self._ENTITY_COLUMNS) +
+                " FROM entities WHERE id = ?",
+                (entity_id,),
+            )
+            row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_entity_by_id(self, entity_id, **fields):
+        """Update arbitrary entity columns by primary key.
+
+        Only known columns are accepted; unknown keyword names raise
+        ValueError (catching typos rather than silently dropping them).
+        Explicit None values are written as SQL NULL (e.g. book_id=None
+        moves an entity to global scope).
+
+        Returns True when a row was updated. Note the backend nuance
+        inherited from the previous inline SQL: MySQL reports rowcount 0
+        for an UPDATE that leaves values unchanged, while SQLite counts
+        matched rows.
+        """
+        unknown = set(fields) - set(self._ENTITY_COLUMNS) | ({"id"} & set(fields))
+        if unknown:
+            raise ValueError(f"Unknown entity column(s): {sorted(unknown)}")
+        if not fields:
+            return False
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            set_clause = ", ".join(f"{k} = ?" for k in fields)
+            cursor.execute(
+                f"UPDATE entities SET {set_clause} WHERE id = ?",
+                list(fields.values()) + [entity_id],
+            )
+            return cursor.rowcount > 0
+
+    def delete_entity_by_id(self, entity_id):
+        """Delete an entity by primary key. Returns True if a row was deleted."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+            return cursor.rowcount > 0
+
+    def list_gendered_entities(self, book_id, categories):
+        """Entities in the given categories with a usable gender and a
+        non-empty translation — the pronoun-repair candidate set.
+
+        Returns a list of dicts: {id, untranslated, translation, gender}.
+        """
+        cats = list(categories) or ["characters"]
+        placeholders = ",".join("?" for _ in cats)
+        with self._conn(dict_rows=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT id, untranslated, translation, gender
+                FROM entities
+                WHERE book_id = ? AND category IN ({placeholders})
+                      AND gender IN ('male', 'female', 'neutral')
+                      AND translation IS NOT NULL AND translation != ''
+                """,
+                (book_id, *cats),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def count_entities_by_category(self, book_id):
+        """Entity counts per category for a book (book-scoped + global rows).
+
+        Returns {category: count}.
+        """
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT category, COUNT(*) FROM entities "
+                "WHERE book_id = ? OR book_id IS NULL GROUP BY category",
+                (book_id,),
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}

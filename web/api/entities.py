@@ -182,42 +182,36 @@ def create_entity(req: EntityCreate):
 
 @router.put("/{entity_id}")
 def update_entity(entity_id: int, req: EntityUpdate):
-    with _entity_manager._conn() as conn:
-        cursor = conn.cursor()
+    # Check exists and get book_id and current translation
+    entity = _entity_manager.get_entity_by_id(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found.")
+    entity_book_id = entity["book_id"]
+    current_translation = entity["translation"]
 
-        # Check exists and get book_id and current translation
-        cursor.execute("SELECT id, book_id, translation FROM entities WHERE id = ?", (entity_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Entity not found.")
-        entity_book_id = row[1]
-        current_translation = row[2]
+    updates = {}
+    if req.translation is not None:
+        updates["translation"] = req.translation
+        # Auto-record the previous translation as incorrect_translation when it
+        # actually changes, so downstream tools (substitution audits, redo
+        # scripts) can find what was edited. The standalone scripts do this too.
+        # Caller may override by sending an explicit incorrect_translation.
+        if req.incorrect_translation is None and current_translation and req.translation != current_translation:
+            updates["incorrect_translation"] = current_translation
+    if req.category is not None:
+        valid_cats = _entity_manager.get_book_categories(entity_book_id) if entity_book_id else CATEGORIES
+        if req.category not in valid_cats:
+            raise HTTPException(status_code=400, detail=f"Invalid category: {req.category}")
+        updates["category"] = req.category
+    if req.gender is not None:
+        updates["gender"] = req.gender
+    if req.incorrect_translation is not None:
+        updates["incorrect_translation"] = req.incorrect_translation
+    if req.note is not None:
+        updates["note"] = req.note
 
-        updates = {}
-        if req.translation is not None:
-            updates["translation"] = req.translation
-            # Auto-record the previous translation as incorrect_translation when it
-            # actually changes, so downstream tools (substitution audits, redo
-            # scripts) can find what was edited. The standalone scripts do this too.
-            # Caller may override by sending an explicit incorrect_translation.
-            if req.incorrect_translation is None and current_translation and req.translation != current_translation:
-                updates["incorrect_translation"] = current_translation
-        if req.category is not None:
-            valid_cats = _entity_manager.get_book_categories(entity_book_id) if entity_book_id else CATEGORIES
-            if req.category not in valid_cats:
-                raise HTTPException(status_code=400, detail=f"Invalid category: {req.category}")
-            updates["category"] = req.category
-        if req.gender is not None:
-            updates["gender"] = req.gender
-        if req.incorrect_translation is not None:
-            updates["incorrect_translation"] = req.incorrect_translation
-        if req.note is not None:
-            updates["note"] = req.note
-
-        if updates:
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            values = list(updates.values()) + [entity_id]
-            cursor.execute(f"UPDATE entities SET {set_clause} WHERE id = ?", values)
+    if updates:
+        _entity_manager.update_entity_by_id(entity_id, **updates)
 
     return {"status": "ok"}
 
@@ -284,12 +278,8 @@ def decase_entity(req: DecaseRequest):
 
 @router.delete("/{entity_id}")
 def delete_entity(entity_id: int):
-    with _entity_manager._conn() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM entities WHERE id = ?", (entity_id,))
-        if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Entity not found.")
-        cursor.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+    if not _entity_manager.delete_entity_by_id(entity_id):
+        raise HTTPException(status_code=404, detail="Entity not found.")
     return {"status": "ok"}
 
 
@@ -302,40 +292,28 @@ def batch_operation(req: BatchRequest):
     if not req.ids:
         raise HTTPException(status_code=400, detail="No entity IDs provided.")
 
-    with _entity_manager._conn() as conn:
-        cursor = conn.cursor()
+    # Verify all IDs exist
+    missing = sorted(eid for eid in set(req.ids)
+                     if not _entity_manager.get_entity_by_id(eid))
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Entity IDs not found: {missing}")
 
-        # Verify all IDs exist
-        placeholders = ",".join("?" for _ in req.ids)
-        cursor.execute(f"SELECT id FROM entities WHERE id IN ({placeholders})", req.ids)
-        found = {row[0] for row in cursor.fetchall()}
-        missing = set(req.ids) - found
-        if missing:
-            raise HTTPException(status_code=404, detail=f"Entity IDs not found: {sorted(missing)}")
+    if req.action == "delete":
+        affected = sum(1 for eid in req.ids if _entity_manager.delete_entity_by_id(eid))
 
-        if req.action == "delete":
-            cursor.execute(f"DELETE FROM entities WHERE id IN ({placeholders})", req.ids)
-            affected = cursor.rowcount
+    elif req.action == "move_category":
+        if not req.category:
+            raise HTTPException(status_code=400, detail="category is required for move_category action.")
+        affected = sum(1 for eid in req.ids
+                       if _entity_manager.update_entity_by_id(eid, category=req.category))
 
-        elif req.action == "move_category":
-            if not req.category:
-                raise HTTPException(status_code=400, detail="category is required for move_category action.")
-            cursor.execute(
-                f"UPDATE entities SET category = ? WHERE id IN ({placeholders})",
-                [req.category] + req.ids,
-            )
-            affected = cursor.rowcount
+    elif req.action == "change_book":
+        # book_id=None means move to global
+        affected = sum(1 for eid in req.ids
+                       if _entity_manager.update_entity_by_id(eid, book_id=req.book_id))
 
-        elif req.action == "change_book":
-            # book_id=None means move to global
-            cursor.execute(
-                f"UPDATE entities SET book_id = ? WHERE id IN ({placeholders})",
-                [req.book_id] + req.ids,
-            )
-            affected = cursor.rowcount
-
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
     _entity_manager._load_entities()
     return {"status": "ok", "affected": affected}
