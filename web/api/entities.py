@@ -20,6 +20,7 @@ def init(entity_manager, translator):
 
 
 from database import DEFAULT_CATEGORIES
+from chapter_text_ops import decase_lines, substitute_in_lines, source_mentions
 CATEGORIES = DEFAULT_CATEGORIES
 
 
@@ -261,7 +262,6 @@ def decase_entity(req: DecaseRequest):
 
         total_subs = 0
         chapters_changed = 0
-        pattern = re.compile(re.escape(word) + r'\b' if word[-1].isalpha() else re.escape(word))
 
         for ch_id, raw_content in rows:
             try:
@@ -269,41 +269,10 @@ def decase_entity(req: DecaseRequest):
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            changed = False
-            new_lines = []
-            for line in lines:
-                # Character spans occupied by protected compound phrases in this
-                # line — word matches fully inside one of these are left alone.
-                protected_spans = []
-                for phrase in protected:
-                    i = line.find(phrase)
-                    while i != -1:
-                        protected_spans.append((i, i + len(phrase)))
-                        i = line.find(phrase, i + 1)
+            new_lines, n_changed = decase_lines(lines, word, lowered, protected)
+            total_subs += n_changed
 
-                def replacer(m):
-                    pos = m.start()
-                    for s, e in protected_spans:
-                        if s <= pos and m.end() <= e:
-                            return m.group(0)
-                    if line[:pos].strip() == '':
-                        return m.group(0)
-                    if pos > 0 and line[pos - 1] in '"\u201c\u2018\'\u3010':
-                        return m.group(0)
-                    i = pos - 1
-                    while i >= 0 and line[i] == ' ':
-                        i -= 1
-                    if i >= 0 and line[i] in '.!?':
-                        return m.group(0)
-                    return lowered + m.group(0)[len(word):]
-
-                new_line = pattern.sub(replacer, line)
-                if new_line != line:
-                    changed = True
-                    total_subs += 1
-                new_lines.append(new_line)
-
-            if changed:
+            if n_changed:
                 chapters_changed += 1
                 cursor.execute(
                     "UPDATE chapters SET translated_content = ? WHERE id = ?",
@@ -556,10 +525,10 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
     action="requeue":    find chapters whose *untranslated* content contains the
                          entity's Chinese text, and add them back to the queue.
     """
-    import json, re
-    from itertools import zip_longest
+    import json
 
     with _entity_manager._conn(dict_rows=True) as conn:
+        cursor = conn.cursor()
 
         # Look up the entity to get its untranslated text and book_id
         cursor.execute("SELECT untranslated, book_id FROM entities WHERE id = ?", (req.entity_id,))
@@ -599,48 +568,9 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
             if req.safer:
                 chapters = [
                     ch for ch in chapters
-                    if ch["untranslated_content"] and untranslated in ch["untranslated_content"]
+                    if source_mentions(ch["untranslated_content"], untranslated)
                 ]
                 candidates = len(chapters)
-
-            pattern = re.compile(re.escape(req.old_translation), re.IGNORECASE)
-            old_words = req.old_translation.split()
-            new_words = req.new_translation.split()
-
-            def match_case(match):
-                # Preserve *positional* casing — the capitalization a word picks up
-                # from where it sits (sentence-start capital, all-caps headings) —
-                # by comparing each matched word against the canonical old word and
-                # re-applying only that shift to the new word. The old translation's
-                # *own* casing is NOT preserved: a pure case correction (e.g.
-                # "azure sword" → "Azure Sword") is applied as written. Comparing
-                # the new word against the matched chapter text instead would make
-                # such a correction reproduce the old casing and silently no-op.
-                chapter_words = match.group().split()
-                transformed = []
-                for idx, (old_w, new_w) in enumerate(
-                    zip_longest(old_words, new_words, fillvalue="")
-                ):
-                    if not new_w:
-                        continue
-                    if not old_w:
-                        # New translation has more words than the old one; the extra
-                        # words have no positional reference, so use them verbatim.
-                        transformed.append(new_w)
-                        continue
-                    chapter_w = chapter_words[idx] if idx < len(chapter_words) else old_w
-                    # The guards ensure a branch fires only for a genuine case
-                    # *shift*; when the old word is already in that form the new
-                    # word is used verbatim (preserving internal caps, "HeavenNet").
-                    if chapter_w == old_w.upper() and not old_w.isupper():
-                        transformed.append(new_w.upper())
-                    elif chapter_w == old_w[0].upper() + old_w[1:] and not old_w[0].isupper():
-                        transformed.append(new_w[0].upper() + new_w[1:])
-                    elif chapter_w == old_w[0].lower() + old_w[1:] and not old_w[0].islower():
-                        transformed.append(new_w[0].lower() + new_w[1:])
-                    else:
-                        transformed.append(new_w)
-                return " ".join(transformed).strip()
 
             affected = 0
             for ch in chapters:
@@ -649,17 +579,15 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
                 except (json.JSONDecodeError, TypeError):
                     continue
 
-                changed = False
-                for i in range(len(content)):
-                    new_line = pattern.sub(match_case, content[i])
-                    if new_line != content[i]:
-                        content[i] = new_line
-                        changed = True
+                # Case-preserving replacement lives in chapter_text_ops (B4).
+                new_content, n_changed = substitute_in_lines(
+                    content, req.old_translation, req.new_translation
+                )
 
-                if changed:
+                if n_changed:
                     cursor.execute(
                         "UPDATE chapters SET translated_content = ? WHERE id = ?",
-                        (json.dumps(content, ensure_ascii=False), ch["id"]),
+                        (json.dumps(new_content, ensure_ascii=False), ch["id"]),
                     )
                     affected += 1
 
