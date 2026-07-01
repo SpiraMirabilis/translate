@@ -1070,13 +1070,97 @@ class DatabaseManager:
             self.logger.error(f"Error retrieving chapter data: {e}")
             return None
 
-    def list_chapters(self, book_id):
+    def get_chapters_bulk(self, book_id, chapter_numbers=None, include_untranslated=False):
         """
-        List all chapters for a specific book.
-        
+        Fetch many chapters in one query (replaces per-chapter get_chapter loops
+        in book export, EPUB generation and WordPress publishing).
+
         Args:
             book_id: Book ID
-            
+            chapter_numbers: Iterable of chapter numbers, or None for all chapters
+            include_untranslated: Also decode + include the source text
+
+        Returns:
+            list: Chapter dicts shaped like get_chapter() (minus "untranslated"
+                  unless requested), ordered by chapter_number. A row whose JSON
+                  content is corrupt falls back to newline-splitting like
+                  get_chapter(); a row that fails entirely is skipped, not fatal.
+        """
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+
+            src_col = ", c.untranslated_content" if include_untranslated else ""
+            base = f'''
+            SELECT c.id, c.book_id, c.chapter_number, c.title,
+                c.translated_content, c.summary, c.translation_date,
+                c.translation_model, b.title as book_title, c.is_proofread{src_col}
+            FROM chapters c
+            JOIN books b ON c.book_id = b.id
+            WHERE c.book_id = ?'''
+
+            rows = []
+            if chapter_numbers is None:
+                cursor.execute(base + " ORDER BY c.chapter_number", (book_id,))
+                rows = cursor.fetchall()
+            else:
+                nums = list(chapter_numbers)
+                # Chunk the IN list to stay well under parameter limits
+                for i in range(0, len(nums), 500):
+                    chunk = nums[i:i + 500]
+                    placeholders = ",".join("?" * len(chunk))
+                    cursor.execute(
+                        base + f" AND c.chapter_number IN ({placeholders})"
+                        " ORDER BY c.chapter_number",
+                        [book_id] + chunk)
+                    rows.extend(cursor.fetchall())
+            conn.close()
+
+            def _decode(raw):
+                try:
+                    return json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    return raw.split('\n') if isinstance(raw, str) else []
+
+            result = []
+            for row in rows:
+                try:
+                    chapter = {
+                        "id": row[0],
+                        "book_id": row[1],
+                        "chapter": row[2],
+                        "title": row[3],
+                        "content": _decode(row[4]),
+                        "summary": row[5],
+                        "translation_date": row[6],
+                        "model": row[7],
+                        "book_title": row[8],
+                        "is_proofread": row[9],
+                    }
+                    if include_untranslated:
+                        chapter["untranslated"] = _decode(row[10])
+                    result.append(chapter)
+                except Exception as e:
+                    self.logger.error(f"Skipping corrupt chapter row in bulk fetch: {e}")
+            if chapter_numbers is not None:
+                result.sort(key=lambda c: c["chapter"])
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error bulk-fetching chapters: {e}")
+            if self.strict_writes:
+                raise
+            return []
+
+    def list_chapters(self, book_id, limit=None, offset=0):
+        """
+        List chapters for a specific book (all of them unless limit is given).
+
+        Args:
+            book_id: Book ID
+            limit: Optional max rows to return (None = all, legacy behavior)
+            offset: Rows to skip when limit is given
+
         Returns:
             list: List of chapter metadata dictionaries
         """
@@ -1086,16 +1170,22 @@ class DatabaseManager:
             if not book:
                 self.logger.warning(f"Book with ID {book_id} not found")
                 return []
-                
+
             conn = self.backend.get_connection()
             cursor = conn.cursor()
-            
-            cursor.execute('''
+
+            query = '''
             SELECT id, chapter_number, title, translation_date, translation_model, is_proofread
             FROM chapters
             WHERE book_id = ?
             ORDER BY chapter_number
-            ''', (book_id,))
+            '''
+            params = [book_id]
+            if limit is not None:
+                query += ' LIMIT ? OFFSET ?'
+                params.extend([int(limit), int(offset)])
+
+            cursor.execute(query, params)
 
             rows = cursor.fetchall()
             conn.close()
@@ -2422,6 +2512,34 @@ class DatabaseManager:
             conn.close()
         except Exception as e:
             self.logger.error(f"Error logging reader view: {e}")
+
+    def flush_reader_views(self, views, book_bumps):
+        """Bulk write buffered reader views (see web/services/view_logger.py).
+
+        Args:
+            views: list of (book_id, chapter_number, ip) tuples for reader_log
+            book_bumps: {book_id: count} aggregate view_count increments
+                        (already includes the per-view bumps)
+        """
+        if not views and not book_bumps:
+            return
+        conn = self.backend.get_connection()
+        try:
+            cursor = conn.cursor()
+            if views:
+                now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                cursor.executemany(
+                    'INSERT INTO reader_log (book_id, chapter_number, ip, viewed_at) VALUES (?, ?, ?, ?)',
+                    [(b, c, ip, now) for (b, c, ip) in views]
+                )
+            for book_id, count in book_bumps.items():
+                cursor.execute(
+                    'UPDATE books SET view_count = view_count + ? WHERE id = ?',
+                    (int(count), book_id)
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     def increment_book_view_count(self, book_id: int):
         """Atomically bump books.view_count by 1. Does not write reader_log."""

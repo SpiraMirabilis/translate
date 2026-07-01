@@ -55,12 +55,29 @@ router = APIRouter(prefix="/api/public")
 
 _db = None
 _config = None
+_view_logger = None
 
 
-def init(db_manager, config=None):
-    global _db, _config
+def init(db_manager, config=None, view_logger=None):
+    global _db, _config, _view_logger
     _db = db_manager
     _config = config
+    _view_logger = view_logger
+
+
+def _log_view(book_id: int, chapter_number: int, ip: str):
+    """Buffered when the ViewLogger is wired (production), direct otherwise."""
+    if _view_logger:
+        _view_logger.log_view(book_id, chapter_number, ip)
+    else:
+        _db.log_reader_view(book_id, chapter_number, ip)
+
+
+def _bump_book_view(book_id: int):
+    if _view_logger:
+        _view_logger.bump_book(book_id)
+    else:
+        _db.increment_book_view_count(book_id)
 
 
 # ------------------------------------------------------------------
@@ -207,7 +224,7 @@ async def get_book(book_id: int, request: Request, response: Response):
     _guard(request)
     _cache(response, _CACHE_SHORT)
     book = _get_public_book(book_id)
-    _db.increment_book_view_count(book_id)
+    _bump_book_view(book_id)
     cover_url, cover_medium_url, cover_thumb_url = _cover_urls(book)
     return {
         "id": book["id"],
@@ -227,11 +244,14 @@ async def get_book(book_id: int, request: Request, response: Response):
 
 
 @router.get("/books/{book_id}/chapters")
-async def list_chapters(book_id: int, request: Request, response: Response):
+async def list_chapters(book_id: int, request: Request, response: Response,
+                        limit: Optional[int] = None, offset: int = 0):
     _guard(request)
     _cache(response, _CACHE_SHORT)
     _get_public_book(book_id)
-    chapters = _db.list_chapters(book_id)
+    if limit is not None:
+        limit = max(1, min(int(limit), 5000))
+    chapters = _db.list_chapters(book_id, limit=limit, offset=max(0, int(offset)))
     return {"chapters": [
         {"chapter": c["chapter"], "title": c.get("title")}
         for c in chapters
@@ -279,11 +299,8 @@ async def get_chapters_batch(book_id: int, nums: str, request: Request, response
         raise HTTPException(status_code=400, detail=f"At most {_BATCH_MAX} chapters per batch")
     out = []
     ip = client_ip(request)
-    for n in wanted:
-        ch = _db.get_chapter(book_id=book_id, chapter_number=n)
-        if not ch:
-            continue
-        _db.log_reader_view(book_id, n, ip)
+    for ch in _db.get_chapters_bulk(book_id, wanted, include_untranslated=True):
+        _log_view(book_id, ch["chapter"], ip)
         out.append(_shape_public_chapter(ch, book_id))
     return {"chapters": out}
 
@@ -297,7 +314,7 @@ async def get_chapter(book_id: int, chapter_number: int, request: Request, respo
     if not ch:
         raise HTTPException(status_code=404, detail="Chapter not found")
     ip = client_ip(request)
-    _db.log_reader_view(book_id, chapter_number, ip)
+    _log_view(book_id, chapter_number, ip)
     return _shape_public_chapter(ch, book_id)
 
 
@@ -370,7 +387,7 @@ async def download_epub(book_id: int, request: Request):
             ver = spaces.epub_version(book_id, book.get("modified_date"))
             key = spaces.epub_key(_db.config, book_id, ver)
             if spaces.exists(_db.config, key):
-                _db.log_reader_view(book_id, 0, ip)
+                _log_view(book_id, 0, ip)
                 return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
     except Exception:
         pass
@@ -383,10 +400,6 @@ async def download_epub(book_id: int, request: Request):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         from output_formatter import OutputFormatter
-
-        chapters = _db.list_chapters(book_id)
-        if not chapters:
-            raise HTTPException(status_code=404, detail="No chapters available")
 
         # Need translator config for OutputFormatter — get it from the init-time db manager
         formatter = OutputFormatter(_db.config, _db.logger)
@@ -401,15 +414,16 @@ async def download_epub(book_id: int, request: Request):
             if os.path.exists(cover_full):
                 book_info["cover_image"] = cover_full
 
-        all_chapters = []
-        for ch_meta in chapters:
-            ch = _db.get_chapter(book_id=book_id, chapter_number=ch_meta["chapter"])
-            if ch:
-                all_chapters.append({
-                    "chapter": ch_meta["chapter"],
-                    "title": ch.get("title", f"Chapter {ch_meta['chapter']}"),
-                    "content": ch.get("content", []),
-                })
+        all_chapters = [
+            {
+                "chapter": ch["chapter"],
+                "title": ch.get("title") or f"Chapter {ch['chapter']}",
+                "content": ch.get("content", []),
+            }
+            for ch in _db.get_chapters_bulk(book_id)
+        ]
+        if not all_chapters:
+            raise HTTPException(status_code=404, detail="No chapters available")
 
         output_path = formatter.save_book_as_epub(all_chapters, book_info)
         if not output_path or not os.path.exists(output_path):
@@ -432,7 +446,7 @@ async def download_epub(book_id: int, request: Request):
         pass
 
     # Log the EPUB download (chapter_number=0 signals an EPUB download)
-    _db.log_reader_view(book_id, 0, ip)
+    _log_view(book_id, 0, ip)
 
     filename = f"{book['title'].replace(' ', '_')}.epub"
     return FileResponse(
