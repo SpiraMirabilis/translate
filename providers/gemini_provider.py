@@ -42,7 +42,14 @@ class GeminiProvider(ModelProvider):
         super().__init__(api_key, base_url, **kwargs)
 
         self.max_output_tokens = kwargs.get('max_output_tokens', None)
-        self.client = genai.Client(api_key=api_key)
+        # google-genai has NO default timeout — without this a hung socket
+        # stalls the translation thread forever. HttpOptions takes milliseconds.
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(
+                timeout=int(self.request_timeout_seconds * 1000),
+            ),
+        )
 
     def _convert_messages_to_gemini_format(
         self, messages: List[Dict[str, Any]]

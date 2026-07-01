@@ -173,6 +173,12 @@ class ModelProvider(ABC):
         self.api_key = api_key
         self.base_url = base_url
         self.config = kwargs
+        # Network resilience defaults, overridable per provider in models.json.
+        # request_timeout is per socket read for streaming SDKs, so long
+        # streamed generations are unaffected; it bounds silent hangs.
+        self.connect_timeout_seconds = float(kwargs.get('connect_timeout_seconds', 15))
+        self.request_timeout_seconds = float(kwargs.get('request_timeout_seconds', 600))
+        self.max_retries = int(kwargs.get('max_retries', 2))
     
     @abstractmethod
     def chat_completion(

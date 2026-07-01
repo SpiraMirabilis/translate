@@ -54,7 +54,17 @@ class ClaudeProvider(ModelProvider):
         # Store provider-specific configuration
         self.max_output_tokens = kwargs.get('max_output_tokens', 8192)
 
-        self.client = anthropic.Anthropic(api_key=api_key)
+        import httpx
+        self.client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=httpx.Timeout(
+                connect=self.connect_timeout_seconds,
+                read=self.request_timeout_seconds,
+                write=60.0,
+                pool=30.0,
+            ),
+            max_retries=self.max_retries,
+        )
     
     def chat_completion(
         self,

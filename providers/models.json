@@ -17,7 +17,10 @@
         "o4-mini"
       ],
       "max_chars": 8000,
-      "max_output_tokens": 16384
+      "max_output_tokens": 16384,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
     },
 
     "deepseek": {
@@ -27,7 +30,10 @@
       "default_model": "deepseek-chat",
       "models": ["deepseek-chat"],
       "max_chars": 3000,
-      "max_output_tokens": 8192
+      "max_output_tokens": 8192,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
     },
     "anthropic": {
       "class": "ClaudeProvider",
@@ -40,7 +46,10 @@
         "claude-3-5-haiku-20241022"
       ],
       "max_chars": 8500,
-      "max_output_tokens": 8192
+      "max_output_tokens": 8192,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
     },
     "google": {
       "class": "GeminiProvider",
@@ -54,7 +63,10 @@
         "gemini-1.5-flash"
       ],
       "max_chars": 12000,
-      "max_output_tokens": 8192
+      "max_output_tokens": 8192,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
     },
     "openrouter": {
       "class": "OpenAIProvider",
@@ -63,7 +75,10 @@
       "default_model": "qwen/qwen3-235b-a22b",
       "models": [],
       "max_chars": 5000,
-      "max_output_tokens": 8192
+      "max_output_tokens": 8192,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
     },
     "claudecode": {
       "class": "ClaudeCodeProvider",

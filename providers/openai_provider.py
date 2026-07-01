@@ -5,6 +5,7 @@ This provider supports both OpenAI and OpenAI-compatible APIs like DeepSeek
 by using different base URLs.
 """
 from typing import Dict, List, Optional, Any, Union
+import httpx
 from openai import OpenAI
 from .base import ModelProvider, StreamingResponse
 
@@ -36,13 +37,23 @@ class OpenAIProvider(ModelProvider):
         self.max_output_tokens = kwargs.get('max_output_tokens', 8192)
 
         # Initialize OpenAI client
-        client_kwargs = {"api_key": api_key}
+        client_kwargs = {
+            "api_key": api_key,
+            "timeout": httpx.Timeout(
+                connect=self.connect_timeout_seconds,
+                read=self.request_timeout_seconds,
+                write=60.0,
+                pool=30.0,
+            ),
+            "max_retries": self.max_retries,
+        }
         if base_url:
             client_kwargs["base_url"] = base_url
 
         # Filter out provider-specific config that shouldn't go to OpenAI client
         openai_kwargs = {k: v for k, v in kwargs.items()
-                        if k not in ['max_chars', 'max_output_tokens', 'default_model', 'models']}
+                        if k not in ['max_chars', 'max_output_tokens', 'default_model', 'models',
+                                     'connect_timeout_seconds', 'request_timeout_seconds', 'max_retries']}
         client_kwargs.update(openai_kwargs)
 
         self.client = OpenAI(**client_kwargs)
