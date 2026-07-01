@@ -35,9 +35,9 @@ from web.auth import configure_auth, AuthMiddleware, router as auth_router
 # Application setup
 # ------------------------------------------------------------------
 
-def create_app() -> FastAPI:
-    config = TranslationConfig()
-    logger = Logger(config)
+def create_app(config=None, logger=None) -> FastAPI:
+    config = config or TranslationConfig()
+    logger = logger or Logger(config)
     entity_manager = DatabaseManager(config, logger, strict_writes=True)
     translator = TranslationEngine(config, logger, entity_manager)
     web_interface = WebInterface(translator, entity_manager, logger, job_manager)
