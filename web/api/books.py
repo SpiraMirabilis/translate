@@ -917,150 +917,18 @@ def pronoun_repair_chapter(book_id: int, chapter_number: int, req: PronounRepair
 
 @router.get("/{book_id}/export")
 def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", "markdown", "html"])):
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    from output_formatter import OutputFormatter
+    from web.services import exporters
 
     book = get_book_or_404(book_id)
+    try:
+        result = exporters.export_book(_entity_manager, _translator.config, _logger, book, format)
+    except exporters.ExportError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
 
-    chapters = _entity_manager.list_chapters(book_id)
-    if not chapters:
-        raise HTTPException(status_code=404, detail="No chapters to export.")
-
-    formatter = OutputFormatter(_translator.config, _logger)
-    book_info = {
-        "id": book_id,
-        "title": book.get("title", "Unknown"),
-        "author": book.get("author") or "Translator",
-        "language": book.get("language") or "en",
-    }
-    # Include cover image path for EPUB export
-    if book.get("cover_image"):
-        cover_full = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
-        if os.path.exists(cover_full):
-            book_info["cover_image"] = cover_full
-
-    if format == "epub":
-        # Check for cached EPUB first
-        cache_dir = _entity_manager._epub_cache_dir()
-        cached_path = os.path.join(cache_dir, f"{book_id}.epub")
-        filename = f"{book['title'].replace(' ', '_')}.epub"
-
-        if not os.path.exists(cached_path):
-            all_chapters = [
-                {
-                    "chapter": ch["chapter"],
-                    "title": ch.get("title") or f"Chapter {ch['chapter']}",
-                    "content": ch.get("content", []),
-                }
-                for ch in _entity_manager.get_chapters_bulk(book_id)
-            ]
-
-            output_path = formatter.save_book_as_epub(all_chapters, book_info)
-            if not output_path or not os.path.exists(output_path):
-                raise HTTPException(status_code=500, detail="Failed to generate EPUB.")
-
-            # Cache the generated EPUB
-            os.makedirs(cache_dir, exist_ok=True)
-            import shutil
-            shutil.copy2(output_path, cached_path)
-
-            # Populate the CDN copy so the public download endpoint can redirect.
-            try:
-                import spaces
-                if spaces.is_enabled(_entity_manager.config):
-                    ver = spaces.epub_version(book_id, book.get("modified_date"))
-                    key = spaces.epub_key(_entity_manager.config, book_id, ver)
-                    if spaces.upload(_entity_manager.config, cached_path, key, "application/epub+zip"):
-                        spaces.prune_epub_versions(_entity_manager.config, book_id, keep_key=key)
-            except Exception:
-                pass
-
-        with open(cached_path, "rb") as f:
-            epub_bytes = f.read()
-        return StreamingResponse(
-            io.BytesIO(epub_bytes),
-            media_type="application/epub+zip",
-            headers={"Content-Disposition": _content_disposition(filename)},
-        )
-
-    # HTML — generate a proper HTML document with chapter structure
-    if format == "html":
-        # Build chapter list for TOC
-        ch_list = [
-            {
-                "number": ch["chapter"],
-                "title": ch.get("title") or f"Chapter {ch['chapter']}",
-                "content": ch.get("content", []),
-            }
-            for ch in _entity_manager.get_chapters_bulk(book_id)
-        ]
-
-        html_parts = [
-            '<!DOCTYPE html>',
-            '<html lang="en">',
-            '<head>',
-            f'<meta charset="utf-8"><title>{book_info["title"]}</title>',
-            '<style>',
-            'body { font-family: Georgia, serif; max-width: 42em; margin: 2em auto; padding: 0 1em; line-height: 1.7; color: #222; }',
-            'h1 { text-align: center; margin: 1.5em 0 0.5em; }',
-            'h2 { margin: 2em 0 0.5em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }',
-            'p { text-indent: 1.5em; margin: 0.4em 0; }',
-            '.title-page { text-align: center; margin: 4em 0; }',
-            '.title-page .author { font-size: 1.1em; color: #555; }',
-            'nav { margin: 2em 0; }',
-            'nav h2 { border-bottom: none; }',
-            'nav ol { padding-left: 1.5em; }',
-            'nav li { margin: 0.3em 0; }',
-            'nav a { color: #2563eb; text-decoration: none; }',
-            'nav a:hover { text-decoration: underline; }',
-            '</style>',
-            '</head><body>',
-            '<div class="title-page">',
-            f'<h1>{book_info["title"]}</h1>',
-            f'<p class="author">{book_info["author"]}</p>',
-            '</div>',
-            '<nav><h2>Table of Contents</h2><ol>',
-        ]
-        for ch_data in ch_list:
-            anchor = f"chapter-{ch_data['number']}"
-            html_parts.append(f'<li><a href="#{anchor}">{ch_data["title"]}</a></li>')
-        html_parts.append('</ol></nav>')
-
-        for ch_data in ch_list:
-            anchor = f"chapter-{ch_data['number']}"
-            html_parts.append(f'<h2 id="{anchor}">{ch_data["title"]}</h2>')
-            for line in ch_data["content"]:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                safe = stripped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                html_parts.append(f'<p>{safe}</p>')
-
-        html_parts.append('</body></html>')
-        filename = f"{book['title'].replace(' ', '_')}.html"
-        return StreamingResponse(
-            io.BytesIO("\n".join(html_parts).encode("utf-8")),
-            media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": _content_disposition(filename)},
-        )
-
-    # Text / markdown — return as plain text file
-    all_lines = []
-    for ch in _entity_manager.get_chapters_bulk(book_id):
-        all_lines.extend(ch.get("content", []))
-        all_lines.append("")
-
-    ext_map = {"text": "txt", "markdown": "md"}
-    ext = ext_map.get(format, "txt")
-    filename = f"{book['title'].replace(' ', '_')}.{ext}"
-    content_str = "\n".join(all_lines)
-
-    return StreamingResponse(
-        io.BytesIO(content_str.encode("utf-8")),
-        media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": _content_disposition(filename)},
-    )
+    headers = {"Content-Disposition": _content_disposition(result.filename)}
+    if result.is_path:
+        return FileResponse(result.path, media_type=result.media_type, headers=headers)
+    return StreamingResponse(io.BytesIO(result.content), media_type=result.media_type, headers=headers)
 
 
 @router.post("/{book_id}/invalidate-epub-cache")
