@@ -91,121 +91,89 @@ class GeminiProvider(ModelProvider):
         Create Gemini response schema from OpenAI-style response_format.
 
         Matches the translation engine's expected output structure.
+
+        Supports a non-standard "mode" key in response_format:
+            - "entity_only": pass-1 of two-pass mode — only the entities field
+            - "translate_only": pass-2 of two-pass mode — title/chapter/summary/content only
+            - unset / "full" (default): full schema with everything
         """
         if not response_format or response_format.get("type") != "json_object":
             return None
 
+        mode = response_format.get("mode", "full")
+
+        def _cat(extra_props=None):
+            inner = {"translation": {"type": "string"}, "last_chapter": {"type": "integer"}}
+            if extra_props:
+                inner.update(extra_props)
+            return {
+                "type": "object",
+                "properties": {
+                    "example": {"type": "object", "properties": inner},
+                },
+            }
+
+        # Build the entities schema from the book's actual categories when the
+        # engine supplies them, marking gender-tracked categories with a gender
+        # field. Fall back to the legacy default category set otherwise.
+        categories = response_format.get("categories")
+        gendered = set(response_format.get("gendered_categories") or [])
+        if categories:
+            entity_props = {
+                cat: _cat({"gender": {"type": "string"}} if cat in gendered else None)
+                for cat in categories
+            }
+        else:
+            entity_props = {
+                "characters": _cat({"gender": {"type": "string"}}),
+                "places": _cat(),
+                "organizations": _cat(),
+                "abilities": _cat(),
+                "titles": _cat(),
+                "equipment": _cat(),
+                "creatures": _cat(),
+            }
+        entities_schema = {
+            "type": "object",
+            "properties": entity_props,
+        }
+
+        text_props = {
+            "title": {
+                "type": "string",
+                "description": "The title of the chapter",
+            },
+            "chapter": {
+                "type": "integer",
+                "description": "The chapter number",
+            },
+            "summary": {
+                "type": "string",
+                "description": "A concise 75-word or less summary of the chapter",
+            },
+            "content": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Array of translated content lines",
+            },
+        }
+
+        if mode == "entity_only":
+            return {
+                "type": "object",
+                "properties": {"entities": entities_schema},
+                "required": ["entities"],
+            }
+        if mode == "translate_only":
+            return {
+                "type": "object",
+                "properties": text_props,
+                "required": ["title", "chapter", "summary", "content"],
+            }
+        # Default ("full"): everything required
         return {
             "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "The title of the chapter",
-                },
-                "chapter": {
-                    "type": "integer",
-                    "description": "The chapter number",
-                },
-                "summary": {
-                    "type": "string",
-                    "description": "A concise 75-word or less summary of the chapter",
-                },
-                "content": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Array of translated content lines",
-                },
-                "entities": {
-                    "type": "object",
-                    "properties": {
-                        "characters": {
-                            "type": "object",
-                            "properties": {
-                                "example_character": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "gender": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                        "places": {
-                            "type": "object",
-                            "properties": {
-                                "example_place": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                        "organizations": {
-                            "type": "object",
-                            "properties": {
-                                "example_organization": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                        "abilities": {
-                            "type": "object",
-                            "properties": {
-                                "example_ability": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                        "titles": {
-                            "type": "object",
-                            "properties": {
-                                "example_title": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                        "equipment": {
-                            "type": "object",
-                            "properties": {
-                                "example_equipment": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                        "creatures": {
-                            "type": "object",
-                            "properties": {
-                                "example_creature": {
-                                    "type": "object",
-                                    "properties": {
-                                        "translation": {"type": "string"},
-                                        "last_chapter": {"type": "integer"},
-                                    },
-                                }
-                            },
-                        },
-                    },
-                },
-            },
+            "properties": {**text_props, "entities": entities_schema},
             "required": ["title", "chapter", "summary", "content", "entities"],
         }
 

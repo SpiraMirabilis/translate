@@ -137,7 +137,11 @@ class OpenAIProvider(ModelProvider):
         # Add response format if specified and supported
         # Note: Newer reasoning models may have limited support for response_format
         if response_format and uses_legacy:
-            request_params["response_format"] = response_format
+            # Strip non-OpenAI extension keys (e.g. "mode", used internally to
+            # pick a schema variant for providers that support it) before
+            # sending — OpenAI rejects unknown fields in response_format.
+            safe_response_format = {k: v for k, v in response_format.items() if k in ("type", "schema", "json_schema")}
+            request_params["response_format"] = safe_response_format
 
         # Remove parameters that might not be supported by all providers
         # (but keep them in kwargs for flexibility)
@@ -168,7 +172,7 @@ class OpenAIProvider(ModelProvider):
             return StreamingResponse(response)
         else:
             # Convert to dict format for consistency
-            print(f"API Finish reason: {response.choices[0].finish_reason}, Usage: {response.usage}")
+            #print(f"API Finish reason: {response.choices[0].finish_reason}, Usage: {response.usage}")
             raw_content = response.choices[0].message.content
             # Strip markdown fences from JSON responses — OpenRouter and
             # non-legacy models may ignore response_format and wrap JSON

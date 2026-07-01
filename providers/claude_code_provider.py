@@ -26,7 +26,14 @@ import threading
 from collections import deque
 from typing import Dict, List, Optional, Any, Union
 
-from .base import ModelProvider, StreamingResponse
+from .base import (
+    ModelProvider,
+    StreamingResponse,
+    OverloadedError,
+    looks_overloaded,
+    SessionLimitError,
+    looks_session_limited,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,11 +242,27 @@ class ClaudeCodeProvider(ModelProvider):
             finally:
                 self._unlink(sys_path)
 
+            # A session-usage-limit notice can arrive on stdout (typically
+            # exit 0) or stderr; surface it as a SessionLimitError so the
+            # engine pauses until the reset time rather than failing the chunk.
+            if looks_session_limited(result.stdout) or looks_session_limited(result.stderr):
+                notice = result.stdout.strip() or result.stderr.strip()
+                raise SessionLimitError(notice[:300], reset_text=notice)
+
             if result.returncode != 0:
+                stderr_tail = result.stderr.strip()[-2000:]
+                # A 529 may exit non-zero with the notice on stderr (or stdout).
+                if looks_overloaded(result.stderr, strict=False) or looks_overloaded(result.stdout, strict=False):
+                    raise OverloadedError(stderr_tail or result.stdout.strip()[:200] or "529 Overloaded")
                 raise RuntimeError(
-                    f"claude CLI failed (exit {result.returncode}): {result.stderr.strip()[-2000:]}"
+                    f"claude CLI failed (exit {result.returncode}): {stderr_tail}"
                 )
             content = result.stdout
+            # When the API is saturated the CLI prints "API Error: 529
+            # Overloaded" to stdout and exits 0; surface it as a retryable
+            # overload rather than letting it fail downstream JSON parsing.
+            if looks_overloaded(content):
+                raise OverloadedError(content.strip()[:200])
             if json_mode:
                 content = self._strip_markdown_fences(content)
             self._schedule_orphan_cleanup()
@@ -282,6 +305,20 @@ class ClaudeCodeProvider(ModelProvider):
                             if b.get("type") == "text"
                         )
                         if text:
+                            # A session-limit notice also arrives as a single
+                            # non-streamed assistant message; pause on it rather
+                            # than emitting it as translated text.
+                            if looks_session_limited(text):
+                                self._unlink(sys_path)
+                                sys_path = None
+                                raise SessionLimitError(text.strip()[:300], reset_text=text)
+                            # A 529 arrives as a single non-streamed assistant
+                            # message ("API Error: 529 Overloaded"); surface it
+                            # as a retryable overload, not as response text.
+                            if looks_overloaded(text):
+                                self._unlink(sys_path)
+                                sys_path = None
+                                raise OverloadedError(text.strip()[:200])
                             yield _Chunk(text=text)
                 elif etype == "result":
                     # The CLI is done with the system-prompt file by now;
@@ -290,6 +327,11 @@ class ClaudeCodeProvider(ModelProvider):
                     # generator suspended and its `finally` unrun until GC.
                     self._unlink(sys_path)
                     sys_path = None
+                    result_text = event.get("result", "")
+                    if event.get("is_error") and looks_session_limited(result_text):
+                        raise SessionLimitError(str(result_text).strip()[:300], reset_text=str(result_text))
+                    if event.get("is_error") and looks_overloaded(result_text, strict=False):
+                        raise OverloadedError(str(result_text).strip()[:200])
                     yield _Chunk(done=True)
                     break
         finally:
@@ -303,6 +345,10 @@ class ClaudeCodeProvider(ModelProvider):
 
         if proc.returncode not in (0, None):
             stderr = "".join(stderr_buf) if stderr_buf else ""
+            if looks_session_limited(stderr):
+                raise SessionLimitError(stderr.strip()[-300:], reset_text=stderr)
+            if looks_overloaded(stderr, strict=False):
+                raise OverloadedError(stderr.strip()[-200:] or "529 Overloaded")
             raise RuntimeError(
                 f"claude CLI failed (exit {proc.returncode}): {stderr.strip()[-2000:]}"
             )

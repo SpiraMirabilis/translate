@@ -15,7 +15,6 @@ import ChapterConflictPanel from '../components/ChapterConflictPanel'
 import TranslationProgress from '../components/TranslationProgress'
 import ComboBox from '../components/ComboBox'
 import { useLocalStorage } from '../hooks/useLocalStorage'
-import { useUrlState } from '../hooks/useUrlState'
 import {
   Play, Square, Info, Trash2
 } from 'lucide-react'
@@ -26,18 +25,22 @@ export default function Dashboard() {
   const [books, setBooks] = useState([])
   const [providers, setProviders] = useState([])
   const [inputText, setInputText] = useState('')
-  // Book + chapter selection live in the URL so the workspace state is
-  // shareable / refresh-safe. Replace mode — ComboBox changes shouldn't
-  // pollute the back-button history.
-  const [selectedBook, setSelectedBook] = useUrlState('book', '')
-  const [chapterNum, setChapterNum] = useUrlState('chapter', '')
+  // Book + chapter selection persist in localStorage so the paste→translate
+  // workflow survives reloads. The chapter number auto-increments after each
+  // successful translation (see the translation_complete handler) so the user
+  // can just paste the next chapter and hit Translate without re-typing it.
+  const [selectedBook, setSelectedBook] = useLocalStorage('dashboard.book', '')
+  const [chapterNum, setChapterNum] = useLocalStorage('dashboard.chapter', '')
   const [modelOverride, setModelOverride] = useLocalStorage('dashboard.modelOverride', '')
   const [adviceModel, setAdviceModel]     = useLocalStorage('shared.adviceModel', '')
   const [cleaningModel, setCleaningModel] = useLocalStorage('shared.cleaningModel', '')
-  const [noReview, setNoReview] = useLocalStorage('dashboard.noReview', false)
+  const [noReview, setNoReviewRaw] = useLocalStorage('dashboard.noReview', false)
+  const [twoPass, setTwoPassRaw] = useLocalStorage('dashboard.twoPass', false)
+  // Mutually exclusive: enabling one auto-disables the other. Two-pass review
+  // is meaningless when entity review is skipped, so they can't both be true.
+  const setNoReview = (v) => { setNoReviewRaw(v); if (v) setTwoPassRaw(false) }
+  const setTwoPass = (v) => { setTwoPassRaw(v); if (v) setNoReviewRaw(false) }
   const [noClean, setNoClean] = useLocalStorage('dashboard.noClean', false)
-  const [noRepair, setNoRepair] = useLocalStorage('dashboard.noRepair', false)
-  const [noConvertUnits, setNoConvertUnits] = useLocalStorage('dashboard.noConvertUnits', false)
   const [noStream, setNoStream] = useLocalStorage('dashboard.noStream', false)
 
   const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
@@ -61,7 +64,14 @@ export default function Dashboard() {
           chunk_index: msg.chunk_index,
           total_chunks: msg.total_chunks,
           chunk_text: msg.chunk_text,
+          is_empty: msg.is_empty,
+          timeout_seconds: msg.timeout_seconds,
         })
+      }
+      // Backend auto-resolved the JSON fix (timed out → retry); dismiss modal.
+      if (msg.type === 'json_fix_resolved') {
+        setJsonFix(null)
+        setJobStatus('running')
       }
     })
   }, [subscribe])
@@ -89,9 +99,14 @@ export default function Dashboard() {
   // Poll job status + activity log as fallback for missed WebSocket messages
   // (React 18 batching can drop messages when multiple arrive in the same frame).
   useEffect(() => {
-    if (jobStatus !== 'running') return
+    if (jobStatus !== 'running' && jobStatus !== 'waiting') return
     const interval = setInterval(() => {
       api.getJobStatus().then(d => {
+        // Recover the running/waiting status if the WS progress message that
+        // would have flipped it was dropped (e.g. the session-limit resume).
+        if (d.status === 'running' || d.status === 'waiting') {
+          setJobStatus(d.status)
+        }
         if (d.status === 'awaiting_review' && d.pending_review) {
           setJobStatus('awaiting_review')
           setEntityReview(d.pending_review)
@@ -128,12 +143,12 @@ export default function Dashboard() {
 
     if (type === 'progress') {
       setChunkProgress(lastMessage)
-      setJobStatus('running')
+      setJobStatus(lastMessage.phase === 'session_limit' ? 'waiting' : 'running')
     }
 
     if (type === 'entity_review_needed') {
       setJobStatus('awaiting_review')
-      setEntityReview({ entities: lastMessage.entities, context: lastMessage.context })
+      setEntityReview({ entities: lastMessage.entities, context: lastMessage.context, phase: lastMessage.phase || 'post' })
     }
 
     if (type === 'chapter_conflict_needed') {
@@ -158,6 +173,14 @@ export default function Dashboard() {
       setEntityReview(null)
       setJsonFix(null)
       setChapterConflict(null)
+      // Auto-advance to the next chapter so the paste → translate → paste loop
+      // doesn't require manually bumping the number. We set an absolute value
+      // (completed chapter + 1) rather than incrementing, so it's idempotent if
+      // the message is somehow delivered twice. `chapter` is whatever the backend
+      // actually used, including auto-assigned numbers when the field was blank.
+      if (Number.isFinite(lastMessage.chapter)) {
+        setChapterNum(String(lastMessage.chapter + 1))
+      }
       // Re-fetch full log to catch any entries dropped by React 18 batching
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
     }
@@ -169,6 +192,16 @@ export default function Dashboard() {
       setJsonFix(null)
       setChapterConflict(null)
       api.getActivityLog().then(d => setActivityLog(d.entries || [])).catch(() => {})
+    }
+
+    // The engine actually stopped after a cancel — clear any transient progress
+    // (a late in-flight chunk update may have flipped the badge back to running).
+    if (type === 'translation_cancelled') {
+      setJobStatus('idle')
+      setChunkProgress(null)
+      setEntityReview(null)
+      setJsonFix(null)
+      setChapterConflict(null)
     }
 
     // Append activity log entries from the backend
@@ -199,9 +232,8 @@ export default function Dashboard() {
         advice_model: adviceModel || null,
         cleaning_model: cleaningModel || null,
         no_review: noReview,
+        two_pass: twoPass,
         no_clean: noClean,
-        no_repair: noRepair,
-        no_convert_units: noConvertUnits,
         no_stream: noStream,
       })
     } catch (e) {
@@ -239,7 +271,7 @@ export default function Dashboard() {
     (p.models || []).map(m => `${p.name}:${m}`)
   )
 
-  const isRunning = jobStatus === 'running' || jobStatus === 'awaiting_review' || jobStatus === 'awaiting_json_fix' || jobStatus === 'awaiting_chapter_conflict'
+  const isRunning = jobStatus === 'running' || jobStatus === 'waiting' || jobStatus === 'awaiting_review' || jobStatus === 'awaiting_json_fix' || jobStatus === 'awaiting_chapter_conflict'
 
   return (
     <div className="h-full flex flex-col">
@@ -333,14 +365,37 @@ export default function Dashboard() {
 
             {/* Options */}
             <div className="flex flex-col gap-1.5">
-              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+              <label
+                className={`flex items-center gap-2 text-sm select-none ${twoPass ? 'text-slate-500 cursor-not-allowed' : 'text-slate-300 cursor-pointer'}`}
+                title={twoPass ? 'Disabled because Two-pass is on' : ''}
+              >
                 <input
                   type="checkbox"
                   className="rounded border-slate-600"
                   checked={noReview}
+                  disabled={twoPass}
                   onChange={e => setNoReview(e.target.checked)}
                 />
                 Skip entity review
+              </label>
+              <label
+                className={`flex items-center gap-2 text-sm select-none ${noReview ? 'text-slate-500 cursor-not-allowed' : 'text-slate-300 cursor-pointer'}`}
+                title={noReview ? 'Disabled because Skip Review is on' : ''}
+              >
+                <input
+                  type="checkbox"
+                  className="rounded border-slate-600"
+                  checked={twoPass}
+                  disabled={noReview}
+                  onChange={e => setTwoPass(e.target.checked)}
+                />
+                Two-pass — review entities before translating
+                <span className="relative group">
+                  <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                    Identifies and translates entities in a first pass, then waits for your review before translating the chapter prose. Your edited entity names are used directly by the model in the second pass — no after-the-fact substitution. Doubles input tokens; output tokens unchanged.
+                  </span>
+                </span>
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                 <input
@@ -354,36 +409,6 @@ export default function Dashboard() {
                   <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
                   <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
                     A second pass using the cleaning model to ensure new entities are only proper nouns. Recommended when using DeepSeek or smaller parameter models, which tend to classify generic terms as entities. Uses very few output tokens, and cleaning model is recommended to be a mini-model like Claude Haiku or gpt-5-mini, or similar.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="rounded border-slate-600"
-                  checked={noRepair}
-                  onChange={e => setNoRepair(e.target.checked)}
-                />
-                Skip partial repair
-                <span className="relative group">
-                  <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
-                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                    After translation, lines still containing Chinese characters are automatically retranslated using the cleaning model. Disable this if you prefer to handle untranslated lines manually.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="rounded border-slate-600"
-                  checked={noConvertUnits}
-                  onChange={e => setNoConvertUnits(e.target.checked)}
-                />
-                Skip unit conversion
-                <span className="relative group">
-                  <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
-                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                    Chinese measurement units (zhang, li, jin, etc.) are automatically annotated with metric equivalents. Disable this to keep units unconverted.
                   </span>
                 </span>
               </label>
@@ -490,6 +515,8 @@ export default function Dashboard() {
         <EntityReviewPanel
           entities={entityReview.entities}
           context={entityReview.context}
+          phase={entityReview.phase}
+          genderedCategories={entityReview.gendered_categories}
           onDone={handleReviewDone}
         />
       )}
@@ -502,6 +529,7 @@ export default function Dashboard() {
           totalChunks={jsonFix.total_chunks}
           chunkText={jsonFix.chunk_text}
           isEmpty={jsonFix.is_empty}
+          timeoutSeconds={jsonFix.timeout_seconds}
           onDone={handleJsonFixDone}
         />
       )}
@@ -531,6 +559,7 @@ function ActivityEntry({ entry }) {
     start:             'text-indigo-400',
     complete:          'text-emerald-400',
     error:             'text-rose-400',
+    warning:           'text-amber-400',
     info:              'text-slate-400',
     entity_review:     'text-amber-400',
     json_fix:          'text-amber-400',
@@ -572,6 +601,7 @@ function StatusBadge({ status }) {
   const map = {
     idle:             { label: 'Idle',           cls: 'badge-slate'   },
     running:          { label: 'Translating…',   cls: 'badge-indigo'  },
+    waiting:          { label: 'Paused (limit)', cls: 'badge-amber'   },
     awaiting_review:  { label: 'Review needed',  cls: 'badge-amber'   },
     awaiting_json_fix:{ label: 'JSON Fix',       cls: 'badge-amber'   },
     awaiting_chapter_conflict: { label: 'Chapter conflict', cls: 'badge-amber' },

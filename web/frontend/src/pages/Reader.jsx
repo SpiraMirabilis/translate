@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { api } from '../services/api'
+import { bustUrl } from '../services/cacheBust'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useUrlModal } from '../hooks/useUrlState'
@@ -11,6 +12,8 @@ import ReaderComments from '../components/ReaderComments'
 import EntityFormModal from '../components/EntityFormModal'
 import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
+import { renderBlock, renderInline, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes } from '../lib/chapterMarkdown'
+import FootnotePopover from '../components/FootnotePopover'
 import { useSite } from '../App'
 import {
   ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle
@@ -22,7 +25,16 @@ const publicApi = {
   getBook:       (id)         => fetch(`/api/public/books/${id}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
   listChapters:  (bookId)     => fetch(`/api/public/books/${bookId}/chapters`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
   getChapter:    (bookId, n)  => fetch(`/api/public/books/${bookId}/chapters/${n}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
+  getChaptersBatch: (bookId, nums) => fetch(`/api/public/books/${bookId}/chapters/batch?nums=${nums.join(',')}`, { credentials: 'same-origin' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
   searchBook:    (bookId, b)  => fetch(`/api/public/books/${bookId}/search`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => { if (!r.ok) throw new Error(r.status); return r.json() }),
+}
+
+// In-chapter illustrations are stored in content as a line ⟦IMG:<id>⟧.
+const IMG_MARKER_RE = /^\s*⟦IMG:([0-9a-f]{4,})⟧\s*$/
+const illustrationId = (line) => {
+  if (typeof line !== 'string') return null
+  const m = line.match(IMG_MARKER_RE)
+  return m ? m[1] : null
 }
 
 export default function Reader({ isPublic = false }) {
@@ -43,6 +55,8 @@ export default function Reader({ isPublic = false }) {
   const [chapters, setChapters] = useState([])
   const [currentNum, setCurrentNum] = useState(null)
   const [chapter, setChapter] = useState(null)
+  const [chapterError, setChapterError] = useState(null)
+  const [reloadTick, setReloadTick] = useState(0)
   const [loading, setLoading] = useState(true)
   const [chapterLoading, setChapterLoading] = useState(false)
   // Drawer overlays — URL-driven so the browser back button closes them
@@ -69,6 +83,10 @@ export default function Reader({ isPublic = false }) {
 
   const contentRef = useRef(null)
   const barTimer = useRef(null)
+  // In-memory cache of prefetched chapters, keyed by `${bookId}:${num}`.
+  // Populated by the next-N prefetch after each successful load so that
+  // tap-next/tap-prev resolves instantly without another round trip.
+  const chapterCache = useRef(new Map())
 
   // Load book + chapter list
   useEffect(() => {
@@ -150,24 +168,71 @@ export default function Reader({ isPublic = false }) {
     [entities, currentNum, bookId]
   )
 
-  // Load chapter content
+  // Load chapter content. Retries once on transient failure (iOS Safari
+  // occasionally drops in-flight fetches mid-navigation, which previously
+  // surfaced as a blank "Chapter " page with no error.)
   useEffect(() => {
     if (currentNum == null) return
     let cancelled = false
-    async function load() {
-      setChapterLoading(true)
+    const cacheKey = `${bookId}:${currentNum}`
+
+    async function prefetchAhead() {
+      // Prefetch the next two chapters into the in-memory cache so that
+      // tap-next is instant. Failures are silently ignored — this is
+      // strictly an optimization.
+      const idx = chapters.findIndex(c => c.chapter === currentNum)
+      if (idx < 0) return
+      const targets = chapters.slice(idx + 1, idx + 3).map(c => c.chapter)
+      const missing = targets.filter(n => !chapterCache.current.has(`${bookId}:${n}`))
+      if (missing.length === 0) return
       try {
-        const data = await readerApi.getChapter(bookId, currentNum)
-        if (!cancelled) setChapter(data)
+        const data = await readerApi.getChaptersBatch(bookId, missing)
+        if (cancelled) return
+        for (const ch of data?.chapters || []) {
+          chapterCache.current.set(`${bookId}:${ch.chapter}`, ch)
+        }
       } catch {
-        if (!cancelled) setChapter(null)
-      } finally {
-        if (!cancelled) setChapterLoading(false)
+        // ignore — prefetch is best-effort
+      }
+    }
+
+    async function load() {
+      const cached = chapterCache.current.get(cacheKey)
+      if (cached) {
+        setChapter(cached)
+        setChapterError(null)
+        setChapterLoading(false)
+        prefetchAhead()
+        return
+      }
+      setChapterLoading(true)
+      setChapterError(null)
+      let lastErr = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (cancelled) return
+        try {
+          const data = await readerApi.getChapter(bookId, currentNum)
+          if (cancelled) return
+          if (!data) throw new Error('Empty response')
+          setChapter(data)
+          setChapterError(null)
+          setChapterLoading(false)
+          chapterCache.current.set(cacheKey, data)
+          prefetchAhead()
+          return
+        } catch (e) {
+          lastErr = e
+          if (attempt === 0) await new Promise(r => setTimeout(r, 600))
+        }
+      }
+      if (!cancelled) {
+        setChapterError(lastErr || new Error('Failed to load chapter'))
+        setChapterLoading(false)
       }
     }
     load()
     return () => { cancelled = true }
-  }, [bookId, currentNum])
+  }, [bookId, currentNum, reloadTick, chapters, readerApi])
 
   // Page title
   useEffect(() => {
@@ -298,6 +363,23 @@ export default function Reader({ isPublic = false }) {
       ? 'bg-amber-100 text-amber-900 hover:bg-amber-200 border-amber-200'
       : 'bg-stone-100 text-gray-700 hover:bg-stone-200 border-stone-200'
 
+  // Footnotes: parse the bottom [n] definitions from the displayed lines and show a
+  // modeless popover on click. Hooks must run before any early return below.
+  const fnLines = (prefs.contentMode === 'source' && chapter?.untranslated?.length)
+    ? (chapter?.untranslated || [])
+    : (chapter?.content || [])
+  const { map: footnotes, ids: fnIds } = useMemo(() => parseFootnotes(fnLines), [fnLines])
+  const [activeFootnote, setActiveFootnote] = useState(null)
+  const onFootnoteClick = useCallback((e) => {
+    const ref = e.target.closest?.('.footnote-ref')
+    if (!ref) return
+    if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
+    const n = ref.getAttribute('data-fn')
+    if (!footnotes[n]) return
+    setActiveFootnote({ n, text: footnotes[n], rect: ref.getBoundingClientRect() })
+  }, [footnotes])
+
   if (loading) {
     return (
       <div className={`min-h-screen ${theme.bg} flex items-center justify-center`}>
@@ -321,6 +403,15 @@ export default function Reader({ isPublic = false }) {
   const hasSource = !!(chapter?.untranslated?.length)
   const translatedLines = chapter?.content || []
   const sourceLines = chapter?.untranslated || []
+  // fnLines/footnotes/fnIds are computed via hooks above the early returns.
+
+  // Illustration URL: prefer the CDN URL baked into the payload, else fall back
+  // to the API route (which itself redirects to CDN or serves local).
+  const illustrationSrc = (imgId) =>
+    bustUrl(
+      chapter?.illustrations?.[imgId] ||
+      `${isPublic ? '/api/public' : '/api'}/books/${bookId}/illustration/${imgId}`
+    )
 
   return (
     <div className={`min-h-screen ${theme.bg} ${theme.text} transition-colors duration-300`}>
@@ -378,6 +469,19 @@ export default function Reader({ isPublic = false }) {
           <div className="flex justify-center py-32">
             <Loader2 size={28} className="animate-spin text-indigo-400" />
           </div>
+        ) : chapterError || !chapter ? (
+          <div className="flex flex-col items-center justify-center py-32 text-center px-6">
+            <p className={`${theme.text} text-lg mb-2`}>Couldn't load this chapter</p>
+            <p className={`text-sm opacity-70 ${theme.text} mb-6`}>
+              The connection may have dropped. Try again, or use Previous/Next to reload.
+            </p>
+            <button
+              onClick={() => setReloadTick(t => t + 1)}
+              className={`px-4 py-2 rounded-lg border text-sm ${navBtnClass}`}
+            >
+              Retry
+            </button>
+          </div>
         ) : (
           <article className={`${marginClass} mx-auto px-6 py-8 sm:px-8 transition-all duration-300`}>
             {/* Chapter heading */}
@@ -426,11 +530,24 @@ export default function Reader({ isPublic = false }) {
             )}
 
             {/* Chapter text */}
-            <div style={contentStyle}>
+            <div style={contentStyle} onClick={onFootnoteClick} onKeyDown={onFootnoteClick}>
               {contentMode === 'both' && hasSource ? (
-                // Interleaved: source line then translated line
+                // Interleaved: source line then translated line. Aligned 1:1, so
+                // only inline Markdown (bold/italic/code/links) is rendered here —
+                // block grouping would break the per-line pairing.
                 translatedLines.map((line, i) => {
-                  const src = sourceLines[i]
+                  // Key illustrations off the translated line only (reconciliation
+                  // guarantees every marker survives there); source/translated
+                  // marker indices may differ, so using both would double-render.
+                  const imgId = illustrationId(line)
+                  if (imgId) {
+                    return (
+                      <img key={i} src={illustrationSrc(imgId)}
+                        alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
+                    )
+                  }
+                  let src = sourceLines[i]
+                  if (illustrationId(src)) src = ''  // hide raw source marker token
                   const isEmpty = (!line || !line.trim()) && (!src || !src.trim())
                   if (isEmpty) return <div key={i} className="h-4" />
                   return (
@@ -440,16 +557,22 @@ export default function Reader({ isPublic = false }) {
                           {src}
                         </p>
                       )}
-                      {line && line.trim() && <p>{line}</p>}
+                      {line && line.trim() && (
+                        <p className="chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderInline(markFootnoteLine(line, fnIds))) }} />
+                      )}
                     </div>
                   )
                 })
               ) : (
-                // Single mode: source or translated
-                (contentMode === 'source' && hasSource ? sourceLines : translatedLines).map((line, i) => {
-                  if (!line || !line.trim()) return <div key={i} className="h-4" />
-                  return <p key={i} className="mb-4">{line}</p>
-                })
+                // Single mode (source or translated): full block-level Markdown,
+                // split into segments around illustration markers.
+                splitSegments(markFootnoteRefs(fnLines, fnIds))
+                  .map((seg, i) => seg.type === 'img' ? (
+                    <img key={i} src={illustrationSrc(seg.id)}
+                      alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
+                  ) : (
+                    <div key={i} className="chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderBlock(seg.md)) }} />
+                  ))
               )}
             </div>
 
@@ -520,6 +643,13 @@ export default function Reader({ isPublic = false }) {
         bookId={Number(bookId)}
         chapterNumber={currentNum}
         themeMode={prefs.theme}
+      />
+
+      {/* Footnote popover (modeless, non-blocking) */}
+      <FootnotePopover
+        footnote={activeFootnote}
+        theme={prefs.theme}
+        onClose={() => setActiveFootnote(null)}
       />
 
       {/* Entity edit modal */}

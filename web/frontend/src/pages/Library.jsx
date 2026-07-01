@@ -6,6 +6,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import RecommendModal from '../components/RecommendModal'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
+import { bustUrl } from '../services/cacheBust'
 import TagChips from '../components/TagChips'
 import ProtagonistBadge from '../components/ProtagonistBadge'
 
@@ -14,10 +15,51 @@ const publicApi = {
 }
 
 const SORT_OPTIONS = [
-  { id: 'popular', label: 'Most Popular' },
-  { id: 'updated', label: 'Recently Updated' },
-  { id: 'title',   label: 'Title' },
+  { id: 'popular',     label: 'Most Popular' },
+  { id: 'updated',     label: 'Recently Updated' },
+  { id: 'newly_added', label: 'Newly Added' },
+  { id: 'title',       label: 'Title' },
 ]
+
+// Maps a source-language code to a display tag. Covers the languages we
+// currently translate from; colloquial variants (kr/jp) map alongside the
+// official ISO 639 codes (ko/ja) so a book tags correctly however it was created.
+// Add more codes here as new source languages come online.
+const LANGUAGE_TAGS = {
+  en: 'english',
+  zh: 'chinese',
+  ru: 'russian',
+  ko: 'korean',   kr: 'korean',
+  ja: 'japanese', jp: 'japanese',
+}
+
+// Prepend the source-language tag (if known) to a book's own tags,
+// skipping it when the book already carries that tag explicitly.
+function tagsWithLanguage(book) {
+  const tags = book.tags || []
+  const lang = LANGUAGE_TAGS[(book.source_language || '').toLowerCase()]
+  if (!lang || tags.some(t => t.toLowerCase() === lang)) return tags
+  return [lang, ...tags]
+}
+
+// A book is "new" if it was added within this many days.
+const NEW_BOOK_DAYS = 31
+// A book has "new updates" if its latest chapter posted within this many hours.
+const RECENT_UPDATE_HOURS = 48
+
+function isNewlyAdded(createdDate) {
+  if (!createdDate) return false
+  const created = new Date(createdDate)
+  if (isNaN(created)) return false
+  return (Date.now() - created.getTime()) < NEW_BOOK_DAYS * 24 * 60 * 60 * 1000
+}
+
+function hasRecentUpdate(lastChapterDate) {
+  if (!lastChapterDate) return false
+  const updated = new Date(lastChapterDate)
+  if (isNaN(updated)) return false
+  return (Date.now() - updated.getTime()) < RECENT_UPDATE_HOURS * 60 * 60 * 1000
+}
 
 const THEME_TOGGLE = [
   { id: 'light', icon: Sun,    label: 'Light' },
@@ -90,7 +132,7 @@ export default function Library() {
   }, [sort])
 
   const filteredBooks = activeTag
-    ? books.filter(b => (b.tags || []).some(t => t.toLowerCase() === activeTag))
+    ? books.filter(b => tagsWithLanguage(b).some(t => t.toLowerCase() === activeTag))
     : books
 
   const clearTag = () => {
@@ -188,14 +230,18 @@ export default function Library() {
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-            {filteredBooks.map(book => (
+            {filteredBooks.map(book => {
+              const isNew = isNewlyAdded(book.created_date)
+              const isUpdated = hasRecentUpdate(book.last_chapter_date)
+              const tags = tagsWithLanguage(book)
+              return (
               <div key={book.id} className="group">
                 <Link to={`/library/book/${book.id}`} className="block">
                   {/* Cover */}
                   <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative`}>
                     {book.cover_image ? (
                       <img
-                        src={`/api/public/books/${book.id}/cover`}
+                        src={bustUrl(book.cover_medium_url || `/api/public/books/${book.id}/cover/medium`)}
                         alt={book.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
@@ -207,10 +253,18 @@ export default function Library() {
                         </span>
                       </div>
                     )}
+                    {/* "New" badge — top-left corner overlay */}
+                    {isNew && (
+                      <div className="absolute top-1.5 left-1.5">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-400 text-amber-950 shadow-sm">
+                          New
+                        </span>
+                      </div>
+                    )}
                     {/* Protagonist badge — top-right corner overlay */}
-                    {book.tags && book.tags.length > 0 && (
+                    {tags.length > 0 && (
                       <div className="absolute top-1.5 right-1.5">
-                        <ProtagonistBadge tags={book.tags} size="sm" showLabel={false} overlay />
+                        <ProtagonistBadge tags={tags} size="sm" showLabel={false} overlay />
                       </div>
                     )}
                     {/* Hover overlay */}
@@ -237,6 +291,11 @@ export default function Library() {
                           <> / {book.total_source_chapters} ({Math.round((book.chapter_count / book.total_source_chapters) * 100)}%)</>
                         )}
                       </span>
+                      {isUpdated && (
+                        <span className="px-1.5 py-0 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400">
+                          Updated
+                        </span>
+                      )}
                       {book.status && book.status !== 'ongoing' && (
                         <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
                           book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
@@ -249,13 +308,14 @@ export default function Library() {
                     </p>
                   </div>
                 </Link>
-                {book.tags && book.tags.length > 0 && (
+                {tags.length > 0 && (
                   <div className="mt-1.5">
-                    <TagChips tags={book.tags} size="sm" theme={prefs.theme} onTagClick={setTag} />
+                    <TagChips tags={tags} size="sm" theme={prefs.theme} onTagClick={setTag} />
                   </div>
                 )}
               </div>
-            ))}
+              )
+            })}
 
             {/* Recommend a Novel card */}
             <button

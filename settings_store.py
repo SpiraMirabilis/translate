@@ -25,6 +25,10 @@ SCHEMA = {
     "pronoun_repair_model":    ("PRONOUN_REPAIR_MODEL",    "claude:claude-haiku-4-5", str),
     "comment_automod_enabled": ("COMMENT_AUTOMOD_ENABLED", False,                     bool),
     "comment_automod_model":   ("COMMENT_AUTOMOD_MODEL",   "claude:claude-haiku-4-5", str),
+    "unit_cleaning_model":     ("UNIT_CLEANING_MODEL",     "claude:claude-haiku-4-5", str),
+    "character_fix_model":     ("CHARACTER_FIX_MODEL",     "claude:claude-opus-4-8",  str),
+    "overload_retry_wait_seconds": ("OVERLOAD_RETRY_WAIT_SECONDS", 300,             int),
+    "json_fix_timeout_seconds":    ("JSON_FIX_TIMEOUT_SECONDS",    300,             int),
     "site_name":               ("SITE_NAME",               "T9",                      str),
     "public_site_name":        ("PUBLIC_SITE_NAME",        "Boonnovels",              str),
     "site_base_url":           ("SITE_BASE_URL",           "",                        str),
@@ -32,9 +36,18 @@ SCHEMA = {
     "debug_mode":              ("DEBUG",                   False,                     bool),
     "public_library":          ("T9_PUBLIC_LIBRARY",       True,                      bool),
     "trad_to_simp":            ("TRAD_TO_SIMP",            False,                     bool),
+    "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
+    "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),
     "wp_username":             ("WP_USERNAME",             "",                        str),
 }
+
+# NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION
+# / SPACES_PREFIX / SPACES_CDN_BASE and the BUCKET_* credentials) is deploy-time
+# infrastructure and lives ONLY in .env — like DB_BACKEND / MYSQL_* / CF_*. It is
+# deliberately NOT in this SCHEMA: managed keys here get mirrored from
+# settings.json into os.environ on load, which would clobber the .env values.
+# config.py reads the SPACES_* vars directly via os.getenv with defaults.
 
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 _data = None  # cached dict; populated lazily by load()

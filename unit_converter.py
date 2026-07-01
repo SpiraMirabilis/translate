@@ -271,12 +271,18 @@ _number_words = (
 )
 
 # Numeric patterns: 1000, 1,000, 3.5
-_numeric = r"(?:\d[\d,]*\.?\d*)"
+# The `(?:[\d,]*\d)?` middle clause forbids a trailing comma in the integer
+# part — without it the regex greedy-eats a stray comma (e.g. "Tier-11, Zhang
+# Yu" → num="11,", unit="Zhang") and a personal name gets mis-annotated.
+_numeric = r"(?:\d(?:[\d,]*\d)?\.?\d*)"
 
-# Vague quantifier patterns to exclude
-_vague_prefix = (
-    r"(?:several|a\s+few|few|many|some|numerous|dozens\s+of|"
-    r"hundreds\s+of|thousands\s+of|countless|myriad|various|multiple)\s+"
+# Vague quantifiers. For hour-based replace units (shichen, double-hour) these
+# are converted to the same vague count of the English unit ("several shichen"
+# -> "several hours") — accepting that the magnitude is approximate. For all
+# other units they're matched but left untouched (see _convert_match).
+_vague_quantifier = (
+    r"(?:a\s+few|few|several|so\s+many|many|some|numerous|countless|"
+    r"myriad|various|multiple|dozens\s+of|hundreds\s+of|thousands\s+of)"
 )
 
 # Fraction phrases like "a quarter", "three-quarters", "half" that can prefix
@@ -298,19 +304,264 @@ _fraction_phrase = (
     r"|half)"
 )
 
-# Main pattern
+# Main pattern. The quantity prefix is one of three branches:
+#   1. a vague quantifier ("several", "a few")
+#   2. a number / word-number, optionally with a fractional prefix ("a quarter of a ke")
+#   3. a hyphenated/bare fraction directly on the unit ("a quarter-shichen")
 _PATTERN = re.compile(
     r"(?<!['\w])"                       # not preceded by word char or apostrophe
-    r"(?!" + _vague_prefix + r")"       # negative lookahead for vague quantifiers
-    r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"  # optional fractional prefix
-    r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words + r"|a\s+full|an\s+full|full|a|an)"
-    r"[\s\-]+"                          # separator
+    r"(?:"
+        r"(?P<vague>" + _vague_quantifier + r")[\s\-]+"               # branch 1
+        r"|"
+        r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"          # branch 2
+        r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words + r"|a\s+full|an\s+full|full|a|an)[\s\-]+"
+        r"|"
+        r"(?P<fracunit>" + _fraction_phrase + r")[\s\-]+"            # branch 3
+    r")"
+    r"(?:(?P<more>more|whole|full)[\s\-]+)?"  # optional filler ("two more/whole/full shichen")
     r"(?P<unit>" + _unit_names + r")"   # unit name
     r"s?"                               # optional plural
     r"(?!\s*\()"                        # negative lookahead: not already annotated
     r"(?!['\w])",                       # not followed by word char or apostrophe
     re.IGNORECASE
 )
+
+# Bare unit pattern: a time unit word with no quantity at all, used as a point
+# in time ("at the appointed shichen"). Only hour-based replace units qualify —
+# for those, the bare word maps to the English time word ("hour").
+_BARE_UNIT_NAMES = [
+    name for name, (value, base_unit, _type, action, numeral) in UNITS.items()
+    if action == "replace" and base_unit == "hour"
+]
+_bare_unit_alt = "|".join(
+    _escape_unit_name(name)
+    for name in sorted(_BARE_UNIT_NAMES, key=len, reverse=True)
+)
+_BARE_PATTERN = re.compile(
+    r"(?<!['\w])"
+    r"(?P<unit>" + _bare_unit_alt + r")"
+    r"s?"
+    r"(?!\s*\()"
+    r"(?!['\w])",
+    re.IGNORECASE
+)
+
+
+# ── Earthly-branch hours (points in time on the traditional 12-hour clock) ──
+# A traditional Chinese day is twelve double-hours, each named for an earthly
+# branch / zodiac animal (子=Rat, 午=Horse, …). A "ke" (刻) is 1/8 of a
+# double-hour = 15 minutes, so 午时三刻 ("third ke of the wu hour") is a point in
+# time 45 minutes into the Horse hour.
+#
+# The translation model emits these points in a wild variety of English forms
+# ("third quarter of the noon hour", "fourth ke of the You hour", "three-quarters
+# past the Hour of the Rabbit", "the start of the hour of the snake", …). We
+# normalise them all to one canonical form:
+#       "<minutes> minutes past the hour of the <Animal>"
+# keeping the idiomatic "noon"/"midnight" only when the translator used them.
+# This is distinct from the span conversions above: shichen/ke as *durations*
+# become hours/minutes, but as *points in time* they become clock positions.
+
+_BRANCH_ANIMALS = [
+    "Rat", "Ox", "Tiger", "Rabbit", "Dragon", "Snake",
+    "Horse", "Goat", "Monkey", "Rooster", "Dog", "Pig",
+]
+
+# pinyin reading of the earthly branch -> branch index
+_BRANCH_PINYIN = {
+    "zi": 0, "chou": 1, "yin": 2, "mao": 3, "chen": 4, "si": 5,
+    "wu": 6, "wei": 7, "shen": 8, "you": 9, "xu": 10, "hai": 11,
+}
+
+# zodiac animal word (incl. common synonyms) -> branch index
+_BRANCH_ANIMAL_WORDS = {
+    "rat": 0, "ox": 1, "tiger": 2, "rabbit": 3, "hare": 3, "dragon": 4,
+    "snake": 5, "serpent": 5, "horse": 6, "goat": 7, "sheep": 7, "ram": 7,
+    "monkey": 8, "rooster": 9, "cock": 9, "chicken": 9, "dog": 10,
+    "pig": 11, "boar": 11,
+}
+
+# idioms the translator may use for 午时 (noon) and 子时 (midnight)
+_BRANCH_SPECIAL = {"noon": 6, "midnight": 0}
+
+# Map a ke/quarter count word to its integer value (1..8).
+_KE_VALUES = {}
+for _i, _w in enumerate(
+    ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"], start=1
+):
+    _KE_VALUES[_w] = _i
+for _i, _w in enumerate(
+    ["one", "two", "three", "four", "five", "six", "seven", "eight"], start=1
+):
+    _KE_VALUES[_w] = _i
+for _i in range(1, 9):
+    _KE_VALUES[str(_i)] = _i
+
+_BRANCH_PIN_ALT = "|".join(sorted(_BRANCH_PINYIN, key=len, reverse=True))
+# "you" / "hour of you" is too collision-prone in English, so the bare
+# "hour of <pinyin>" frame excludes it (the distinctive "you hour" still works).
+_BRANCH_PIN_NOYOU = "|".join(
+    sorted((p for p in _BRANCH_PINYIN if p != "you"), key=len, reverse=True)
+)
+_BRANCH_ANI_ALT = "|".join(sorted(_BRANCH_ANIMAL_WORDS, key=len, reverse=True))
+# Joined romanisations like "sishi" (巳时), "maoshi" (卯时).
+_BRANCH_JOINED_ALT = "|".join(
+    sorted((p + "shi" for p in _BRANCH_PINYIN), key=len, reverse=True)
+)
+
+_KE_NUM = (
+    r"(?:[1-8]|one|two|three|four|five|six|seven|eight|"
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth)"
+)
+
+# Optional prefix specifying the position within the hour. Each branch consumes
+# any leading article so a sentence-initial "The third quarter of ..." doesn't
+# leave a dangling "The".
+_POINT_PREFIX = (
+    r"(?P<prefix>"
+        # "third quarter of", "fourth ke of", "third mark of", "a fifth quarter of"
+        r"(?:the\s+|an?\s+)?(?P<ke>" + _KE_NUM + r")(?:st|nd|rd|th)?[\s\-](?:ke|quarters?|marks?)\s+(?:of|into)\s+"
+        r"|"
+        # "a quarter past", "half past", "three-quarters past"
+        r"(?:the\s+)?(?P<fp>a\s+quarter|quarter|half|three[\s\-]quarters)\s+past\s+"
+        r"|"
+        # already-converted "forty-five minutes past"
+        r"(?:the\s+|an?\s+)?(?P<mp>\d{1,3}|" + _number_words + r")[\s\-]minutes?\s+(?:past|after|into)\s+"
+        r"|"
+        # 初: "the start of", "the beginning of" (a leading "at" stays outside)
+        r"(?P<st>(?:the\s+)?(?:start|beginning)\s+of\s+)"
+    r")"
+)
+
+# The hour itself, in any of the forms the model produces. Every branch allows a
+# leading article so the bare form ("the wu hour") is consumed whole.
+_POINT_HOUR = (
+    r"(?:"
+        r"(?:the\s+)?(?P<pin>" + _BRANCH_PIN_ALT + r")[\s\-](?:hour|shichen)"
+        r"|(?:the\s+)?hour\s+of\s+(?:the\s+)?(?P<pin2>" + _BRANCH_PIN_NOYOU + r")\b"
+        r"|(?P<pinj>" + _BRANCH_JOINED_ALT + r")\b"
+        r"|(?:the\s+)?(?P<ani>" + _BRANCH_ANI_ALT + r"|noon|midnight)[\s\-]hour"
+        r"|(?:the\s+)?hour\s+of\s+(?:the\s+)?(?P<ani2>" + _BRANCH_ANI_ALT + r")\b"
+        r"|(?P<sp>noon|midnight)\b"
+        # Bare branch names ("third quarter of Zi", "first ke of the Snake"):
+        # only resolved when a position prefix precedes them (see resolver), since
+        # bare "Zi"/"Snake" are far too collision-prone on their own.
+        r"|(?:the\s+)?(?P<pinbare>" + _BRANCH_PIN_NOYOU + r")\b"
+        r"|(?:the\s+)?(?P<anibare>" + _BRANCH_ANI_ALT + r")\b"
+    r")"
+)
+
+_POINT_RE = re.compile(
+    r"(?<![\w'])"
+    + r"(?:" + _POINT_PREFIX + r")?"
+    + _POINT_HOUR
+    + r"(?![\w'])",
+    re.IGNORECASE,
+)
+
+
+def _minutes_phrase(minutes: int) -> str:
+    """Render a minute offset as words: 45 -> 'forty-five minutes',
+    60 -> 'an hour', 105 -> 'an hour and forty-five minutes'."""
+    minutes = int(round(minutes))
+    if minutes < 60:
+        suffix = "" if minutes == 1 else "s"
+        return f"{_int_to_words(minutes)} minute{suffix}"
+    hours, rem = divmod(minutes, 60)
+    hours_word = "an hour" if hours == 1 else f"{_int_to_words(hours)} hours"
+    if rem == 0:
+        return hours_word
+    suffix = "" if rem == 1 else "s"
+    return f"{hours_word} and {_int_to_words(rem)} minute{suffix}"
+
+
+def _convert_point_match(match: re.Match) -> str:
+    """Replace callback for traditional point-in-time expressions (_POINT_RE).
+
+    Returns the original text unchanged when the match can't be resolved or is
+    already canonical (e.g. a bare "noon" with no position prefix)."""
+    full = match.group(0)
+    gd = match.groupdict()
+    has_prefix = bool(gd.get("prefix"))
+
+    # ── Resolve which earthly branch this is, and whether the translator used a
+    #    noon/midnight idiom we should preserve. ──
+    idx = None
+    special_word = None
+    if gd.get("pin"):
+        idx = _BRANCH_PINYIN[gd["pin"].lower()]
+    elif gd.get("pin2"):
+        idx = _BRANCH_PINYIN[gd["pin2"].lower()]
+    elif gd.get("pinj"):
+        idx = _BRANCH_PINYIN[gd["pinj"].lower()[:-3]]  # strip trailing "shi"
+    elif gd.get("ani") or gd.get("ani2"):
+        word = (gd.get("ani") or gd.get("ani2")).lower()
+        if word in _BRANCH_SPECIAL:
+            idx = _BRANCH_SPECIAL[word]
+            special_word = word
+        else:
+            idx = _BRANCH_ANIMAL_WORDS[word]
+    elif gd.get("sp"):
+        # A bare "noon"/"midnight" is only a point-in-time worth rewriting when a
+        # position prefix pins it down ("half past noon"); otherwise leave it.
+        if not has_prefix:
+            return full
+        idx = _BRANCH_SPECIAL[gd["sp"].lower()]
+        special_word = gd["sp"].lower()
+    elif gd.get("pinbare") or gd.get("anibare"):
+        # A bare branch name with no "hour" word ("third quarter of Zi") is only
+        # safe to resolve when a position prefix precedes it.
+        if not has_prefix:
+            return full
+        if gd.get("pinbare"):
+            idx = _BRANCH_PINYIN[gd["pinbare"].lower()]
+        else:
+            word = gd["anibare"].lower()
+            if word in _BRANCH_SPECIAL:
+                idx = _BRANCH_SPECIAL[word]
+                special_word = word
+            else:
+                idx = _BRANCH_ANIMAL_WORDS[word]
+
+    if idx is None:
+        return full
+
+    # ── Determine the position within the hour. ──
+    minutes = None
+    start = False
+    if gd.get("ke"):
+        minutes = 15 * _KE_VALUES[gd["ke"].lower()]
+    elif gd.get("fp"):
+        frac = re.sub(r"[\s\-]+", " ", gd["fp"].lower())
+        minutes = {"a quarter": 15, "quarter": 15, "half": 30, "three quarters": 45}.get(frac)
+        if minutes is None:
+            return full
+    elif gd.get("mp"):
+        val = _word_to_number(gd["mp"])
+        if val is None:
+            return full
+        minutes = int(round(val))
+    elif gd.get("st"):
+        start = True
+
+    # ── Build the canonical labels. ──
+    animal = _BRANCH_ANIMALS[idx]
+    if special_word == "noon":
+        past_label, of_label, bare_label = "noon", "the noon hour", "noon"
+    elif special_word == "midnight":
+        past_label, of_label, bare_label = "midnight", "the midnight hour", "midnight"
+    else:
+        past_label = of_label = bare_label = f"the hour of the {animal}"
+
+    if start:
+        out = f"the start of {of_label}"
+    elif minutes is not None:
+        out = f"{_minutes_phrase(minutes)} past {past_label}"
+    else:
+        out = bare_label
+
+    # Mirror the original phrase's leading casing (sentence-initial -> capital).
+    return _match_case(full, out)
 
 
 def _parse_fraction_phrase(text: str) -> Optional[float]:
@@ -378,40 +629,61 @@ def _lookup_unit(matched_text: str) -> tuple:
 
 
 def _convert_match(match: re.Match) -> str:
-    """Replace callback for unit matches."""
+    """Replace callback for unit matches (from _PATTERN)."""
     full = match.group(0)
-    fraction_str = match.group("frac")
-    num_str = match.group("num").strip()
-    unit_text = match.group("unit")
-
-    # Check text before match for vague quantifiers
-    before = match.string[:match.start()]
-    if _VAGUE_BEFORE.search(before):
-        return full
-
-    # Handle "a"/"an"/"a full"/"an full"/"a single"/"single" as 1
-    normalized = re.sub(r"\s+", " ", num_str.strip().lower())
-    is_another = normalized == "another"
-    if normalized in ("a", "an", "a full", "an full", "full", "a single", "single", "another"):
-        number = 1.0
-    else:
-        number = _word_to_number(num_str)
-
-    if number is None:
-        return full  # vague quantifier, skip
+    gd = match.groupdict()
+    fraction_str = gd.get("frac")
+    fracunit_str = gd.get("fracunit")
+    vague_str = gd.get("vague")
+    num_str = (gd.get("num") or "").strip()
+    more_str = gd.get("more")
+    unit_text = gd["unit"]
 
     unit_info = _lookup_unit(unit_text)
     if unit_info is None:
         return full
-
-    # Apply fractional multiplier if we matched one (e.g. "a quarter of a ke")
-    if fraction_str:
-        frac_mult = _parse_fraction_phrase(fraction_str)
-        if frac_mult is None:
-            return full
-        number *= frac_mult
-
     base_value, base_unit, _, action, numeral = unit_info
+
+    # ── Vague quantifier path ("several shichen" -> "several hours") ──
+    # Only for hour-based replace units; anything else is left untouched so we
+    # don't misstate magnitude ("several jiazi", "several ke") or try to annotate
+    # an uncountable phrase ("several zhang").
+    if vague_str:
+        if action != "replace" or base_unit != "hour":
+            return full
+        vague_norm = re.sub(r"\s+", " ", vague_str.strip())
+        return _match_case(full, f"{vague_norm} {base_unit}s")
+
+    # ── Determine the numeric quantity ──
+    if fracunit_str:
+        # Hyphenated/bare fraction directly on the unit ("a quarter-shichen").
+        number = _parse_fraction_phrase(fracunit_str)
+        if number is None:
+            return full
+    else:
+        # Check text before match for vague quantifiers ("several thousand X")
+        before = match.string[:match.start()]
+        if _VAGUE_BEFORE.search(before):
+            return full
+
+        # Handle "a"/"an"/"a full"/"an full"/"a single"/"single" as 1
+        normalized = re.sub(r"\s+", " ", num_str.strip().lower())
+        if normalized in ("a", "an", "a full", "an full", "full", "a single", "single", "another"):
+            number = 1.0
+        else:
+            number = _word_to_number(num_str)
+
+        if number is None:
+            return full  # vague quantifier, skip
+
+        # Apply fractional multiplier if we matched one (e.g. "a quarter of a ke")
+        if fraction_str:
+            frac_mult = _parse_fraction_phrase(fraction_str)
+            if frac_mult is None:
+                return full
+            number *= frac_mult
+
+    is_another = num_str.strip().lower() == "another"
     raw = number * base_value
 
     # Word-form source ("twenty ke") signals casual phrasing; numeric source
@@ -427,15 +699,20 @@ def _convert_match(match: re.Match) -> str:
         formatted = _format_number(scaled)
 
     if action == "replace":
-        # Special case: "an hour" reads better than "one hour"
-        if numeral == "english" and scaled == 1.0 and final_unit == "hour" and not is_another:
+        # Special case: "an hour" reads better than "one hour" — but only when
+        # there's no filler word to preserve ("one more hour", not "an more hour").
+        if (numeral == "english" and scaled == 1.0 and final_unit == "hour"
+                and not is_another and not more_str):
             output = "about an hour" if was_rounded else "an hour"
         else:
             # Pluralize the unit if value != 1
             unit_label = final_unit
             if scaled != 1.0 and not unit_label.endswith("s"):
                 unit_label += "s"
-            body = f"{formatted} {unit_label}"
+            # Keep the filler word between the number and unit, echoing whatever
+            # matched: "four more hours", "four whole hours", "two full hours".
+            filler = more_str.lower() if more_str else None
+            body = f"{formatted} {filler} {unit_label}" if filler else f"{formatted} {unit_label}"
             if is_another:
                 body = f"another {body}"
             output = f"about {body}" if was_rounded else body
@@ -445,6 +722,29 @@ def _convert_match(match: re.Match) -> str:
     else:
         # Default: annotate — leaves the original phrase untouched
         return f"{full} ({formatted} {final_unit})"
+
+
+def _convert_bare_match(match: re.Match) -> str:
+    """Replace callback for bare unit matches (from _BARE_PATTERN).
+
+    A bare time unit with no quantity is a point in time ("the appointed
+    shichen") rather than a span, so it maps to the English time word with no
+    number: "shichen" -> "hour", "shichens" -> "hours".
+    """
+    full = match.group(0)
+    unit_text = match.group("unit")
+
+    unit_info = _lookup_unit(unit_text)
+    if unit_info is None:
+        return full
+    _value, base_unit, _type, action, _numeral = unit_info
+    if action != "replace" or base_unit != "hour":
+        return full
+
+    # Preserve plurality from the matched token ("shichens" -> "hours").
+    plural = full.lower() != unit_text.lower()
+    label = f"{base_unit}s" if plural else base_unit
+    return _match_case(full, label)
 
 
 def _extract_sentence_context(line: str, match_start: int, match_end: int,
@@ -579,21 +879,52 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None) -> Lis
     Returns:
         Lines with metric annotations appended where units were found.
     """
-    # Pass 1: Collect all matches across all lines
+    # Pass 1: Collect all matches across all lines. Precedence (highest first):
+    #   1. point-in-time expressions (_POINT_RE) — "third ke of the wu hour"
+    #   2. quantity-bearing spans (_PATTERN)      — "two shichen"
+    #   3. bare units (_BARE_PATTERN)             — "the appointed shichen"
+    # Lower-precedence matches are dropped where they overlap a higher one, so a
+    # phrase is handled exactly once.
     all_matches = []  # List of (line_idx, match_obj, match_id)
+    match_kind: dict = {}  # match_id -> "point" | "main" | "bare"
     for line_idx, line in enumerate(lines):
+        point_spans = []
+        for match in _POINT_RE.finditer(line):
+            # Skip no-ops (bare "noon", already-canonical hours) so they neither
+            # clutter the plan nor needlessly suppress overlapping span matches.
+            if _convert_point_match(match) == match.group(0):
+                continue
+            point_spans.append((match.start(), match.end()))
+            match_kind[len(all_matches)] = "point"
+            all_matches.append((line_idx, match, len(all_matches)))
+
+        main_spans = []
         for match in _PATTERN.finditer(line):
+            if any(s < match.end() and match.start() < e for s, e in point_spans):
+                continue  # part of a point-in-time expression; skip
+            main_spans.append((match.start(), match.end()))
+            match_kind[len(all_matches)] = "main"
+            all_matches.append((line_idx, match, len(all_matches)))
+        for match in _BARE_PATTERN.finditer(line):
+            if any(s < match.end() and match.start() < e
+                   for s, e in point_spans + main_spans):
+                continue  # overlaps a higher-precedence match; skip
+            match_kind[len(all_matches)] = "bare"
             all_matches.append((line_idx, match, len(all_matches)))
 
     if not all_matches:
         return list(lines)
 
-    # Pass 2: Optionally filter false positives via cleaning model
+    # Pass 2: Optionally filter false positives via cleaning model. Point-in-time
+    # matches are deterministic and don't fit the unit classifier's prompt, so
+    # they bypass it (they're always applied).
     false_positive_ids: Set[int] = set()
     if cleaning_model:
-        false_positive_ids = _filter_false_positives(
-            lines, all_matches, cleaning_model
-        )
+        cleanable = [m for m in all_matches if match_kind.get(m[2]) != "point"]
+        if cleanable:
+            false_positive_ids = _filter_false_positives(
+                lines, cleanable, cleaning_model
+            )
 
     # Pass 3: Apply conversions, skipping false positives
     # Group by line index, process in reverse offset order to preserve positions
@@ -607,7 +938,13 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None) -> Lis
         for match, match_id in sorted(match_list, key=lambda x: x[0].start(), reverse=True):
             if match_id in false_positive_ids:
                 continue
-            replacement = _convert_match(match)
+            kind = match_kind.get(match_id)
+            if kind == "point":
+                replacement = _convert_point_match(match)
+            elif kind == "bare":
+                replacement = _convert_bare_match(match)
+            else:
+                replacement = _convert_match(match)
             line = line[:match.start()] + replacement + line[match.end():]
         result[line_idx] = line
 

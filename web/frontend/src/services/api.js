@@ -1,3 +1,5 @@
+import { isNoCache } from './cacheBust'
+
 const BASE = ''  // same origin via Vite proxy
 
 async function request(method, path, body, isFormData = false) {
@@ -7,7 +9,14 @@ async function request(method, path, body, isFormData = false) {
     headers: isFormData ? {} : { 'Content-Type': 'application/json' },
     body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
   }
-  const res = await fetch(BASE + path, opts)
+  let url = BASE + path
+  if (isNoCache()) {
+    opts.cache = 'no-store'
+    if (method === 'GET') {
+      url += (url.includes('?') ? '&' : '?') + '_nc=' + Date.now()
+    }
+  }
+  const res = await fetch(url, opts)
   if (res.status === 401 && !path.startsWith('/api/auth/')) {
     // Session expired or invalid — reload to trigger auth check
     window.location.reload()
@@ -49,6 +58,7 @@ export const api = {
   updateBook:    (id, body)   => put(`/api/books/${id}`, body),
   deleteBook:    (id)         => del(`/api/books/${id}`),
   exportBook:    (id, format) => get(`/api/books/${id}/export?format=${format}`),
+  invalidateEpubCache: (id)   => post(`/api/books/${id}/invalidate-epub-cache`, {}),
   uploadCover:   (id, formData) => postForm(`/api/books/${id}/cover`, formData),
   deleteCover:   (id)         => del(`/api/books/${id}/cover`),
 
@@ -60,6 +70,7 @@ export const api = {
   // Chapters
   listChapters:        (bookId)       => get(`/api/books/${bookId}/chapters`),
   getChapter:          (bookId, num)  => get(`/api/books/${bookId}/chapters/${num}`),
+  getChaptersBatch:    (bookId, nums) => get(`/api/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
   updateChapter:       (bookId, num, body) => put(`/api/books/${bookId}/chapters/${num}`, body),
   renumberChapter:     (bookId, num, newNum) => post(`/api/books/${bookId}/chapters/${num}/renumber`, { new_chapter_number: newNum }),
   deleteChapter:       (bookId, num)  => del(`/api/books/${bookId}/chapters/${num}`),
@@ -72,6 +83,10 @@ export const api = {
 
   // Genres
   listGenres:    ()              => get('/api/books/genres'),
+
+  // Per-book modules
+  getModules:    (bookId)       => get(`/api/books/modules${bookId != null ? `?book_id=${bookId}` : ''}`),
+  setModuleSettings: (bookId, moduleId, settings) => put(`/api/books/${bookId}/modules/${moduleId}/settings`, { settings }),
 
   // Prompt templates
   getDefaultPrompt: ()           => get('/api/books/default-prompt'),
@@ -121,6 +136,7 @@ export const api = {
   uploadToQueue:    (formData)   => postForm('/api/queue/upload', formData),
   uploadBatch:      (formData)   => postForm('/api/queue/upload-batch', formData),
   uploadEpub:       (formData)   => postForm('/api/queue/upload-epub', formData),
+  uploadFb2:        (formData)   => postForm('/api/queue/upload-fb2', formData),
   processNext:      (body = {})  => post('/api/queue/process-next', body),
   stopAutoProcess:  ()           => post('/api/queue/stop-auto', {}),
 
@@ -193,6 +209,7 @@ export const api = {
   // Reader stats
   getReaderStats:   (duration, groupBy = 'ip') =>
     get(`/api/reader-stats?duration=${encodeURIComponent(duration)}&group_by=${encodeURIComponent(groupBy)}`),
+  getReaderStatsIpInfo: (ips) => post('/api/reader-stats/ip-info', { ips }),
 
   // Auth
   authStatus:       ()           => get('/api/auth/status'),

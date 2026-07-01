@@ -6,9 +6,97 @@ import os
 import re
 import json
 import logging
+import posixpath
+from urllib.parse import unquote, urldefrag
 from bs4 import BeautifulSoup
 from ebooklib import epub
 import html2text
+from illustrations import IllustrationCollector, make_marker, store_chapter_illustrations, MARKER_RE
+
+
+# --- Chapter-number parsing -------------------------------------------------
+
+_CN_DIGITS = {
+    '零': 0, '〇': 0, '一': 1, '壹': 1, '二': 2, '贰': 2, '貳': 2,
+    '两': 2, '兩': 2, '三': 3, '叁': 3, '參': 3, '四': 4, '肆': 4,
+    '五': 5, '伍': 5, '六': 6, '陆': 6, '陸': 6, '七': 7, '柒': 7,
+    '八': 8, '捌': 8, '九': 9, '玖': 9,
+}
+_CN_UNITS = {'十': 10, '拾': 10, '百': 100, '佰': 100, '千': 1000, '仟': 1000}
+_CN_BIG = {'万': 10000, '萬': 10000, '亿': 100000000, '億': 100000000}
+
+_CHAPTER_NUM_RE = re.compile(
+    r'第\s*([0-9零〇一二三四五六七八九十百千万亿'
+    r'壹贰貳两兩叁參肆伍陆陸柒捌玖拾佰仟萬億]+)\s*[章节節篇回卷]'
+)
+
+
+def parse_chinese_numeral(text):
+    """Convert a Chinese-numeral string (e.g. '三百三十七') to an int.
+
+    Handles standard place-value forms with 十/百/千 and the large-group
+    markers 万/亿, including leading-ten shorthand ('十二' -> 12) and the
+    financial/variant character set. Returns None if `text` contains any
+    character that is not a recognized numeral.
+    """
+    if not text:
+        return None
+
+    total = 0     # accumulates completed 万/亿 groups
+    section = 0   # value of the current group below 万
+    current = 0   # pending digit not yet attached to a unit
+    seen = False
+
+    for ch in text:
+        if ch in _CN_DIGITS:
+            current = _CN_DIGITS[ch]
+            seen = True
+        elif ch in _CN_UNITS:
+            section += (current if current else 1) * _CN_UNITS[ch]
+            current = 0
+            seen = True
+        elif ch in _CN_BIG:
+            section += current
+            total += (section if section else 1) * _CN_BIG[ch]
+            section = 0
+            current = 0
+            seen = True
+        else:
+            return None
+
+    if not seen:
+        return None
+    return total + section + current
+
+
+def chapter_number_from_title(title, default=None):
+    """Extract a chapter number from a chapter title.
+
+    Recognizes both Arabic ('Chapter 12', '第12章') and Chinese-numeral
+    ('第三百三十七章') forms. An explicit 第…章/节/篇/回/卷 marker is preferred;
+    otherwise the first Arabic run anywhere in the title is used. Returns
+    `default` when nothing parseable is found.
+    """
+    if not title:
+        return default
+
+    match = _CHAPTER_NUM_RE.search(title)
+    if match:
+        token = match.group(1)
+        if token.isdigit():
+            return int(token)
+        value = parse_chinese_numeral(token)
+        if value is not None:
+            return value
+
+    match = re.search(r'(\d+)', title)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+
+    return default
 
 
 class EPUBProcessor:
@@ -28,6 +116,9 @@ class EPUBProcessor:
         self.config = config
         self.logger = logger
         self.db_manager = db_manager
+        # Per-run illustration state; populated by process_epub before extraction.
+        self._collector = None
+        self._epub_book = None
         self.h2t = html2text.HTML2Text()
         self.h2t.ignore_links = True
         self.h2t.ignore_images = True
@@ -144,22 +235,16 @@ class EPUBProcessor:
                     continue
                 
                 # Get content
-                content = self._process_html_content(item.content)
-                
-                # Skip empty chapters or very short ones (likely just titles)
-                if not content or len(content) < 50:
+                content = self._process_html_content(item.content, base_href=href)
+
+                # Skip empty chapters or very short ones (likely just titles),
+                # but keep image-only chapters.
+                if not content or (len(content) < 50 and "⟦IMG:" not in content):
                     continue
-                
-                chapter_number = i
-                
-                # Try to extract chapter number from title
-                match = re.search(r'(\d+)', title)
-                if match:
-                    try:
-                        chapter_number = int(match.group(1))
-                    except ValueError:
-                        pass
-                
+
+                # Extract chapter number from title (Arabic or Chinese numerals)
+                chapter_number = chapter_number_from_title(title, default=i)
+
                 chapters.append({
                     'title': title,
                     'content': content,
@@ -173,7 +258,7 @@ class EPUBProcessor:
             items.sort(key=lambda x: x.file_name)
             
             for i, item in enumerate(items, 1):
-                content = self._process_html_content(item.content)
+                content = self._process_html_content(item.content, base_href=item.file_name)
                 
                 # Skip empty or very short content
                 if not content or len(content) < 50:
@@ -181,18 +266,13 @@ class EPUBProcessor:
                 
                 # Try to extract title and chapter number from content
                 title = self._extract_title_from_content(content)
-                chapter_number = i
-                
-                # If title found, try to extract chapter number
+
+                # If title found, extract chapter number (Arabic or Chinese numerals)
                 if title:
-                    match = re.search(r'(\d+)', title)
-                    if match:
-                        try:
-                            chapter_number = int(match.group(1))
-                        except ValueError:
-                            pass
+                    chapter_number = chapter_number_from_title(title, default=i)
                 else:
                     title = f"Chapter {i}"
+                    chapter_number = i
                 
                 # Only treat as chapter if it resembles one
                 if len(content.split('\n')) > 5 and (
@@ -211,27 +291,92 @@ class EPUBProcessor:
         self.logger.info(f"Extracted {len(chapters)} chapters")
         return chapters
     
-    def _process_html_content(self, html_content):
+    def _process_html_content(self, html_content, base_href=None):
         """
         Process HTML content to extract clean text.
-        
+
+        When an illustration collector is active, embedded <img>/<svg image>
+        elements are resolved against the EPUB manifest, stored, and replaced
+        by an inline ⟦IMG:id⟧ marker (later isolated onto its own line). With no
+        collector, behaviour is unchanged (html2text drops images).
+
         Args:
             html_content: Raw HTML content
-            
+            base_href: The chapter item's href, used to resolve relative image
+                src paths against the manifest.
+
         Returns:
             str: Cleaned text content
         """
         if isinstance(html_content, bytes):
             html_content = html_content.decode('utf-8', errors='replace')
-        
+
+        # Substitute image elements with markers before html2text runs.
+        if self._collector is not None and self._epub_book is not None:
+            html_content = self._substitute_images(html_content, base_href)
+
         # Convert HTML to text
         text = self.h2t.handle(html_content)
-        
+
+        # Ensure every marker sits alone on its own line (html2text may have
+        # reflowed an inline marker into surrounding text).
+        text = re.sub(r'[ \t]*(⟦IMG:[0-9a-f]+⟧)[ \t]*', r'\n\1\n', text)
+
         # Clean up the text
         text = re.sub(r'\n{3,}', '\n\n', text)  # Replace multiple newlines
         text = text.strip()
-        
+
         return text
+
+    def _substitute_images(self, html_content, base_href):
+        """Replace <img>/<svg image> elements with ⟦IMG:id⟧ markers in order.
+
+        Decorative/tiny or unresolvable images are removed. Returns the modified
+        HTML string for html2text to process.
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+        except Exception:
+            return html_content
+
+        for el in soup.find_all(['img', 'image']):
+            src = (el.get('src') or el.get('xlink:href') or el.get('href') or '').strip()
+            data, mime = self._resolve_epub_image(src, base_href)
+            marker_id = None
+            if data:
+                marker_id = self._collector.add(
+                    data, mime=mime, alt=(el.get('alt') or None), original_href=src,
+                )
+            if marker_id:
+                el.replace_with(f" {make_marker(marker_id)} ")
+            else:
+                el.decompose()  # decorative / unresolved → drop cleanly
+
+        return str(soup)
+
+    def _resolve_epub_image(self, src, base_href):
+        """Resolve an image src (relative to base_href) to (bytes, mime)."""
+        if not src or src.startswith('data:'):
+            return None, None
+        # Strip fragment/query and URL-decode.
+        src = unquote(urldefrag(src)[0])
+        candidates = [src]
+        # Resolve relative to the chapter's directory.
+        if base_href:
+            base_dir = posixpath.dirname(unquote(urldefrag(base_href)[0]))
+            if base_dir:
+                candidates.append(posixpath.normpath(posixpath.join(base_dir, src)))
+        candidates.append(posixpath.basename(src))
+
+        for cand in candidates:
+            item = self._epub_book.get_item_with_href(cand)
+            if item is not None:
+                try:
+                    return item.get_content(), (item.media_type or '')
+                except Exception:
+                    return None, None
+        self.logger.warning(f"Could not resolve EPUB image href: {src}")
+        return None, None
     
     def _extract_title_from_content(self, content):
         """
@@ -336,7 +481,14 @@ class EPUBProcessor:
         with open(filepath, "wb") as f:
             f.write(image_bytes)
         self.logger.info(f"Saved cover image to {filepath}")
-        return f"covers/{filename}"
+        rel_path = f"covers/{filename}"
+        try:
+            import spaces
+            if spaces.is_enabled(self.config):
+                spaces.upload_relpath(self.config, rel_path)
+        except Exception:
+            pass
+        return rel_path
 
     def add_chapters_to_queue(self, chapters, book_id=None, epub_path=None):
         """
@@ -370,12 +522,21 @@ class EPUBProcessor:
 
             if queue_item_id:
                 added_count += 1
+                # Persist illustrations referenced by this chapter's content.
+                if self._collector is not None:
+                    try:
+                        store_chapter_illustrations(
+                            self.db_manager, self.config, book_id,
+                            content_lines, self._collector, queue_id=queue_item_id,
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Failed to store illustrations for chapter {chapter['number']}: {e}")
             else:
                 self.logger.error(f"Failed to add chapter {chapter['number']} to queue")
 
         self.logger.info(f"Added {added_count} chapters to queue")
         return added_count
-    
+
     def process_epub(self, epub_path, book_id=None):
         """
         Process an EPUB file and add chapters to the translation queue.
@@ -391,7 +552,11 @@ class EPUBProcessor:
         book = self.load_epub(epub_path)
         if not book:
             return False, 0, f"Failed to load EPUB: {epub_path}"
-        
+
+        # Enable illustration extraction for this run.
+        self._collector = IllustrationCollector()
+        self._epub_book = book
+
         # Extract TOC
         toc = self.extract_toc(book)
         

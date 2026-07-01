@@ -8,6 +8,8 @@ or:
 """
 import sys
 import os
+import re
+from html import escape
 
 # Make the project root importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, HTMLResponse
 
 from config import TranslationConfig
 from logger import Logger
@@ -135,6 +137,23 @@ def create_app() -> FastAPI:
         # Serve actual static assets (JS, CSS, images, etc.)
         app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="static-assets")
 
+        # Per-book RSS autodiscovery: feed readers fetch the page URL server-side
+        # and don't run JS, so the React-injected <link> is invisible to them.
+        # For the book-detail route we splice a per-book <link rel="alternate">
+        # into the served index.html so non-JS crawlers discover the book's feed.
+        _book_path_re = re.compile(r"^library/book/(\d+)/?$")
+        with open(index_html, "r", encoding="utf-8") as fh:
+            _index_html_text = fh.read()
+
+        def _index_with_book_feed(book_id: int):
+            book = entity_manager.get_book(book_id=book_id)
+            if not book or not book.get("is_public", True):
+                return None
+            title = escape(f"{book.get('title', 'Book')} — New Chapters", quote=True)
+            tag = (f'<link rel="alternate" type="application/rss+xml" '
+                   f'title="{title}" href="/api/public/books/{book_id}/feed.rss" />')
+            return _index_html_text.replace("</head>", tag + "</head>", 1)
+
         # SPA catch-all: any non-API path serves index.html for client-side routing
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str):
@@ -142,6 +161,11 @@ def create_app() -> FastAPI:
             file_path = os.path.join(static_dir, full_path)
             if full_path and os.path.isfile(file_path):
                 return FileResponse(file_path)
+            m = _book_path_re.match(full_path)
+            if m:
+                html = _index_with_book_feed(int(m.group(1)))
+                if html is not None:
+                    return HTMLResponse(html)
             return FileResponse(index_html)
 
     return app

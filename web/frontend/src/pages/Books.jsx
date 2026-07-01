@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
+import { bustUrl } from '../services/cacheBust'
 import { useWs } from '../App'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, SquareMinus, Code, MessageCircle, MessageCircleOff
+  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, SquareMinus, Code, MessageCircle, MessageCircleOff, Boxes, RefreshCw, Settings
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -33,6 +34,7 @@ export default function Books() {
   const categoriesModal = useUrlModal('categories', { idKey: 'book' })
   const reviewModal = useUrlModal('review', { idKey: 'book' })
   const pronounRepairModal = useUrlModal('pronounRepair', { idKey: 'book' })
+  const modulesModal = useUrlModal('modules', { idKey: 'book' })
 
   // Chapter selection for batch retranslate — too large to live in the URL,
   // so it's kept local and keyed by book id.
@@ -122,6 +124,16 @@ export default function Books() {
       alert(`Export failed: ${e.message}`)
     } finally {
       setExporting(null)
+    }
+  }
+
+  const handleInvalidateCache = async (bookId) => {
+    if (!confirm('Delete the cached EPUB for this book (local disk + Spaces)? The next export will regenerate it.')) return
+    try {
+      const res = await api.invalidateEpubCache(bookId)
+      alert(res?.spaces_purged ? 'EPUB cache cleared (disk + Spaces).' : 'EPUB cache cleared (disk).')
+    } catch (e) {
+      alert(`Failed to clear EPUB cache: ${e.message}`)
     }
   }
 
@@ -261,7 +273,7 @@ export default function Books() {
                 </button>
                 {book.cover_image && (
                   <img
-                    src={`/api/books/${book.id}/cover/thumb`}
+                    src={bustUrl(book.cover_thumb_url || `/api/books/${book.id}/cover/thumb`)}
                     alt=""
                     className="w-8 h-11 object-cover rounded border border-slate-700 shrink-0"
                   />
@@ -331,6 +343,8 @@ export default function Books() {
                     onEdit={() => editBookModal.open(book.id)}
                     onDelete={() => handleDelete(book.id)}
                     onPronounRepair={() => pronounRepairModal.open(book.id)}
+                    onModules={() => modulesModal.open(book.id)}
+                    onInvalidateCache={() => handleInvalidateCache(book.id)}
                   />
                 </div>
               </div>
@@ -484,6 +498,13 @@ export default function Books() {
         return <PromptEditorModal book={book} onClose={promptModal.close} />
       })()}
 
+      {/* Per-book modules modal */}
+      {modulesModal.isOpen && (() => {
+        const book = books.find(b => b.id === parseInt(modulesModal.id, 10))
+        if (!book) return null
+        return <BookModulesModal book={book} onClose={modulesModal.close} onSaved={() => { modulesModal.close(); load() }} />
+      })()}
+
       {/* Retranslate modal */}
       {retranslateModal.isOpen && (() => {
         const bId = parseInt(retranslateModal.params.book, 10)
@@ -552,7 +573,7 @@ export default function Books() {
   )
 }
 
-function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair }) {
+function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -602,6 +623,7 @@ function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, o
               {fmt.toUpperCase()}
             </button>
           ))}
+          {item(<RefreshCw size={12} />, 'Clear EPUB Cache', onInvalidateCache)}
           <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Publish</div>
           {item(<Globe size={12} />, 'WordPress', onPublish)}
@@ -615,6 +637,7 @@ function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, o
           <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
           {item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
+          {item(<Boxes size={12} />, 'Modules', onModules)}
           {item(<Code size={12} />, 'API Logs', onApiLogs)}
           {item(<Edit2 size={12} />, 'Edit Book', onEdit)}
           {item(<Trash2 size={12} />, 'Delete', onDelete, 'text-rose-400 hover:text-rose-300')}
@@ -636,7 +659,6 @@ function BookFormModal({ book, onClose, onSaved }) {
     status: book?.status || 'ongoing',
     source_url: book?.source_url || '',
     notes: book?.notes || '',
-    trad_to_simp: book?.trad_to_simp ?? null,
     tags: Array.isArray(book?.tags) ? book.tags : [],
   })
   const [genres, setGenres] = useState([])
@@ -788,21 +810,6 @@ function BookFormModal({ book, onClose, onSaved }) {
             <label className="label">Total Source Chapters</label>
             <input className="input" type="number" min="0" placeholder="Optional" value={form.total_source_chapters} onChange={e => setForm(f => ({...f, total_source_chapters: e.target.value}))} />
           </div>
-          {book && (
-            <div>
-              <label className="label">Traditional → Simplified Chinese</label>
-              <select
-                className="input"
-                value={form.trad_to_simp === null || form.trad_to_simp === undefined ? '' : String(form.trad_to_simp)}
-                onChange={e => setForm(f => ({ ...f, trad_to_simp: e.target.value === '' ? null : parseInt(e.target.value, 10) }))}
-              >
-                <option value="">Inherit global default</option>
-                <option value="0">Off</option>
-                <option value="1">On — convert source on save</option>
-              </select>
-              <p className="text-xs text-slate-500 mt-1">Retrofit existing: <code className="text-slate-400">bulk_convert_trad_to_simp.py --book-id {book.id}</code></p>
-            </div>
-          )}
           <div><label className="label">Description</label><textarea className="input h-24 resize-none" value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} /></div>
           <div><label className="label">Notes</label><textarea className="input h-24 resize-none" value={form.notes} onChange={e => setForm(f => ({...f, notes: e.target.value}))} /></div>
           {book && (
@@ -1038,6 +1045,281 @@ function PromptEditorModal({ book, onClose }) {
             </div>
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+function BookModulesModal({ book, onClose, onSaved }) {
+  const [available, setAvailable] = useState([])
+  const [overrides, setOverrides] = useState(
+    (book?.modules && typeof book.modules === 'object') ? book.modules : {}
+  )
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [settingsFor, setSettingsFor] = useState(null)  // module whose settings modal is open
+
+  const reloadModules = async () => {
+    const d = await api.getModules(book.id)
+    setAvailable(d.modules || [])
+  }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await reloadModules()
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [])
+
+  const stateOf = (id) => overrides?.[id] === true ? 'on' : overrides?.[id] === false ? 'off' : 'auto'
+  const setState = (id, state) => {
+    setOverrides(o => {
+      const next = { ...(o || {}) }
+      if (state === 'auto') delete next[id]
+      else next[id] = (state === 'on')
+      return next
+    })
+  }
+
+  const handleSave = async () => {
+    setSaving(true); setError(null)
+    try {
+      await api.updateBook(book.id, { modules: overrides })
+      onSaved()
+    } catch (e) {
+      setError(e.message)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="card w-full max-w-2xl max-w-[95vw] max-h-[90vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
+          <div>
+            <h2 className="font-semibold text-slate-200">Modules — {book.title}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              <span className="font-medium">Auto</span> matches the book's Source URL against each module's site.
+              Set <span className="font-medium">On</span>/<span className="font-medium">Off</span> to override for this book.
+            </p>
+          </div>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center p-12 text-slate-400 text-sm">
+            <Loader2 size={14} className="animate-spin mr-2" /> Loading…
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 overflow-auto p-4 space-y-3">
+              {available.length === 0 && (
+                <p className="text-sm text-slate-500">No modules are registered.</p>
+              )}
+              {available.map(m => {
+                // Modules with no auto-on behavior (no default_enabled, URL match,
+                // or custom auto-rule) get no "Auto" option and default to Off.
+                const hasAuto = m.has_auto !== false
+                const value = hasAuto ? stateOf(m.id) : (overrides?.[m.id] === true ? 'on' : 'off')
+                const onChange = (e) => {
+                  const v = e.target.value
+                  // For no-auto modules "Off" == the auto default, so clear the override.
+                  setState(m.id, (!hasAuto && v === 'off') ? 'auto' : v)
+                }
+                // Whether the module's auto-trigger currently fires for this book
+                // (server-resolved). Only meaningful while the dropdown is on Auto.
+                const autoResolved = m.auto_enabled === true
+                const autoKnown = m.auto_enabled === true || m.auto_enabled === false
+                const showAutoState = value === 'auto' && autoKnown
+                return (
+                  <div key={m.id} className="flex items-start gap-3 border-b border-slate-800 pb-3 last:border-0">
+                    <select
+                      className={`input w-24 shrink-0${showAutoState ? (autoResolved ? ' text-emerald-400' : ' text-slate-500') : ''}`}
+                      value={value}
+                      onChange={onChange}
+                    >
+                      {hasAuto && <option value="auto">Auto</option>}
+                      <option value="on">On</option>
+                      <option value="off">Off</option>
+                    </select>
+                    <div className="text-sm min-w-0 flex-1">
+                      <div className="text-slate-200">
+                        {m.name} <span className="text-xs text-slate-500">({m.id})</span>
+                        {showAutoState && (
+                          <span className={`ml-2 text-[11px] px-1.5 py-0.5 rounded ${autoResolved ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-700/60 text-slate-400'}`}>
+                            {autoResolved ? 'Auto → enabled' : 'Auto → off'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500">{m.description}</div>
+                      {hasAuto && m.auto_hint && (
+                        <div className="text-[11px] text-slate-600 mt-0.5">Auto: {m.auto_hint}</div>
+                      )}
+                    </div>
+                    {m.has_settings && (
+                      <button
+                        className="btn-ghost p-1 shrink-0 self-center"
+                        title="Module settings"
+                        onClick={() => setSettingsFor(m)}
+                      >
+                        <Settings size={15} />
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {error && <div className="px-5 shrink-0"><p className="text-rose-400 text-sm">{error}</p></div>}
+
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-700 shrink-0">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving}>
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                Save
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {settingsFor && (
+        <ModuleSettingsModal
+          book={book}
+          module={settingsFor}
+          onClose={() => setSettingsFor(null)}
+          onSaved={async () => { setSettingsFor(null); try { await reloadModules() } catch { /* keep prior list */ } }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Schema-driven per-book settings for one module. Stacked at z-[60] above the
+// modules modal (mirrors the EntityFormModal → DeleteEntityModal precedent).
+// Fields render from module.settings_schema; a field is shown/saved only when
+// every key in its optional `show_if` equals the current form value.
+function ModuleSettingsModal({ book, module, onClose, onSaved }) {
+  const schema = module.settings_schema || []
+  const [form, setForm] = useState(() => ({ ...(module.settings || {}) }))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [catOptions, setCatOptions] = useState(null)
+
+  const needsCategories = schema.some(f => f.options_source === 'book_categories')
+  useEffect(() => {
+    if (!needsCategories) return
+    (async () => {
+      try {
+        const d = await api.getBookCategories(book.id)
+        setCatOptions(d.categories || [])
+      } catch { setCatOptions([]) }
+    })()
+  }, [])
+
+  const visible = (f) => !f.show_if || Object.entries(f.show_if).every(([k, v]) => form[k] === v)
+  const setField = (key, value) => setForm(s => ({ ...s, [key]: value }))
+  const optionsFor = (f) => f.options_source === 'book_categories' ? (catOptions || []) : (f.options || [])
+
+  const handleSave = async () => {
+    setSaving(true); setError(null)
+    // Strip hidden fields so stale values from a since-hidden branch aren't saved.
+    const out = {}
+    for (const f of schema) if (visible(f)) out[f.key] = form[f.key]
+    try {
+      await api.setModuleSettings(book.id, module.id, out)
+      onSaved(out)
+    } catch (e) { setError(e.message); setSaving(false) }
+  }
+
+  const renderField = (f) => {
+    const value = form[f.key]
+    if (f.type === 'bool') {
+      return (
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={!!value} onChange={e => setField(f.key, e.target.checked)} />
+          <span className="text-sm text-slate-200">{f.label}</span>
+        </label>
+      )
+    }
+    if (f.type === 'multiselect') {
+      const opts = optionsFor(f)
+      const sel = Array.isArray(value) ? value : []
+      const toggle = (opt) => setField(f.key, sel.includes(opt) ? sel.filter(x => x !== opt) : [...sel, opt])
+      return (
+        <div>
+          <div className="label">{f.label}</div>
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {opts.length === 0 && <span className="text-xs text-slate-500">No categories available.</span>}
+            {opts.map(opt => (
+              <button type="button" key={opt} onClick={() => toggle(opt)}
+                className={`text-xs px-2 py-1 rounded border ${sel.includes(opt) ? 'bg-emerald-500/15 text-emerald-300 border-emerald-600' : 'border-slate-700 text-slate-400 hover:border-slate-500'}`}>
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      )
+    }
+    if (f.type === 'select') {
+      return (
+        <div>
+          <div className="label">{f.label}</div>
+          <select className="input mt-1" value={value ?? ''} onChange={e => setField(f.key, e.target.value)}>
+            {optionsFor(f).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+        </div>
+      )
+    }
+    if (f.type === 'textarea') {
+      return (
+        <div>
+          <div className="label">{f.label}</div>
+          <textarea className="input mt-1" rows={4} value={value ?? ''} onChange={e => setField(f.key, e.target.value)} />
+        </div>
+      )
+    }
+    return (
+      <div>
+        <div className="label">{f.label}</div>
+        <input className="input mt-1" type={f.type === 'number' ? 'number' : 'text'}
+          value={value ?? ''}
+          onChange={e => setField(f.key, f.type === 'number' ? Number(e.target.value) : e.target.value)} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60"
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="card w-full max-w-lg max-w-[95vw] max-h-[90vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
+          <h2 className="font-semibold text-slate-200">{module.name} — Settings</h2>
+          <button className="btn-ghost p-1" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="flex-1 overflow-auto p-5 space-y-4">
+          {schema.length === 0 && <p className="text-sm text-slate-500">This module has no settings.</p>}
+          {schema.filter(visible).map(f => (
+            <div key={f.key}>
+              {renderField(f)}
+              {f.help && <p className="text-[11px] text-slate-500 mt-1">{f.help}</p>}
+            </div>
+          ))}
+        </div>
+        {error && <div className="px-5 shrink-0"><p className="text-rose-400 text-sm">{error}</p></div>}
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-700 shrink-0">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving}>
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+            Save
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1430,6 +1712,7 @@ function WordPressPublishModal({ book, onClose }) {
 
 function CategoryManagerModal({ book, onClose }) {
   const [categories, setCategories] = useState([])
+  const [attributes, setAttributes] = useState({})
   const [loading, setLoading] = useState(true)
   const [isDefault, setIsDefault] = useState(true)
   const [newCat, setNewCat] = useState('')
@@ -1447,6 +1730,7 @@ function CategoryManagerModal({ book, onClose }) {
           api.getCategoryEntityCounts(book.id),
         ])
         setCategories(catData.categories || DEFAULT_CATEGORIES)
+        setAttributes(catData.attributes || {})
         setIsDefault(catData.is_default)
         setEntityCounts(countData.counts || {})
       } catch (e) {
@@ -1457,11 +1741,12 @@ function CategoryManagerModal({ book, onClose }) {
     })()
   }, [book.id])
 
-  const handleSave = async (cats) => {
+  const handleSave = async (cats, attrs) => {
     setSaving(true); setError(null); setSuccessMsg(null)
     try {
-      const res = await api.setBookCategories(book.id, { categories: cats })
+      const res = await api.setBookCategories(book.id, { categories: cats, attributes: attrs })
       setCategories(res.categories)
+      setAttributes(res.attributes || {})
       setIsDefault(false)
       setSuccessMsg('Categories saved.')
       setTimeout(() => setSuccessMsg(null), 3000)
@@ -1480,7 +1765,7 @@ function CategoryManagerModal({ book, onClose }) {
     const updated = [...categories, c]
     setCategories(updated)
     setNewCat('')
-    handleSave(updated)
+    handleSave(updated, attributes)
   }
 
   const handleRemove = (cat) => {
@@ -1488,8 +1773,20 @@ function CategoryManagerModal({ book, onClose }) {
     if (count > 0 && !confirm(`"${cat}" has ${count} entities. They won't be deleted but will be hidden from translation prompts and UI filters. Continue?`)) return
     const updated = categories.filter(c => c !== cat)
     if (updated.length === 0) { setError('At least one category is required.'); return }
+    const { [cat]: _removed, ...restAttrs } = attributes
     setCategories(updated)
-    handleSave(updated)
+    setAttributes(restAttrs)
+    handleSave(updated, restAttrs)
+  }
+
+  const handleToggleGender = (cat) => {
+    const current = attributes[cat] || []
+    const next = current.includes('gender')
+      ? current.filter(a => a !== 'gender')
+      : [...current, 'gender']
+    const updated = { ...attributes, [cat]: next }
+    setAttributes(updated)
+    handleSave(categories, updated)
   }
 
   const handleReset = async () => {
@@ -1498,6 +1795,7 @@ function CategoryManagerModal({ book, onClose }) {
     try {
       await api.resetBookCategories(book.id)
       setCategories([...DEFAULT_CATEGORIES])
+      setAttributes({ characters: ['gender'] })
       setIsDefault(true)
       setSuccessMsg('Reset to defaults.')
       setTimeout(() => setSuccessMsg(null), 3000)
@@ -1526,7 +1824,9 @@ function CategoryManagerModal({ book, onClose }) {
         ) : (
           <>
             <div className="space-y-1.5">
-              {categories.map(cat => (
+              {categories.map(cat => {
+                const gendered = (attributes[cat] || []).includes('gender')
+                return (
                 <div key={cat} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-slate-750/50">
                   <div className="flex items-center gap-2">
                     <span {...catBadgeProps(cat)}>{cat}</span>
@@ -1534,16 +1834,32 @@ function CategoryManagerModal({ book, onClose }) {
                       <span className="text-xs text-slate-500">{entityCounts[cat]} entities</span>
                     )}
                   </div>
-                  <button
-                    className="btn-ghost p-1 hover:text-rose-400"
-                    title="Remove category"
-                    onClick={() => handleRemove(cat)}
-                    disabled={saving}
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      className={`text-xs px-1.5 py-0.5 rounded border transition-colors ${
+                        gendered
+                          ? 'text-indigo-300 bg-indigo-900/50 border-indigo-500'
+                          : 'text-slate-500 border-slate-600 hover:text-slate-300'
+                      }`}
+                      title={gendered
+                        ? 'Gender-tracked — entities in this category carry a gender (enables pronoun repair). Click to disable.'
+                        : 'Click to gender-track this category (adds a gender field + enables pronoun repair).'}
+                      onClick={() => handleToggleGender(cat)}
+                      disabled={saving}
+                    >
+                      ⚥ gender
+                    </button>
+                    <button
+                      className="btn-ghost p-1 hover:text-rose-400"
+                      title="Remove category"
+                      onClick={() => handleRemove(cat)}
+                      disabled={saving}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 </div>
-              ))}
+              )})}
             </div>
 
             <div className="flex gap-2">

@@ -130,6 +130,16 @@ async def get_settings():
         "email_from": getattr(_config, "email_from", ""),
         "site_base_url": getattr(_config, "site_base_url", ""),
         "trad_to_simp": getattr(_config, "trad_to_simp", False),
+        "disable_content_cache": getattr(_config, "disable_content_cache", False),
+        "disable_media_cache": getattr(_config, "disable_media_cache", False),
+        "overload_retry_wait_seconds": getattr(
+            _config, "overload_retry_wait_seconds",
+            int(os.getenv("OVERLOAD_RETRY_WAIT_SECONDS", "300")),
+        ),
+        "json_fix_timeout_seconds": getattr(
+            _config, "json_fix_timeout_seconds",
+            int(os.getenv("JSON_FIX_TIMEOUT_SECONDS", "300")),
+        ),
     }
 
 
@@ -146,6 +156,10 @@ class SettingsUpdate(BaseModel):
     email_from: Optional[str] = None
     site_base_url: Optional[str] = None
     trad_to_simp: Optional[bool] = None
+    disable_content_cache: Optional[bool] = None
+    disable_media_cache: Optional[bool] = None
+    overload_retry_wait_seconds: Optional[int] = None
+    json_fix_timeout_seconds: Optional[int] = None
 
 
 @router.put("")

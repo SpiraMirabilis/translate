@@ -212,3 +212,36 @@ class WordPressClient:
             if e.response.status_code == 404:
                 return None
             raise
+
+    def list_posts(self, post_type: str, per_page: int = 100) -> list[dict]:
+        """List all posts of a type, paging through every page.
+
+        Returns a list of {id, slug, link} dicts. Used to harvest the canonical
+        permalinks for building old-WP-URL -> reader redirects.
+        """
+        results: list[dict] = []
+        page = 1
+        while True:
+            resp = self._request(
+                "GET",
+                f"{self.base}/{post_type}",
+                params={
+                    "per_page": per_page,
+                    "page": page,
+                    "_fields": "id,slug,link,status",
+                    # 'publish' is the default, but be explicit so drafts/trash are skipped
+                    "status": "publish",
+                },
+            )
+            batch = resp.json()
+            for item in batch:
+                results.append({
+                    "id": item.get("id"),
+                    "slug": item.get("slug"),
+                    "link": item.get("link"),
+                })
+            total_pages = int(resp.headers.get("X-WP-TotalPages", page) or page)
+            if page >= total_pages or not batch:
+                break
+            page += 1
+        return results

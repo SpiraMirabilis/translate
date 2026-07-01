@@ -3,6 +3,7 @@
   "li":          { "value": 500.0,  "unit": "m",    "type": "length", "action": "annotate" },
   "chi":         { "value": 0.333,  "unit": "m",    "type": "length", "action": "annotate" },
   "cun":         { "value": 0.0333, "unit": "m",    "type": "length", "action": "annotate" },
+  "ren":         { "value": 2.67,   "unit": "m",    "type": "length", "action": "annotate" },
   "jin":         { "value": 0.5,    "unit": "kg",   "type": "mass",   "action": "annotate" },
   "liang":       { "value": 0.05,   "unit": "kg",   "type": "mass",   "action": "annotate" },
   "qian":        { "value": 0.005,  "unit": "kg",   "type": "mass",   "action": "annotate" },
@@ -11,5 +12,7 @@
   "double-hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
   "double hour": { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
   "shichen":     { "value": 2.0,    "unit": "hour", "type": "time",   "action": "replace",  "numeral": "english" },
-  "ke":          { "value": 15.0,   "unit": "minute", "type": "time", "action": "replace",  "numeral": "english" }
+  "ke":          { "value": 15.0,   "unit": "minute", "type": "time", "action": "replace",  "numeral": "english" },
+  "sexagenary cycle": { "value": 60.0, "unit": "year", "type": "time", "action": "replace", "numeral": "english" },
+  "jiazi":       { "value": 60.0,   "unit": "year", "type": "time", "action": "replace",  "numeral": "english" }
 }

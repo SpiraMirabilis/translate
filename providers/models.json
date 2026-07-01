@@ -39,7 +39,7 @@
         "claude-haiku-4-5",
         "claude-3-5-haiku-20241022"
       ],
-      "max_chars": 20000,
+      "max_chars": 8500,
       "max_output_tokens": 8192
     },
     "google": {

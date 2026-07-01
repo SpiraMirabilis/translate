@@ -12,7 +12,12 @@ import { copyToClipboard } from '../utils/clipboard'
 import { DictResult, useDictLookup } from './DictLookup'
 import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps } from '../utils/categories'
 
-export default function EntityReviewPanel({ entities, context, onDone }) {
+export default function EntityReviewPanel({ entities, context, onDone, phase = 'post', genderedCategories }) {
+  // Categories that carry a gender attribute for this book (from the review payload).
+  // Falls back to the legacy "characters" default when the backend didn't supply a list.
+  const genderedSet = (genderedCategories && genderedCategories.length)
+    ? genderedCategories
+    : ['characters']
   // Build the full list of categories available in this review
   const allCategories = (() => {
     const cats = [...DEFAULT_CATEGORIES]
@@ -147,9 +152,13 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
           <div>
-            <h2 className="font-semibold text-slate-100">Entity Review</h2>
+            <h2 className="font-semibold text-slate-100">
+              {phase === 'pre' ? 'Entity Review (Two-pass)' : 'Entity Review'}
+            </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              {activeRows.length} new {activeRows.length === 1 ? 'entity' : 'entities'} found — review and edit before saving
+              {phase === 'pre'
+                ? `${activeRows.length} new ${activeRows.length === 1 ? 'entity' : 'entities'} found — review and edit before translation begins`
+                : `${activeRows.length} new ${activeRows.length === 1 ? 'entity' : 'entities'} found — review and edit before saving`}
             </p>
           </div>
           <div className="flex gap-2">
@@ -165,7 +174,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
             </button>
             <button className="btn-primary flex items-center gap-1.5" onClick={handleSubmit} disabled={submitting}>
               <CheckCircle size={14} />
-              Approve & Continue
+              {phase === 'pre' ? 'Approve & Translate' : 'Approve & Continue'}
             </button>
           </div>
         </div>
@@ -187,6 +196,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
               key={row.id}
               row={row}
               categories={allCategories}
+              gendered={genderedSet.includes(row.category)}
               onUpdate={patch => update(row.id, patch)}
               onDelete={() => update(row.id, { deleted: true })}
               onAdvice={() => handleAdvice(row)}
@@ -224,7 +234,7 @@ export default function EntityReviewPanel({ entities, context, onDone }) {
   )
 }
 
-function EntityRow({ row, categories, onUpdate, onDelete, onAdvice, onCopyContext, hasContext }) {
+function EntityRow({ row, categories, gendered, onUpdate, onDelete, onAdvice, onCopyContext, hasContext }) {
   const [showAdvice, setShowAdvice] = useState(false)
   const [copied, setCopied] = useState(false)
   const { dictQuery, dictData, dictLoading, dictError, lookup: dictLookup, close: dictClose } = useDictLookup()
@@ -259,8 +269,8 @@ function EntityRow({ row, categories, onUpdate, onDelete, onAdvice, onCopyContex
           />
         </div>
 
-        {/* Gender (for characters) */}
-        {row.category === 'characters' && (
+        {/* Gender (for gender-tracked categories) */}
+        {gendered && (
           <div className="flex shrink-0 gap-0.5">
             {[
               { value: 'male', symbol: '♂', color: 'text-blue-400 bg-blue-900/60 border-blue-500' },

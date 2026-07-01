@@ -3,13 +3,14 @@ import { X, ChevronLeft, ChevronRight, Save, Sparkles, BookOpen, Copy, Replace, 
 import { api } from '../services/api'
 import { copyToClipboard } from '../utils/clipboard'
 import { DictResult, useDictLookup } from './DictLookup'
-import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps } from '../utils/categories'
+import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps, isGenderedCategory } from '../utils/categories'
 
 export default function RetroactiveReviewModal({ book, onClose }) {
   const [originChapters, setOriginChapters] = useState([])
   const [currentChapter, setCurrentChapter] = useState(null)
   const [rows, setRows] = useState([])
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES)
+  const [categoryAttributes, setCategoryAttributes] = useState(null)
   const [loading, setLoading] = useState(true)
   const [propagate, setPropagate] = useState(null) // { entityId, oldTranslation, newTranslation, untranslated }
   const [error, setError] = useState(null)
@@ -26,6 +27,7 @@ export default function RetroactiveReviewModal({ book, onClose }) {
         if (cancelled) return
         setOriginChapters(chapRes.chapters || [])
         if (catRes.categories?.length) setCategories(catRes.categories)
+        setCategoryAttributes(catRes.attributes || null)
         if (chapRes.chapters?.length) setCurrentChapter(chapRes.chapters[0])
       } catch (e) {
         if (!cancelled) setError(e.message)
@@ -206,6 +208,7 @@ export default function RetroactiveReviewModal({ book, onClose }) {
                 key={row.id}
                 row={row}
                 categories={categories}
+                categoryAttributes={categoryAttributes}
                 onUpdate={patch => update(row.id, patch)}
                 onSave={() => handleSave(row)}
                 onAdvice={() => handleAdvice(row)}
@@ -234,7 +237,7 @@ export default function RetroactiveReviewModal({ book, onClose }) {
   )
 }
 
-function EntityRow({ row, categories, onUpdate, onSave, onAdvice, onDelete, bookId }) {
+function EntityRow({ row, categories, categoryAttributes, onUpdate, onSave, onAdvice, onDelete, bookId }) {
   const [showAdvice, setShowAdvice] = useState(false)
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -294,8 +297,8 @@ function EntityRow({ row, categories, onUpdate, onSave, onAdvice, onDelete, book
           />
         </div>
 
-        {/* Gender (for characters) */}
-        {row.category === 'characters' && (
+        {/* Gender (for gender-tracked categories) */}
+        {isGenderedCategory(row.category, categoryAttributes) && (
           <div className="flex shrink-0 gap-0.5">
             {[
               { value: 'male', symbol: '\u2642', color: 'text-blue-400 bg-blue-900/60 border-blue-500' },

@@ -5,7 +5,7 @@ import {
   X, Check, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
   Pin, CheckSquare, Square, FolderInput, ArrowRightLeft, Download
 } from 'lucide-react'
-import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
+import { DEFAULT_CATEGORIES, catBadgeProps, isGenderedCategory } from '../utils/categories'
 import DeleteEntityModal from '../components/DeleteEntityModal'
 import EntityFormModal from '../components/EntityFormModal'
 import { useUrlState, useUrlModal } from '../hooks/useUrlState'
@@ -135,6 +135,7 @@ export default function Entities() {
   const [duplicates, setDuplicates] = useState(null)
   const [error, setError] = useState(null)
   const [activeCategories, setActiveCategories] = useState(DEFAULT_CATEGORIES)
+  const [categoryAttributes, setCategoryAttributes] = useState(null)
   const [selected, setSelected] = useState(new Set())
   // Local payload for the delete modal (list of entities can't live in URL)
   const [pendingDeletePayload, setPendingDeletePayload] = useState(null)
@@ -204,10 +205,14 @@ export default function Entities() {
   useEffect(() => {
     if (filterBook && filterBook !== 'global') {
       api.getBookCategories(parseInt(filterBook))
-        .then(d => setActiveCategories(d.categories || DEFAULT_CATEGORIES))
-        .catch(() => setActiveCategories(DEFAULT_CATEGORIES))
+        .then(d => {
+          setActiveCategories(d.categories || DEFAULT_CATEGORIES)
+          setCategoryAttributes(d.attributes || null)
+        })
+        .catch(() => { setActiveCategories(DEFAULT_CATEGORIES); setCategoryAttributes(null) })
     } else {
       setActiveCategories(DEFAULT_CATEGORIES)
+      setCategoryAttributes(null)
     }
   }, [filterBook])
 
@@ -437,6 +442,7 @@ export default function Entities() {
             <CategorySection
               key={cat}
               category={cat}
+              gendered={isGenderedCategory(cat, categoryAttributes)}
               entities={catEntities}
               onEdit={(ent) => editEntityModal.open(ent.id)}
               onDelete={handleDelete}
@@ -514,12 +520,12 @@ function SortIcon({ col, sortCol, sortDir }) {
     : <ChevronDown size={11} className="text-indigo-400 ml-1 inline-block" />
 }
 
-function CategorySection({ category, entities, onEdit, onDelete, defaultOpen, selected, onToggleSelect, onSetSelected }) {
+function CategorySection({ category, gendered, entities, onEdit, onDelete, defaultOpen, selected, onToggleSelect, onSetSelected }) {
   const [open, setOpen] = useState(defaultOpen)
   const [showAll, setShowAll] = useState(false)
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
-  const showGender = category === 'characters'
+  const showGender = gendered
   const cols = showGender
     ? [BASE_SORT_COLS[0], BASE_SORT_COLS[1], GENDER_COL, BASE_SORT_COLS[2]]
     : BASE_SORT_COLS

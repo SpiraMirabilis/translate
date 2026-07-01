@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional, List
 
+from translation_engine import TranslationCancelled
+
 router = APIRouter()
 
 # Injected by app.py
@@ -57,9 +59,8 @@ class TranslateRequest(BaseModel):
     advice_model: Optional[str] = None
     cleaning_model: Optional[str] = None
     no_review: bool = False
+    two_pass: bool = False
     no_clean: bool = False
-    no_repair: bool = False
-    no_convert_units: bool = False
     no_stream: bool = False
 
 
@@ -96,6 +97,7 @@ async def start_translation(req: TranslateRequest):
         raise HTTPException(status_code=400, detail="No text provided.")
 
     # Configure the job
+    _job_manager.clear_cancel()
     _job_manager.pending_text = lines
     _job_manager.book_id = req.book_id
     _job_manager.chapter_number = req.chapter_number
@@ -112,9 +114,10 @@ async def start_translation(req: TranslateRequest):
     _web_interface.cleaning_model = req.cleaning_model or None
 
     _web_interface.no_review = req.no_review
+    # Mutually exclusive with no_review: defensive guard for stale clients that
+    # may send both flags. UI also enforces this, but trust nothing from the wire.
+    _web_interface.two_pass = req.two_pass and not req.no_review
     _web_interface.no_clean = req.no_clean
-    _web_interface.no_repair = req.no_repair
-    _web_interface.no_convert_units = req.no_convert_units
     _web_interface.stream = not req.no_stream
 
     # Resolve book name for the activity log
@@ -134,6 +137,9 @@ async def start_translation(req: TranslateRequest):
     def run():
         try:
             _web_interface.run_translation()
+        except TranslationCancelled:
+            _job_manager.status = "idle"
+            _job_manager.send_message_sync({"type": "translation_cancelled"})
         except Exception as e:
             _job_manager.status = "error"
             _job_manager.error = str(e)
@@ -141,7 +147,7 @@ async def start_translation(req: TranslateRequest):
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             _job_manager.is_running = False
-            if _job_manager.status not in ("error", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
+            if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
 
     thread = threading.Thread(target=run, daemon=True)
@@ -262,9 +268,16 @@ async def get_status():
 @router.post("/api/translate/cancel")
 async def cancel_translation():
     """
-    Best-effort cancel: unblock the review event so the thread can finish.
-    Actual mid-chunk cancellation is not supported (would require provider changes).
+    Cancel the running translation. Sets the cooperative-cancel flag (the engine
+    polls it between and mid-chunk and raises TranslationCancelled), stops the
+    auto-process loop, and unblocks any pause the thread is parked on (entity
+    review / JSON fix / chapter conflict) so it can reach the next cancel check.
     """
+    # Signal the engine to stop at its next cancellation checkpoint. This is the
+    # key fix: previously the thread kept streaming and the backend treated the
+    # interruption as a transient failure and silently retried.
+    _job_manager.request_cancel()
+
     if _job_manager.auto_process:
         _job_manager.stop_auto_process()
     if _job_manager.status == "awaiting_review":
@@ -273,7 +286,6 @@ async def cancel_translation():
         _job_manager.submit_json_fix({"action": "abort"})
     if _job_manager.status == "awaiting_chapter_conflict":
         _job_manager.submit_chapter_conflict("cancel")
-    _job_manager.is_running = False
     _job_manager.status = "idle"
     await _job_manager.log_activity_async(type='info', message='Translation cancelled.')
     return {"status": "cancelled"}

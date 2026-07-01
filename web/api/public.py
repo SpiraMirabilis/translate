@@ -32,7 +32,24 @@ _CACHE_STATIC  = 24 * 60 * 60 * 30  # 30 day  — cover images
 
 
 def _cache(response: Response, max_age: int):
-    response.headers["Cache-Control"] = f"public, max-age={max_age}"
+    # Text/content responses (chapter content, lists, metadata, rss, site info).
+    # The admin-controlled "disable content cache" toggle lets corrections to
+    # translated chapters reach readers immediately instead of waiting out the TTL.
+    import settings_store
+    if settings_store.get("disable_content_cache", False):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    else:
+        response.headers["Cache-Control"] = f"public, max-age={max_age}"
+
+
+def _media_cache_headers(max_age: int) -> dict:
+    """Cache-Control headers for high-byte media (covers, illustrations, EPUBs).
+    Gated by a separate toggle from text content so flipping the content cache
+    doesn't force readers to re-download media that rarely changes."""
+    import settings_store
+    if settings_store.get("disable_media_cache", False):
+        return {"Cache-Control": "no-store, max-age=0"}
+    return {"Cache-Control": f"public, max-age={max_age}"}
 
 router = APIRouter(prefix="/api/public")
 
@@ -44,6 +61,77 @@ def init(db_manager, config=None):
     global _db, _config
     _db = db_manager
     _config = config
+
+
+# ------------------------------------------------------------------
+# Spaces / CDN helpers
+# ------------------------------------------------------------------
+
+def _cdn_url(rel_path):
+    """CDN URL for a local relative media path, or None when Spaces is disabled."""
+    if not rel_path:
+        return None
+    try:
+        import spaces
+        return spaces.url_for_relpath(_db.config, rel_path)
+    except Exception:
+        return None
+
+
+def _cover_urls(book):
+    """Return (cover_url, cover_medium_url, cover_thumb_url) CDN urls, or Nones."""
+    if not book.get("cover_image"):
+        return None, None, None
+    return (
+        _cdn_url(book["cover_image"]),
+        _cdn_url(f"covers/{book['id']}_medium.webp"),
+        _cdn_url(f"covers/{book['id']}_thumb.webp"),
+    )
+
+
+def _illustration_map(book_id, *line_lists):
+    """Map {marker_id: cdn_url} for markers in the given content arrays.
+
+    Returns None when Spaces is disabled (frontend then falls back to the API
+    route), so image-free / local-only deployments carry no extra payload.
+    """
+    try:
+        import spaces
+        if not spaces.is_enabled(_db.config):
+            return None
+        from illustrations import markers_in
+        out = {}
+        for lines in line_lists:
+            for mid in markers_in(lines or []):
+                if mid in out:
+                    continue
+                row = _db.get_book_illustration(book_id, mid)
+                if row and row.get("filename"):
+                    out[mid] = spaces.url_for_relpath(_db.config, row["filename"])
+        return out or None
+    except Exception:
+        return None
+
+
+def _cdn_redirect_or_file(rel_path, local_filepath, headers=None):
+    """Redirect to the CDN object if present, else serve the local file.
+
+    Used by the legacy /cover|/illustration routes as a fallback path (the
+    frontend prefers the CDN URL baked into payloads).
+    """
+    from fastapi.responses import RedirectResponse, FileResponse as _FR
+    try:
+        import spaces
+        cfg = _db.config
+        if spaces.is_enabled(cfg):
+            key = spaces.key_for(cfg, rel_path)
+            if spaces.exists(cfg, key):
+                return RedirectResponse(spaces.public_url(cfg, key), status_code=302)
+    except Exception:
+        pass
+    if not os.path.exists(local_filepath):
+        raise HTTPException(status_code=404, detail="File missing")
+    return _FR(local_filepath, headers=headers or {})
 
 
 @router.get("/site_info")
@@ -130,7 +218,7 @@ def _guard(request: Request):
 # Endpoints
 # ------------------------------------------------------------------
 
-_VALID_SORTS = {'popular', 'title', 'updated'}
+_VALID_SORTS = {'popular', 'title', 'updated', 'newly_added'}
 
 
 @router.get("/books")
@@ -141,20 +229,29 @@ async def list_books(request: Request, response: Response, sort: str = 'popular'
         sort = 'popular'
     books = _db.list_books(order_by=sort)
     # Return only public-facing fields, filtered to public books
-    return {"books": [
-        {
+    out = []
+    for b in books:
+        if not b.get("is_public", True):
+            continue
+        cover_url, cover_medium_url, cover_thumb_url = _cover_urls(b)
+        out.append({
             "id": b["id"],
             "title": b["title"],
             "author": b.get("author"),
             "description": b.get("description"),
             "cover_image": b.get("cover_image"),
+            "cover_url": cover_url,
+            "cover_medium_url": cover_medium_url,
+            "cover_thumb_url": cover_thumb_url,
             "chapter_count": b.get("chapter_count", 0),
             "total_source_chapters": b.get("total_source_chapters"),
             "status": b.get("status", "ongoing"),
+            "source_language": b.get("source_language"),
             "tags": b.get("tags") or [],
-        }
-        for b in books if b.get("is_public", True)
-    ]}
+            "created_date": b.get("created_date"),
+            "last_chapter_date": b.get("last_chapter_date"),
+        })
+    return {"books": out}
 
 
 def _get_public_book(book_id: int):
@@ -171,12 +268,16 @@ async def get_book(book_id: int, request: Request, response: Response):
     _cache(response, _CACHE_SHORT)
     book = _get_public_book(book_id)
     _db.increment_book_view_count(book_id)
+    cover_url, cover_medium_url, cover_thumb_url = _cover_urls(book)
     return {
         "id": book["id"],
         "title": book["title"],
         "author": book.get("author"),
         "description": book.get("description"),
         "cover_image": book.get("cover_image"),
+        "cover_url": cover_url,
+        "cover_medium_url": cover_medium_url,
+        "cover_thumb_url": cover_thumb_url,
         "source_language": book.get("source_language"),
         "total_source_chapters": book.get("total_source_chapters"),
         "status": book.get("status", "ongoing"),
@@ -197,19 +298,8 @@ async def list_chapters(book_id: int, request: Request, response: Response):
     ]}
 
 
-@router.get("/books/{book_id}/chapters/{chapter_number}")
-async def get_chapter(book_id: int, chapter_number: int, request: Request, response: Response):
-    _guard(request)
-    _cache(response, _CACHE_LONG)
-    _get_public_book(book_id)
-    ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number)
-    if not ch:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-    # Log the chapter view
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
-    _db.log_reader_view(book_id, chapter_number, ip)
+def _shape_public_chapter(ch: dict, book_id: int = None) -> dict:
     content = ch.get("content", [])
-    # Strip the first line if it's a chapter heading (Chapter X...)
     if content and re.match(r'^Chapter\s+\d+', content[0], re.IGNORECASE):
         content = content[1:]
     result = {
@@ -218,18 +308,57 @@ async def get_chapter(book_id: int, chapter_number: int, request: Request, respo
         "content": content,
     }
     if ch.get("untranslated"):
-        lines = ch["untranslated"]
-        # Strip all lines beginning with #
-        lines = [l for l in lines if not l.startswith('#')]
-        # Strip the first line if it's a chapter heading (第X章)
+        lines = [l for l in ch["untranslated"] if not l.startswith('#')]
         if lines and re.match(r'第\d', lines[0]):
             lines = lines[1:]
         if lines:
             result["untranslated"] = lines
+    # CDN URLs for any in-chapter illustrations (omitted when Spaces disabled).
+    if book_id is not None:
+        imap = _illustration_map(book_id, content, result.get("untranslated"))
+        if imap:
+            result["illustrations"] = imap
     return result
 
 
-_COVER_CACHE_HEADERS = {"Cache-Control": f"public, max-age={_CACHE_STATIC}"}
+_BATCH_MAX = 10
+
+
+@router.get("/books/{book_id}/chapters/batch")
+async def get_chapters_batch(book_id: int, nums: str, request: Request, response: Response):
+    _guard(request)
+    _cache(response, _CACHE_LONG)
+    _get_public_book(book_id)
+    try:
+        wanted = [int(n) for n in nums.split(",") if n.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="nums must be comma-separated integers")
+    if not wanted:
+        return {"chapters": []}
+    if len(wanted) > _BATCH_MAX:
+        raise HTTPException(status_code=400, detail=f"At most {_BATCH_MAX} chapters per batch")
+    out = []
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+    for n in wanted:
+        ch = _db.get_chapter(book_id=book_id, chapter_number=n)
+        if not ch:
+            continue
+        _db.log_reader_view(book_id, n, ip)
+        out.append(_shape_public_chapter(ch, book_id))
+    return {"chapters": out}
+
+
+@router.get("/books/{book_id}/chapters/{chapter_number}")
+async def get_chapter(book_id: int, chapter_number: int, request: Request, response: Response):
+    _guard(request)
+    _cache(response, _CACHE_LONG)
+    _get_public_book(book_id)
+    ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+    _db.log_reader_view(book_id, chapter_number, ip)
+    return _shape_public_chapter(ch, book_id)
 
 
 @router.get("/books/{book_id}/cover")
@@ -239,27 +368,49 @@ async def get_cover(book_id: int, request: Request):
     if not book.get("cover_image"):
         raise HTTPException(status_code=404, detail="No cover image")
     filepath = os.path.join(_db.config.script_dir, book["cover_image"])
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Cover file missing")
-    return FileResponse(filepath, headers=_COVER_CACHE_HEADERS)
+    return _cdn_redirect_or_file(book["cover_image"], filepath, _media_cache_headers(_CACHE_STATIC))
+
+
+def _serve_cover_derivative(book_id, kind):
+    """Serve a cover derivative (thumb|medium), generating on the fly if missing,
+    with CDN redirect + full-cover fallback."""
+    import cover_images
+    book = _get_public_book(book_id)
+    if not book.get("cover_image"):
+        raise HTTPException(status_code=404, detail="No cover image")
+    path = cover_images.ensure_derivative(_db.config, book, kind)
+    if not path:
+        filepath = os.path.join(_db.config.script_dir, book["cover_image"])
+        return _cdn_redirect_or_file(book["cover_image"], filepath, _media_cache_headers(_CACHE_STATIC))
+    return _cdn_redirect_or_file(
+        cover_images.derivative_relpath(book_id, kind), path, _media_cache_headers(_CACHE_STATIC)
+    )
 
 
 @router.get("/books/{book_id}/cover/thumb")
 async def get_cover_thumb(book_id: int, request: Request):
     _guard(request)
-    book = _get_public_book(book_id)
-    if not book.get("cover_image"):
-        raise HTTPException(status_code=404, detail="No cover image")
-    # Reuse the covers directory from the authenticated endpoint
-    covers_dir = os.path.join(_db.config.script_dir, "covers")
-    thumb_path = os.path.join(covers_dir, f"{book_id}_thumb.webp")
-    if os.path.exists(thumb_path):
-        return FileResponse(thumb_path, media_type="image/webp", headers=_COVER_CACHE_HEADERS)
-    # Fall back to full image
-    filepath = os.path.join(_db.config.script_dir, book["cover_image"])
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Cover file missing")
-    return FileResponse(filepath, headers=_COVER_CACHE_HEADERS)
+    return _serve_cover_derivative(book_id, "thumb")
+
+
+@router.get("/books/{book_id}/cover/medium")
+async def get_cover_medium(book_id: int, request: Request):
+    _guard(request)
+    return _serve_cover_derivative(book_id, "medium")
+
+
+@router.get("/books/{book_id}/illustration/{marker_id}")
+async def get_illustration(book_id: int, marker_id: str, request: Request):
+    """Serve an in-chapter illustration referenced by ⟦IMG:<marker_id>⟧."""
+    _guard(request)
+    if not re.fullmatch(r"[0-9a-f]{4,}", marker_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid illustration id")
+    _get_public_book(book_id)  # 404s if book missing / not public
+    row = _db.get_book_illustration(book_id, marker_id)
+    if not row or not row.get("filename"):
+        raise HTTPException(status_code=404, detail="Illustration not found")
+    filepath = os.path.join(_db.config.script_dir, row["filename"])
+    return _cdn_redirect_or_file(row["filename"], filepath, _media_cache_headers(_CACHE_STATIC))
 
 
 @router.get("/books/{book_id}/epub")
@@ -267,6 +418,22 @@ async def download_epub(book_id: int, request: Request):
     """Download the cached EPUB for a public book, generating it if needed."""
     _guard(request)
     book = _get_public_book(book_id)
+
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+
+    # If Spaces holds the current content version, redirect to the immutable CDN
+    # URL — the VM serves no bytes.
+    try:
+        import spaces
+        from fastapi.responses import RedirectResponse
+        if spaces.is_enabled(_db.config):
+            ver = spaces.epub_version(book_id, book.get("modified_date"))
+            key = spaces.epub_key(_db.config, book_id, ver)
+            if spaces.exists(_db.config, key):
+                _db.log_reader_view(book_id, 0, ip)
+                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
+    except Exception:
+        pass
 
     cache_dir = _db._epub_cache_dir()
     cached_path = os.path.join(cache_dir, f"{book_id}.epub")
@@ -284,6 +451,7 @@ async def download_epub(book_id: int, request: Request):
         # Need translator config for OutputFormatter — get it from the init-time db manager
         formatter = OutputFormatter(_db.config, _db.logger)
         book_info = {
+            "id": book_id,
             "title": book.get("title", "Unknown"),
             "author": book.get("author") or "Translator",
             "language": book.get("language") or "en",
@@ -311,8 +479,19 @@ async def download_epub(book_id: int, request: Request):
         import shutil
         shutil.copy2(output_path, cached_path)
 
+    # Mirror the freshly-built EPUB to Spaces under its version key, prune stale
+    # versions, then serve the local bytes for this request (next one redirects).
+    try:
+        import spaces
+        if spaces.is_enabled(_db.config):
+            ver = spaces.epub_version(book_id, book.get("modified_date"))
+            key = spaces.epub_key(_db.config, book_id, ver)
+            if spaces.upload(_db.config, cached_path, key, "application/epub+zip"):
+                spaces.prune_epub_versions(_db.config, book_id, keep_key=key)
+    except Exception:
+        pass
+
     # Log the EPUB download (chapter_number=0 signals an EPUB download)
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     _db.log_reader_view(book_id, 0, ip)
 
     filename = f"{book['title'].replace(' ', '_')}.epub"
@@ -320,9 +499,7 @@ async def download_epub(book_id: int, request: Request):
         cached_path,
         media_type="application/epub+zip",
         filename=filename,
-        headers={
-            "Cache-Control": f"public, max-age={_CACHE_SHORT}",
-        },
+        headers=_media_cache_headers(_CACHE_SHORT),
     )
 
 

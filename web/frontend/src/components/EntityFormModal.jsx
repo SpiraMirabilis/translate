@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../services/api'
-import { DEFAULT_CATEGORIES } from '../utils/categories'
+import { DEFAULT_CATEGORIES, isGenderedCategory } from '../utils/categories'
 import { DictResult, useDictLookup } from './DictLookup'
 import { copyToClipboard } from '../utils/clipboard'
 import DeleteEntityModal from './DeleteEntityModal'
@@ -8,7 +8,7 @@ import {
   X, Check, Loader2, Sparkles, BookOpen, Copy, Replace, RotateCcw, AlertCircle, Trash2
 } from 'lucide-react'
 
-function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, newGender, untranslated, originChapter, onDone }) {
+function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, newGender, untranslated, onDone }) {
   const [acting, setActing] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
@@ -16,7 +16,7 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
   const translationChanged = !!newTranslation && oldTranslation !== newTranslation
   const genderChanged = (oldGender || '') !== (newGender || '')
 
-  const handleAction = async (action, fromChapter = null) => {
+  const handleAction = async (action, opts = {}) => {
     if (action === 'nothing') { onDone(); return }
     setActing(true); setError(null)
     try {
@@ -27,12 +27,13 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
         old_gender: oldGender || null,
         new_gender: newGender || null,
         action,
-        from_chapter: fromChapter,
+        ...(opts.safer ? { safer: true } : {}),
       })
       setResult({
         action,
         affected: res.affected,
-        fromChapter,
+        candidates: res.candidates ?? null,
+        safer: !!opts.safer,
       })
     } catch (e) {
       setError(e.message)
@@ -89,17 +90,17 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
               </div>
             </button>
 
-            {translationChanged && originChapter && (
+            {translationChanged && (
               <button
                 className="w-full text-left card p-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3"
-                onClick={() => handleAction('substitute', originChapter)}
+                onClick={() => handleAction('substitute', { safer: true })}
                 disabled={acting}
               >
                 <Replace size={16} className="text-emerald-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-sm font-medium text-slate-200">Find and replace from chapter {originChapter} onward</p>
+                  <p className="text-sm font-medium text-slate-200">Find and replace in chapters mentioning {untranslated}</p>
                   <p className="text-xs text-slate-500">
-                    Replace &ldquo;{oldTranslation}&rdquo; with &ldquo;{newTranslation}&rdquo; only in chapters at or after the entity&rsquo;s origin chapter. Safer for generic terms.
+                    First scan the book for chapters whose original text contains &ldquo;{untranslated}&rdquo;, then replace &ldquo;{oldTranslation}&rdquo; with &ldquo;{newTranslation}&rdquo; only within that subset. Safer for generic English strings that may appear in unrelated chapters.
                   </p>
                 </div>
               </button>
@@ -163,7 +164,9 @@ function PropagateModal({ entityId, oldTranslation, newTranslation, oldGender, n
           <div className="space-y-3">
             <p className="text-sm text-emerald-400">
               {result.action === 'substitute'
-                ? `Replaced text in ${result.affected} chapter${result.affected !== 1 ? 's' : ''}${result.fromChapter ? ` (from chapter ${result.fromChapter} onward)` : ''}.`
+                ? result.safer
+                  ? `Replaced text in ${result.affected} of ${result.candidates} chapter${result.candidates !== 1 ? 's' : ''} mentioning the entity.`
+                  : `Replaced text in ${result.affected} chapter${result.affected !== 1 ? 's' : ''}.`
                 : result.action === 'pronoun_repair'
                   ? `Started — scanning ${result.affected} chapter${result.affected !== 1 ? 's' : ''}. See activity log for results.`
                   : `Added ${result.affected} chapter${result.affected !== 1 ? 's' : ''} to the retranslation queue.`}
@@ -194,14 +197,19 @@ export default function EntityFormModal({ entity, books = [], categories: parent
   const [error, setError] = useState(null)
   // Fetch categories based on the entity/form's book_id, not the page filter
   const [modalCategories, setModalCategories] = useState(parentCategories)
+  const [categoryAttributes, setCategoryAttributes] = useState(null)
   useEffect(() => {
     const bookId = form.book_id !== '' ? parseInt(form.book_id) : null
     if (bookId) {
       api.getBookCategories(bookId)
-        .then(d => setModalCategories(d.categories || DEFAULT_CATEGORIES))
-        .catch(() => setModalCategories(DEFAULT_CATEGORIES))
+        .then(d => {
+          setModalCategories(d.categories || DEFAULT_CATEGORIES)
+          setCategoryAttributes(d.attributes || null)
+        })
+        .catch(() => { setModalCategories(DEFAULT_CATEGORIES); setCategoryAttributes(null) })
     } else {
       setModalCategories(DEFAULT_CATEGORIES)
+      setCategoryAttributes(null)
     }
   }, [form.book_id])
   // After saving an edit with a changed translation, show propagation options
@@ -294,7 +302,6 @@ export default function EntityFormModal({ entity, books = [], categories: parent
             newTranslation: form.translation,
             oldGender: entity.gender || '',
             newGender: form.gender || '',
-            originChapter: entity.origin_chapter || null,
           })
           return
         }
@@ -432,7 +439,7 @@ export default function EntityFormModal({ entity, books = [], categories: parent
               </div>
             )}
           </div>
-          {form.category === 'characters' && (
+          {isGenderedCategory(form.category, categoryAttributes) && (
             <div><label className="label">Gender</label>
               <div className="flex gap-1 mt-1">
                 {[

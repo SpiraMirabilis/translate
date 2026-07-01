@@ -140,7 +140,7 @@ export default function App() {
         <Route path="/library" element={<Library />} />
         <Route path="/library/book/:bookId" element={<BookDetail />} />
         <Route path="/library/read/:bookId/:chapterNum" element={<Reader isPublic />} />
-        <Route path="/library/read/:bookId" element={<Reader isPublic />} />
+        <Route path="/library/read/:bookId" element={<BookDetail />} />
         <Route path="/read/:bookId/:chapterNum" element={<Reader isPublic />} />
         <Route path="/read/:bookId" element={<Reader isPublic />} />
         {/* Admin routes — auth gated. Only specific paths are listed, so

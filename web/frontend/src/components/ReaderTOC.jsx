@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { X, CheckCircle2 } from 'lucide-react'
+import { bustUrl } from '../services/cacheBust'
 
 export default function ReaderTOC({ open, onClose, book, chapters, currentChapter, onSelect, theme, isPublic }) {
   const activeRef = useRef(null)
@@ -31,7 +32,7 @@ export default function ReaderTOC({ open, onClose, book, chapters, currentChapte
         <div className={`p-4 border-b ${borderColor} flex items-start gap-3`}>
           {book?.cover_image && (
             <img
-              src={isPublic ? `/api/public/books/${book.id}/cover/thumb` : `/api/books/${book.id}/cover/thumb`}
+              src={bustUrl(book.cover_thumb_url || (isPublic ? `/api/public/books/${book.id}/cover/thumb` : `/api/books/${book.id}/cover/thumb`))}
               alt=""
               className="w-12 h-[68px] object-cover rounded shadow shrink-0"
             />

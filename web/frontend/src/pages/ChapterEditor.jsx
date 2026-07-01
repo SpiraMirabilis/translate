@@ -9,7 +9,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
-import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, CheckCircle2, Search, Pencil, Globe, Sparkles } from 'lucide-react'
+import { bustUrl } from '../services/cacheBust'
+import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, BookOpen, Languages, CheckCircle2, Search, Pencil, Globe, Sparkles, Bold, Italic, Code, Link2, Heading, List, Quote, Minus, Eye } from 'lucide-react'
+import { renderBlock, splitSegments } from '../lib/chapterMarkdown'
 import ComboBox from '../components/ComboBox'
 import { useSearch } from '../hooks/useSearch'
 import SearchBar from '../components/SearchBar'
@@ -722,6 +724,7 @@ export default function ChapterEditor() {
   const [entities, setEntities] = useState([])
   const [showEntities, setShowEntities] = useLocalStorage('editor.showEntities', true)
   const [showSource, setShowSource] = useLocalStorage('editor.showSource', true)
+  const [showPreview, setShowPreview] = useLocalStorage('editor.showPreview', false)
   const [isProofread, setIsProofread] = useState(false)
   const [chapterList, setChapterList] = useState([])
   const [editingTitle, setEditingTitle] = useState(false)
@@ -1155,6 +1158,68 @@ export default function ChapterEditor() {
     setSaved(false)
   }
 
+  // Wrap/prefix the current textarea selection with Markdown syntax.
+  const applyFormat = useCallback((kind) => {
+    const el = textareaRef.current
+    if (!el) return
+    const value = el.value
+    const start = el.selectionStart
+    const end = el.selectionEnd
+    const selected = value.slice(start, end)
+    let newValue, selStart, selEnd
+
+    const wrap = (marker, placeholder) => {
+      const inner = selected || placeholder
+      newValue = value.slice(0, start) + marker + inner + marker + value.slice(end)
+      selStart = start + marker.length
+      selEnd = selStart + inner.length
+    }
+    const linePrefix = (prefix) => {
+      const ls = value.lastIndexOf('\n', start - 1) + 1
+      newValue = value.slice(0, ls) + prefix + value.slice(ls)
+      selStart = start + prefix.length
+      selEnd = end + prefix.length
+    }
+
+    switch (kind) {
+      case 'bold': wrap('**', 'bold text'); break
+      case 'italic': wrap('*', 'italic text'); break
+      case 'code': wrap('`', 'code'); break
+      case 'link': {
+        const inner = selected || 'text'
+        newValue = value.slice(0, start) + `[${inner}](url)` + value.slice(end)
+        selStart = start + inner.length + 3   // position of 'url'
+        selEnd = selStart + 3
+        break
+      }
+      case 'h2': linePrefix('## '); break
+      case 'quote': linePrefix('> '); break
+      case 'list': linePrefix('- '); break
+      case 'hr': {
+        const before = value.slice(0, start)
+        const lead = before && !before.endsWith('\n\n') ? '\n\n' : ''
+        const insert = `${lead}---\n\n`
+        newValue = before + insert + value.slice(end)
+        selStart = selEnd = before.length + insert.length
+        break
+      }
+      default: return
+    }
+
+    setText(newValue)
+    setDirty(true)
+    setSaved(false)
+    requestAnimationFrame(() => {
+      el.focus()
+      el.setSelectionRange(selStart, selEnd)
+    })
+  }, [])
+
+  // Illustration URL for the preview pane — prefer the CDN URL on the payload,
+  // else the admin serve route (mirrors Reader.illustrationSrc).
+  const previewIllustrationSrc = (id) =>
+    bustUrl(chapter?.illustrations?.[id] || `/api/books/${bookId}/illustration/${id}`)
+
   const handleSave = async () => {
     setSaving(true)
     setError(null)
@@ -1568,6 +1633,45 @@ export default function ChapterEditor() {
           </span>
         )}
 
+        {/* Markdown formatting toolbar */}
+        <div className="flex items-center gap-0.5 rounded border border-slate-700 px-0.5 py-0.5">
+          {[
+            { kind: 'bold', Icon: Bold, title: 'Bold (**)' },
+            { kind: 'italic', Icon: Italic, title: 'Italic (*)' },
+            { kind: 'code', Icon: Code, title: 'Inline code (`)' },
+            { kind: 'link', Icon: Link2, title: 'Link' },
+            { kind: 'h2', Icon: Heading, title: 'Heading (##)' },
+            { kind: 'list', Icon: List, title: 'List (-)' },
+            { kind: 'quote', Icon: Quote, title: 'Blockquote (>)' },
+            { kind: 'hr', Icon: Minus, title: 'Scene break (---)' },
+          ].map(({ kind, Icon, title }) => (
+            <button
+              key={kind}
+              type="button"
+              className="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => applyFormat(kind)}
+              title={title}
+            >
+              <Icon size={13} />
+            </button>
+          ))}
+        </div>
+
+        {/* Preview toggle */}
+        <button
+          className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
+            showPreview
+              ? 'border-indigo-500/50 bg-indigo-500/10 text-indigo-300'
+              : 'border-slate-700 text-slate-500 hover:text-slate-400'
+          }`}
+          onClick={() => setShowPreview(!showPreview)}
+          title="Toggle rendered Markdown preview"
+        >
+          <Eye size={12} />
+          {showPreview ? 'Preview' : 'Preview off'}
+        </button>
+
         {/* Source panel toggle */}
         {hasSource && (
           <button
@@ -1784,6 +1888,18 @@ export default function ChapterEditor() {
               )}
             </div>
           )}
+          {showPreview ? (
+            <div className="flex-1 overflow-y-auto bg-slate-950">
+              <div className="chapter-markdown max-w-2xl mx-auto px-6 py-6 text-slate-200 text-[15px] leading-relaxed">
+                {splitSegments(textLines).map((seg, i) => seg.type === 'img' ? (
+                  <img key={i} src={previewIllustrationSrc(seg.id)}
+                    alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
+                ) : (
+                  <div key={i} dangerouslySetInnerHTML={{ __html: renderBlock(seg.md) }} />
+                ))}
+              </div>
+            </div>
+          ) : (
           <div className="flex-1 relative overflow-hidden bg-slate-950 flex">
             {/* Hidden mirror for measuring wrapped line heights */}
             <div
@@ -1850,6 +1966,7 @@ export default function ChapterEditor() {
               />
             </div>
           </div>
+          )}
         </div>
 
         {/* Selection toolbar (floating) */}

@@ -9,13 +9,16 @@ const JsonCodeMirror = lazy(() => import('./JsonCodeMirror'))
 import { api } from '../services/api'
 import { RefreshCw, Check, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
 
-export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chunkText, isEmpty, onDone }) {
+export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chunkText, isEmpty, timeoutSeconds, onDone }) {
   const [editedJson, setEditedJson] = useState(rawResponse || '')
   const [isValid, setIsValid] = useState(false)
   const [validationError, setValidationError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [showSource, setShowSource] = useState(false)
   const [responseEmpty, setResponseEmpty] = useState(isEmpty || false)
+  const [remaining, setRemaining] = useState(
+    Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? Math.round(timeoutSeconds) : null
+  )
 
   // Always fetch raw_response from API — the WS message triggers the modal
   // but the payload can get lost/truncated in transit.
@@ -25,6 +28,9 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
         const fix = d.pending_json_fix
         if (fix.raw_response) setEditedJson(fix.raw_response)
         if (fix.is_empty) setResponseEmpty(true)
+        if (remaining === null && fix.timeout_seconds > 0) {
+          setRemaining(Math.round(fix.timeout_seconds))
+        }
       }
     }).catch(() => {})
   }, [rawResponse])
@@ -40,6 +46,20 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
       setValidationError(e.message)
     }
   }, [editedJson])
+
+  // Auto-dismiss countdown. The backend stops waiting after `timeoutSeconds`
+  // and defaults to retrying the chunk, so when our timer hits zero we just
+  // close the modal locally (the backend also pushes `json_fix_resolved`).
+  // Pauses while a manual submit is in flight.
+  useEffect(() => {
+    if (remaining === null || submitting) return
+    if (remaining <= 0) {
+      onDone()
+      return
+    }
+    const t = setTimeout(() => setRemaining(r => (r === null ? null : r - 1)), 1000)
+    return () => clearTimeout(t)
+  }, [remaining, submitting, onDone])
 
   const submit = useCallback(async (action) => {
     setSubmitting(true)
@@ -62,6 +82,14 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
         <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-700 shrink-0">
           <AlertTriangle size={18} className="text-amber-400" />
           <h2 className="text-sm font-semibold text-slate-200 flex-1">JSON Fix Required</h2>
+          {remaining !== null && (
+            <span
+              className="text-xs text-slate-400 tabular-nums"
+              title="Auto-retries this chunk if no action is taken"
+            >
+              Auto-retry in {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}
+            </span>
+          )}
           <span className="badge-amber text-xs">Chunk {chunkIndex}/{totalChunks}</span>
         </div>
 

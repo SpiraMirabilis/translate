@@ -78,6 +78,12 @@ class PropagateRequest(BaseModel):
     new_translation: str
     action: str  # "substitute" | "requeue" | "pronoun_repair"
     from_chapter: Optional[int] = None  # only affect chapters >= this number
+    # When True (substitute only): first sweep the book for chapters whose
+    # source text actually contains the entity's Chinese, and restrict the
+    # replacement to that subset. Mirrors correct_entity_translation.py's
+    # --safer-substitute — avoids rewriting unrelated occurrences of the old
+    # English string in chapters that don't feature the entity.
+    safer: bool = False
     old_gender: Optional[str] = None
     new_gender: Optional[str] = None
 
@@ -229,6 +235,18 @@ async def decase_entity(req: DecaseRequest):
 
     lowered = word[0].lower() + word[1:]
 
+    # Collect translations of other entities (book-specific + global) that
+    # *contain* this word — occurrences of the word inside these compound
+    # phrases must keep their capitalisation. The entity being deleted is
+    # still in the DB at this point, so it is excluded via `t != word`.
+    protected = set()
+    all_entities = _entity_manager.get_all_entities_for_review(book_id=req.book_id)
+    for ents in all_entities.values():
+        for data in ents.values():
+            t = data.get("translation", "")
+            if t and t != word and word in t:
+                protected.add(t)
+
     conn = _entity_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -250,8 +268,20 @@ async def decase_entity(req: DecaseRequest):
         changed = False
         new_lines = []
         for line in lines:
+            # Character spans occupied by protected compound phrases in this
+            # line — word matches fully inside one of these are left alone.
+            protected_spans = []
+            for phrase in protected:
+                i = line.find(phrase)
+                while i != -1:
+                    protected_spans.append((i, i + len(phrase)))
+                    i = line.find(phrase, i + 1)
+
             def replacer(m):
                 pos = m.start()
+                for s, e in protected_spans:
+                    if s <= pos and m.end() <= e:
+                        return m.group(0)
                 if line[:pos].strip() == '':
                     return m.group(0)
                 if pos > 0 and line[pos - 1] in '"\u201c\u2018\'\u3010':
@@ -582,27 +612,53 @@ async def propagate_change(req: PropagateRequest, background_tasks: BackgroundTa
             conn.close()
             return {"status": "ok", "affected": 0}
 
+        # Safer mode: restrict to chapters whose source (untranslated) text
+        # contains the entity's Chinese — the same subset
+        # correct_entity_translation.py --safer-substitute targets. The source
+        # is JSON-encoded with ensure_ascii=False (or, for legacy rows, plain
+        # text), so the Chinese substring appears literally either way.
+        candidates = None
+        if req.safer:
+            chapters = [
+                ch for ch in chapters
+                if ch["untranslated_content"] and untranslated in ch["untranslated_content"]
+            ]
+            candidates = len(chapters)
+
         pattern = re.compile(re.escape(req.old_translation), re.IGNORECASE)
+        old_words = req.old_translation.split()
+        new_words = req.new_translation.split()
 
         def match_case(match):
-            matched_text = match.group()
-            old_words = matched_text.split()
-            new_words = req.new_translation.split()
+            # Preserve *positional* casing — the capitalization a word picks up
+            # from where it sits (sentence-start capital, all-caps headings) —
+            # by comparing each matched word against the canonical old word and
+            # re-applying only that shift to the new word. The old translation's
+            # *own* casing is NOT preserved: a pure case correction (e.g.
+            # "azure sword" → "Azure Sword") is applied as written. Comparing
+            # the new word against the matched chapter text instead would make
+            # such a correction reproduce the old casing and silently no-op.
+            chapter_words = match.group().split()
             transformed = []
-            for old_w, new_w in zip_longest(old_words, new_words, fillvalue=""):
+            for idx, (old_w, new_w) in enumerate(
+                zip_longest(old_words, new_words, fillvalue="")
+            ):
                 if not new_w:
                     continue
                 if not old_w:
+                    # New translation has more words than the old one; the extra
+                    # words have no positional reference, so use them verbatim.
                     transformed.append(new_w)
                     continue
-                # Preserve the user-entered casing in new_w (e.g. "HeavenNet")
-                # and only adjust the first character to match the surrounding
-                # context. .capitalize()/.lower() would destroy internal caps.
-                if old_w.isupper() and len(old_w) > 1:
+                chapter_w = chapter_words[idx] if idx < len(chapter_words) else old_w
+                # The guards ensure a branch fires only for a genuine case
+                # *shift*; when the old word is already in that form the new
+                # word is used verbatim (preserving internal caps, "HeavenNet").
+                if chapter_w == old_w.upper() and not old_w.isupper():
                     transformed.append(new_w.upper())
-                elif old_w[0].isupper():
+                elif chapter_w == old_w[0].upper() + old_w[1:] and not old_w[0].isupper():
                     transformed.append(new_w[0].upper() + new_w[1:])
-                elif old_w[0].islower():
+                elif chapter_w == old_w[0].lower() + old_w[1:] and not old_w[0].islower():
                     transformed.append(new_w[0].lower() + new_w[1:])
                 else:
                     transformed.append(new_w)
@@ -631,7 +687,10 @@ async def propagate_change(req: PropagateRequest, background_tasks: BackgroundTa
 
         conn.commit()
         conn.close()
-        return {"status": "ok", "affected": affected}
+        result = {"status": "ok", "affected": affected}
+        if candidates is not None:
+            result["candidates"] = candidates
+        return result
 
     elif req.action == "requeue":
         # Build an auto-generated retranslation reason from whatever actually

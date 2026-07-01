@@ -3,7 +3,7 @@ import { useLocalStorage } from './useLocalStorage'
 const DEFAULTS = {
   fontSize: 18,
   fontFamily: 'serif',
-  theme: 'light',
+  theme: 'dark',
   lineHeight: 1.8,
   margins: 'medium',
 }
@@ -30,7 +30,7 @@ export function useReaderPrefs() {
   const [prefs, setPrefs] = useLocalStorage('reader-prefs', DEFAULTS)
 
   const merged = { ...DEFAULTS, ...prefs }
-  const theme = THEME_CLASSES[merged.theme] || THEME_CLASSES.light
+  const theme = THEME_CLASSES[merged.theme] || THEME_CLASSES.dark
 
   const contentStyle = {
     fontSize: `${merged.fontSize}px`,

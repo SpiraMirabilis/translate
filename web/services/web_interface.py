@@ -35,9 +35,8 @@ class WebInterface(UserInterface):
         # Translation settings (can be overridden per-request)
         self.stream = True            # Streaming enabled — progress_callback fires every 10 tokens
         self.no_review = False        # Entity review enabled
+        self.two_pass = False         # Two-pass mode (entity review BEFORE translation)
         self.no_clean = False         # Auto-clean generic nouns before review
-        self.no_repair = False        # Skip partial translation repair
-        self.no_convert_units = False # Skip Chinese unit → metric conversion
         self.silent_notifications = True
         self.cleaning_model = None
         self.output_format = "text"
@@ -48,6 +47,9 @@ class WebInterface(UserInterface):
 
         # JSON fix callback — pauses translation on parse failure
         self.json_fix_callback = self._handle_json_fix
+
+        # Cooperative cancel predicate — the engine polls this between/mid chunks.
+        self.should_cancel = self.job_manager.is_cancelled
 
     # ------------------------------------------------------------------
     # Abstract method implementations
@@ -60,6 +62,7 @@ class WebInterface(UserInterface):
         """
         self.book_id = self.job_manager.book_id
         self.chapter_number = self.job_manager.chapter_number
+        self.chapter_title = getattr(self.job_manager, 'chapter_title', None)
         return self.job_manager.pending_text
 
     def display_results(self, results: dict, book_info=None) -> None:
@@ -96,11 +99,16 @@ class WebInterface(UserInterface):
             self.job_manager.log_activity(type='info', message=f'Synopsis: {summary}')
         self.job_manager.last_result = results
 
-    def review_entities(self, entities: Dict, untranslated_text) -> Dict:
+    def review_entities(self, entities: Dict, untranslated_text, phase: str = 'post') -> Dict:
         """
         Pause translation and send new entities to the frontend for review.
         Filters duplicates and existing entities, optionally auto-cleans generic
         (non-proper-noun) entities, then blocks until the user submits.
+
+        `phase` is 'post' (default — single-pass, review after translation) or
+        'pre' (two-pass mode — review before translation begins). The phase is
+        included in the `entity_review_needed` WebSocket message so the modal
+        can show context-appropriate copy.
         """
         # Skip review entirely when no_review is set (e.g. auto-process batch jobs)
         if getattr(self, 'no_review', False):
@@ -141,11 +149,20 @@ class WebInterface(UserInterface):
         else:
             context = str(untranslated_text)
 
-        self.job_manager.pending_review = {"entities": serializable, "context": context}
+        book_id = self.job_manager.book_id
+        gendered_categories = (
+            self.entity_manager.get_book_gendered_categories(book_id) if book_id else ['characters']
+        )
+        self.job_manager.pending_review = {
+            "entities": serializable, "context": context, "phase": phase,
+            "gendered_categories": gendered_categories,
+        }
         self.job_manager.send_message_sync({
             "type": "entity_review_needed",
             "entities": serializable,
             "context": context,
+            "phase": phase,
+            "gendered_categories": gendered_categories,
         })
 
         self.job_manager.log_activity(
@@ -192,9 +209,11 @@ class WebInterface(UserInterface):
         renumber_existing (move existing chapter aside), renumber_new (move
         the incoming chapter to a different number).
 
-        On "merge", `chapter_text` is mutated in place to be
-        existing_untranslated + new_untranslated so the translation thread
-        retranslates the combined source and overwrites the existing chapter.
+        On "merge", `chapter_text` is mutated in place to contain ONLY the new
+        source, and the existing chapter's already-translated lines are stashed
+        in `self._merge_prefix`. The translation thread translates only the new
+        segment; ui.py prepends the stashed existing translation at save time so
+        the old text is not re-translated.
 
         Renumber decisions cascade: if the chosen target number itself
         conflicts (renumber_new) the panel re-opens for the new number; if
@@ -283,9 +302,19 @@ class WebInterface(UserInterface):
             new_num = (result or {}).get("new_chapter_number")
 
             if decision == "merge":
-                merged = list(existing_untranslated) + list(new_untranslated)
+                # Incremental merge: translate ONLY the newly appended segment and
+                # stitch its output onto the end of the existing translation at save
+                # time (see ui.py). Stash the already-translated existing chapter as a
+                # prefix and feed the translate thread just the new source — avoids
+                # re-translating (and re-billing) text that's already done.
+                self._merge_prefix = {
+                    "untranslated": list(existing_untranslated),
+                    "translated": list(existing.get('content') or []),
+                    "title": existing.get('title') or '',
+                    "summary": existing.get('summary') or '',
+                }
                 if isinstance(chapter_text, list):
-                    chapter_text[:] = merged
+                    chapter_text[:] = list(new_untranslated)
                 return True
 
             if decision == "renumber_new":
@@ -365,9 +394,19 @@ class WebInterface(UserInterface):
             return decision == "proceed"
 
     def _handle_json_fix(self, raw_response, chunk_index, total_chunks, chunk_text):
-        """Pause translation and send malformed JSON to the frontend for fixing."""
+        """Pause translation and send malformed JSON to the frontend for fixing.
+
+        The modal stays open for up to JSON_FIX_TIMEOUT_SECONDS (default 300).
+        If no human responds in that window, we default to retrying the chunk so
+        unattended jobs never hang forever.
+        """
         # Truncate source text for display
         display_text = chunk_text[:500] + ('…' if len(chunk_text) > 500 else '')
+
+        try:
+            timeout = max(0, int(os.getenv("JSON_FIX_TIMEOUT_SECONDS", "300")))
+        except (TypeError, ValueError):
+            timeout = 300
 
         payload = {
             "raw_response": raw_response or "",
@@ -375,6 +414,7 @@ class WebInterface(UserInterface):
             "total_chunks": total_chunks,
             "chunk_text": display_text,
             "is_empty": not bool(raw_response and raw_response.strip()),
+            "timeout_seconds": timeout,
         }
         self.job_manager.pending_json_fix = payload
         self.job_manager.send_message_sync({
@@ -387,7 +427,18 @@ class WebInterface(UserInterface):
             message=f'JSON parse failed on chunk {chunk_index}/{total_chunks} — fix required.',
         )
 
-        return self.job_manager.wait_for_json_fix()
+        result = self.job_manager.wait_for_json_fix(timeout=timeout)
+
+        if result.get("timed_out"):
+            # No human acted in time — tell the frontend to dismiss the modal
+            # and log the auto-retry fallback.
+            self.job_manager.send_message_sync({"type": "json_fix_resolved"})
+            self.job_manager.log_activity(
+                type='json_fix',
+                message=f'No response within {timeout}s — auto-retrying chunk {chunk_index}/{total_chunks}.',
+            )
+
+        return result
 
     def _fix_partial_translations(self, content, source_language='zh'):
         """Override to send a progress message before running repair."""

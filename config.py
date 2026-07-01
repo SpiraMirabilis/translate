@@ -66,6 +66,17 @@ class TranslationConfig:
         self.email_from = os.getenv("EMAIL_FROM", "")        # e.g. noreply@boondollars.com
         self.site_base_url = os.getenv("SITE_BASE_URL", "")  # e.g. https://reader.boondollars.com
 
+        # DigitalOcean Spaces (S3-compatible) CDN offload for covers/illustrations/EPUBs.
+        # Secrets live in .env; the rest are non-secret settings (settings_store).
+        self.spaces_enabled = os.getenv("SPACES_ENABLED", "0").lower() in ("1", "true", "yes")
+        self.spaces_endpoint = os.getenv("BUCKET_ENDPOINT", "")     # e.g. https://nyc3.digitaloceanspaces.com
+        self.spaces_access_key = os.getenv("BUCKET_ACCESS_ID", "")
+        self.spaces_secret_key = os.getenv("BUCKET_SECRET", "")
+        self.spaces_bucket = os.getenv("SPACES_BUCKET", "spiraspira")
+        self.spaces_region = os.getenv("SPACES_REGION", "nyc3")
+        self.spaces_prefix = os.getenv("SPACES_PREFIX", "t9")
+        self.spaces_cdn_base = os.getenv("SPACES_CDN_BASE", "https://spiraspira.nyc3.cdn.digitaloceanspaces.com")
+
         # Translation settings (now per-provider via models.json)
         # Legacy fallback for MAX_CHARS env var if needed
         self._fallback_max_chars = int(os.getenv("MAX_CHARS", "5000"))

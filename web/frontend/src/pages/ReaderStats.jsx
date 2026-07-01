@@ -11,12 +11,26 @@ const GROUP_OPTIONS = [
   { id: 'book', label: 'By book' },
 ]
 
+// Pull every IP out of a stats response, regardless of group_by shape.
+function collectIps(resp) {
+  if (!resp) return []
+  const ips = new Set()
+  if (resp.group_by === 'book') {
+    (resp.books || []).forEach(b => (b.readers || []).forEach(r => ips.add(r.ip)))
+  } else {
+    (resp.ips || []).forEach(e => ips.add(e.ip))
+  }
+  return [...ips]
+}
+
 export default function ReaderStats() {
   const [duration, setDuration] = useState('24h')
   const [groupBy, setGroupBy] = useState('ip')
   const [customInput, setCustomInput] = useState('')
   const [customError, setCustomError] = useState('')
   const [data, setData] = useState(null)
+  const [ipInfo, setIpInfo] = useState({})
+  const [enriching, setEnriching] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(new Set())
@@ -24,14 +38,27 @@ export default function ReaderStats() {
   const load = useCallback(async (d, g) => {
     setLoading(true)
     setError('')
+    setIpInfo({})
     try {
       const resp = await api.getReaderStats(d, g)
       setData(resp)
+      setLoading(false)
+
+      // Paint the table immediately, then fill in hostname/geo as the
+      // (parallelized, server-cached) reverse-DNS + IPInfo lookups return.
+      const ips = collectIps(resp)
+      if (ips.length) {
+        setEnriching(true)
+        api.getReaderStatsIpInfo(ips)
+          .then(info => setIpInfo(info || {}))
+          .catch(() => {})
+          .finally(() => setEnriching(false))
+      }
     } catch (e) {
       setError(e.message || 'Failed to load reader stats')
       setData(null)
+      setLoading(false)
     }
-    setLoading(false)
   }, [])
 
   useEffect(() => { load(duration, groupBy) }, [duration, groupBy, load])
@@ -79,6 +106,7 @@ export default function ReaderStats() {
               ? <>
                   {data.total_views.toLocaleString()} view{data.total_views !== 1 ? 's' : ''} across{' '}
                   {data.unique_ips} unique IP{data.unique_ips !== 1 ? 's' : ''} &middot; window: {data.duration}
+                  {enriching && <span className="text-slate-500"> &middot; resolving locations…</span>}
                 </>
               : <>Loading activity…</>}
           </p>
@@ -165,20 +193,23 @@ export default function ReaderStats() {
           No reader activity in the last {data?.duration || duration}.
         </div>
       ) : activeGroup === 'ip' ? (
-        <IpView entries={entries} expanded={expanded} toggle={toggle} />
+        <IpView entries={entries} expanded={expanded} toggle={toggle} ipInfo={ipInfo} />
       ) : (
-        <BookView entries={entries} expanded={expanded} toggle={toggle} />
+        <BookView entries={entries} expanded={expanded} toggle={toggle} ipInfo={ipInfo} />
       )}
     </div>
   )
 }
 
-function IpView({ entries, expanded, toggle }) {
+function IpView({ entries, expanded, toggle, ipInfo }) {
   return (
     <div className="space-y-2">
       {entries.map(entry => {
         const isExpanded = expanded.has(entry.ip)
-        const geoText = [entry.city, entry.region, entry.country].filter(Boolean).join(', ')
+        const info = ipInfo[entry.ip] || entry
+        const hostname = info.hostname
+        const org = info.org
+        const geoText = [info.city, info.region, info.country].filter(Boolean).join(', ')
         return (
           <div key={entry.ip} className="border border-slate-700 rounded-lg overflow-hidden">
             <button
@@ -191,9 +222,9 @@ function IpView({ entries, expanded, toggle }) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-mono font-medium text-slate-200">{entry.ip}</span>
-                  {entry.hostname && (
+                  {hostname && (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 flex items-center gap-1">
-                      <Server size={10} /> {entry.hostname}
+                      <Server size={10} /> {hostname}
                     </span>
                   )}
                   {geoText && (
@@ -201,9 +232,9 @@ function IpView({ entries, expanded, toggle }) {
                       <Globe size={10} /> {geoText}
                     </span>
                   )}
-                  {entry.org && (
+                  {org && (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
-                      {entry.org}
+                      {org}
                     </span>
                   )}
                   <span className="ml-auto text-xs px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 flex items-center gap-1">
@@ -240,7 +271,7 @@ function IpView({ entries, expanded, toggle }) {
   )
 }
 
-function BookView({ entries, expanded, toggle }) {
+function BookView({ entries, expanded, toggle, ipInfo }) {
   return (
     <div className="space-y-2">
       {entries.map(entry => {
@@ -284,13 +315,16 @@ function BookView({ entries, expanded, toggle }) {
             {isExpanded && (
               <div className="border-t border-slate-700 divide-y divide-slate-800">
                 {entry.readers.map(reader => {
-                  const geoText = [reader.city, reader.region, reader.country].filter(Boolean).join(', ')
+                  const info = ipInfo[reader.ip] || reader
+                  const hostname = info.hostname
+                  const org = info.org
+                  const geoText = [info.city, info.region, info.country].filter(Boolean).join(', ')
                   return (
                     <div key={reader.ip} className="px-4 py-2.5 flex items-baseline gap-3 flex-wrap">
                       <span className="text-sm font-mono text-slate-200">{reader.ip}</span>
-                      {reader.hostname && (
+                      {hostname && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 flex items-center gap-1">
-                          <Server size={10} /> {reader.hostname}
+                          <Server size={10} /> {hostname}
                         </span>
                       )}
                       {geoText && (
@@ -298,9 +332,9 @@ function BookView({ entries, expanded, toggle }) {
                           <Globe size={10} /> {geoText}
                         </span>
                       )}
-                      {reader.org && (
+                      {org && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
-                          {reader.org}
+                          {org}
                         </span>
                       )}
                       {reader.chapter_views > 0 && (

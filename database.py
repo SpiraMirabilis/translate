@@ -7,11 +7,58 @@ from typing import Dict, List, Optional, Any, Union, Tuple
 from itertools import zip_longest
 import re
 from db_backend import create_backend
+from modules import (apply_source_ingest, fire_book_module_events,
+                     resolve_module_ids)
 
 DEFAULT_CATEGORIES = [
     'characters', 'places', 'organizations', 'abilities',
     'titles', 'equipment', 'creatures'
 ]
+
+# Categories that carry a gender attribute by default (and the attribute set they
+# get). "characters" has always been gender-tracked; this is the seed used when a
+# book stores no explicit per-category attributes (legacy string lists / NULL).
+DEFAULT_GENDERED_CATEGORIES = {'characters'}
+
+# Known per-category attributes. Today only "gender" exists, but categories are
+# stored as {"name": ..., "attributes": [...]} so new behaviours can be added
+# without a schema change.
+KNOWN_CATEGORY_ATTRIBUTES = {'gender'}
+
+
+def normalize_categories(raw):
+    """Normalize a book's stored categories into a list of attribute-carrying dicts.
+
+    Accepts any of:
+      - None                          -> DEFAULT_CATEGORIES (characters gendered)
+      - ["characters", "places"]      -> legacy string list (characters gendered)
+      - [{"name": ..., "attributes": [...]}]  -> already-normalized objects
+
+    Always returns a list of {"name": str, "attributes": [str, ...]} dicts.
+    Attribute lists are de-duplicated and filtered to KNOWN_CATEGORY_ATTRIBUTES.
+    """
+    if raw is None:
+        raw = list(DEFAULT_CATEGORIES)
+
+    out = []
+    seen = set()
+    for item in raw:
+        if isinstance(item, str):
+            name = item.strip()
+            attrs = ['gender'] if name in DEFAULT_GENDERED_CATEGORIES else []
+        elif isinstance(item, dict):
+            name = str(item.get('name', '')).strip()
+            attrs = item.get('attributes') or []
+            if isinstance(attrs, str):
+                attrs = [attrs]
+        else:
+            continue
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        clean_attrs = [a for a in dict.fromkeys(attrs) if a in KNOWN_CATEGORY_ATTRIBUTES]
+        out.append({'name': name, 'attributes': clean_attrs})
+    return out
 
 # Pre-translation similarity matching: include entities whose first-2 or last-2
 # source-language chars appear in the chapter text, as reference-only hints for
@@ -141,6 +188,9 @@ class DatabaseManager:
             if 'tags' not in book_cols:
                 cursor.execute("ALTER TABLE books ADD COLUMN tags TEXT")
                 self.logger.info("Added tags column to books table")
+            if 'modules' not in book_cols:
+                cursor.execute("ALTER TABLE books ADD COLUMN modules TEXT")
+                self.logger.info("Added modules column to books table")
 
             comment_cols = self.backend.get_table_columns(conn, 'comments')
             if 'notify_replies' not in comment_cols:
@@ -152,12 +202,21 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE queue ADD COLUMN retranslation_reason TEXT")
                 self.logger.info("Added retranslation_reason column to queue table")
 
-            # Create covers directory (only meaningful for local installs)
+            wp_state_cols = self.backend.get_table_columns(conn, 'wp_publish_state')
+            if 'wp_link' not in wp_state_cols:
+                cursor.execute("ALTER TABLE wp_publish_state ADD COLUMN wp_link TEXT")
+                self.logger.info("Added wp_link column to wp_publish_state table")
+            if 'wp_slug' not in wp_state_cols:
+                cursor.execute("ALTER TABLE wp_publish_state ADD COLUMN wp_slug TEXT")
+                self.logger.info("Added wp_slug column to wp_publish_state table")
+
+            # Create covers + illustrations directories (only meaningful for local installs)
             if self.backend.name == 'sqlite':
-                covers_dir = os.path.join(os.path.dirname(self.db_path), "covers")
+                media_base = os.path.dirname(self.db_path)
             else:
-                covers_dir = os.path.join(self.config.script_dir, "covers")
-            os.makedirs(covers_dir, exist_ok=True)
+                media_base = self.config.script_dir
+            os.makedirs(os.path.join(media_base, "covers"), exist_ok=True)
+            os.makedirs(os.path.join(media_base, "illustrations"), exist_ok=True)
 
             conn.commit()
             conn.close()
@@ -262,27 +321,61 @@ class DatabaseManager:
             self.logger.error(f"Error setting book prompt template: {e}")
             return False
 
-    def get_book_categories(self, book_id):
-        """Get entity categories for a book. Returns DEFAULT_CATEGORIES if none set."""
+    def _get_raw_book_categories(self, book_id):
+        """Return the raw stored categories value (parsed JSON) or None if unset."""
+        conn = self.backend.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT categories FROM books WHERE id = ?", (book_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            return json.loads(row[0])
+        return None
+
+    def get_book_categories_meta(self, book_id):
+        """Get entity categories with per-category attributes for a book.
+
+        Returns a list of {"name": str, "attributes": [str, ...]} dicts,
+        falling back to DEFAULT_CATEGORIES (characters gendered) when unset.
+        """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT categories FROM books WHERE id = ?", (book_id,))
-            row = cursor.fetchone()
-            conn.close()
-            if row and row[0]:
-                return json.loads(row[0])
-            return list(DEFAULT_CATEGORIES)
+            return normalize_categories(self._get_raw_book_categories(book_id))
         except Exception as e:
-            self.logger.error(f"Error getting book categories: {e}")
-            return list(DEFAULT_CATEGORIES)
+            self.logger.error(f"Error getting book category metadata: {e}")
+            return normalize_categories(None)
+
+    def get_book_categories(self, book_id):
+        """Get entity category names for a book. Returns DEFAULT_CATEGORIES if none set.
+
+        Backward-compatible: returns a plain list of names regardless of whether the
+        book stores legacy string lists or the newer attribute-carrying objects.
+        """
+        return [c['name'] for c in self.get_book_categories_meta(book_id)]
+
+    def get_book_gendered_categories(self, book_id):
+        """Return the names of categories that carry the 'gender' attribute for a book."""
+        return [c['name'] for c in self.get_book_categories_meta(book_id)
+                if 'gender' in c['attributes']]
+
+    def is_gendered_category(self, book_id, category):
+        """True if `category` is gender-tracked for this book."""
+        if not category:
+            return False
+        return category in self.get_book_gendered_categories(book_id)
 
     def set_book_categories(self, book_id, categories):
-        """Set entity categories for a book. Pass None to reset to defaults."""
+        """Set entity categories for a book. Pass None to reset to defaults.
+
+        Accepts either a list of names or a list of {"name", "attributes"} dicts;
+        the value is normalized to the attribute-carrying form before storage.
+        """
         try:
             conn = self.backend.get_connection()
             cursor = conn.cursor()
-            value = json.dumps(categories) if categories is not None else None
+            if categories is None:
+                value = None
+            else:
+                value = json.dumps(normalize_categories(categories))
             cursor.execute("UPDATE books SET categories = ? WHERE id = ?", (value, book_id))
             conn.commit()
             conn.close()
@@ -367,7 +460,7 @@ class DatabaseManager:
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
-                    view_count, trad_to_simp, tags
+                    view_count, trad_to_simp, tags, modules
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
@@ -376,7 +469,7 @@ class DatabaseManager:
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
-                    view_count, trad_to_simp, tags
+                    view_count, trad_to_simp, tags, modules
                 FROM books
                 WHERE title = ?
                 ''', (title,))
@@ -389,6 +482,11 @@ class DatabaseManager:
 
             raw_cats = row[10] if len(row) > 10 else None
             raw_tags = row[19] if len(row) > 19 else None
+            raw_modules = row[20] if len(row) > 20 else None
+            try:
+                modules = json.loads(raw_modules) if raw_modules else None
+            except (json.JSONDecodeError, TypeError):
+                modules = None
             book_info = {
                 "id": row[0],
                 "title": row[1],
@@ -410,8 +508,9 @@ class DatabaseManager:
                 "view_count": row[17] if len(row) > 17 and row[17] is not None else 0,
                 "trad_to_simp": row[18] if len(row) > 18 else None,
                 "tags": json.loads(raw_tags) if raw_tags else [],
+                "modules": modules,
             }
-            
+
             return book_info
             
         except Exception as e:
@@ -430,28 +529,33 @@ class DatabaseManager:
             bool: True if successful, False otherwise
         """
         try:
+            # If this update can change which modules are enabled, snapshot the
+            # enabled set beforehand so we can fire add/remove events on the diff.
+            module_trigger = ('modules' in kwargs) or ('source_url' in kwargs)
+            before_ids = resolve_module_ids(self.get_book(book_id=book_id)) if module_trigger else set()
+
             conn = self.backend.get_connection()
             cursor = conn.cursor()
-            
+
             # Check if book exists
             cursor.execute("SELECT 1 FROM books WHERE id = ?", (book_id,))
             if not cursor.fetchone():
                 self.logger.warning(f"Book with ID {book_id} not found")
                 conn.close()
                 return False
-            
+
             # Build the SET clause dynamically based on provided kwargs
             set_clause = []
             values = []
-            
+
             # Update modified_date automatically
             kwargs["modified_date"] = datetime.datetime.now().isoformat()
-            
+
             for key, value in kwargs.items():
                 if key in ['title', 'author', 'language', 'description', 'source_language',
                         'target_language', 'modified_date', 'cover_image', 'is_public',
                         'total_source_chapters', 'status', 'comments_enabled',
-                        'source_url', 'notes', 'trad_to_simp', 'tags']:
+                        'source_url', 'notes', 'trad_to_simp', 'tags', 'modules']:
                     set_clause.append(f"{key} = ?")
                     if key in ('is_public', 'comments_enabled'):
                         values.append(int(bool(value)))
@@ -462,26 +566,26 @@ class DatabaseManager:
                             values.append(None)
                         else:
                             values.append(int(bool(value)))
-                    elif key == 'tags':
+                    elif key in ('tags', 'modules'):
                         values.append(json.dumps(value) if value else None)
                     else:
                         values.append(value)
-            
+
             if not set_clause:
                 self.logger.warning("No valid fields to update")
                 conn.close()
                 return False
-            
+
             # Complete the parameter list with book_id
             values.append(book_id)
-            
+
             # Execute the update
             cursor.execute(f'''
-            UPDATE books 
+            UPDATE books
             SET {', '.join(set_clause)}
             WHERE id = ?
             ''', values)
-            
+
             conn.commit()
             conn.close()
 
@@ -490,6 +594,14 @@ class DatabaseManager:
             if epub_fields & set(kwargs):
                 self.invalidate_epub_cache(book_id)
 
+            # Fire module add/remove lifecycle events if the enabled set changed.
+            if module_trigger:
+                book_after = self.get_book(book_id=book_id)
+                after_ids = resolve_module_ids(book_after)
+                if before_ids != after_ids:
+                    fire_book_module_events(self, book_after, before_ids, after_ids,
+                                            self.config, self.logger)
+
             self.logger.info(f"Updated book with ID {book_id}")
             return True
 
@@ -497,13 +609,82 @@ class DatabaseManager:
             self.logger.error(f"Error updating book: {e}")
             return False
 
+    def get_module_settings(self, book_id, module_id=None):
+        """Return stored per-book module settings.
+
+        With ``module_id``: returns ``{setting_key: value}`` for that one module.
+        Without it: returns ``{module_id: {setting_key: value}}`` for the whole
+        book (used to attach all module settings to the run ``ctx`` in one query).
+        Values are JSON-decoded; malformed rows are skipped. Only *stored* values
+        are returned — callers merge schema defaults via
+        ``TranslationModule.resolve_settings``.
+        """
+        result = {}
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            if module_id is not None:
+                cursor.execute(
+                    "SELECT setting_key, value_json FROM book_module_settings "
+                    "WHERE book_id = ? AND module_id = ?",
+                    (book_id, module_id))
+                for skey, raw in cursor.fetchall():
+                    try:
+                        result[skey] = json.loads(raw) if raw is not None else None
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+            else:
+                cursor.execute(
+                    "SELECT module_id, setting_key, value_json FROM book_module_settings "
+                    "WHERE book_id = ?",
+                    (book_id,))
+                for mid, skey, raw in cursor.fetchall():
+                    try:
+                        val = json.loads(raw) if raw is not None else None
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    result.setdefault(mid, {})[skey] = val
+            conn.close()
+        except Exception as e:
+            self.logger.error(f"Error loading module settings for book {book_id}: {e}")
+        return result
+
+    def set_module_settings(self, book_id, module_id, settings):
+        """Authoritatively replace the stored settings for one book+module.
+
+        ``settings`` is a ``{setting_key: value}`` dict; values are JSON-encoded.
+        All prior rows for this (book, module) are deleted first, so the passed
+        dict is the complete new state (omitted keys are cleared). Dual-backend
+        safe (plain ``?`` placeholders via ``self.backend``).
+        """
+        if settings is None:
+            settings = {}
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM book_module_settings WHERE book_id = ? AND module_id = ?",
+                (book_id, module_id))
+            for skey, value in settings.items():
+                cursor.execute(
+                    "INSERT INTO book_module_settings "
+                    "(book_id, module_id, setting_key, value_json) VALUES (?, ?, ?, ?)",
+                    (book_id, module_id, skey, json.dumps(value)))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(
+                f"Error saving module settings for book {book_id}/{module_id}: {e}")
+            return False
+
     def list_books(self, order_by: str = 'title'):
         """
         List all books in the database.
 
         Args:
-            order_by: One of 'title' (default), 'popular', or 'updated'.
-                Unknown values fall back to 'title'.
+            order_by: One of 'title' (default), 'popular', 'updated', or
+                'newly_added'. Unknown values fall back to 'title'.
 
         Returns:
             list: List of book information dictionaries
@@ -516,6 +697,7 @@ class DatabaseManager:
             'title':   title_clause,
             'popular': 'view_count DESC, ' + title_clause,
             'updated': "COALESCE(modified_date, created_date, '') DESC, " + title_clause,
+            'newly_added': 'id DESC',
         }
         clause = ORDER_CLAUSES.get(order_by, ORDER_CLAUSES['title'])
         try:
@@ -526,7 +708,8 @@ class DatabaseManager:
             SELECT id, title, author, language, created_date, cover_image, categories,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count,
                 description, is_public, total_source_chapters, status, comments_enabled,
-                source_url, notes, view_count, modified_date, trad_to_simp, tags
+                source_url, notes, view_count, modified_date, trad_to_simp, tags, modules,
+                (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id) as last_chapter_date
             FROM books
             ORDER BY {clause}
             ''')
@@ -539,7 +722,11 @@ class DatabaseManager:
                 (book_id, title, author, language, created_date, cover_image, raw_cats,
                  chapter_count, description, is_public, total_source_chapters, status,
                  comments_enabled, source_url, notes, view_count, modified_date,
-                 trad_to_simp, raw_tags) = row
+                 trad_to_simp, raw_tags, raw_modules, last_chapter_date) = row
+                try:
+                    modules = json.loads(raw_modules) if raw_modules else None
+                except (json.JSONDecodeError, TypeError):
+                    modules = None
                 result.append({
                     "id": book_id,
                     "title": title,
@@ -547,6 +734,7 @@ class DatabaseManager:
                     "language": language,
                     "created_date": created_date,
                     "modified_date": modified_date,
+                    "last_chapter_date": last_chapter_date,
                     "cover_image": cover_image,
                     "categories": json.loads(raw_cats) if raw_cats else None,
                     "chapter_count": chapter_count,
@@ -560,6 +748,7 @@ class DatabaseManager:
                     "view_count": view_count or 0,
                     "trad_to_simp": trad_to_simp,
                     "tags": json.loads(raw_tags) if raw_tags else [],
+                    "modules": modules,
                 })
 
             return result
@@ -624,7 +813,11 @@ class DatabaseManager:
         return os.path.join(self.config.script_dir, "epub_cache")
 
     def invalidate_epub_cache(self, book_id):
-        """Delete the cached EPUB file for a book so it will be regenerated on next export."""
+        """Invalidate a book's cached EPUB so it will be regenerated on next export.
+
+        Removes both the local on-disk cache file and, when Spaces/CDN is enabled,
+        every EPUB blob under the book's ``epub/{book_id}`` prefix in object storage.
+        """
         cache_path = os.path.join(self._epub_cache_dir(), f"{book_id}.epub")
         if os.path.exists(cache_path):
             try:
@@ -632,6 +825,14 @@ class DatabaseManager:
                 self.logger.info(f"Invalidated EPUB cache for book {book_id}")
             except OSError as e:
                 self.logger.warning(f"Failed to remove cached EPUB for book {book_id}: {e}")
+
+        # Best-effort purge of this book's EPUB objects from Spaces/CDN.
+        try:
+            import spaces
+            if spaces.is_enabled(self.config):
+                spaces.delete_prefix(self.config, f"epub/{book_id}")
+        except Exception as e:
+            self.logger.warning(f"Failed to purge Spaces EPUB objects for book {book_id}: {e}")
 
     # Chapter management section
     def save_chapter(self, book_id, chapter_number, title, untranslated_content, translated_content,
@@ -658,20 +859,16 @@ class DatabaseManager:
                 self.logger.error(f"Book with ID {book_id} not found")
                 return None
 
-            # Optional trad→simp preprocessing of source text before persistence
-            if self._should_convert_trad(book):
-                try:
-                    from trad_simp import convert_text
-                    untranslated_content = convert_text(untranslated_content)
-                except ImportError as e:
-                    self.logger.error(f"Trad→simp conversion skipped: {e}")
+            # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
+            untranslated_content = apply_source_ingest(book, untranslated_content,
+                                                       self.config, self.logger, db=self)
 
             # Serialize content if it's a list
             if isinstance(untranslated_content, list):
                 untranslated_text = json.dumps(untranslated_content, ensure_ascii=False)
             else:
                 untranslated_text = untranslated_content
-                
+
             if isinstance(translated_content, list):
                 translated_text = json.dumps(translated_content, ensure_ascii=False)
             else:
@@ -739,6 +936,31 @@ class DatabaseManager:
             conn.commit()
             conn.close()
             self.invalidate_epub_cache(book_id)
+
+            # Link any illustration rows referenced by this chapter's content
+            # (markers in the saved source array) to this chapter_id.
+            try:
+                from illustrations import markers_in
+                if isinstance(untranslated_content, list):
+                    src_lines = untranslated_content
+                elif isinstance(untranslated_content, str):
+                    src_lines = untranslated_content.split('\n')
+                else:
+                    src_lines = []
+                marker_ids = markers_in(src_lines)
+                if marker_ids:
+                    self.link_illustrations_to_chapter(book_id, chapter_id, marker_ids)
+            except Exception as e:
+                self.logger.error(f"Illustration linkage skipped for chapter {chapter_number}: {e}")
+
+            # Re-apply persisted footnotes onto the freshly-saved content. A brand-new
+            # chapter has no footnote rows, so this is a no-op for initial translation;
+            # on retranslation (or any re-save) it re-anchors them and flags orphans.
+            try:
+                if self.get_chapter_footnotes(chapter_id):
+                    self.rerender_chapter_footnotes(chapter_id)
+            except Exception as e:
+                self.logger.error(f"Footnote reapply skipped for chapter {chapter_number}: {e}")
 
             return chapter_id
 
@@ -1375,6 +1597,317 @@ class DatabaseManager:
         conn.close()
         return True
 
+    # Illustration management section
+    def add_illustration(self, book_id, marker_id, filename, alt=None,
+                         original_href=None, ordinal=None, queue_id=None, chapter_id=None):
+        """Insert an illustration row, idempotent on (book_id, marker_id).
+
+        Returns True if a new row was inserted, False if it already existed or
+        on error. The marker_id is the opaque id embedded in chapter content as
+        ⟦IMG:<marker_id>⟧ (see illustrations.py).
+        """
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id FROM illustrations WHERE book_id = ? AND marker_id = ?',
+                (book_id, marker_id),
+            )
+            if cursor.fetchone():
+                conn.close()
+                return False
+
+            from datetime import datetime
+            cursor.execute('''
+                INSERT INTO illustrations
+                    (book_id, marker_id, filename, alt, original_href, ordinal,
+                     queue_id, chapter_id, created_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (book_id, marker_id, filename, alt, original_href, ordinal,
+                  queue_id, chapter_id, datetime.now().isoformat()))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error adding illustration {marker_id} for book {book_id}: {e}")
+            return False
+
+    def get_book_illustration(self, book_id, marker_id):
+        """Return a single illustration row as a dict, or None."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, book_id, marker_id, filename, alt, original_href, '
+                'ordinal, queue_id, chapter_id FROM illustrations '
+                'WHERE book_id = ? AND marker_id = ?',
+                (book_id, marker_id),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            cols = ['id', 'book_id', 'marker_id', 'filename', 'alt',
+                    'original_href', 'ordinal', 'queue_id', 'chapter_id']
+            return dict(zip(cols, row))
+        except Exception as e:
+            self.logger.error(f"Error fetching illustration {marker_id} for book {book_id}: {e}")
+            return None
+
+    def get_chapter_illustrations(self, book_id, chapter_id):
+        """Return a chapter's illustration rows (list of dicts), ordered by ordinal."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, book_id, marker_id, filename, alt, original_href, '
+                'ordinal, queue_id, chapter_id FROM illustrations '
+                'WHERE book_id = ? AND chapter_id = ? ORDER BY ordinal',
+                (book_id, chapter_id),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            cols = ['id', 'book_id', 'marker_id', 'filename', 'alt',
+                    'original_href', 'ordinal', 'queue_id', 'chapter_id']
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception as e:
+            self.logger.error(f"Error fetching illustrations for chapter {chapter_id}: {e}")
+            return []
+
+    def link_illustrations_to_chapter(self, book_id, chapter_id, marker_ids):
+        """Set chapter_id on the illustration rows for the given marker ids.
+
+        Called after save_chapter so a queue-time illustration row becomes
+        associated with its chapter. The markers in the saved content array are
+        the linkage, so this is robust to renumber/requeue/retranslate.
+        """
+        if not marker_ids:
+            return 0
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            placeholders = ','.join('?' for _ in marker_ids)
+            cursor.execute(
+                f'UPDATE illustrations SET chapter_id = ? '
+                f'WHERE book_id = ? AND marker_id IN ({placeholders})',
+                (chapter_id, book_id, *marker_ids),
+            )
+            n = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return n
+        except Exception as e:
+            self.logger.error(f"Error linking illustrations to chapter {chapter_id}: {e}")
+            return 0
+
+    # Footnote management section
+    #
+    # Footnotes are persisted here so they survive retranslation. The inline
+    # "[n]" marker + definition block in chapter content is a derived rendering
+    # re-applied on every save by anchor (the English term the marker hugs); see
+    # footnotes.py and rerender_chapter_footnotes below.
+
+    _FOOTNOTE_COLS = ['id', 'book_id', 'chapter_id', 'anchor', 'source_term',
+                      'body', 'occurrence', 'status', 'is_source', 'sort_order']
+
+    def add_footnote(self, book_id, chapter_id, anchor, body, *, source_term=None,
+                     occurrence=1, is_source=0, sort_order=None, status='active'):
+        """Upsert a footnote, idempotent on (chapter_id, is_source, anchor, occurrence).
+
+        Returns the row id, or None on error. The body is updated in place when the
+        row already exists, so re-running a script with an edited body never
+        duplicates.
+        """
+        try:
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id FROM footnotes WHERE chapter_id = ? AND is_source = ? '
+                'AND anchor = ? AND occurrence = ?',
+                (chapter_id, is_source, anchor, occurrence),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                fid = existing[0]
+                cursor.execute(
+                    'UPDATE footnotes SET body = ?, source_term = ?, sort_order = ?, '
+                    'status = ?, modified_date = ? WHERE id = ?',
+                    (body, source_term, sort_order, status, now, fid),
+                )
+                conn.commit()
+                conn.close()
+                return fid
+            cursor.execute(
+                'INSERT INTO footnotes (book_id, chapter_id, anchor, source_term, body, '
+                'occurrence, status, is_source, sort_order, created_date, modified_date) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (book_id, chapter_id, anchor, source_term, body, occurrence, status,
+                 is_source, sort_order, now, now),
+            )
+            fid = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return fid
+        except Exception as e:
+            self.logger.error(f"Error adding footnote for chapter {chapter_id}: {e}")
+            return None
+
+    def get_chapter_footnotes(self, chapter_id, *, is_source=None, status=None):
+        """Return a chapter's footnote rows (list of dicts), ordered by id."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            q = ('SELECT id, book_id, chapter_id, anchor, source_term, body, '
+                 'occurrence, status, is_source, sort_order FROM footnotes '
+                 'WHERE chapter_id = ?')
+            params = [chapter_id]
+            if is_source is not None:
+                q += ' AND is_source = ?'
+                params.append(is_source)
+            if status is not None:
+                q += ' AND status = ?'
+                params.append(status)
+            q += ' ORDER BY id'
+            cursor.execute(q, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(zip(self._FOOTNOTE_COLS, r)) for r in rows]
+        except Exception as e:
+            self.logger.error(f"Error fetching footnotes for chapter {chapter_id}: {e}")
+            return []
+
+    def get_book_footnotes(self, book_id, *, status=None):
+        """Return a book's footnote rows joined with chapter_number, for reports."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            q = ('SELECT f.id, f.book_id, f.chapter_id, c.chapter_number, f.anchor, '
+                 'f.source_term, f.body, f.occurrence, f.status, f.is_source, f.sort_order '
+                 'FROM footnotes f JOIN chapters c ON c.id = f.chapter_id '
+                 'WHERE f.book_id = ?')
+            params = [book_id]
+            if status is not None:
+                q += ' AND f.status = ?'
+                params.append(status)
+            q += ' ORDER BY c.chapter_number, f.id'
+            cursor.execute(q, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+            cols = ['id', 'book_id', 'chapter_id', 'chapter_number', 'anchor',
+                    'source_term', 'body', 'occurrence', 'status', 'is_source', 'sort_order']
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception as e:
+            self.logger.error(f"Error fetching footnotes for book {book_id}: {e}")
+            return []
+
+    def update_footnote(self, footnote_id, *, anchor=None, body=None, source_term=None,
+                        occurrence=None, sort_order=None):
+        """Update mutable fields of a footnote. Returns True if a row changed."""
+        sets, params = [], []
+        for col, val in (('anchor', anchor), ('body', body), ('source_term', source_term),
+                         ('occurrence', occurrence), ('sort_order', sort_order)):
+            if val is not None:
+                sets.append(f'{col} = ?')
+                params.append(val)
+        if not sets:
+            return False
+        try:
+            from datetime import datetime
+            sets.append('modified_date = ?')
+            params.append(datetime.now().isoformat())
+            params.append(footnote_id)
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(f'UPDATE footnotes SET {", ".join(sets)} WHERE id = ?', tuple(params))
+            n = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return n > 0
+        except Exception as e:
+            self.logger.error(f"Error updating footnote {footnote_id}: {e}")
+            return False
+
+    def set_footnote_status(self, footnote_id, status):
+        """Set a footnote's status ('active' | 'orphaned'). Returns True on success."""
+        try:
+            from datetime import datetime
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE footnotes SET status = ?, modified_date = ? WHERE id = ?',
+                (status, datetime.now().isoformat(), footnote_id),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error setting footnote {footnote_id} status: {e}")
+            return False
+
+    def delete_footnote(self, footnote_id):
+        """Delete a footnote row. Returns True if a row was removed."""
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM footnotes WHERE id = ?', (footnote_id,))
+            n = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return n > 0
+        except Exception as e:
+            self.logger.error(f"Error deleting footnote {footnote_id}: {e}")
+            return False
+
+    def rerender_chapter_footnotes(self, chapter_id):
+        """Re-apply persisted footnotes onto a chapter's content (translated and,
+        if any, source), flipping each row's status based on whether its anchor was
+        found. Writes back with a plain UPDATE — never calls save_chapter, so the
+        save-time reapply hook cannot recurse. Deterministic and idempotent.
+
+        Returns True on success (including the no-op case), False on error.
+        """
+        try:
+            from footnotes import render_footnotes, content_to_list
+            chapter = self.get_chapter(chapter_id=chapter_id)
+            if not chapter:
+                return False
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            wrote = False
+            for is_source in (0, 1):
+                rows = self.get_chapter_footnotes(chapter_id, is_source=is_source)
+                if not rows:
+                    continue
+                key = 'untranslated' if is_source else 'content'
+                column = 'untranslated_content' if is_source else 'translated_content'
+                base = content_to_list(chapter.get(key))
+                new_lines, orphans = render_footnotes(base, rows)
+                orphan_ids = {o['id'] for o in orphans}
+                from datetime import datetime
+                now = datetime.now().isoformat()
+                for r in rows:
+                    want = 'orphaned' if r['id'] in orphan_ids else 'active'
+                    if r.get('status') != want:
+                        cursor.execute(
+                            'UPDATE footnotes SET status = ?, modified_date = ? WHERE id = ?',
+                            (want, now, r['id']),
+                        )
+                cursor.execute(
+                    f'UPDATE chapters SET {column} = ? WHERE id = ?',
+                    (json.dumps(new_lines, ensure_ascii=False), chapter_id),
+                )
+                wrote = True
+            conn.commit()
+            conn.close()
+            if wrote:
+                self.invalidate_epub_cache(chapter['book_id'])
+            return True
+        except Exception as e:
+            self.logger.error(f"Error rerendering footnotes for chapter {chapter_id}: {e}")
+            return False
+
     # Queue management section
     def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None, priority=False, retranslation_reason=None):
         """
@@ -1401,13 +1934,8 @@ class DatabaseManager:
                 self.logger.error(f"Book with ID {book_id} not found")
                 return None
 
-            # Optional trad→simp preprocessing of queued source text
-            if self._should_convert_trad(book):
-                try:
-                    from trad_simp import convert_text
-                    content = convert_text(content)
-                except ImportError as e:
-                    self.logger.error(f"Trad→simp conversion skipped: {e}")
+            # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
+            content = apply_source_ingest(book, content, self.config, self.logger, db=self)
 
             conn = self.backend.get_connection()
             cursor = conn.cursor()
@@ -1571,12 +2099,17 @@ class DatabaseManager:
             self.logger.error(f"Error removing from queue: {e}")
             return False
 
-    def list_queue(self, book_id=None):
+    def list_queue(self, book_id=None, include_content=False):
         """
         List all items in the queue.
 
         Args:
             book_id: Optional book ID to filter by specific book
+            include_content: When False (default), the large per-item content
+                and metadata columns are not fetched or decoded — they are
+                returned as None. List/UI callers never use them; fetching them
+                made the queue page download every queued chapter's full text.
+                Pass True only when the actual chapter content is needed.
 
         Returns:
             list: List of queue item dicts ordered by position
@@ -1585,11 +2118,13 @@ class DatabaseManager:
             conn = self.backend.get_connection()
             cursor = conn.cursor()
 
+            content_cols = "q.content, q.metadata," if include_content else ""
+
             # Build query with optional book_id filter
             if book_id:
-                cursor.execute('''
-                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
-                       q.metadata, q.position, q.created_date, b.title as book_title,
+                cursor.execute(f'''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
+                       q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
@@ -1597,9 +2132,9 @@ class DatabaseManager:
                 ORDER BY q.position ASC
                 ''', (book_id,))
             else:
-                cursor.execute('''
-                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
-                       q.metadata, q.position, q.created_date, b.title as book_title,
+                cursor.execute(f'''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
+                       q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
@@ -1611,21 +2146,27 @@ class DatabaseManager:
 
             result = []
             for row in rows:
-                # Deserialize content
-                content_json = row[5]
-                try:
-                    content = json.loads(content_json)
-                except:
-                    content = content_json
-
-                # Deserialize metadata if present
-                metadata_json = row[6]
-                metadata = None
-                if metadata_json:
+                if include_content:
+                    # Deserialize content
+                    content_json = row[5]
                     try:
-                        metadata = json.loads(metadata_json)
+                        content = json.loads(content_json)
                     except:
-                        pass
+                        content = content_json
+
+                    # Deserialize metadata if present
+                    metadata_json = row[6]
+                    metadata = None
+                    if metadata_json:
+                        try:
+                            metadata = json.loads(metadata_json)
+                        except:
+                            pass
+                    tail = row[7:]
+                else:
+                    content = None
+                    metadata = None
+                    tail = row[5:]
 
                 result.append({
                     'id': row[0],
@@ -1635,16 +2176,37 @@ class DatabaseManager:
                     'source': row[4],
                     'content': content,
                     'metadata': metadata,
-                    'position': row[7],
-                    'created_date': row[8],
-                    'book_title': row[9],
-                    'retranslation_reason': row[10],
+                    'position': tail[0],
+                    'created_date': tail[1],
+                    'book_title': tail[2],
+                    'retranslation_reason': tail[3],
                 })
 
             return result
 
         except Exception as e:
             self.logger.error(f"Error listing queue: {e}")
+            return []
+
+    def get_queued_book_ids(self):
+        """
+        Return the distinct book IDs that currently have queued items.
+
+        Cheap index-friendly scan used to populate the queue page's book
+        filter without re-fetching the entire (content-laden) queue.
+
+        Returns:
+            list[int]: Distinct book IDs present in the queue.
+        """
+        try:
+            conn = self.backend.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT DISTINCT book_id FROM queue')
+            rows = cursor.fetchall()
+            conn.close()
+            return [row[0] for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting queued book ids: {e}")
             return []
 
     def clear_queue(self, book_id=None):
@@ -1656,24 +2218,23 @@ class DatabaseManager:
 
         Returns:
             int: Number of items removed
+
+        Raises:
+            Exception: re-raises any database error so callers can surface it
+            (the API turns this into a 500 instead of falsely reporting success).
         """
         try:
             conn = self.backend.get_connection()
             cursor = conn.cursor()
 
             if book_id:
-                # Clear queue for specific book
+                # Clear queue for specific book. Leave the remaining items'
+                # positions untouched — gaps are fine (same as remove_from_queue),
+                # and a sequential 0..n reassignment would collide with the
+                # UNIQUE constraint on queue.position mid-loop, raising a
+                # duplicate-key error that rolls back the DELETE.
                 cursor.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
                 count = cursor.rowcount
-
-                # Reorder positions after deletion
-                # Get all remaining items ordered by position
-                cursor.execute('SELECT id FROM queue ORDER BY position ASC')
-                items = cursor.fetchall()
-
-                # Update positions to be sequential
-                for i, (item_id,) in enumerate(items):
-                    cursor.execute('UPDATE queue SET position = ? WHERE id = ?', (i, item_id))
             else:
                 # Clear entire queue
                 cursor.execute('DELETE FROM queue')
@@ -1687,7 +2248,7 @@ class DatabaseManager:
 
         except Exception as e:
             self.logger.error(f"Error clearing queue: {e}")
-            return 0
+            raise
 
     def get_queue_count(self, book_id=None):
         """
@@ -2271,18 +2832,6 @@ class DatabaseManager:
         """Normalize text for consistent comparison"""
         return unicodedata.normalize('NFC', text)
 
-    def _should_convert_trad(self, book):
-        """Resolve effective trad→simp setting for a book row.
-
-        Per-book ``trad_to_simp`` column (NULL/0/1) overrides the global default.
-        ``book`` may be a dict-like row or None; None falls back to the global flag.
-        """
-        if book is not None:
-            override = book.get('trad_to_simp') if hasattr(book, 'get') else None
-            if override is not None:
-                return bool(override)
-        return bool(getattr(self.config, 'trad_to_simp', False))
-    
     def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None, note=None):
         """
         Add a new entity to the database.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWs } from '../App'
 import { api } from '../services/api'
@@ -14,6 +14,7 @@ export default function Queue() {
   const navigate = useNavigate()
   const [books, setBooks] = useState([])
   const [queue, setQueue] = useState([])
+  const [queuedBookIds, setQueuedBookIds] = useState([])
   const [loading, setLoading] = useState(true)
   const [filterBook, setFilterBook] = useLocalStorage('queue.filterBook', '')
   const [processing, setProcessing] = useState(false)
@@ -25,10 +26,16 @@ export default function Queue() {
   const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
   const [adviceModel, setAdviceModel]             = useLocalStorage('shared.adviceModel', '')
   const [cleaningModel, setCleaningModel]         = useLocalStorage('shared.cleaningModel', '')
-  const [noReview, setNoReview]                   = useLocalStorage('queue.noReview', false)
+  const [noReview, setNoReviewRaw]                = useLocalStorage('queue.noReview', false)
+  const [twoPass, setTwoPassRaw]                  = useLocalStorage('queue.twoPass', false)
+  // Mutually exclusive: two-pass review is meaningless when entity review is skipped
+  const setNoReview = (v) => { setNoReviewRaw(v); if (v) setTwoPassRaw(false) }
+  const setTwoPass = (v) => { setTwoPassRaw(v); if (v) setNoReviewRaw(false) }
+  // Stale localStorage can have both set, which disables both checkboxes. Reset to neither.
+  useEffect(() => {
+    if (noReview && twoPass) { setNoReviewRaw(false); setTwoPassRaw(false) }
+  }, [])
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
-  const [noRepair, setNoRepair]                   = useLocalStorage('queue.noRepair', false)
-  const [noConvertUnits, setNoConvertUnits]       = useLocalStorage('queue.noConvertUnits', false)
   const [noStream, setNoStream]                   = useLocalStorage('queue.noStream', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
   const [maxChapters, setMaxChapters]             = useLocalStorage('queue.maxChapters', '')
@@ -38,6 +45,11 @@ export default function Queue() {
     try {
       const d = await api.listQueue(filterBook ? parseInt(filterBook) : undefined)
       setQueue(d.items || [])
+      // Which books currently have queued chapters — the response includes the
+      // full distinct set (independent of the active filter), so the drop-down
+      // stays correct without a second unfiltered fetch. Fall back to deriving
+      // it from items in case an older backend doesn't send book_ids.
+      setQueuedBookIds(d.book_ids || [...new Set((d.items || []).map(it => it.book_id))])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -57,19 +69,31 @@ export default function Queue() {
 
   useEffect(() => { load() }, [load])
 
-  // Watch for job events to update UI
+  // Read autoProcess inside the WS handler via a ref so it doesn't need to be
+  // an effect dependency. Listing it caused the handler to re-run on every
+  // checkbox toggle and replay the persisted (possibly stale) lastMessage.
+  const autoProcessRef = useRef(autoProcess)
+  useEffect(() => { autoProcessRef.current = autoProcess }, [autoProcess])
+
+  // Watch for job events to update UI. `lastMessage` persists in the WS context
+  // (it holds the last message ever received), so only act on a genuinely new
+  // message — otherwise an effect re-run from an unrelated dependency change
+  // (e.g. the book filter) would replay a stale `progress` event and falsely
+  // flip the UI into the "running" state.
+  const processedMsgRef = useRef(null)
   useEffect(() => {
-    if (!lastMessage) return
+    if (!lastMessage || lastMessage === processedMsgRef.current) return
+    processedMsgRef.current = lastMessage
     if (lastMessage.type === 'progress') {
       setChunkProgress(lastMessage)
-      setJobStatus('running')
+      setJobStatus(lastMessage.phase === 'session_limit' ? 'waiting' : 'running')
     }
     if (lastMessage.type === 'translation_complete') {
       setChunkProgress(null)
       load()
       // During auto-process the backend drives the loop, so stay in "running".
       // For single-shot, mark complete.
-      if (!autoProcess) {
+      if (!autoProcessRef.current) {
         setJobStatus('complete')
         setProcessing(false)
       }
@@ -98,7 +122,7 @@ export default function Queue() {
       setJobStatus('awaiting_json_fix')
       navigate('/')
     }
-  }, [lastMessage, load, autoProcess])
+  }, [lastMessage, load])
 
   const handleProcessNext = async () => {
     setProcessing(true)
@@ -110,9 +134,8 @@ export default function Queue() {
         advice_model: adviceModel || null,
         cleaning_model: cleaningModel || null,
         no_review: noReview,
+        two_pass: twoPass,
         no_clean: noClean,
-        no_repair: noRepair,
-        no_convert_units: noConvertUnits,
         no_stream: noStream,
         auto_process: autoProcess,
         max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
@@ -132,11 +155,16 @@ export default function Queue() {
   const handleClear = async () => {
     const bookName = books.find(b => String(b.id) === String(filterBook))?.title || `Book ${filterBook}`
     if (!confirm(`Clear all queued chapters for "${bookName}"?`)) return
-    await api.clearQueue(parseInt(filterBook))
+    try {
+      await api.clearQueue(parseInt(filterBook))
+    } catch (e) {
+      setError(e.message)
+      return
+    }
     load()
   }
 
-  const isJobRunning = processing || jobStatus === 'running' || jobStatus === 'awaiting_review'
+  const isJobRunning = processing || jobStatus === 'running' || jobStatus === 'waiting' || jobStatus === 'awaiting_review'
 
   const modelOptions = providers.flatMap(p =>
     (p.models || []).map(m => `${p.name}:${m}`)
@@ -231,13 +259,35 @@ export default function Queue() {
           </div>
         </div>
         <div className="flex items-center gap-x-6 gap-y-2 mt-3 flex-wrap">
-          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+          <label
+            className={`flex items-center gap-2 text-sm select-none ${twoPass ? 'text-slate-500 cursor-not-allowed' : 'text-slate-300 cursor-pointer'}`}
+            title={twoPass ? 'Disabled because Two-pass is on' : ''}
+          >
             <input
               type="checkbox"
               checked={noReview}
+              disabled={twoPass}
               onChange={e => setNoReview(e.target.checked)}
             />
             Skip entity review
+          </label>
+          <label
+            className={`flex items-center gap-2 text-sm select-none ${noReview ? 'text-slate-500 cursor-not-allowed' : 'text-slate-300 cursor-pointer'}`}
+            title={noReview ? 'Disabled because Skip Review is on' : ''}
+          >
+            <input
+              type="checkbox"
+              checked={twoPass}
+              disabled={noReview}
+              onChange={e => setTwoPass(e.target.checked)}
+            />
+            Two-pass review
+            <span className="relative group">
+              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                Identifies and translates entities in a first pass, then waits for your review before translating the chapter prose. Your edited entity names are used directly by the model in the second pass — no after-the-fact substitution. Doubles input tokens; output tokens unchanged.
+              </span>
+            </span>
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
             <input
@@ -250,34 +300,6 @@ export default function Queue() {
               <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
               <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
                 A second pass using the cleaning model to ensure new entities are only proper nouns. Recommended when using DeepSeek or smaller parameter models, which tend to classify generic terms as entities. Uses very few output tokens, and cleaning model is recommended to be a mini-model like Claude Haiku or gpt-5-mini, or similar.
-              </span>
-            </span>
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={noRepair}
-              onChange={e => setNoRepair(e.target.checked)}
-            />
-            Skip partial repair
-            <span className="relative group">
-              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
-              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                After translation, lines still containing Chinese characters are automatically retranslated using the cleaning model. Disable this if you prefer to handle untranslated lines manually.
-              </span>
-            </span>
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={noConvertUnits}
-              onChange={e => setNoConvertUnits(e.target.checked)}
-            />
-            Skip unit conversion
-            <span className="relative group">
-              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
-              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                Chinese measurement units (zhang, li, jin, etc.) are automatically annotated with metric equivalents. Disable this to keep units unconverted.
               </span>
             </span>
           </label>
@@ -350,7 +372,7 @@ export default function Queue() {
       <div className="mb-4">
         <select className="input w-48" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
           <option value="">All books</option>
-          {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+          {books.filter(b => queuedBookIds.includes(b.id)).map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
         </select>
       </div>
 
@@ -405,6 +427,8 @@ function UploadModal({ books, onClose, onDone }) {
   const [error, setError] = useState(null)
 
   const isEpub = files.length === 1 && files[0].name.toLowerCase().endsWith('.epub')
+  const isFb2 = files.length === 1 && /\.fb2(\.zip)?$/.test(files[0].name.toLowerCase())
+  const isBook = isEpub || isFb2  // single-file book formats: create-book + cover support
   const isBatch = files.length > 1
 
   const handleFileChange = (e) => {
@@ -415,17 +439,17 @@ function UploadModal({ books, onClose, onDone }) {
 
   const handleUpload = async () => {
     if (files.length === 0) { setError('No file selected'); return }
-    if (!isEpub && !bookId) { setError('Select a book'); return }
-    if (isEpub && !bookId && !createBook) { setError('Select a book'); return }
+    if (!isBook && !bookId) { setError('Select a book'); return }
+    if (isBook && !bookId && !createBook) { setError('Select a book'); return }
 
     setUploading(true); setError(null)
     try {
-      if (isEpub) {
+      if (isBook) {
         const fd = new FormData()
         fd.append('file', files[0])
         if (bookId) fd.append('book_id', bookId)
         fd.append('create_book', createBook ? 'true' : 'false')
-        await api.uploadEpub(fd)
+        await (isFb2 ? api.uploadFb2(fd) : api.uploadEpub(fd))
       } else if (isBatch) {
         const fd = new FormData()
         for (const f of files) fd.append('files', f)
@@ -455,8 +479,8 @@ function UploadModal({ books, onClose, onDone }) {
 
         <div className="space-y-3">
           <div>
-            <label className="label">Files (.txt or .epub)</label>
-            <input type="file" accept=".txt,.epub" multiple className="input py-1 text-sm" onChange={handleFileChange} />
+            <label className="label">Files (.txt, .epub or .fb2)</label>
+            <input type="file" accept=".txt,.epub,.fb2,.zip" multiple className="input py-1 text-sm" onChange={handleFileChange} />
             {isBatch && (
               <p className="text-xs text-slate-500 mt-1">
                 {files.length} text files selected — will be sorted by chapter number or filename
@@ -465,7 +489,7 @@ function UploadModal({ books, onClose, onDone }) {
           </div>
 
           <div>
-            <label className="label">Book {isEpub ? '' : '*'}</label>
+            <label className="label">Book {isBook ? '' : '*'}</label>
             <select
               className="input"
               value={createBook ? '__create__' : bookId}
@@ -480,11 +504,11 @@ function UploadModal({ books, onClose, onDone }) {
               }}
             >
               <option value="">Select…</option>
-              {isEpub && <option value="__create__">Create book from this EPUB</option>}
+              {isBook && <option value="__create__">Create book from this {isFb2 ? 'FB2' : 'EPUB'}</option>}
               {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
             </select>
           </div>
-          {!isEpub && (
+          {!isBook && (
             <div>
               <label className="label">{isBatch ? 'Starting chapter # (optional)' : 'Chapter # (optional)'}</label>
               <input className="input" type="number" min="1" value={chapterNum} onChange={e => setChapterNum(e.target.value)}

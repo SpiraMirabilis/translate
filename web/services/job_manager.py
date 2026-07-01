@@ -23,7 +23,7 @@ class JobManager:
 
     def reset(self):
         self.is_running = False
-        self.status = "idle"  # idle | running | awaiting_review | complete | error
+        self.status = "idle"  # idle | running | waiting | awaiting_review | complete | error
         self.error: Optional[str] = None
         self.last_result: Optional[dict] = None
 
@@ -31,6 +31,7 @@ class JobManager:
         self.pending_text: Optional[list] = None
         self.book_id: Optional[int] = None
         self.chapter_number: Optional[int] = None
+        self.chapter_title: Optional[str] = None
 
         # WebSocket connection — set when client connects
         self.websocket = None
@@ -57,6 +58,27 @@ class JobManager:
         self._stop_auto = threading.Event()
         self._auto_max = None
         self._auto_done = 0
+
+        # Cooperative cancellation — set by the cancel endpoint, polled by the
+        # translation engine between (and mid-) chunks via is_cancelled().
+        self._cancel_event = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Cooperative cancellation
+    # ------------------------------------------------------------------
+
+    def request_cancel(self):
+        """Signal the running translation thread to stop at the next chunk
+        boundary (or mid-stream). The engine polls is_cancelled()."""
+        self._cancel_event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def clear_cancel(self):
+        """Reset the cancel flag — called when a fresh job starts so a stale
+        cancel from a previous run doesn't immediately kill the new one."""
+        self._cancel_event.clear()
 
     # ------------------------------------------------------------------
     # WebSocket helpers
@@ -96,6 +118,32 @@ class JobManager:
     # ------------------------------------------------------------------
 
     def on_progress(self, progress: dict):
+        phase = progress.get("phase")
+        if phase == "session_limit":
+            # The translation thread is parked until the Claude Code session
+            # usage resets. Surface that as a distinct "waiting" status (so the
+            # UI doesn't look like it's stuck mid-chunk) and drop one activity
+            # log line per pause. The engine re-emits this phase each retry
+            # loop, so guard on the status transition to avoid log spam.
+            if self.status != "waiting":
+                self.status = "waiting"
+                wait = progress.get("wait_seconds")
+                mins = max(1, round(wait / 60)) if wait else None
+                msg = "Claude Code session limit reached — queue paused"
+                if mins:
+                    msg += f"; resuming in ~{mins} min"
+                self.log_activity(
+                    type="warning", message=msg,
+                    book_id=self.book_id, chapter=self.chapter_number,
+                )
+        elif self.status == "waiting":
+            # Any other progress phase means the session reset and work has
+            # resumed; flip back to running and note it on the activity log.
+            self.status = "running"
+            self.log_activity(
+                type="info", message="Session limit reset — queue resumed",
+                book_id=self.book_id, chapter=self.chapter_number,
+            )
         self.send_message_sync({"type": "progress", **progress})
 
     # ------------------------------------------------------------------
@@ -131,14 +179,23 @@ class JobManager:
     # JSON fix pause/resume
     # ------------------------------------------------------------------
 
-    def wait_for_json_fix(self) -> dict:
+    def wait_for_json_fix(self, timeout: Optional[float] = None) -> dict:
         """
-        Block the translation thread until the user submits a JSON fix.
+        Block the translation thread until the user submits a JSON fix, or until
+        `timeout` seconds elapse. On timeout (no human response), default to
+        retrying the chunk so the job never hangs indefinitely. A non-positive or
+        None timeout waits forever (legacy behaviour).
         """
         self.status = "awaiting_json_fix"
         self._json_fix_event.clear()
-        self._json_fix_event.wait()
+        wait_for = timeout if (timeout and timeout > 0) else None
+        signalled = self._json_fix_event.wait(wait_for)
         self.status = "running"
+        if not signalled:
+            # No human responded in time — fall back to retrying the chunk.
+            self.pending_json_fix = None
+            self._json_fix_result = None
+            return {"action": "retry", "timed_out": True}
         result = self._json_fix_result or {}
         self._json_fix_result = None
         return result

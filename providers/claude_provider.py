@@ -5,13 +5,19 @@ This provider supports Claude models (Claude 3.5 Sonnet, Claude 3 Opus, etc.)
 through the official Anthropic API.
 """
 from typing import Dict, List, Optional, Any, Union
-from .base import ModelProvider, StreamingResponse
+from .base import ModelProvider, StreamingResponse, OverloadedError
 
 try:
     import anthropic
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
+
+
+# Models that reject the `temperature` parameter outright (e.g. claude-opus-4-8).
+# Populated lazily the first time the API rejects it, so subsequent calls in the
+# same process skip sending temperature and avoid a wasted round-trip.
+_MODELS_REJECTING_TEMPERATURE = set()
 
 
 class ClaudeProvider(ModelProvider):
@@ -120,17 +126,36 @@ class ClaudeProvider(ModelProvider):
             "model": model,
             "messages": claude_messages,
             "max_tokens": self.max_output_tokens,  # Use configured max output tokens
-            "temperature": temperature,
             "stream": stream
         }
-        
+        # Only send temperature if this model is not known to reject it.
+        if model not in _MODELS_REJECTING_TEMPERATURE:
+            request_params["temperature"] = temperature
+
         if system_message:
             request_params["system"] = system_message
-        
+
         # Add any additional parameters
         request_params.update(kwargs)
-        
-        response = self.client.messages.create(**request_params)
+
+        try:
+            response = self.client.messages.create(**request_params)
+        except anthropic.BadRequestError as e:
+            # Some newer models (e.g. claude-opus-4-8) reject `temperature`
+            # entirely ("temperature is deprecated for this model"). Remember
+            # that, drop it, and retry rather than failing the request.
+            if "temperature" in str(e).lower() and "temperature" in request_params:
+                _MODELS_REJECTING_TEMPERATURE.add(model)
+                del request_params["temperature"]
+                response = self.client.messages.create(**request_params)
+            else:
+                raise
+        except anthropic.APIStatusError as e:
+            # 529 "Overloaded" is transient — surface it as a retryable
+            # overload so the engine waits and retries instead of failing.
+            if getattr(e, "status_code", None) == 529 or "overload" in str(e).lower():
+                raise OverloadedError(str(e)[:300])
+            raise
         
         if stream:
             return StreamingResponse(response)

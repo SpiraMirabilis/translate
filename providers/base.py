@@ -2,8 +2,142 @@
 Abstract base class for model providers in the translation system.
 """
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Iterator, Union
 import json
+import re
+
+
+class OverloadedError(Exception):
+    """Raised when a provider reports a transient 529 "Overloaded" condition.
+
+    This is distinct from a parse failure or a hard connection error: the
+    service is temporarily saturated and the request should be retried after a
+    wait rather than counted as a real failure. The translation engine catches
+    this specifically and sleeps a configurable interval before retrying.
+    """
+
+
+class SessionLimitError(Exception):
+    """Raised when the Claude Code CLI reports the user's session usage limit
+    is exhausted, e.g. "You've hit your session limit · resets 10:40pm (UTC)".
+
+    Unlike OverloadedError (a transient saturation retried after a fixed
+    interval), this carries a concrete reset time. The translation engine
+    waits until just past that time before resuming, effectively pausing the
+    queue rather than burning the per-chunk retry budget. The original notice
+    text is preserved so the engine can parse the reset clock time from it.
+    """
+
+    def __init__(self, message, reset_text: Optional[str] = None):
+        super().__init__(message)
+        # Text containing the "resets <time>" clause to parse. Defaults to the
+        # message itself when a separate copy isn't supplied.
+        self.reset_text = reset_text if reset_text is not None else str(message)
+
+
+# The Claude Code CLI prints the usage-limit notice as plain text, e.g.
+# "You've hit your session limit · resets 10:40pm (UTC)". Key on the stable
+# "session limit" phrase rather than the (reworded-over-time) tail.
+_SESSION_LIMIT_RE = re.compile(r"hit\s+your\s+session\s+limit", re.IGNORECASE)
+
+# Pulls the reset clock time out of the notice. Handles 12-hour ("10:40pm",
+# "3 pm") and bare 24-hour ("22:40") forms, with an optional parenthesised
+# timezone such as "(UTC)".
+_SESSION_RESET_RE = re.compile(
+    r"resets?\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?\s*(?:\(\s*([A-Za-z/]+)\s*\))?",
+    re.IGNORECASE,
+)
+
+
+def looks_session_limited(text) -> bool:
+    """Return True if `text` looks like a Claude Code session-limit notice."""
+    if not text:
+        return False
+    return bool(_SESSION_LIMIT_RE.search(str(text)))
+
+
+def parse_session_reset_seconds(text, now: Optional[datetime] = None,
+                                grace_seconds: int = 60) -> Optional[int]:
+    """Seconds to wait until `grace_seconds` past the reset time named in a
+    session-limit notice, or None if no reset time can be parsed.
+
+    The reset clause states a clock time (and usually a timezone). We resolve
+    it to the next occurrence of that time — today if it's still ahead,
+    otherwise tomorrow — and add the grace period (default 60s, per the
+    requirement to resume "1 minute past the time specified").
+
+    Timezone handling: an explicit "(UTC)"/"(GMT)" is honoured; anything else
+    (a named zone we can't resolve here, or no zone at all) is treated as the
+    server's local time, which matches how the CLI renders it for interactive
+    users.
+    """
+    if not text:
+        return None
+    m = _SESSION_RESET_RE.search(str(text))
+    if not m:
+        return None
+
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    tzname = (m.group(4) or "").upper()
+
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+
+    if tzname in ("UTC", "GMT", "Z"):
+        cur = (now.astimezone(timezone.utc)
+               if (now is not None and now.tzinfo is not None)
+               else datetime.now(timezone.utc))
+    else:
+        cur = now if now is not None else datetime.now()
+
+    target = cur.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= cur:
+        target += timedelta(days=1)
+
+    wait = (target - cur).total_seconds() + grace_seconds
+    return int(max(grace_seconds, wait))
+
+
+# Matches the various shapes a 529 surfaces as: the Claude Code CLI prints
+# "API Error: 529 Overloaded"; the Anthropic SDK raises with a body containing
+# {"type":"overloaded_error"} and status 529. We require the "529"/"error"
+# context so a translation that merely contains the word "overloaded" in prose
+# doesn't trip the detector.
+_OVERLOAD_RE = re.compile(
+    r"(?:api[\s_]*error.*529|529.*overload|overload.*529|overloaded_error)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def looks_overloaded(text, strict=True) -> bool:
+    """Return True if `text` looks like a 529 "Overloaded" notice.
+
+    strict=True (default) is for sniffing model *output*: it refuses to match
+    inside a large or JSON-shaped payload, since a real translation could
+    legitimately mention "overloaded" in prose. strict=False is for known
+    error contexts (subprocess stderr, exception strings) where no such guard
+    is needed.
+    """
+    if not text:
+        return False
+    s = str(text).strip()
+    # The Claude Code CLI prints a 529 as a line beginning with
+    # "API Error: 529" (followed by varying help text, e.g. "...Overloaded.
+    # This is a server-side issue ... check https://status.claude.com."). Key
+    # on the prefix so we stay robust if Anthropic rewords the tail.
+    if s[:14].lower() == "api error: 529":
+        return True
+    if strict:
+        if len(s) > 300 or s.startswith("{") or s.startswith("["):
+            return False
+    return bool(_OVERLOAD_RE.search(s))
 
 
 class StreamingResponse:

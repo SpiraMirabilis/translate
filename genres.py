@@ -58,3 +58,39 @@ def extract_categories_from_prompt(prompt_text):
     if not entities or not isinstance(entities, dict):
         return None
     return list(entities.keys())
+
+
+def extract_categories_meta_from_prompt(prompt_text):
+    """Extract entity categories *with attributes* from a prompt's response template.
+
+    Like extract_categories_from_prompt, but returns a list of
+    {"name": str, "attributes": [str, ...]} dicts. A category is given the
+    "gender" attribute when its example entries in the template carry a "gender"
+    field. Returns None if the template can't be parsed.
+    """
+    pattern = re.compile(
+        r'\+\+\+\+ Response Template Example\n(.*?)\+\+\+\+ Response Template End',
+        re.DOTALL,
+    )
+    match = pattern.search(prompt_text)
+    if not match:
+        return None
+    try:
+        template = json.loads(match.group(1).strip())
+    except json.JSONDecodeError:
+        return None
+    entities = template.get("entities")
+    if not entities or not isinstance(entities, dict):
+        return None
+
+    out = []
+    for name, examples in entities.items():
+        attributes = []
+        if isinstance(examples, dict):
+            # A category is gender-tracked if any example entry declares a gender field
+            for entry in examples.values():
+                if isinstance(entry, dict) and "gender" in entry:
+                    attributes.append("gender")
+                    break
+        out.append({"name": name, "attributes": attributes})
+    return out

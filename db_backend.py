@@ -327,6 +327,7 @@ _COMMON_DDL_SQLITE = [
         view_count INTEGER NOT NULL DEFAULT 0,
         trad_to_simp INTEGER DEFAULT NULL,
         tags TEXT,
+        modules TEXT,
         UNIQUE(title)
     )''',
 
@@ -364,6 +365,7 @@ _COMMON_DDL_SQLITE = [
     'CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)',
     'CREATE INDEX IF NOT EXISTS idx_queue_position ON queue(position)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_position_unique ON queue(position)',
+    'CREATE INDEX IF NOT EXISTS idx_queue_book_id_position ON queue(book_id, position)',
 
     # token_ratios
     '''CREATE TABLE IF NOT EXISTS token_ratios (
@@ -394,6 +396,8 @@ _COMMON_DDL_SQLITE = [
         wp_post_type TEXT NOT NULL,
         last_published TEXT,
         content_hash TEXT,
+        wp_link TEXT,
+        wp_slug TEXT,
         UNIQUE(book_id, chapter_number),
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     )''',
@@ -524,6 +528,67 @@ _COMMON_DDL_SQLITE = [
         UNIQUE(comment_id, recipient_email)
     )''',
     'CREATE INDEX IF NOT EXISTS idx_email_notif_comment ON email_notifications(comment_id)',
+
+    # illustrations — in-chapter images extracted at import; the marker_id is
+    # embedded inline in chapter content as ⟦IMG:<marker_id>⟧ and is the stable
+    # link between text and file (see illustrations.py).
+    '''CREATE TABLE IF NOT EXISTS illustrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        marker_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        alt TEXT,
+        original_href TEXT,
+        ordinal INTEGER,
+        queue_id INTEGER,
+        chapter_id INTEGER,
+        created_date TEXT,
+        UNIQUE(book_id, marker_id),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_illustrations_book ON illustrations(book_id)',
+    'CREATE INDEX IF NOT EXISTS idx_illustrations_chapter ON illustrations(chapter_id)',
+    'CREATE INDEX IF NOT EXISTS idx_illustrations_queue ON illustrations(queue_id)',
+
+    # footnotes — persistent store for chapter footnotes so they survive
+    # retranslation. The body lives here; the inline "[n]" marker + definition
+    # block in chapters.translated_content is a derived rendering re-applied on
+    # every save by anchor (the English term the marker hugs). See footnotes.py.
+    '''CREATE TABLE IF NOT EXISTS footnotes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_id INTEGER NOT NULL,
+        anchor TEXT NOT NULL,
+        source_term TEXT,
+        body TEXT NOT NULL,
+        occurrence INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active',
+        is_source INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER,
+        created_date TEXT,
+        modified_date TEXT,
+        UNIQUE(chapter_id, is_source, anchor, occurrence),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE,
+        FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_footnotes_book ON footnotes(book_id)',
+    'CREATE INDEX IF NOT EXISTS idx_footnotes_chapter ON footnotes(chapter_id)',
+    'CREATE INDEX IF NOT EXISTS idx_footnotes_status ON footnotes(status)',
+
+    # book_module_settings — per-book, per-module structured settings. A module
+    # declares a settings_schema (see modules/base.py); values are JSON-encoded so
+    # one column carries bool/text/object alike. set_module_settings replaces all
+    # rows for a (book, module) authoritatively. (Column is 'setting_key', not
+    # 'key', because 'key' is a reserved word in MySQL.)
+    '''CREATE TABLE IF NOT EXISTS book_module_settings (
+        book_id INTEGER NOT NULL,
+        module_id TEXT NOT NULL,
+        setting_key TEXT NOT NULL,
+        value_json TEXT,
+        PRIMARY KEY (book_id, module_id, setting_key),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_book_module_settings_book ON book_module_settings(book_id)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -560,6 +625,7 @@ _COMMON_DDL_MYSQL = [
         view_count INTEGER NOT NULL DEFAULT 0,
         trad_to_simp INTEGER DEFAULT NULL,
         tags TEXT,
+        modules TEXT,
         UNIQUE KEY uq_title (title(500))
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
@@ -597,6 +663,7 @@ _COMMON_DDL_MYSQL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_queue_book_id ON queue(book_id)',
     'CREATE INDEX idx_queue_position ON queue(position)',
+    'CREATE INDEX idx_queue_book_id_position ON queue(book_id, position)',
 
     # token_ratios
     '''CREATE TABLE IF NOT EXISTS token_ratios (
@@ -627,6 +694,8 @@ _COMMON_DDL_MYSQL = [
         wp_post_type VARCHAR(50) NOT NULL,
         last_published VARCHAR(50),
         content_hash VARCHAR(255),
+        wp_link VARCHAR(512),
+        wp_slug VARCHAR(255),
         UNIQUE KEY uq_wp_state (book_id, chapter_number),
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
@@ -755,6 +824,58 @@ _COMMON_DDL_MYSQL = [
         UNIQUE KEY uq_notif (comment_id, recipient_email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_email_notif_comment ON email_notifications(comment_id)',
+
+    # illustrations — in-chapter images extracted at import (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS illustrations (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        marker_id VARCHAR(64) NOT NULL,
+        filename VARCHAR(512) NOT NULL,
+        alt TEXT,
+        original_href TEXT,
+        ordinal INTEGER,
+        queue_id INTEGER,
+        chapter_id INTEGER,
+        created_date VARCHAR(50),
+        UNIQUE KEY uq_illustration (book_id, marker_id),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_illustrations_book ON illustrations(book_id)',
+    'CREATE INDEX idx_illustrations_chapter ON illustrations(chapter_id)',
+    'CREATE INDEX idx_illustrations_queue ON illustrations(queue_id)',
+
+    # footnotes — persistent store (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS footnotes (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_id INTEGER NOT NULL,
+        anchor VARCHAR(512) NOT NULL,
+        source_term VARCHAR(512),
+        body TEXT NOT NULL,
+        occurrence INTEGER NOT NULL DEFAULT 1,
+        status VARCHAR(16) NOT NULL DEFAULT 'active',
+        is_source TINYINT NOT NULL DEFAULT 0,
+        sort_order INTEGER,
+        created_date VARCHAR(50),
+        modified_date VARCHAR(50),
+        UNIQUE KEY uq_footnote (chapter_id, is_source, anchor(255), occurrence),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE,
+        FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_footnotes_book ON footnotes(book_id)',
+    'CREATE INDEX idx_footnotes_chapter ON footnotes(chapter_id)',
+    'CREATE INDEX idx_footnotes_status ON footnotes(status)',
+
+    # book_module_settings — per-book, per-module structured settings (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS book_module_settings (
+        book_id INTEGER NOT NULL,
+        module_id VARCHAR(64) NOT NULL,
+        setting_key VARCHAR(128) NOT NULL,
+        value_json TEXT,
+        PRIMARY KEY (book_id, module_id, setting_key),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_book_module_settings_book ON book_module_settings(book_id)',
 ]
 
 

@@ -4,11 +4,67 @@ Handles conversion of translated content to various output formats.
 """
 import os
 import re
+import glob
 import json
 import logging
 import datetime
+import mimetypes
 from ebooklib import epub
 from typing import Dict, List, Optional, Union, Tuple
+
+from illustrations import parse_marker
+
+# Markdown tag/attr allowlist — kept in parity with the frontend renderer
+# (web/frontend/src/lib/chapterMarkdown.js) so the Reader and exported files
+# render the same constructs.
+_MD_ALLOWED_TAGS = [
+    'p', 'br', 'em', 'strong', 'del', 's', 'code', 'pre', 'blockquote', 'hr',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'a',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+]
+_MD_ALLOWED_ATTRS = {'a': ['href', 'title'], 'th': ['align'], 'td': ['align']}
+
+# Block-level Markdown styling for exported EPUB/HTML, mirroring the reader's
+# .chapter-markdown rules.
+_MD_BLOCK_CSS = '''
+    blockquote { border-left: 3px solid #888; margin: 1em 0; padding: 0.25em 0 0.25em 1em; font-style: italic; }
+    hr { border: 0; border-top: 1px solid #ccc; width: 40%; margin: 2em auto; }
+    ul, ol { margin: 1em 0; padding-left: 1.5em; }
+    li { text-indent: 0; }
+    code { font-family: monospace; }
+    pre { background: #f4f4f4; padding: 0.75em; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #999; padding: 0.4em 0.6em; text-align: left; }
+    .illustration { text-align: center; margin: 1.5em 0; }
+    .illustration img { max-width: 100%; }
+'''
+
+
+def _render_markdown(text):
+    """Render a Markdown document to sanitized HTML.
+
+    Lazily imports markdown + bleach so the module never breaks if they're
+    absent; falls back to escaped paragraphs in that case.
+    """
+    if not text or not text.strip():
+        return ""
+    try:
+        import markdown as _markdown
+        import bleach as _bleach
+    except Exception:
+        # Fallback: escape and wrap each blank-line-separated block in <p>.
+        import html as _html
+        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+        return "".join(f"<p>{_html.escape(b)}</p>\n" for b in blocks)
+    html = _markdown.markdown(text, extensions=['extra', 'sane_lists', 'nl2br'])
+    # python-markdown emits a spurious all-empty body row for header-only tables
+    # (e.g. a single 【…】 notification → `| X |` / `| --- |`). markdown-it (the
+    # Reader) omits it, so strip it here to keep EPUB/HTML in parity with the
+    # Reader — leaving just the header row.
+    import re as _re
+    html = _re.sub(r"<tr>\s*(?:<td[^>]*>\s*</td>\s*)+</tr>\s*", "", html)
+    html = _re.sub(r"<tbody>\s*</tbody>\s*", "", html)
+    return _bleach.clean(html, tags=_MD_ALLOWED_TAGS, attributes=_MD_ALLOWED_ATTRS, strip=True)
 
 
 class OutputFormatter:
@@ -96,6 +152,28 @@ class OutputFormatter:
             self.logger.warning(f"Unknown format '{format}', defaulting to text")
             return self._save_text(content, title, final_output_path)
         
+    def _register_epub_image(self, book_id, marker_id, used_images):
+        """Resolve an illustration file on disk and register it for embedding.
+
+        Files live at illustrations/<book_id>/<marker_id>.<ext>. Returns the
+        in-EPUB file name to use as the <img src>, or None if not found.
+        """
+        if marker_id in used_images:
+            return used_images[marker_id]['file_name']
+        if book_id is None:
+            return None
+        pattern = os.path.join(self.config.script_dir, "illustrations", str(book_id), f"{marker_id}.*")
+        matches = glob.glob(pattern)
+        if not matches:
+            self.logger.warning(f"Illustration file not found for marker {marker_id} (book {book_id})")
+            return None
+        path = matches[0]
+        ext = os.path.splitext(path)[1] or '.jpg'
+        mime = mimetypes.guess_type(path)[0] or 'image/jpeg'
+        file_name = f"images/{marker_id}{ext}"
+        used_images[marker_id] = {'file_name': file_name, 'path': path, 'mime': mime}
+        return file_name
+
     def save_book_as_epub(self, all_chapters, book_info):
         """
         Save multiple chapters as a single EPUB file.
@@ -127,6 +205,7 @@ class OutputFormatter:
                 book.add_metadata('DC', 'description', book_description)
 
             # Add cover image if available
+            cover_file_name = None
             cover_path = book_info.get('cover_image')
             if cover_path and os.path.exists(cover_path):
                 import mimetypes
@@ -134,7 +213,8 @@ class OutputFormatter:
                 with open(cover_path, 'rb') as cf:
                     cover_data = cf.read()
                 ext = os.path.splitext(cover_path)[1] or '.jpg'
-                book.set_cover(f"cover{ext}", cover_data, create_page=True)
+                cover_file_name = f"cover{ext}"
+                book.set_cover(cover_file_name, cover_data, create_page=True)
 
             # Add default CSS
             default_css = epub.EpubItem(
@@ -145,7 +225,7 @@ class OutputFormatter:
                     body { font-family: serif; }
                     h1 { text-align: center; margin-bottom: 1em; }
                     p { text-indent: 1.5em; margin-top: 0.5em; margin-bottom: 0.5em; }
-                '''
+                ''' + _MD_BLOCK_CSS
             )
             book.add_item(default_css)
             
@@ -159,18 +239,26 @@ class OutputFormatter:
                 </head>
                 <body>
                     <h1>{book_title}</h1>
+                    {f'<div class="cover-image" style="text-align: center;"><img src="{cover_file_name}" alt="Cover" style="max-width: 100%; height: auto;" /></div>' if cover_file_name else ''}
                     <p>Author: {book_author}</p>
                     <p>Generation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
                     <p>{book_description}</p>
                 </body>
                 </html>
             '''
+            # Attach the stylesheet via ebooklib's API — it regenerates the
+            # <head> on serialization and drops any hand-written <link>.
+            intro.add_item(default_css)
             book.add_item(intro)
             
             # Add to spine and TOC
             book.spine = ['nav', intro]
             book.toc = [epub.Link('intro.xhtml', 'Introduction', 'intro')]
-            
+
+            # Track in-chapter illustrations to embed (marker_id -> epub file name).
+            book_id = book_info.get('id')
+            used_images = {}
+
             # Add each chapter
             for chapter_data in sorted(all_chapters, key=lambda x: x.get('chapter', 0)):
                 chapter_number = chapter_data.get('chapter', 0)
@@ -184,31 +272,29 @@ class OutputFormatter:
                 else:
                     content = []
                 
-                # Convert list of content lines to HTML
-
+                # Convert list of content lines to HTML. Lines are split into
+                # runs at illustration markers; each run is rendered as one
+                # Markdown document (block-level), and markers become <img>.
                 html_content = ""
-                current_paragraph = []
+                run = []
+
+                def _flush():
+                    nonlocal html_content, run
+                    if run:
+                        html_content += _render_markdown("\n".join(run))
+                        run = []
 
                 for line in content:
-                    if line.strip() == "":
-                        # If we have content in the current paragraph, wrap it and add it
-                        if current_paragraph:
-                            paragraph_text = " ".join(current_paragraph)
-                            paragraph_text = paragraph_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                            html_content += f"<p>{paragraph_text}</p>\n"
-                            current_paragraph = []
+                    marker_id = parse_marker(line)
+                    if marker_id:
+                        _flush()
+                        epub_name = self._register_epub_image(book_id, marker_id, used_images)
+                        if epub_name:
+                            html_content += f'<div class="illustration"><img src="{epub_name}" alt="" /></div>\n'
                     else:
-                        # Add this line to the current paragraph
-                        current_paragraph.append(line)
+                        run.append(line)
 
-                # Add any remaining paragraph content
-                if current_paragraph:
-                    paragraph_text = " ".join(current_paragraph)
-                    paragraph_text = paragraph_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    html_content += f"<p>{paragraph_text}</p>\n"
-
-
-
+                _flush()
 
                 # Create chapter
                 chapter_id = f"chapter_{chapter_number}"
@@ -228,19 +314,34 @@ class OutputFormatter:
                     </body>
                     </html>
                 '''
+                epub_chapter.add_item(default_css)
                 book.add_item(epub_chapter)
-                
+
                 # Add chapter to table of contents and spine
                 book.spine.append(epub_chapter)
                 book.toc.append(epub.Link(chapter_filename, chapter_title, chapter_id))
             
+            # Embed each referenced illustration as an EPUB image resource.
+            for marker_id, info in used_images.items():
+                try:
+                    with open(info['path'], 'rb') as imf:
+                        img_bytes = imf.read()
+                    book.add_item(epub.EpubItem(
+                        uid=f"img_{marker_id}",
+                        file_name=info['file_name'],
+                        media_type=info['mime'],
+                        content=img_bytes,
+                    ))
+                except Exception as img_err:
+                    self.logger.error(f"Failed to embed illustration {marker_id}: {img_err}")
+
             # Add navigation files
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
-            
+
             # Create output directory if it doesn't exist
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
+
             # Write the EPUB file
             epub.write_epub(output_path, book, {})
             
@@ -280,6 +381,24 @@ class OutputFormatter:
         
         return cleaned
     
+    @staticmethod
+    def _strip_markdown(line: str) -> str:
+        """Best-effort plain-text rendering of a Markdown line (for .txt export)."""
+        if not line:
+            return line
+        s = line
+        s = re.sub(r'^\s{0,3}#{1,6}\s+', '', s)          # headings
+        s = re.sub(r'^\s{0,3}>\s?', '', s)                # blockquote
+        s = re.sub(r'^\s*[-*+]\s+', '• ', s)         # bullet list → •
+        s = re.sub(r'^\s*\d+\.\s+', '', s)                # ordered list marker
+        if re.fullmatch(r'\s*([-*_])\1{2,}\s*', s):       # horizontal rule
+            return '* * *'
+        s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)            # bold
+        s = re.sub(r'(?<!\*)\*(?!\*)(.+?)\*', r'\1', s)   # italic
+        s = re.sub(r'`(.+?)`', r'\1', s)                  # inline code
+        s = re.sub(r'\[(.+?)\]\((?:[^)]*)\)', r'\1', s)   # links → text
+        return s
+
     def _save_text(self, content: List[str], title: str, output_path: str, chapter: Union[int, str] = 0) -> str:
         """
         Save content as plain text.
@@ -301,8 +420,8 @@ class OutputFormatter:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"{display_title}\n\n")
                 for line in content:
-                    f.write(f"{line}\n")
-            
+                    f.write(f"{self._strip_markdown(line)}\n")
+
             self.logger.info(f"Saved text output to {output_path}")
             return output_path
         except Exception as e:
@@ -336,21 +455,19 @@ class OutputFormatter:
                 f.write('    <style>\n')
                 f.write('        body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }\n')
                 f.write('        h1 { text-align: center; margin-bottom: 30px; }\n')
-                f.write('        p { margin-bottom: 1em; text-indent: 2em; }\n')
-                f.write('        .empty-line { height: 1em; }\n')
+                f.write('        p { margin-bottom: 1em; }\n')
+                f.write(_MD_BLOCK_CSS)
                 f.write('    </style>\n')
                 f.write('</head>\n')
                 f.write('<body>\n')
                 f.write(f'    <h1>{display_title}</h1>\n')
-                
-                for line in content:
-                    if line.strip() == "":
-                        f.write('    <div class="empty-line"></div>\n')
-                    else:
-                        # Escape HTML special characters
-                        line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        f.write(f'    <p>{line}</p>\n')
-                
+
+                # Render content as block-level Markdown (illustration markers,
+                # which have no embedded image in single-chapter HTML, are dropped).
+                text = "\n".join(l for l in content if not parse_marker(l))
+                f.write(_render_markdown(text))
+                f.write('\n')
+
                 f.write('</body>\n')
                 f.write('</html>\n')
             
@@ -476,6 +593,9 @@ class OutputFormatter:
                     </body>
                     </html>
                 '''
+                # Attach the stylesheet via ebooklib's API — it regenerates the
+                # <head> on serialization and drops any hand-written <link>.
+                intro.add_item(default_css)
                 book.add_item(intro)
                 self.logger.info(f"Creating new EPUB: {output_path}")
             
@@ -493,6 +613,13 @@ class OutputFormatter:
             display_title = self._display_title(title, chapter)
             chapter_id = f"chapter_{chapter}"
             chapter_filename = f"chapter_{chapter}.xhtml"
+
+            # Look up the stylesheet item so we can attach it to chapters via
+            # ebooklib's API. In append mode the book was loaded from disk, so
+            # `default_css` isn't in scope — fetch it by uid instead. (ebooklib
+            # regenerates the <head> on serialization and drops hand-written
+            # <link> tags, so the stylesheet must be attached this way.)
+            css_item = book.get_item_with_id("style_default")
 
             # Check if chapter already exists
             chapter_exists = False
@@ -512,6 +639,8 @@ class OutputFormatter:
                         </body>
                         </html>
                     '''
+                    if css_item:
+                        item.add_item(css_item)
                     break
 
             if not chapter_exists:
@@ -529,8 +658,10 @@ class OutputFormatter:
                     </body>
                     </html>
                 '''
+                if css_item:
+                    epub_chapter.add_item(css_item)
                 book.add_item(epub_chapter)
-                
+
                 # Add chapter to table of contents and spine
                 book.spine.append(epub_chapter)
                 book.toc.append(epub.Link(chapter_filename, display_title, chapter_id))

@@ -1,5 +1,6 @@
 import os
 from epub_processor import EPUBProcessor
+from fb2_processor import FB2Processor
 from typing import Dict, List, Optional, Any, Union, Tuple
 from abc import ABC, abstractmethod
 from database import DatabaseManager
@@ -92,8 +93,9 @@ class CommandLineInterface(UserInterface):
         group.add_argument("--resume", action="store_true", help="Take input from the queue and translate sequentially (optional: --book-id to process specific book)")
         group.add_argument("--file", type=str, help="Process input from a specified file")
         group.add_argument("--epub", type=str, help="Process an EPUB file and add chapters to the queue")
-        parser.add_argument("--create-book-from-epub", action="store_true", 
-                        help="Create a new book from EPUB metadata when processing/queuing EPUB file")
+        group.add_argument("--fb2", type=str, help="Process an FB2 (FictionBook 2.0) file and add chapters to the queue")
+        parser.add_argument("--create-book-from-epub", action="store_true",
+                        help="Create a new book from the imported file's metadata when processing/queuing an EPUB or FB2 file")
         
 
         # directory input and options
@@ -201,8 +203,6 @@ class CommandLineInterface(UserInterface):
                     help="Disable streaming API and progress tracking (slightly faster for very short texts)")
         parser.add_argument("--no-clean", action="store_true",
                     help="Disable automatic cleaning of generic nouns from new entities during post-translation review")
-        parser.add_argument("--no-convert-units", action="store_true",
-                    help="Skip automatic Chinese unit to metric conversion (zhang, li, jin, etc.)")
 
         args = parser.parse_args()
    
@@ -220,11 +220,6 @@ class CommandLineInterface(UserInterface):
             self.no_clean = True
         else:
             self.no_clean = False
-
-        if args.no_convert_units:
-            self.no_convert_units = True
-        else:
-            self.no_convert_units = False
 
         # Store cleaning model spec (will be used by entity cleaning)
         self.cleaning_model = args.cleaning_model
@@ -510,11 +505,20 @@ class CommandLineInterface(UserInterface):
 
             # Store queue item for later removal (in ui.py)
             self._current_queue_item = queue_item
+            # Reset any stashed merge prefix from a prior item so an interrupted
+            # "Append & retranslate" can't bleed into the next chapter.
+            self._merge_prefix = None
 
             # Set book context
             self.book_id = queue_item['book_id']
             self.book_title = queue_item['book_title']
             self.chapter_number = queue_item.get('chapter_number')
+            # Carry the queued source-language title through so the engine can
+            # translate it into the chapter's English title via {{CHAPTER_TITLE}}.
+            # Importers (e.g. queue_flat_text.py) deliberately store the heading
+            # in queue.title and strip it from the content; without this the
+            # title is lost and the model falls back to "Chapter N".
+            self.chapter_title = queue_item.get('title')
 
             self.logger.info(f"Processing queue item for book '{self.book_title}' (ID: {self.book_id})")
             print(f"Processing: {queue_item['title']} from '{self.book_title}'")
@@ -532,6 +536,17 @@ class CommandLineInterface(UserInterface):
             create_book = args.create_book_from_epub
             self._process_epub_file(args.epub, book_id, create_book)
             exit(0)  # Exit after processing EPUB
+        elif args.fb2:
+            if not args.book_id and not args.create_book_from_epub:
+                print("When ingesting an --fb2 you MUST select either --book-id # or --create-book-from-epub to properly associate queued chapters with correct book")
+                exit(1)
+            elif args.book_id and args.create_book_from_epub:
+                print("When ingesting an fb2 with --fb2, --book-id and --create-book-from-epub are mutually exclusive. choose one or the other.")
+                exit(1)
+            book_id = args.book_id
+            create_book = args.create_book_from_epub
+            self._process_fb2_file(args.fb2, book_id, create_book)
+            exit(0)  # Exit after processing FB2
         else:
             # Manual entry
             print("Enter/Paste your content. Type ENDEND or Ctrl-D out to start translating.")
@@ -632,7 +647,75 @@ class CommandLineInterface(UserInterface):
             print(f"Error processing EPUB: {e}")
             import traceback
             traceback.print_exc()
-    
+
+    def _process_fb2_file(self, fb2_path, book_id=None, create_book=False):
+        """Process an FB2 file and add chapters to the queue with book association."""
+        try:
+            # Initialize FB2 processor
+            processor = FB2Processor(self.entity_manager.config, self.logger, self.entity_manager)
+
+            # Load basic FB2 metadata if needed for book creation
+            if create_book:
+                book_metadata = processor.get_fb2_metadata(fb2_path)
+
+                if not book_id:  # Only create a book if one wasn't specified
+                    # Create a new book from FB2 metadata
+                    book_title = book_metadata.get('title', os.path.basename(fb2_path))
+                    book_author = book_metadata.get('author', 'Unknown')
+
+                    # Create book in database (FB2 is most often Russian)
+                    book_id = self.entity_manager.create_book(
+                        title=book_title,
+                        author=book_author,
+                        language="en",  # Default target language
+                        source_language=book_metadata.get('language') or "ru",  # Default source language
+                        description=f"Imported from {os.path.basename(fb2_path)}"
+                    )
+
+                    if book_id:
+                        print(f"Created new book '{book_title}' (ID: {book_id}) from FB2 metadata")
+
+                        # Extract and save cover image, if any
+                        try:
+                            fb2_root = processor.load_fb2(fb2_path)
+                            if fb2_root is not None:
+                                cover_bytes, cover_ext = processor.extract_cover_image(fb2_root)
+                                if cover_bytes:
+                                    cover_rel = processor.save_cover_image(cover_bytes, cover_ext, book_id)
+                                    self.entity_manager.update_book(book_id, cover_image=cover_rel)
+                        except Exception as cover_err:
+                            self.logger.error(f"Could not extract FB2 cover: {cover_err}")
+                    else:
+                        print("Failed to create book from FB2 metadata")
+
+            # Validate book_id if provided
+            if book_id:
+                book = self.entity_manager.get_book(book_id=book_id)
+                if not book:
+                    print(f"Error: Book with ID {book_id} not found")
+                    return
+
+                print(f"Processing FB2 file: {fb2_path} for book '{book['title']}' (ID: {book_id})")
+            else:
+                print(f"Processing FB2 file: {fb2_path} (no book association)")
+
+            # Process the FB2 with the book_id
+            success, num_chapters, message = processor.process_fb2(fb2_path, book_id)
+
+            if success:
+                print(f"Success! {message}")
+
+                # Show queue summary
+                self._list_queue_contents(summary_only=True)
+            else:
+                print(f"Failed! {message}")
+
+        except Exception as e:
+            self.logger.error(f"Error processing FB2: {e}")
+            print(f"Error processing FB2: {e}")
+            import traceback
+            traceback.print_exc()
+
     def check_database_duplicates(self):
         """
         Check for entity duplications in the database, report them, and
@@ -1025,11 +1108,11 @@ class CommandLineInterface(UserInterface):
         if book_id:
             # Apply genre preset: prompt template and categories (derived from prompt)
             if genre_obj:
-                from genres import read_genre_prompt, extract_categories_from_prompt
+                from genres import read_genre_prompt, extract_categories_meta_from_prompt
                 prompt = read_genre_prompt(self.entity_manager.config.script_dir, genre_obj)
                 if prompt:
                     self.entity_manager.set_book_prompt_template(book_id, prompt)
-                    cats = extract_categories_from_prompt(prompt)
+                    cats = extract_categories_meta_from_prompt(prompt)
                     if cats:
                         self.entity_manager.set_book_categories(book_id, cats)
 
@@ -1760,10 +1843,14 @@ class CommandLineInterface(UserInterface):
         else:
             print(json.dumps(data, indent=4, ensure_ascii=False))
     
-    def review_entities(self, data, untranslated_text=[]):
+    def review_entities(self, data, untranslated_text=[], phase='post'):
         """
         Using questionary to display interactive prompts.
         Returns a dictionary of edited data.
+
+        `phase` is 'post' (default; after translation) or 'pre' (two-pass mode, before
+        translation). The CLI ignores the phase for UX — the data shape is identical —
+        but accepts the kwarg so the shared two-pass branch in ui.py can pass it.
         """
         # Check if there are any entities to review
         has_entities = any(data.get(category, {}) for category in data)
@@ -2605,9 +2692,13 @@ class CommandLineInterface(UserInterface):
             if not proceed:
                 return
 
-        # Step 5: Optional gender field (for characters only)
+        # Step 5: Optional gender field (for gender-tracked categories)
         gender = None
-        if category == "characters":
+        cat_is_gendered = (
+            self.entity_manager.is_gendered_category(book_id, category)
+            if book_id else category == "characters"
+        )
+        if cat_is_gendered:
             has_gender = self.questionary.confirm(
                 "Do you want to specify a gender for this character?"
             ).ask()
@@ -3236,7 +3327,7 @@ class CommandLineInterface(UserInterface):
 
     def _list_queue_contents(self, summary_only=False, book_id=None):
         """List all items in the translation queue."""
-        queue_items = self.entity_manager.list_queue(book_id=book_id)
+        queue_items = self.entity_manager.list_queue(book_id=book_id, include_content=True)
 
         if not queue_items:
             if book_id:

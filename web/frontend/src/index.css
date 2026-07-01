@@ -8,6 +8,18 @@
   100% { transform: translateX(150%);  width: 40%; }
 }
 
+/* Directional nudge for the chapter-conflict hover arrow */
+@keyframes conflict-slide-left {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(-12px); }
+}
+@keyframes conflict-slide-right {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(12px); }
+}
+.conflict-arrow-left  { animation: conflict-slide-left  1s ease-in-out infinite; }
+.conflict-arrow-right { animation: conflict-slide-right 1s ease-in-out infinite; }
+
 @layer base {
   * {
     box-sizing: border-box;
@@ -41,6 +53,9 @@
   .btn-danger {
     @apply btn bg-rose-700 hover:bg-rose-600 text-white;
   }
+  .btn-success {
+    @apply btn bg-emerald-700 hover:bg-emerald-600 text-white;
+  }
   .btn-ghost {
     @apply btn bg-transparent hover:bg-slate-700 text-slate-300;
   }
@@ -63,3 +78,90 @@
   .badge-rose { @apply badge bg-rose-900 text-rose-300; }
   .badge-slate { @apply badge bg-slate-700 text-slate-300; }
 }
+
+/* Rendered Markdown for chapter content (Reader + editor preview).
+   Colors/typography inherit from the surrounding reader container; structural
+   accents use currentColor with low opacity so they adapt to every theme. */
+.chapter-markdown { overflow-wrap: break-word; }
+.chapter-markdown > :first-child { margin-top: 0; }
+.chapter-markdown > :last-child { margin-bottom: 0; }
+/* ~2rem inter-paragraph gap to match the pre-Markdown reader, which paired a
+   1rem paragraph margin with a 1rem blank-line spacer div. */
+.chapter-markdown p { margin: 0 0 2rem; }
+.chapter-markdown h1,
+.chapter-markdown h2,
+.chapter-markdown h3,
+.chapter-markdown h4,
+.chapter-markdown h5,
+.chapter-markdown h6 { font-weight: 700; line-height: 1.25; margin: 1.5rem 0 0.75rem; }
+.chapter-markdown h1 { font-size: 1.6em; }
+.chapter-markdown h2 { font-size: 1.4em; }
+.chapter-markdown h3 { font-size: 1.2em; }
+.chapter-markdown h4,
+.chapter-markdown h5,
+.chapter-markdown h6 { font-size: 1.05em; }
+.chapter-markdown em { font-style: italic; }
+.chapter-markdown strong { font-weight: 700; }
+.chapter-markdown a { color: #6366f1; text-decoration: underline; }
+/* Inline footnote markers ([1]) — subtle superscript link, opens a popover. */
+.chapter-markdown .footnote-ref {
+  color: #6366f1;
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 0.8em;
+  vertical-align: super;
+  line-height: 0;
+  padding: 0 0.1em;
+}
+.chapter-markdown .footnote-ref:hover { text-decoration: underline; }
+.chapter-markdown ul,
+.chapter-markdown ol { margin: 0 0 1rem; padding-left: 1.6em; }
+.chapter-markdown ul { list-style: disc; }
+.chapter-markdown ol { list-style: decimal; }
+.chapter-markdown li { margin: 0.25rem 0; }
+.chapter-markdown blockquote {
+  margin: 0 0 1rem;
+  padding: 0.25rem 0 0.25rem 1rem;
+  border-left: 3px solid currentColor;
+  opacity: 0.85;
+  font-style: italic;
+}
+.chapter-markdown hr {
+  border: 0;
+  border-top: 1px solid currentColor;
+  opacity: 0.25;
+  margin: 2rem auto;
+  width: 40%;
+}
+.chapter-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+  background: rgba(127, 127, 127, 0.18);
+}
+.chapter-markdown pre {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.4rem;
+  overflow-x: auto;
+  background: rgba(127, 127, 127, 0.14);
+}
+.chapter-markdown pre code { padding: 0; background: none; }
+.chapter-markdown table {
+  width: 100%;
+  margin: 0 0 1rem;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.chapter-markdown th,
+.chapter-markdown td {
+  border: 1px solid currentColor;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+.chapter-markdown th { font-weight: 700; background: rgba(127, 127, 127, 0.12); }
+/* Table/cell borders shouldn't be as loud as the text. */
+.chapter-markdown table { border-color: rgba(127, 127, 127, 0.4); }
+.chapter-markdown th,
+.chapter-markdown td { border-color: rgba(127, 127, 127, 0.4); }

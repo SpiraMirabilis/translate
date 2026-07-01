@@ -18,6 +18,11 @@ ebooklib>=0.17.1
 beautifulsoup4>=4.10.0
 html2text>=2020.1.16
 
+# Rich-text (Markdown) rendering for chapter content export (EPUB/HTML).
+# Debian/Ubuntu: sudo apt install python3-markdown python3-bleach
+markdown>=3.4
+bleach>=6.0
+
 # Optional for PDF output
 # weasyprint>=53.0
 
@@ -26,6 +31,10 @@ lxml>=4.6.3
 
 # Web auth
 itsdangerous>=2.0.0
+
+# Optional: DigitalOcean Spaces / S3-compatible CDN offload (only needed if SPACES_ENABLED=1)
+# Debian/Ubuntu: sudo apt install python3-boto3
+boto3>=1.28.0
 
 # Optional: Traditional → Simplified Chinese preprocessing (only needed if TRAD_TO_SIMP=1 or any book has trad_to_simp=1)
 # Requires system libopencc (Debian/Ubuntu: sudo apt install libopencc1.1 libopencc-data)

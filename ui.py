@@ -2,7 +2,8 @@ from typing import Dict, List, Optional, Any, Union, Tuple
 from abc import ABC, abstractmethod
 from database import DatabaseManager
 from logger import Logger
-from translation_engine import TranslationEngine
+from modules import apply_source_ingest, apply_translated_ingest
+from translation_engine import TranslationEngine, TranslationCancelled
 from strip_chapter_prefix_titles import strip_chapter_prefix
 import datetime
 import json
@@ -28,8 +29,13 @@ class UserInterface(ABC):
         pass
     
     @abstractmethod
-    def review_entities(self, entities: Dict, untranslated_text: List[str]) -> Dict:
-        """Allow the user to review and edit entities"""
+    def review_entities(self, entities: Dict, untranslated_text: List[str], phase: str = 'post') -> Dict:
+        """Allow the user to review and edit entities.
+
+        `phase` is 'post' (default — review after the chapter is translated, single-pass)
+        or 'pre' (review before chapter prose is translated, two-pass mode). Subclasses
+        may use phase to label the UI appropriately; the data shape is identical.
+        """
         pass
 
     def check_chapter_conflict(self, chapter_text: List[str]) -> bool:
@@ -84,7 +90,22 @@ class UserInterface(ABC):
                             self.logger.info(f"Created Default Book (ID: {self.book_id}) for this translation")
                         else:
                             self.logger.info("Warning: Failed to create default book, chapter will not be saved to database")
-            
+
+                # Per-book module source transforms (e.g. novel543/twkan boilerplate
+                # strip). Mirrors the queue-ingest path in database.save_chapter so a
+                # manually-pasted chapter is "ingested" through the modules before it
+                # is translated. Idempotent, so a later save_chapter re-application is
+                # harmless. Runs before the chapter-conflict check below so the source
+                # is compared transformed-vs-transformed.
+                if getattr(self, 'book_id', None) is not None:
+                    book_for_modules = self.entity_manager.get_book(book_id=self.book_id)
+                    if book_for_modules:
+                        chapter_text = apply_source_ingest(
+                            book_for_modules, chapter_text,
+                            self.translator.config, self.logger,
+                            db=self.entity_manager,
+                        )
+
                 # Pre-translation guard: if a chapter with this
                 # (book_id, chapter_number) already exists and the source text
                 # differs, ask the user whether to overwrite or skip.
@@ -106,6 +127,44 @@ class UserInterface(ABC):
                                 self.logger.error(f"Failed to remove cancelled queue item: {e}")
                         break
 
+                # Two-pass mode: identify and review entities BEFORE translating the prose.
+                # Only active when entity review is also on — they're mutually exclusive
+                # by UI design; the backend defensively forces two_pass off when no_review on.
+                two_pass = bool(getattr(self, 'two_pass', False)) and not bool(getattr(self, 'no_review', False))
+                pass2_only = False
+                if two_pass:
+                    self.logger.info("Two-pass mode: running entity extraction pass before translation")
+                    pre_extract_failed = False
+                    try:
+                        pre_entities = self.translator.extract_entities(
+                            chapter_text,
+                            book_id=getattr(self, 'book_id', None),
+                            chapter_number=getattr(self, 'chapter_number', None),
+                            progress_callback=getattr(self, 'progress_callback', None),
+                            retranslation_reason=getattr(self, 'retranslation_reason', None),
+                            should_cancel=getattr(self, 'should_cancel', None),
+                        )
+                    except TranslationCancelled:
+                        raise
+                    except Exception as e:
+                        self.logger.error(f"Two-pass entity extraction failed: {e}. Falling back to single-pass.")
+                        pre_entities = None
+                        pre_extract_failed = True
+
+                    if pre_extract_failed:
+                        # Fall through to standard single-pass — user still gets post-translation review.
+                        pass2_only = False
+                    else:
+                        if pre_entities and any(v for v in pre_entities.values()):
+                            edited_pre = self.review_entities(pre_entities, chapter_text, phase='pre')
+                        else:
+                            edited_pre = {}
+
+                        # Persist approved entities BEFORE pass 2 builds its prompt so the
+                        # pre-translated entities block contains the user's chosen names.
+                        self._save_reviewed_entities(pre_entities or {}, edited_pre or {})
+                        pass2_only = True
+
                 # Perform translation
                 stream = getattr(self,'stream', False)
                 self.logger.debug(f"Stream mode is {stream}")
@@ -117,6 +176,9 @@ class UserInterface(ABC):
                     chapter_number=getattr(self, 'chapter_number', None),
                     json_fix_callback=getattr(self, 'json_fix_callback', None),
                     retranslation_reason=getattr(self, 'retranslation_reason', None),
+                    pass2_only=pass2_only,
+                    chapter_title=getattr(self, 'chapter_title', None),
+                    should_cancel=getattr(self, 'should_cancel', None),
                 )
 
                 if translation_results is None:
@@ -176,8 +238,9 @@ class UserInterface(ABC):
                                 "last_chapter": current_chapter
                             }
                 
-                # Continue with regular entity review
-                if any(v for v in totally_new_entities.values()):
+                # Continue with regular entity review (skipped in two-pass mode —
+                # entities were already reviewed and persisted before pass 2 ran)
+                if not pass2_only and any(v for v in totally_new_entities.values()):
                     edited_entities = self.review_entities(totally_new_entities, chapter_text)
                 else:
                     edited_entities = {}
@@ -191,19 +254,18 @@ class UserInterface(ABC):
                 # Lowercase any capitalised generic terms that were auto-cleaned
                 end_object['content'] = self._decase_cleaned_entities(end_object['content'])
 
-                # Fix any lines where the model left source-language characters untranslated
-                if not getattr(self, 'no_repair', False):
-                    # Determine source language from the book
-                    _source_lang = 'zh'
-                    if hasattr(self, 'book_id') and self.book_id:
-                        _book_info = self.entity_manager.get_book(self.book_id)
-                        if _book_info:
-                            _source_lang = _book_info.get('source_language', 'zh') or 'zh'
-                    end_object['content'] = self._fix_partial_translations(end_object['content'], source_language=_source_lang)
-
-                # Convert Chinese measurement units to metric equivalents
-                if not getattr(self, 'no_convert_units', False):
-                    end_object['content'] = self._convert_chinese_units(end_object['content'])
+                # Per-book module transforms of the translated text (partial-translation
+                # repair, unit conversion, spacing, …). Fired here at the post-translation
+                # point (not save_chapter) so each runs once per fresh translation with the
+                # per-run cleaning model, and the optional AI filters aren't invoked on every
+                # manual chapter edit. Enablement is per book (modules), so the model is
+                # passed for model-based auto-rules (e.g. partial_repair auto-on for DeepSeek).
+                _config = self.entity_manager.config
+                _book = self.entity_manager.get_book(self.book_id) if getattr(self, 'book_id', None) else None
+                end_object['content'] = apply_translated_ingest(
+                    _book, end_object['content'], _config, self.logger,
+                    cleaning_model=getattr(self, 'cleaning_model', None),
+                    model=_config.translation_model)
 
                 # Strip "Chapter N" prefix from translated titles (raw sources usually
                 # carry it through, but we store titles bare).
@@ -241,6 +303,7 @@ class UserInterface(ABC):
                                 last_chapter = node.get("last_chapter", current_chapter)
                                 incorrect_translation = node.get("incorrect_translation", None)
                                 gender = node.get("gender", None)
+                                note = node.get("note", None)
 
                                 # Check if this entity already exists in another category
                                 result = self.entity_manager.add_entity(
@@ -251,6 +314,7 @@ class UserInterface(ABC):
                                     last_chapter=last_chapter,
                                     incorrect_translation=incorrect_translation,
                                     gender=gender,
+                                    note=note,
                                 )
 
                                 # Update end_object so direct SQL save stays consistent
@@ -306,6 +370,7 @@ class UserInterface(ABC):
                             last_chapter = entity_data.get("last_chapter", current_chapter)
                             incorrect_translation = entity_data.get("incorrect_translation", None)
                             gender = entity_data.get("gender", None)
+                            note = entity_data.get("note", None)
                             is_new_or_edited = (category, key) in new_or_edited_keys
 
                             # Check if entity exists with this book_id
@@ -318,13 +383,15 @@ class UserInterface(ABC):
 
                             if existing:
                                 if is_new_or_edited:
-                                    # New entity from LLM or edited during review — full update
+                                    # New entity from LLM or edited during review — full update.
+                                    # note uses COALESCE so a re-translation that omits a note
+                                    # doesn't wipe an existing human-/model-set note.
                                     cursor.execute('''
                                     UPDATE entities
                                     SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
-                                        origin_chapter = COALESCE(origin_chapter, ?)
+                                        origin_chapter = COALESCE(origin_chapter, ?), note = COALESCE(?, note)
                                     WHERE id = ?
-                                    ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, existing[0]))
+                                    ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, note, existing[0]))
                                     self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
                                 else:
                                     # Pre-existing entity — only bump last_chapter to avoid
@@ -339,9 +406,9 @@ class UserInterface(ABC):
                                 # Insert new — record origin_chapter
                                 cursor.execute('''
                                 INSERT INTO entities
-                                (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, origin_chapter)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id, current_chapter))
+                                (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, origin_chapter, note)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id, current_chapter, note))
                                 self.logger.debug(f"Added entity {key} ({translation}) to category {category} with book_id={self.book_id}")
 
                     conn.commit()
@@ -353,9 +420,41 @@ class UserInterface(ABC):
                 # Update in-memory cache for consistent state
                 self.entity_manager._load_entities(book_id=self.book_id)
                 
+                # Incremental "Append & retranslate" merge: only the new segment was
+                # translated above. Prepend the existing chapter's already-translated
+                # lines (stashed in check_chapter_conflict) so the saved chapter is the
+                # full combined source + translation, without re-translating the old part.
+                merge_prefix = getattr(self, '_merge_prefix', None)
+                self._merge_prefix = None  # one-shot — never leak to the next queue item
+                if merge_prefix:
+                    chapter_text = list(merge_prefix["untranslated"]) + list(chapter_text)
+                    end_object['content'] = list(merge_prefix["translated"]) + list(end_object.get('content') or [])
+                    # Keep the existing chapter's title (matches the old full-merge
+                    # behaviour, where the merged first line was the existing heading).
+                    if merge_prefix["title"]:
+                        end_object['title'] = merge_prefix["title"]
+                    # Concatenate summaries — the new summary only covers the appended part.
+                    new_summary = (end_object.get('summary') or '').strip()
+                    old_summary = (merge_prefix["summary"] or '').strip()
+                    end_object['summary'] = (
+                        (old_summary + ' ' + new_summary).strip() if old_summary else new_summary
+                    )
+
                 # Add original text to output
                 end_object['untranslated'] = chapter_text
-                
+
+                # Belt-and-suspenders: re-assert illustration markers after the
+                # post-translation passes (decase / partial-fix / unit-convert /
+                # entity application) and the merge-prefix prepend, in case any of
+                # them dropped a marker line. Idempotent — a no-op when the
+                # markers already match (the common case).
+                try:
+                    end_object['content'] = self.translator.reconcile_illustration_markers(
+                        chapter_text, end_object.get('content', [])
+                    )
+                except Exception as e:
+                    self.logger.error(f"Illustration marker re-assert skipped: {e}")
+
 
                 self.logger.debug(f"About to save chapter with book_id={self.book_id}, chapter_number={getattr(self, 'chapter_number', 'None')}")
                 self.logger.debug(f"Current chapter from translation: {current_chapter}")
@@ -477,6 +576,68 @@ class UserInterface(ABC):
     # ------------------------------------------------------------------
     # Entity filtering and cleaning (shared by CLI and Web)
     # ------------------------------------------------------------------
+
+    def _save_reviewed_entities(self, pre_entities: Dict, edited: Dict):
+        """
+        Persist entities approved by the user during a two-pass pre-review.
+        Called after `review_entities` returns in two-pass mode so pass-2's
+        system prompt includes the user's chosen names in the
+        pre-translated-entities block.
+
+        Args:
+            pre_entities: Raw entities returned by extract_entities, before review.
+            edited: Result dict from review_entities. {} means "skip review — accept
+                    AI translations as-is". Otherwise, contains the user's edits
+                    (translation/category/gender changes, deletions).
+        """
+        book_id = getattr(self, 'book_id', None)
+        chapter_number = getattr(self, 'chapter_number', None) or 0
+
+        if edited:
+            # User submitted review — save according to their edits.
+            for category, ents in edited.items():
+                if not isinstance(ents, dict):
+                    continue
+                for key, val in ents.items():
+                    if not isinstance(val, dict):
+                        continue
+                    if val.get("deleted"):
+                        continue
+                    translation = val.get("translation", "")
+                    gender = val.get("gender")
+                    note = val.get("note")
+                    last_chapter = val.get("last_chapter", chapter_number)
+                    self.entity_manager.add_entity(
+                        category, key, translation,
+                        book_id=book_id,
+                        last_chapter=last_chapter,
+                        gender=gender,
+                        note=note,
+                    )
+                    self.logger.debug(f"Two-pass: saved entity {key} -> {translation} ({category})")
+        else:
+            # Skip review path — save AI's pass-1 output unchanged.
+            for category, ents in (pre_entities or {}).items():
+                if not isinstance(ents, dict):
+                    continue
+                for key, val in ents.items():
+                    if not isinstance(val, dict):
+                        continue
+                    translation = val.get("translation", "")
+                    gender = val.get("gender")
+                    note = val.get("note")
+                    last_chapter = val.get("last_chapter", chapter_number)
+                    self.entity_manager.add_entity(
+                        category, key, translation,
+                        book_id=book_id,
+                        last_chapter=last_chapter,
+                        gender=gender,
+                        note=note,
+                    )
+                    self.logger.debug(f"Two-pass (skip-review): saved entity {key} -> {translation} ({category})")
+
+        # Refresh the in-memory cache so pass-2's prompt picks up the saved entities
+        self.entity_manager._load_entities(book_id=book_id)
 
     def _filter_existing_entities(self, data: Dict):
         """
@@ -732,117 +893,3 @@ class UserInterface(ABC):
                 text[i] = re.sub(pattern, make_replacer(text[i], lower), text[i])
 
         return text
-
-    # Regex patterns for detecting untranslated source-language characters
-    _SOURCE_LANG_PATTERNS = {
-        'zh': re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]'),
-        # Japanese: CJK ideographs OR hiragana/katakana (to catch Japanese-specific text)
-        'ja': re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff]'),
-        # Korean: Hangul syllables and Jamo
-        'ko': re.compile(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]'),
-    }
-
-    _LANG_NAMES = {
-        'zh': 'Chinese',
-        'ja': 'Japanese',
-        'ko': 'Korean',
-    }
-
-    def _convert_chinese_units(self, content: List[str]) -> List[str]:
-        """Append metric equivalents to Chinese measurement units in translated text."""
-        from unit_converter import convert_units
-        model = getattr(self, 'cleaning_model', None)
-        return convert_units(content, cleaning_model=model)
-
-    def _fix_partial_translations(self, content: List[str], source_language: str = 'zh') -> List[str]:
-        """
-        Detect lines containing untranslated source-language characters and fix them
-        using the cleaning model. Batches all affected lines into a single
-        API call, returning the content list with fixed lines spliced back in.
-
-        Only supported for zh, ja, ko. For other languages the content is returned as-is.
-        """
-        import os
-
-        pattern = self._SOURCE_LANG_PATTERNS.get(source_language)
-        if pattern is None:
-            self.logger.debug(f"Partial-translation repair not supported for source_language='{source_language}', skipping")
-            return content
-
-        affected_indices = [i for i, line in enumerate(content) if pattern.search(line)]
-
-        if not affected_indices:
-            return content
-
-        lang_name = self._LANG_NAMES.get(source_language, source_language)
-        self.logger.info(f"Found {len(affected_indices)} partially translated line(s) containing {lang_name} characters")
-
-        lines_to_fix = [content[i] for i in affected_indices]
-        user_prompt = json.dumps(lines_to_fix, ensure_ascii=False, indent=2)
-
-        try:
-            from providers import create_provider
-            from config import TranslationConfig
-            config = TranslationConfig()
-
-            # Build repair prompt — use the template file with language substituted
-            repair_prompt_path = os.path.join(config.script_dir, "translation_repair_prompt.txt")
-            try:
-                if os.path.exists(repair_prompt_path):
-                    with open(repair_prompt_path, 'r', encoding='utf-8') as file:
-                        system_prompt = file.read()
-                else:
-                    self.logger.error(f"translation_repair_prompt.txt not found at {repair_prompt_path}")
-                    return content
-            except Exception as e:
-                self.logger.error(f"Error loading repair prompt: {e}")
-                return content
-
-            # Replace language placeholder so the prompt is language-aware
-            system_prompt = system_prompt.replace("{{LANGUAGE}}", lang_name)
-
-            if hasattr(self, 'cleaning_model') and self.cleaning_model:
-                model_spec = self.cleaning_model
-            else:
-                model_spec = config.translation_model
-
-            provider_name, model_name = config.parse_model_spec(model_spec)
-            provider = create_provider(provider_name)
-
-            self.logger.info(f"Repairing {len(affected_indices)} line(s) with {model_name}...")
-
-            response = provider.chat_completion(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.0
-            )
-
-            raw = provider.get_response_content(response).strip()
-
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
-                if raw.startswith("json"):
-                    raw = raw[4:].strip()
-
-            fixed_lines = json.loads(raw)
-
-            if not isinstance(fixed_lines, list) or len(fixed_lines) != len(affected_indices):
-                raise ValueError(
-                    f"Expected {len(affected_indices)} fixed lines, got "
-                    f"{len(fixed_lines) if isinstance(fixed_lines, list) else type(fixed_lines)}"
-                )
-
-            result = list(content)
-            for idx, fixed in zip(affected_indices, fixed_lines):
-                result[idx] = fixed
-
-            self.logger.info(f"Repaired {len(affected_indices)} partially translated line(s)")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Could not repair partial translations: {e}")
-            return content

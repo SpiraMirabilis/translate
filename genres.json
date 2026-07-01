@@ -29,6 +29,13 @@
       "description": "Korean web novels"
     },
     {
+      "id": "russian_web_novel",
+      "name": "Russian Web Novel",
+      "source_language": "ru",
+      "prompt_file": "prompts/russian_wn.txt",
+      "description": "Russian web novels (LitRPG, progression, popadanets/isekai, etc.)"
+    },
+    {
       "id": "custom",
       "name": "Custom",
       "source_language": null,

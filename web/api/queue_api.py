@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel
 from typing import Optional
 
+from translation_engine import TranslationCancelled
+
 router = APIRouter(prefix="/api/queue")
 
 _entity_manager = None
@@ -30,7 +32,8 @@ def init(entity_manager, job_manager, web_interface):
 async def list_queue(book_id: Optional[int] = Query(None)):
     items = _entity_manager.list_queue(book_id=book_id)
     count = _entity_manager.get_queue_count(book_id=book_id)
-    return {"items": items or [], "count": count}
+    book_ids = _entity_manager.get_queued_book_ids()
+    return {"items": items or [], "count": count, "book_ids": book_ids}
 
 
 @router.delete("/{item_id}")
@@ -43,8 +46,11 @@ async def remove_queue_item(item_id: int):
 
 @router.delete("")
 async def clear_queue(book_id: Optional[int] = Query(None)):
-    _entity_manager.clear_queue(book_id=book_id)
-    return {"status": "ok"}
+    try:
+        count = _entity_manager.clear_queue(book_id=book_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear queue: {e}")
+    return {"status": "ok", "removed": count}
 
 
 # ------------------------------------------------------------------
@@ -247,7 +253,7 @@ async def upload_epub(
 
             # Apply genre preset: prompt template and categories (derived from prompt)
             if genre_obj:
-                from genres import read_genre_prompt as _read_prompt, extract_categories_from_prompt as _extract_cats
+                from genres import read_genre_prompt as _read_prompt, extract_categories_meta_from_prompt as _extract_cats
                 prompt = _read_prompt(_entity_manager.config.script_dir, genre_obj)
                 if prompt:
                     _entity_manager.set_book_prompt_template(book_id, prompt)
@@ -281,6 +287,94 @@ async def upload_epub(
 
 
 # ------------------------------------------------------------------
+# Upload FB2 (FictionBook 2.0) to queue
+# ------------------------------------------------------------------
+
+@router.post("/upload-fb2")
+async def upload_fb2(
+    file: UploadFile = File(...),
+    book_id: Optional[int] = Form(None),
+    create_book: bool = Form(False),
+    genre: Optional[str] = Form(None),
+):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    from fb2_processor import FB2Processor
+
+    if not book_id and not create_book:
+        raise HTTPException(status_code=400, detail="Provide book_id or set create_book=true.")
+
+    content = await file.read()
+    # Preserve the .zip suffix so the processor unzips .fb2.zip archives.
+    suffix = ".fb2.zip" if file.filename and file.filename.lower().endswith(".zip") else ".fb2"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        config = _entity_manager.config
+        from logger import Logger
+        logger = Logger(config)
+        processor = FB2Processor(config, logger, _entity_manager)
+
+        if create_book:
+            meta = processor.get_fb2_metadata(tmp_path)
+
+            # Determine source language from genre if provided; FB2 is most
+            # often Russian, so default to "ru" (vs EPUB's "zh").
+            source_lang = "ru"
+            genre_obj = None
+            if genre and genre != "custom":
+                from genres import get_genre as _get_genre
+                genre_obj = _get_genre(_entity_manager.config.script_dir, genre)
+                if genre_obj and genre_obj.get("source_language"):
+                    source_lang = genre_obj["source_language"]
+
+            book_id = _entity_manager.create_book(
+                title=meta.get("title", file.filename),
+                author=meta.get("author", "Unknown"),
+                language="en",
+                source_language=source_lang,
+                description=f"Imported from {file.filename}",
+            )
+            if not book_id:
+                raise HTTPException(status_code=500, detail="Failed to create book from FB2.")
+
+            # Apply genre preset: prompt template and categories (derived from prompt)
+            if genre_obj:
+                from genres import read_genre_prompt as _read_prompt, extract_categories_meta_from_prompt as _extract_cats
+                prompt = _read_prompt(_entity_manager.config.script_dir, genre_obj)
+                if prompt:
+                    _entity_manager.set_book_prompt_template(book_id, prompt)
+                    cats = _extract_cats(prompt)
+                    if cats:
+                        _entity_manager.set_book_categories(book_id, cats)
+
+            # Extract cover image from FB2
+            try:
+                fb2_root = processor.load_fb2(tmp_path)
+                if fb2_root is not None:
+                    cover_bytes, cover_ext = processor.extract_cover_image(fb2_root)
+                    if cover_bytes:
+                        cover_rel = processor.save_cover_image(cover_bytes, cover_ext, book_id)
+                        _entity_manager.update_book(book_id, cover_image=cover_rel)
+            except Exception:
+                pass  # Non-fatal
+
+        success, num_chapters, message = processor.process_fb2(tmp_path, book_id)
+        if not success:
+            raise HTTPException(status_code=500, detail=message)
+
+        return {
+            "status": "ok",
+            "book_id": book_id,
+            "chapters_added": num_chapters,
+            "message": message,
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
+# ------------------------------------------------------------------
 # Process next queue item
 # ------------------------------------------------------------------
 
@@ -290,9 +384,8 @@ class ProcessNextRequest(BaseModel):
     advice_model: Optional[str] = None
     cleaning_model: Optional[str] = None
     no_review: bool = False
+    two_pass: bool = False
     no_clean: bool = False
-    no_repair: bool = False
-    no_convert_units: bool = False
     no_stream: bool = False
     auto_process: bool = False
     max_chapters: Optional[int] = None  # Stop after N chapters (None = unlimited)
@@ -303,6 +396,7 @@ def _setup_job(queue_item, settings):
     _job_manager.pending_text = queue_item["content"]
     _job_manager.book_id = queue_item["book_id"]
     _job_manager.chapter_number = queue_item.get("chapter_number")
+    _job_manager.chapter_title = queue_item.get("title")
     _job_manager.status = "running"
     _job_manager.error = None
     _job_manager.last_result = None
@@ -313,9 +407,9 @@ def _setup_job(queue_item, settings):
         _web_interface.translator.config.advice_model = settings["advice_model"]
     _web_interface.cleaning_model = settings["cleaning_model"] or None
     _web_interface.no_review = settings["no_review"]
+    # Mutually exclusive with no_review (UI enforces this; backend defends in depth)
+    _web_interface.two_pass = settings.get("two_pass", False) and not settings["no_review"]
     _web_interface.no_clean = settings["no_clean"]
-    _web_interface.no_repair = settings["no_repair"]
-    _web_interface.no_convert_units = settings["no_convert_units"]
     _web_interface.stream = not settings["no_stream"]
     _web_interface.retranslation_reason = queue_item.get("retranslation_reason") or None
     _web_interface._current_queue_item = queue_item
@@ -359,12 +453,12 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         "advice_model": req.advice_model,
         "cleaning_model": req.cleaning_model,
         "no_review": req.no_review,
+        "two_pass": req.two_pass,
         "no_clean": req.no_clean,
-        "no_repair": req.no_repair,
-        "no_convert_units": req.no_convert_units,
         "no_stream": req.no_stream,
     }
 
+    _job_manager.clear_cancel()
     _job_manager.is_running = True
     _setup_job(queue_item, settings)
 
@@ -409,6 +503,9 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
                     done = _job_manager._auto_max
                     _job_manager.send_message_sync({"type": "auto_process_done", "reason": "limit_reached", "chapters_done": done})
                     _job_manager.log_activity(type='info', message=f'Auto-process complete — {done} chapter limit reached.')
+        except TranslationCancelled:
+            _job_manager.status = "idle"
+            _job_manager.send_message_sync({"type": "translation_cancelled"})
         except Exception as e:
             _job_manager.status = "error"
             _job_manager.error = str(e)
@@ -417,7 +514,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         finally:
             _job_manager.is_running = False
             _job_manager.auto_process = False
-            if _job_manager.status not in ("error", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
+            if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
 
     thread = threading.Thread(target=run, daemon=True)

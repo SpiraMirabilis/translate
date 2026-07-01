@@ -14,6 +14,7 @@ from itertools import zip_longest
 from openai import OpenAI
 from dotenv import load_dotenv
 from epub_processor import EPUBProcessor
+from fb2_processor import FB2Processor
 from output_formatter import OutputFormatter
 from directory_processor import DirectoryProcessor
 from config import TranslationConfig

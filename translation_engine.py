@@ -7,14 +7,172 @@ import time
 import re
 import uuid
 from database import DEFAULT_CATEGORIES
+from modules import apply_system_prompt, apply_source_module
+from providers.base import (
+    OverloadedError,
+    looks_overloaded,
+    SessionLimitError,
+    looks_session_limited,
+    parse_session_reset_seconds,
+)
+
+
+class TranslationCancelled(Exception):
+    """Raised when the user cancels an in-flight translation.
+
+    Distinct from connection/parse errors so the per-chunk retry loops do NOT
+    swallow it and "transparently retry" — a cancel must propagate straight out
+    of translate_chapter rather than being treated as a transient failure.
+    """
+    pass
+
 
 class TranslationEngine:
     """Core class for handling text translation logic"""
-    
+
     def __init__(self, config: 'TranslationConfig', logger: 'Logger', entity_manager: 'DatabaseManager'):
         self.config = config
         self.logger = logger
         self.entity_manager = entity_manager
+
+    @staticmethod
+    def _check_cancel(should_cancel):
+        """Raise TranslationCancelled if the caller-supplied predicate fires.
+
+        `should_cancel` is an optional zero-arg callable (None disables it).
+        Called at every cooperative cancellation point in translate_chapter."""
+        if should_cancel is not None:
+            try:
+                cancelled = should_cancel()
+            except Exception:
+                cancelled = False
+            if cancelled:
+                raise TranslationCancelled()
+
+    def _interruptible_sleep(self, seconds, should_cancel=None):
+        """Sleep up to `seconds`, but wake early (raising TranslationCancelled)
+        if a cancel is requested. Polls once per second so a long overload /
+        session-limit wait doesn't keep a cancelled job parked for minutes."""
+        if should_cancel is None:
+            time.sleep(seconds)
+            return
+        remaining = max(0, int(seconds))
+        for _ in range(remaining):
+            self._check_cancel(should_cancel)
+            time.sleep(1)
+        # Sleep any sub-second remainder.
+        frac = seconds - int(seconds)
+        if frac > 0:
+            time.sleep(frac)
+        self._check_cancel(should_cancel)
+
+    def _overload_retry_wait_seconds(self) -> int:
+        """Seconds to wait before retrying after a 529 "Overloaded" response.
+
+        Configurable via the OVERLOAD_RETRY_WAIT_SECONDS setting/env var
+        (default 300). settings_store mirrors the setting into os.environ.
+        """
+        raw = os.getenv("OVERLOAD_RETRY_WAIT_SECONDS", "300")
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            return 300
+
+    def _sleep_for_overload(self, reason, progress_callback=None, chunk_index=None, should_cancel=None):
+        """Wait the configured interval after a 529, then return so the caller
+        can retry. Overload waits are intentionally not bounded by the normal
+        per-chunk retry budget — the service is saturated, not broken."""
+        wait = self._overload_retry_wait_seconds()
+        where = f" on chunk {chunk_index}" if chunk_index else ""
+        print(f"\n⏳ API overloaded (529){where}. Waiting {wait}s before retrying...")
+        self.logger.warning(
+            f"API overloaded (529){where}: {str(reason)[:200]}. Waiting {wait}s before retry."
+        )
+        if progress_callback:
+            try:
+                progress_callback({
+                    "phase": "overloaded",
+                    "wait_seconds": wait,
+                    "chunk": chunk_index,
+                })
+            except Exception:
+                pass
+        self._interruptible_sleep(wait, should_cancel)
+
+    def _sleep_for_session_limit(self, reason, progress_callback=None, chunk_index=None, should_cancel=None):
+        """Pause the queue until just past the Claude Code session-limit reset
+        time named in `reason`, then return so the caller can retry the chunk.
+
+        Like the overload wait, this is intentionally not bounded by the
+        per-chunk retry budget — the session is throttled, not broken, and the
+        chapter resumes from the same chunk once usage resets. If the reset
+        time can't be parsed we fall back to the overload retry interval and
+        loop again, re-reading the (still-current) limit notice next time."""
+        wait = parse_session_reset_seconds(str(reason))
+        if wait is None:
+            wait = self._overload_retry_wait_seconds()
+            detail = "reset time unparseable, using overload interval"
+        else:
+            detail = "until 1 min past reset"
+        where = f" on chunk {chunk_index}" if chunk_index else ""
+        mins = max(1, round(wait / 60))
+        print(
+            f"\n⏸️  Claude Code session limit hit{where}. "
+            f"Pausing ~{mins} min ({detail}) before resuming..."
+        )
+        self.logger.warning(
+            f"Session limit hit{where}: {str(reason)[:200]}. "
+            f"Pausing {wait}s before retry."
+        )
+        if progress_callback:
+            try:
+                progress_callback({
+                    "phase": "session_limit",
+                    "wait_seconds": wait,
+                    "resume_at": time.time() + wait,
+                    "chunk": chunk_index,
+                    "reset_text": str(reason)[:200],
+                })
+            except Exception:
+                pass
+        self._interruptible_sleep(wait, should_cancel)
+
+    def _chat_completion_overload_aware(self, provider, progress_callback=None, should_cancel=None, **kwargs):
+        """Non-streaming provider.chat_completion that transparently waits and
+        retries on a 529 "Overloaded" (whether raised as OverloadedError or
+        returned as plain-text content). Genuine errors propagate to the
+        caller's normal retry handling. Returns the provider response dict."""
+        while True:
+            self._check_cancel(should_cancel)
+            try:
+                response = provider.chat_completion(**kwargs)
+            except TranslationCancelled:
+                raise
+            except SessionLimitError as e:
+                self._sleep_for_session_limit(e.reset_text, progress_callback, should_cancel=should_cancel)
+                continue
+            except OverloadedError as e:
+                self._sleep_for_overload(e, progress_callback, should_cancel=should_cancel)
+                continue
+            except Exception as e:
+                if looks_session_limited(str(e)):
+                    self._sleep_for_session_limit(e, progress_callback, should_cancel=should_cancel)
+                    continue
+                if looks_overloaded(str(e), strict=False):
+                    self._sleep_for_overload(e, progress_callback, should_cancel=should_cancel)
+                    continue
+                raise
+            try:
+                content = provider.get_response_content(response)
+            except Exception:
+                content = ""
+            if looks_session_limited(content):
+                self._sleep_for_session_limit(content, progress_callback, should_cancel=should_cancel)
+                continue
+            if looks_overloaded(content):
+                self._sleep_for_overload("529 Overloaded", progress_callback, should_cancel=should_cancel)
+                continue
+            return response
     
     def find_substring_with_context(self, text_array, substring, padding=20):
         """
@@ -94,7 +252,7 @@ class TranslationEngine:
             self.logger.warning(f"Failed to parse response template JSON from prompt: {e}")
             return None
 
-    def _build_response_template(self, categories, entities, chapter_number=3, base_template=None, source_language='zh'):
+    def _build_response_template(self, categories, entities, chapter_number=3, base_template=None, source_language='zh', mode='full', gendered_categories=None):
         """
         Build the response template JSON dynamically from the book's active
         categories, using real entities as examples where available.
@@ -109,10 +267,13 @@ class TranslationEngine:
             chapter_number: chapter number to use in the example (default 3)
             base_template: dict parsed from the prompt's response template (optional)
             source_language: source language code for placeholder entity keys
+            mode: 'full' (default — title/content/entities), 'entity_only' (entities only),
+                  'translate_only' (title/content but no entities)
         Returns:
             str: A pretty-printed JSON string suitable for the response template
         """
         ch = chapter_number if isinstance(chapter_number, int) and chapter_number > 0 else 3
+        gendered = set(gendered_categories) if gendered_categories else set()
 
         # Determine which fields the base template's entity entries carry (e.g. gender on characters)
         base_entity_fields = {}
@@ -135,9 +296,12 @@ class TranslationEngine:
                     "translation": entry.get("translation", "Example Translation"),
                     "last_chapter": ch,
                 }
-                # Carry over extra fields from the base template (e.g. gender for characters)
+                # Carry over extra fields from the base template (e.g. gender for characters).
+                # A category is gender-tracked if the book says so (gendered set), if the
+                # base template already carries gender, or — when no book context was passed —
+                # the legacy "characters" default.
                 extra_fields = base_entity_fields.get(cat, set())
-                if "gender" in extra_fields or cat == "characters":
+                if "gender" in extra_fields or cat in gendered or (gendered_categories is None and cat == "characters"):
                     example_entry["gender"] = entry.get("gender", "male")
                 for field in extra_fields - {"gender"}:
                     if field in entry:
@@ -159,21 +323,24 @@ class TranslationEngine:
                     if singular.endswith('ie'):
                         singular = singular[:-2] + 'y'
                     placeholder = {"translation": f"Example {singular.title()}", "last_chapter": ch}
-                    if "gender" in base_entity_fields.get(cat, set()) or cat == "characters":
+                    if "gender" in base_entity_fields.get(cat, set()) or cat in gendered or (gendered_categories is None and cat == "characters"):
                         placeholder["gender"] = "male"
                     cat_example[placeholder_key] = placeholder
 
             entities_example[cat] = cat_example
 
         # Build the final template, preserving non-entity fields from the base if available
-        if base_template:
+        if mode == 'entity_only':
+            template = {"entities": entities_example}
+        elif base_template:
             template = {
                 "title": base_template.get("title", f"Chapter {ch} - The Great Apocalyptic Battle"),
                 "chapter": ch,
                 "summary": base_template.get("summary", "A concise summary of no more than 75 words."),
                 "content": base_template.get("content", []),
-                "entities": entities_example,
             }
+            if mode != 'translate_only':
+                template["entities"] = entities_example
         else:
             template = {
                 "title": f"Chapter {ch} - The Great Apocalyptic Battle",
@@ -186,10 +353,26 @@ class TranslationEngine:
                     "",
                     "A cold wind swept across the battlefield as the first clash of steel echoed through the valley."
                 ],
-                "entities": entities_example,
             }
+            if mode != 'translate_only':
+                template["entities"] = entities_example
 
         return json.dumps(template, ensure_ascii=False, indent=4)
+
+    @staticmethod
+    def _entity_response_format(mode=None, categories=None, gendered_categories=None):
+        """Build the OpenAI-style response_format dict, carrying the book's entity
+        categories and which of them are gender-tracked so structured-output
+        providers (Gemini) can build a matching schema. Non-Gemini providers
+        ignore the extra keys."""
+        rf = {"type": "json_object"}
+        if mode:
+            rf["mode"] = mode
+        if categories is not None:
+            rf["categories"] = categories
+        if gendered_categories is not None:
+            rf["gendered_categories"] = gendered_categories
+        return rf
 
     @staticmethod
     def _placeholder_entity_key(category, source_language='zh'):
@@ -201,7 +384,7 @@ class TranslationEngine:
         }
         return placeholders.get(source_language, f"示例{category}")
 
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None, mode='full', chapter_title=None, gendered_categories=None, book=None, chunk_index=None, total_chunks=None, previous_summary=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
 
@@ -211,6 +394,15 @@ class TranslationEngine:
             source_language: Source language code for the book (default: zh)
             retranslation_reason: Optional free-text reason for retranslating this chapter,
                 appended as an extra section at the end of the prompt.
+            mode: 'full' (default — translate + extract entities),
+                  'entity_only' (pass-1 of two-pass — identify entities, no prose),
+                  'translate_only' (pass-2 of two-pass — translate prose, no entity output).
+            chunk_index: 1-based index of the chunk currently being translated (when the
+                chapter was split across multiple chunks). None/1 with total_chunks<=1 means
+                the chapter fits in a single pass and no chunk framing is added.
+            total_chunks: Total number of chunks the chapter was split into.
+            previous_summary: Running summary of all previously-translated chunks of this
+                same chapter, injected for continuity when chunk_index > 1.
         """
         # Debug info
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
@@ -280,6 +472,15 @@ class TranslationEngine:
         else:
             prompt = prompt.replace("\nYou are translating chapter {{CHAPTER_NUMBER}}.\n", "\n")
 
+        # Insert the source-language chapter title if known, otherwise remove the
+        # whole line carrying the placeholder. This lets the model translate the
+        # chapter title into the "title" field even when the importer stripped the
+        # heading out of the chapter content (it lives in queue.title instead).
+        if chapter_title and str(chapter_title).strip():
+            prompt = prompt.replace("{{CHAPTER_TITLE}}", str(chapter_title).strip())
+        else:
+            prompt = re.sub(r'[^\n]*\{\{CHAPTER_TITLE\}\}[^\n]*\n?', '', prompt)
+
         # Parse the base template from the prompt before rebuilding it
         base_template = self._parse_template_from_prompt(prompt)
 
@@ -292,15 +493,79 @@ class TranslationEngine:
         if match:
             dynamic_template = self._build_response_template(
                 list(entities.keys()), entities, chapter_number or 3,
-                base_template=base_template, source_language=source_language
+                base_template=base_template, source_language=source_language,
+                mode=mode, gendered_categories=gendered_categories,
             )
             prompt = prompt[:match.start()] + match.group(1) + "\n" + dynamic_template + "\n" + match.group(2) + prompt[match.end():]
-            self.logger.debug(f"Rebuilt response template with categories: {list(entities.keys())}")
+            self.logger.debug(f"Rebuilt response template with categories: {list(entities.keys())} (mode={mode})")
 
         # For Gemini providers, remove the JSON schema example to avoid conflicts with responseSchema
         if provider and hasattr(provider, 'provider_name') and 'Gemini' in provider.provider_name:
             prompt = template_pattern.sub('', prompt)
             self.logger.debug("Removed JSON schema template for Gemini provider")
+
+        # Mode-specific overrides appended at the end so they override anything earlier in the prompt
+        if mode == 'entity_only':
+            prompt = prompt.rstrip() + (
+                "\n\n---\n\n"
+                "ENTITY-EXTRACTION MODE (OVERRIDES ALL OTHER INSTRUCTIONS):\n"
+                "Your sole task is to identify proper nouns and consistency-required terms in the chapter "
+                "below and return ONLY their translations. Do NOT translate the chapter prose. "
+                "Your JSON response must contain ONLY the 'entities' field (no 'title', 'chapter', "
+                "'summary', or 'content' fields). Use the existing entity rules above for what counts as "
+                "an entity and what does not.\n"
+            )
+        elif mode == 'translate_only':
+            prompt = prompt.rstrip() + (
+                "\n\n---\n\n"
+                "TRANSLATION-ONLY MODE (OVERRIDES ALL OTHER INSTRUCTIONS):\n"
+                "All entities have already been identified and pre-translated in the PRE-TRANSLATED "
+                "ENTITIES block above. Use those translations exactly when the entity appears in the "
+                "source. You must NOT emit an 'entities' field in your response — return only 'title', "
+                "'chapter', 'summary', and 'content'.\n"
+            )
+
+        # If this chapter carries illustration sentinels, instruct the model to
+        # preserve them verbatim. Injected dynamically (only when a marker is
+        # actually present) so image-free chapters pay no token/noise cost.
+        try:
+            from illustrations import markers_in
+            if markers_in(pretext):
+                prompt = prompt.rstrip() + (
+                    "\n\n---\n\n"
+                    "IMAGE PLACEHOLDERS:\n"
+                    "Some content lines are opaque image placeholders of the exact form "
+                    "⟦IMG:xxxxxx⟧ (where xxxxxx is a short code). Copy every such line into "
+                    "your output 'content' array verbatim and unchanged, on its own line, in "
+                    "the same relative position. Never translate, transliterate, reword, "
+                    "merge, reorder, duplicate, or omit them, and do not alter the ⟦ ⟧ "
+                    "brackets or the code inside.\n"
+                )
+        except Exception:
+            pass
+
+        # If this chapter was split into multiple chunks (output-token limits),
+        # tell the model which chunk it is translating and feed it the running
+        # summary of everything translated so far. This keeps tone, pronouns,
+        # ongoing events, and entity rendering consistent across chunk boundaries.
+        if total_chunks and isinstance(total_chunks, int) and total_chunks > 1 and chunk_index:
+            prompt = prompt.rstrip() + (
+                "\n\n---\n\n"
+                "CHUNKED CHAPTER:\n"
+                "This chapter was too long to translate in one pass, so it has been split "
+                f"into {total_chunks} sequential chunks. You are now translating chunk "
+                f"{chunk_index} of {total_chunks}. The user message contains ONLY this "
+                "chunk's source text — translate exactly what is given, do not summarize, "
+                "skip ahead, or re-translate earlier chunks. Your 'summary' field should "
+                "describe the events of THIS chunk only.\n"
+            )
+            prior = (previous_summary or "").strip()
+            if chunk_index > 1 and prior:
+                prompt = prompt.rstrip() + (
+                    "\n\nSUMMARY OF PREVIOUS CHUNKS (context for continuity only — do not "
+                    "re-translate this text or include it in your output):\n"
+                    f"{prior}\n"
+                )
 
         # Append retranslation reason (if any) as a final, high-priority section
         reason = (retranslation_reason or "").strip()
@@ -314,6 +579,10 @@ class TranslationEngine:
                 f"{reason}\n"
             )
             self.logger.info(f"Appended retranslation reason to system prompt ({len(reason)} chars)")
+
+        # Per-book module transforms of the assembled system prompt.
+        prompt = apply_system_prompt(book, prompt, self.config, self.logger,
+                                     chapter_number=chapter_number, mode=mode)
 
         return prompt
     
@@ -524,7 +793,164 @@ class TranslationEngine:
         
         return parsed_response
     
-    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None):
+    def extract_entities(self, chapter_text, book_id=None, chapter_number=None,
+                         progress_callback=None, retranslation_reason=None, should_cancel=None):
+        """
+        Pass-1 of two-pass mode: identify new entities in the chapter without
+        translating any prose. Makes a single non-streaming API call over the
+        full chapter (no chunking — output is small enough that input limits,
+        not output limits, drive sizing). Returns the same shape as the
+        per-chunk `find_new_entities` output: { category: { untranslated: {...} } }.
+
+        Args:
+            chapter_text (list[str]): Chapter source lines.
+            book_id (int|None): Book ID for prompt template + entity scope.
+            chapter_number (int|None): Known chapter number (injected into the prompt).
+            progress_callback (callable|None): Receives {"phase": "entity_extract", ...} updates.
+            retranslation_reason (str|None): Forwarded to generate_system_prompt.
+
+        Returns:
+            dict: {category: {untranslated: entity_data}} containing only NEW entities
+                  (filtered against the existing DB).
+        """
+        session_id = str(uuid.uuid4())
+
+        if not chapter_text:
+            self.logger.warning("extract_entities: empty chapter_text")
+            return {}
+
+        # Strip common scraping artifacts (matches translate_chapter's behavior)
+        if chapter_text[-1].strip() == '(本章完)':
+            chapter_text = chapter_text[:-1]
+
+        book_prompt_template = None
+        source_language = 'zh'
+        book_info = None
+        if book_id:
+            book_prompt_template = self.entity_manager.get_book_prompt_template(book_id)
+            book_info = self.entity_manager.get_book(book_id)
+            if book_info:
+                source_language = book_info.get('source_language', 'zh') or 'zh'
+
+        # Optional trad→simp preprocessing (mirrors translate_chapter). Applies the
+        # trad_to_simp module only, so the AI sees canonical simplified text even on
+        # direct (non-ingest) paths. Idempotent if it already ran at ingest.
+        chapter_text = apply_source_module(book_info, chapter_text, "trad_to_simp",
+                                           self.config, self.logger)
+
+        provider, model_name = self.config.get_client(self.config.translation_model)
+        self.logger.debug(f"extract_entities: using {provider.provider_name}/{model_name}")
+
+        # Load entities scoped to this book so categories from other books
+        # don't leak into the system prompt's {{ENTITY_CATEGORIES}}.
+        if book_id:
+            self.entity_manager._load_entities(book_id=book_id)
+        old_entities = self.entity_manager.entities.copy()
+        if book_id:
+            for cat in self.entity_manager.get_book_categories(book_id):
+                old_entities.setdefault(cat, {})
+        else:
+            for cat in DEFAULT_CATEGORIES:
+                old_entities.setdefault(cat, {})
+
+        book_categories = self.entity_manager.get_book_categories(book_id) if book_id else None
+        gendered_categories = self.entity_manager.get_book_gendered_categories(book_id) if book_id else None
+        system_prompt = self.generate_system_prompt(
+            chapter_text, old_entities,
+            book_prompt_template=book_prompt_template, provider=provider,
+            chapter_number=chapter_number, source_language=source_language,
+            retranslation_reason=retranslation_reason, mode='entity_only',
+            gendered_categories=gendered_categories, book=book_info,
+        )
+
+        # Save the pass-1 prompt for debugging (mirrors translate_chapter's behavior)
+        self.entity_manager.save_json_file(f"{self.config.script_dir}/prompt.tmp", system_prompt)
+
+        chunk_str = "\n".join(chapter_text)
+        user_text = "Identify the entities in the following text. Do NOT translate the prose.\n" + chunk_str
+
+        if progress_callback:
+            progress_callback({"phase": "entity_extract", "chunk": 1, "total": 1})
+
+        # Pass mode hint to providers (Gemini uses it to pick the right schema)
+        response_format = self._entity_response_format("entity_only", book_categories, gendered_categories)
+
+        MAX_RETRIES = 2
+        parsed = None
+        for attempt in range(MAX_RETRIES + 1):
+            self._check_cancel(should_cancel)
+            if attempt > 0:
+                self.logger.info(f"extract_entities: retrying pass-1 (attempt {attempt + 1}/{MAX_RETRIES + 1})")
+            call_start_time = time.time()
+            response_content = ""
+            try:
+                response = self._chat_completion_overload_aware(
+                    provider,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_text},
+                    ],
+                    model=model_name,
+                    temperature=1,
+                    top_p=1,
+                    response_format=response_format,
+                )
+                response_content = provider.get_response_content(response)
+                usage = response.get("usage", {}) if isinstance(response, dict) else {}
+                self.entity_manager.log_api_call(
+                    session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                    chunk_index=0, total_chunks=1,
+                    system_prompt=system_prompt, user_prompt=user_text,
+                    response_text=response_content,
+                    model_name=model_name, provider=provider.provider_name,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    total_tokens=usage.get("total_tokens", 0),
+                    duration_ms=int((time.time() - call_start_time) * 1000),
+                    success=1, attempt=attempt,
+                )
+                parsed = provider.validate_json_response(response_content)
+                break
+            except json.JSONDecodeError as e:
+                self.logger.warning(f"extract_entities: JSON parse failed (attempt {attempt + 1}): {e}")
+                if attempt < MAX_RETRIES:
+                    continue
+                self.logger.error("extract_entities: giving up after JSON parse failures")
+                with open('json_fail_debug.txt', 'w', encoding='utf-8') as f:
+                    f.write(str(response_content))
+                raise
+            except TranslationCancelled:
+                raise
+            except Exception as e:
+                self.logger.error(f"extract_entities: provider error (attempt {attempt + 1}): {e}")
+                self.entity_manager.log_api_call(
+                    session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                    chunk_index=0, total_chunks=1,
+                    system_prompt=system_prompt, user_prompt=user_text, response_text="",
+                    model_name=model_name, provider=provider.provider_name,
+                    duration_ms=int((time.time() - call_start_time) * 1000),
+                    success=0, attempt=attempt,
+                )
+                if attempt < MAX_RETRIES:
+                    continue
+                raise
+
+        raw_entities = (parsed or {}).get("entities", {}) or {}
+        # Filter to only newly-seen entities (same logic translate_chapter uses on each chunk)
+        new_entities = self.entity_manager.find_new_entities(old_entities, raw_entities)
+
+        # Apply the chapter_number to last_chapter so downstream code can use it directly
+        ch = chapter_number if isinstance(chapter_number, int) and chapter_number > 0 else 0
+        for cat in new_entities:
+            for key, val in new_entities[cat].items():
+                if isinstance(val, dict):
+                    val.setdefault("last_chapter", ch)
+
+        return new_entities
+
+    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None, pass2_only=False, chapter_title=None, should_cancel=None):
         """
         Translate a chapter of text using the configured LLM.
 
@@ -564,13 +990,10 @@ class TranslationEngine:
 
         # Optional trad→simp preprocessing — runs before the AI sees the source so
         # entity matching and prompt generation work against canonical (simplified) text.
-        # Idempotent: if the source was already converted in add_to_queue, this is a no-op.
-        if self.entity_manager._should_convert_trad(book_info):
-            try:
-                from trad_simp import convert_text
-                chapter_text = convert_text(chapter_text)
-            except ImportError as e:
-                self.logger.error(f"Trad→simp conversion skipped: {e}")
+        # Applies the trad_to_simp module only. Idempotent: if the source was already
+        # converted in add_to_queue, this is a no-op.
+        chapter_text = apply_source_module(book_info, chapter_text, "trad_to_simp",
+                                           self.config, self.logger)
 
         provider, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")
@@ -613,12 +1036,6 @@ class TranslationEngine:
         max_chars = self.config.get_max_chars(self.config.translation_model)
         chunks_count = max(1, math.ceil(total_char_count / max_chars))
 
-        # Generate the initial system prompt
-        system_prompt = self.generate_system_prompt(chapter_text, old_entities,
-                                               book_prompt_template=book_prompt_template, provider=provider,
-                                               chapter_number=chapter_number, source_language=source_language,
-                                               retranslation_reason=retranslation_reason)
-
         # Split the text into chunks for the LLM if necessary due to output token limits
         split_text = list(self.split_by_n(chapter_text, chunks_count))
 
@@ -629,6 +1046,18 @@ class TranslationEngine:
             # Create a single chunk with the entire text as a fallback
             split_text = [chapter_text]
             self.logger.debug("Created fallback chunk with entire text")
+
+        # Generate the initial system prompt (for chunk 1). total_chunks lets the
+        # prompt tell the model which chunk it is translating when split > 1.
+        _mode = 'translate_only' if pass2_only else 'full'
+        book_categories = self.entity_manager.get_book_categories(book_id) if book_id else None
+        gendered_categories = self.entity_manager.get_book_gendered_categories(book_id) if book_id else None
+        system_prompt = self.generate_system_prompt(chapter_text, old_entities,
+                                               book_prompt_template=book_prompt_template, provider=provider,
+                                               chapter_number=chapter_number, source_language=source_language,
+                                               retranslation_reason=retranslation_reason, mode=_mode,
+                                               chapter_title=chapter_title, gendered_categories=gendered_categories,
+                                               book=book_info, chunk_index=1, total_chunks=len(split_text))
 
         if len(split_text) > 1:
             self.logger.info(f"Input text is {total_char_count} characters. Splitting text into {len(split_text)} chunks.")
@@ -644,6 +1073,9 @@ class TranslationEngine:
         
         self.logger.debug(f"About to process {len(split_text)} chunks")
         for chunk_index, chunk in enumerate(split_text, 1):
+            # Cooperative cancellation point — between chunks the job stops cleanly
+            # (raising TranslationCancelled) rather than billing the next chunk.
+            self._check_cancel(should_cancel)
             self.logger.debug(f"Processing chunk {chunk_index} of {len(split_text)}")
             if progress_callback:
                 progress_callback({"chunk": chunk_index, "total": len(split_text), "phase": "start"})
@@ -670,88 +1102,141 @@ class TranslationEngine:
                 parsed_chunk = None
 
                 for attempt in range(MAX_STREAM_RETRIES + 1):
+                    self._check_cancel(should_cancel)
                     if attempt > 0:
                         print(f"🔄 Retrying chunk {chunk_index} (attempt {attempt + 1}/{MAX_STREAM_RETRIES + 1})...")
 
-                    response_text = ""
-                    chunk_count = 0
-                    start_time = time.time()
-                    call_start_time = time.time()
-                    repetition_detected = False
+                    # A genuine connection error consumes a retry from the
+                    # MAX_STREAM_RETRIES budget. A 529 "Overloaded" does not:
+                    # the service is saturated, so the inner loop waits a
+                    # configurable interval and re-streams without burning a
+                    # retry, looping until the service recovers.
+                    connection_failed = False
+                    while True:
+                        self._check_cancel(should_cancel)
+                        response_text = ""
+                        chunk_count = 0
+                        start_time = time.time()
+                        call_start_time = time.time()
+                        repetition_detected = False
+                        overloaded = False
+                        session_limited = None
 
-                    try:
-                        response_stream = provider.chat_completion(
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": system_prompt
-                                },
-                                {
-                                    "role": "user",
-                                    "content": user_text
-                                }
-                            ],
-                            model=model_name,
-                            temperature=1,
-                            top_p=1,
-                            response_format={"type": "json_object"},
-                            stream=True
-                        )
+                        try:
+                            response_stream = provider.chat_completion(
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": system_prompt
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": user_text
+                                    }
+                                ],
+                                model=model_name,
+                                temperature=1,
+                                top_p=1,
+                                response_format=self._entity_response_format(None, book_categories, gendered_categories),
+                                stream=True
+                            )
 
-                        # Process streaming response
-                        for stream_chunk in response_stream:
-                            content = provider.get_streaming_content(stream_chunk)
-                            if content:
-                                response_text += content
-                                chunk_count += 1
+                            # Process streaming response
+                            for stream_chunk in response_stream:
+                                content = provider.get_streaming_content(stream_chunk)
+                                if content:
+                                    response_text += content
+                                    chunk_count += 1
 
-                                # Estimate tokens from response length (~4 chars per token for English + JSON)
-                                token_count = len(response_text) // 4
+                                    # Mid-stream cancellation: abort the in-flight
+                                    # stream as soon as the user cancels instead of
+                                    # waiting for the whole chunk to finish.
+                                    if chunk_count % 10 == 0:
+                                        self._check_cancel(should_cancel)
 
-                                # Check for repetition loop every 20 chunks
-                                if chunk_count % 20 == 0 and self._detect_repetition(response_text):
-                                    print(f"\n⚠️  Repetition loop detected at ~{token_count} tokens. Aborting stream...")
-                                    repetition_detected = True
+                                    # Estimate tokens from response length (~4 chars per token for English + JSON)
+                                    token_count = len(response_text) // 4
+
+                                    # Check for repetition loop every 20 chunks
+                                    if chunk_count % 20 == 0 and self._detect_repetition(response_text):
+                                        print(f"\n⚠️  Repetition loop detected at ~{token_count} tokens. Aborting stream...")
+                                        repetition_detected = True
+                                        break
+
+                                    # Update progress display every 10 chunks
+                                    if chunk_count % 10 == 0:
+                                        elapsed = time.time() - start_time
+                                        tokens_per_second = token_count / elapsed if elapsed > 0 else 0
+                                        completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
+                                        progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
+                                        print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
+                                        if progress_callback:
+                                            progress_callback({
+                                                "chunk": chunk_index,
+                                                "total": len(split_text),
+                                                "phase": "translating",
+                                                "token_count": token_count,
+                                                "expected_tokens": int(expected_tokens),
+                                                "percent": round(completion_percentage, 1),
+                                                "tokens_per_second": round(tokens_per_second, 1),
+                                                "elapsed": round(elapsed, 1),
+                                            })
+
+                                # Check if stream is complete
+                                if provider.is_stream_complete(stream_chunk):
                                     break
 
-                                # Update progress display every 10 chunks
-                                if chunk_count % 10 == 0:
-                                    elapsed = time.time() - start_time
-                                    tokens_per_second = token_count / elapsed if elapsed > 0 else 0
-                                    completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
-                                    progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
-                                    print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
-                                    if progress_callback:
-                                        progress_callback({
-                                            "chunk": chunk_index,
-                                            "total": len(split_text),
-                                            "phase": "translating",
-                                            "token_count": token_count,
-                                            "expected_tokens": int(expected_tokens),
-                                            "percent": round(completion_percentage, 1),
-                                            "tokens_per_second": round(tokens_per_second, 1),
-                                            "elapsed": round(elapsed, 1),
-                                        })
+                            # Some providers surface a 529 — or a session-limit
+                            # notice — as plain assistant text rather than
+                            # raising. Detect both before treating it as output.
+                            if looks_session_limited(response_text):
+                                session_limited = response_text
+                            elif looks_overloaded(response_text):
+                                overloaded = True
 
-                            # Check if stream is complete
-                            if provider.is_stream_complete(stream_chunk):
-                                break
-
-                    except Exception as e:
-                        print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
-                        self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
-                        self.entity_manager.log_api_call(
-                            session_id=session_id, book_id=book_id, chapter_number=chapter_number,
-                            chunk_index=chunk_index, total_chunks=len(split_text),
-                            system_prompt=system_prompt, user_prompt=user_text, response_text="",
-                            model_name=model_name, provider=provider.provider_name,
-                            duration_ms=int((time.time() - call_start_time) * 1000),
-                            success=0, attempt=attempt,
-                        )
-                        if attempt < MAX_STREAM_RETRIES:
-                            continue
-                        else:
+                        except TranslationCancelled:
                             raise
+                        except SessionLimitError as e:
+                            self._sleep_for_session_limit(e.reset_text, progress_callback, chunk_index, should_cancel=should_cancel)
+                            continue
+                        except OverloadedError as e:
+                            self._sleep_for_overload(e, progress_callback, chunk_index, should_cancel=should_cancel)
+                            continue
+                        except Exception as e:
+                            if looks_session_limited(str(e)):
+                                self._sleep_for_session_limit(e, progress_callback, chunk_index, should_cancel=should_cancel)
+                                continue
+                            if looks_overloaded(str(e), strict=False):
+                                self._sleep_for_overload(e, progress_callback, chunk_index, should_cancel=should_cancel)
+                                continue
+                            print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
+                            self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
+                            self.entity_manager.log_api_call(
+                                session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                                chunk_index=chunk_index, total_chunks=len(split_text),
+                                system_prompt=system_prompt, user_prompt=user_text, response_text="",
+                                model_name=model_name, provider=provider.provider_name,
+                                duration_ms=int((time.time() - call_start_time) * 1000),
+                                success=0, attempt=attempt,
+                            )
+                            if attempt < MAX_STREAM_RETRIES:
+                                connection_failed = True
+                                break
+                            else:
+                                raise
+
+                        if session_limited:
+                            self._sleep_for_session_limit(session_limited, progress_callback, chunk_index, should_cancel=should_cancel)
+                            continue
+
+                        if overloaded:
+                            self._sleep_for_overload("529 Overloaded", progress_callback, chunk_index, should_cancel=should_cancel)
+                            continue
+
+                        break  # streamed without an overload / session limit
+
+                    if connection_failed:
+                        continue  # consume one retry from the outer budget
 
                     print("")
                     token_count = len(response_text) // 4
@@ -829,11 +1314,15 @@ class TranslationEngine:
                 MAX_RETRIES = 2
                 parsed_chunk = None
                 for attempt in range(MAX_RETRIES + 1):
+                    self._check_cancel(should_cancel)
                     if attempt > 0:
                         print(f"🔄 Retrying chunk {chunk_index} (attempt {attempt + 1}/{MAX_RETRIES + 1})...")
                     call_start_time = time.time()
                     try:
-                        response = provider.chat_completion(
+                        response = self._chat_completion_overload_aware(
+                            provider,
+                            progress_callback=progress_callback,
+                            should_cancel=should_cancel,
                             messages=[
                                 {
                                     "role": "system",
@@ -847,7 +1336,7 @@ class TranslationEngine:
                             model=model_name,
                             temperature=1,
                             top_p=1,
-                            response_format={"type": "json_object"}
+                            response_format=self._entity_response_format(None, book_categories, gendered_categories)
                         )
                         response_content = provider.get_response_content(response)
                         usage = response.get("usage", {}) if isinstance(response, dict) else {}
@@ -897,6 +1386,8 @@ class TranslationEngine:
                                 f.write(str(response_content))
                             print(f"Error: {e}")
                             raise
+                    except TranslationCancelled:
+                        raise
                     except Exception as e:
                         self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
                         self.entity_manager.log_api_call(
@@ -920,18 +1411,31 @@ class TranslationEngine:
                 current_chapter = parsed_chunk['chapter']
 
             end_object = self.combine_json_chunks(end_object, parsed_chunk, current_chapter)
-            
-            # Find new entities in this chunk and record them in totally_new_entities as a running total
-            new_entities_this_chunk = self.entity_manager.find_new_entities(real_old_entities, end_object['entities'])
-            totally_new_entities = self.entity_manager.combine_json_entities(totally_new_entities, new_entities_this_chunk)
-            
-            # Update old_entities with the newly processed chunk's combined entities
-            old_entities = self.entity_manager.combine_json_entities(old_entities, end_object['entities'])
-            
-            # Regenerate the system prompt for the next chunk to maintain consistency
-            system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False,
-                                                       book_prompt_template=book_prompt_template, provider=provider,
-                                                       chapter_number=chapter_number, source_language=source_language)
+
+            if pass2_only:
+                # Pass-2 of two-pass: entities were finalized in pass-1, so don't
+                # accumulate anything new. The model is also instructed not to
+                # emit an 'entities' field, but if it does, drop it on the floor.
+                end_object['entities'] = {}
+            else:
+                # Find new entities in this chunk and record them in totally_new_entities as a running total
+                new_entities_this_chunk = self.entity_manager.find_new_entities(real_old_entities, end_object['entities'])
+                totally_new_entities = self.entity_manager.combine_json_entities(totally_new_entities, new_entities_this_chunk)
+
+                # Update old_entities with the newly processed chunk's combined entities
+                old_entities = self.entity_manager.combine_json_entities(old_entities, end_object['entities'])
+
+                # Regenerate the system prompt for the next chunk to maintain consistency.
+                # Pass the running summary accumulated so far (end_object['summary']
+                # holds every prior chunk's summary) so the next chunk has continuity.
+                if chunk_index < len(split_text):
+                    system_prompt = self.generate_system_prompt(chapter_text, old_entities, do_count=False,
+                                                               book_prompt_template=book_prompt_template, provider=provider,
+                                                               chapter_number=chapter_number, source_language=source_language,
+                                                               mode=_mode, chapter_title=chapter_title,
+                                                               gendered_categories=gendered_categories, book=book_info,
+                                                               chunk_index=chunk_index + 1, total_chunks=len(split_text),
+                                                               previous_summary=end_object.get('summary', ''))
         
         self.logger.debug("Finished processing all chunks")
 
@@ -952,6 +1456,13 @@ class TranslationEngine:
             if cat not in new_entities:
                 new_entities[cat] = ent_data[cat]
 
+        # Reconcile illustration markers: guarantee every ⟦IMG:…⟧ from the source
+        # survives into the translated content (the model may have dropped or
+        # mangled them despite the prompt instruction).
+        end_object['content'] = self.reconcile_illustration_markers(
+            chapter_text, end_object.get('content', [])
+        )
+
         return {
             "end_object": end_object,
             "new_entities": new_entities,
@@ -961,6 +1472,92 @@ class TranslationEngine:
             "current_chapter": current_chapter,
             "total_char_count": total_char_count
         }
+
+    def reconcile_illustration_markers(self, source_lines, translated_lines):
+        """Ensure the translated content carries exactly the source's image markers.
+
+        The source array is the ground truth: it holds every ⟦IMG:id⟧ marker in
+        known order. The model may drop, mangle, duplicate, or reorder them. This:
+          1. Repairs lightly-mangled markers (e.g. 【IMG:..】, [IMG:..], inline) for
+             ids that exist in the source, isolating each onto its own line.
+          2. If the resulting marker sequence already matches the source, keeps the
+             model's positions (the common happy path).
+          3. Otherwise strips all markers and re-inserts the source set in order,
+             positioning each proportionally to where it sat in the source — so
+             presence and ordering are guaranteed even when the model diverged.
+
+        Returns the (possibly rewritten) translated line list. No-op for chapters
+        with no illustrations.
+        """
+        from illustrations import (
+            markers_in, parse_marker, parse_marker_lenient, make_marker,
+            MARKER_RE_LENIENT,
+        )
+
+        ground_truth = markers_in(source_lines)
+        if not ground_truth:
+            return translated_lines
+
+        known = set(ground_truth)
+
+        # 1. Normalize: split any clean/known-mangled markers onto their own lines.
+        norm = []
+        for line in (translated_lines or []):
+            if not isinstance(line, str):
+                norm.append(line)
+                continue
+            if parse_marker(line):
+                norm.append(line.strip())
+                continue
+            # Look for embedded / mangled markers whose id is a real source id.
+            segments = []
+            last = 0
+            for m in MARKER_RE_LENIENT.finditer(line):
+                mid = m.group(1).lower()
+                if mid not in known:
+                    continue
+                before = line[last:m.start()]
+                if before.strip():
+                    segments.append(before.strip())
+                segments.append(make_marker(mid))
+                last = m.end()
+            if not segments:
+                norm.append(line)
+                continue
+            tail = line[last:]
+            if tail.strip():
+                segments.append(tail.strip())
+            norm.extend(segments)
+
+        present = markers_in(norm)
+        if present == ground_truth:
+            return norm  # happy path — model preserved everything
+
+        self.logger.warning(
+            f"Illustration marker mismatch: source has {ground_truth}, "
+            f"translation had {present}. Reconciling."
+        )
+
+        # 2. Strip all markers, then re-insert the ground-truth set by position.
+        stripped = [l for l in norm if not (isinstance(l, str) and parse_marker(l))]
+        src_marker_idx = [i for i, l in enumerate(source_lines)
+                          if isinstance(l, str) and parse_marker(l)]
+        S = max(1, len(source_lines))
+        T = len(stripped)
+
+        targets = []
+        for k, mid in enumerate(ground_truth):
+            s_idx = src_marker_idx[k] if k < len(src_marker_idx) else S
+            t = int(round((s_idx / S) * T))
+            t = max(0, min(t, T))
+            targets.append((t, k, mid))
+        targets.sort(key=lambda x: (x[0], x[1]))
+
+        result = list(stripped)
+        for offset, (t, _k, mid) in enumerate(targets):
+            result.insert(t + offset, make_marker(mid))
+        return result
+
     def _check_for_translation_duplicates(self, entities_dict):
         """
         Check for duplicate translations across different categories or within the same category

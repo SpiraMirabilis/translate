@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { api } from '../services/api'
+import { isNoCache, setNoCache } from '../services/cacheBust'
 import { Check, Eye, EyeOff, Loader2, RefreshCw, Download, X, FileJson } from 'lucide-react'
 const JsonCodeMirror = lazy(() => import('../components/JsonCodeMirror'))
 
@@ -158,12 +159,33 @@ export default function Settings() {
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
-                checked={settings.trad_to_simp || false}
-                onChange={e => setSettings(s => ({ ...s, trad_to_simp: e.target.checked }))}
+                checked={settings.disable_content_cache || false}
+                onChange={e => setSettings(s => ({ ...s, disable_content_cache: e.target.checked }))}
               />
-              Convert traditional Chinese to simplified (global default)
-              <span className="text-xs text-slate-500 font-normal">— rewrites source text on chapter save; books can override</span>
+              Disable server-side caching of chapter/text content
+              <span className="text-xs text-slate-500 font-normal">— readers see chapter corrections immediately; turn off again to restore caching</span>
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.disable_media_cache || false}
+                onChange={e => setSettings(s => ({ ...s, disable_media_cache: e.target.checked }))}
+              />
+              Disable server-side caching of media (covers, illustrations, EPUBs)
+              <span className="text-xs text-slate-500 font-normal">— rarely needed; high-byte items that seldom change</span>
+            </label>
+            <div>
+              <label className="label">JSON fix timeout (seconds)</label>
+              <input
+                className="input text-sm"
+                type="number"
+                min="0"
+                value={settings.json_fix_timeout_seconds ?? 300}
+                onChange={e => setSettings(s => ({ ...s, json_fix_timeout_seconds: parseInt(e.target.value || '0', 10) }))}
+                placeholder="300"
+              />
+              <p className="text-xs text-slate-500 mt-1">How long the JSON Fix modal waits for manual input before defaulting to "Retry Chunk" so unattended jobs don't hang. 0 = wait forever.</p>
+            </div>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
                 {saved ? <Check size={13} /> : <Check size={13} />}
@@ -252,6 +274,9 @@ export default function Settings() {
       {/* Unit Conversions */}
       <UnitsSection />
 
+      {/* Developer */}
+      <DeveloperSection />
+
       {/* Database */}
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">Database</h2>
@@ -263,6 +288,39 @@ export default function Settings() {
         </div>
       </section>
     </div>
+  )
+}
+
+function DeveloperSection() {
+  // Frontend-only, localStorage-backed toggle — applies instantly (no service
+  // restart) and only to this browser. See services/cacheBust.js.
+  const [noCache, setNoCacheState] = useState(isNoCache())
+
+  const toggle = (on) => {
+    setNoCache(on)
+    setNoCacheState(on)
+  }
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold text-slate-300 mb-3">Developer</h2>
+      <div className="card p-4 space-y-4">
+        <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={noCache}
+            onChange={e => toggle(e.target.checked)}
+          />
+          Disable caching of API calls &amp; assets
+          <span className="text-xs text-slate-500 font-normal">— see book/chapter/cover edits immediately</span>
+        </label>
+        <p className="text-xs text-slate-500">
+          Sends every API request with <code className="text-slate-400">cache: no-store</code> and busts cover /
+          illustration image URLs so the browser refetches them on reload. This setting lives in your browser only
+          (not the server) and takes effect immediately — leave it off in normal use to keep things snappy.
+        </p>
+      </div>
+    </section>
   )
 }
 

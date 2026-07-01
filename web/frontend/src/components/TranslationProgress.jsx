@@ -11,7 +11,7 @@ export default function TranslationProgress({ progress, status }) {
   // Defensive: if the job isn't actively running/awaiting, suppress any stale
   // progress UI. Without this, a dropped `translation_complete` WS message can
   // leave the bar stuck on "Repairing translation…" until the user refreshes.
-  if (status !== 'running' && status !== 'awaiting_review' && status !== 'awaiting_json_fix' && status !== 'awaiting_chapter_conflict') {
+  if (status !== 'running' && status !== 'waiting' && status !== 'awaiting_review' && status !== 'awaiting_json_fix' && status !== 'awaiting_chapter_conflict') {
     return null
   }
 
@@ -33,6 +33,31 @@ export default function TranslationProgress({ progress, status }) {
 
   const { chunk, total, phase, token_count, expected_tokens, percent, tokens_per_second, elapsed } = progress
   const hasTokenData = token_count != null && expected_tokens != null
+
+  // Paused: Claude Code session usage limit reached. The translation thread is
+  // sleeping until the reset time; show that clearly rather than an active bar.
+  if (phase === 'session_limit') {
+    const mins = progress.wait_seconds ? Math.max(1, Math.round(progress.wait_seconds / 60)) : null
+    const resumeAt = progress.resume_at
+      ? new Date(progress.resume_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : null
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-amber-300">⏸ Session limit reached — queue paused</span>
+          {resumeAt && (
+            <span className="text-slate-400">
+              resuming ~{resumeAt}{mins ? ` (~${mins} min)` : ''}
+            </span>
+          )}
+        </div>
+        <div className="h-2 rounded-full bg-slate-700 overflow-hidden">
+          <div className="h-full bg-amber-500 rounded-full w-12"
+               style={{ animation: 'indeterminate 1.4s ease-in-out infinite' }} />
+        </div>
+      </div>
+    )
+  }
 
   // Post-translation phases (cleaning, repairing, etc.)
   if (phase === 'cleaning' || phase === 'repairing') {

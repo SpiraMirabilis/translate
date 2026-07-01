@@ -5,6 +5,7 @@ import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
+import { bustUrl } from '../services/cacheBust'
 import ReaderComments from '../components/ReaderComments'
 import { loadIdentity } from '../components/CommentForm'
 import TagChips from '../components/TagChips'
@@ -142,6 +143,20 @@ export default function BookDetail() {
     return () => { document.title = site_name }
   }, [book, public_site_name, site_name])
 
+  // Per-book RSS autodiscovery: inject an <link rel="alternate"> into the head
+  // so feed readers and browser extensions detect this book's feed. The SPA's
+  // static index.html only advertises the global feed.
+  useEffect(() => {
+    if (!bookId) return
+    const link = document.createElement('link')
+    link.rel = 'alternate'
+    link.type = 'application/rss+xml'
+    link.title = book ? `${book.title} — New Chapters` : 'New Chapters'
+    link.href = `/api/public/books/${bookId}/feed.rss`
+    document.head.appendChild(link)
+    return () => { document.head.removeChild(link) }
+  }, [bookId, book])
+
   const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
 
   const [epubLoading, setEpubLoading] = useState(false)
@@ -173,6 +188,9 @@ export default function BookDetail() {
 
   const currentChapter = progress?.[bookId]
   const hasProgress = currentChapter && currentChapter > 1
+  // First real chapter to open when there's no saved progress. Skips the
+  // book-discussion sentinel and doesn't assume chapters start at 1.
+  const firstChapter = chapters.find(ch => ch.chapter > BOOK_DISCUSSION_CH)?.chapter ?? 1
 
   const displayedChapters = showAll ? chapters : chapters.slice(0, INITIAL_CHAPTERS)
 
@@ -231,7 +249,7 @@ export default function BookDetail() {
             <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-lg`}>
               {book.cover_image ? (
                 <img
-                  src={`/api/public/books/${bookId}/cover`}
+                  src={bustUrl(book.cover_medium_url || `/api/public/books/${bookId}/cover/medium`)}
                   alt={book.title}
                   className="w-full h-full object-cover"
                 />
@@ -288,7 +306,7 @@ export default function BookDetail() {
             <div className="flex items-center gap-3 mt-5 justify-center sm:justify-start flex-wrap">
               {chapters.length > 0 ? (
                 <Link
-                  to={hasProgress ? `/library/read/${bookId}/${currentChapter}` : `/library/read/${bookId}`}
+                  to={`/library/read/${bookId}/${hasProgress ? currentChapter : firstChapter}`}
                   className={`${t.btnPrimary} px-5 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2`}
                 >
                   <BookOpen size={16} />

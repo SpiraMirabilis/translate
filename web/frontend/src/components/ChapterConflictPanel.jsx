@@ -26,6 +26,9 @@ export default function ChapterConflictPanel({
   const [renumberMode, setRenumberMode] = useState(null) // null | 'existing' | 'new'
   const [renumberDraft, setRenumberDraft] = useState('')
   const [errorMsg, setErrorMsg] = useState(null)
+  // Which action button is currently hovered, to show the directional arrow
+  // overlay across the split view. null | 'overwrite' | 'skip'.
+  const [hoverHint, setHoverHint] = useState(null)
 
   // Re-fetch the payload from the API on mount as a safety net — mirrors
   // the JsonFixPanel pattern so the modal still works after a page refresh.
@@ -130,7 +133,15 @@ export default function ChapterConflictPanel({
         </div>
 
         {/* Body — split view */}
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-0 min-h-0 overflow-hidden">
+        <div className="relative flex-1 grid grid-cols-1 md:grid-cols-2 gap-0 min-h-0 overflow-hidden">
+          {/* Directional hint arrow — shown while hovering Skip / Overwrite.
+              Overwrite: arrow points left (incoming, right pane, wins).
+              Skip: arrow points right (existing, left pane, wins). */}
+          {hoverHint && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+              <ConflictArrow direction={hoverHint === 'overwrite' ? 'left' : 'right'} />
+            </div>
+          )}
           {/* Existing */}
           <div className="flex flex-col border-r border-slate-700 min-h-0">
             <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/60 shrink-0">
@@ -205,15 +216,20 @@ export default function ChapterConflictPanel({
         ) : (
           <div className="px-5 py-4 border-t border-slate-700 shrink-0">
             <div className="text-xs text-slate-500 mb-3">
-              "Skip" drops the queue item. "Append &amp; retranslate" combines both sources.
+              "Skip" drops the queue item. "Append &amp; translate new part" keeps the existing
+              translation and only translates the appended source, joining the two.
               "Renumber" moves either chapter to a new number. "Insert &amp; shift queue" translates
               this item as the next chapter and bumps every later queue item up by one.
               "Overwrite" replaces the existing chapter.
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
-              className="btn-secondary flex items-center gap-1.5"
+              className="btn-success flex items-center gap-1.5"
               onClick={() => submit('cancel')}
+              onMouseEnter={() => setHoverHint('skip')}
+              onMouseLeave={() => setHoverHint(null)}
+              onFocus={() => setHoverHint('skip')}
+              onBlur={() => setHoverHint(null)}
               disabled={submitting}
             >
               <X size={13} /> Skip queue item
@@ -223,7 +239,7 @@ export default function ChapterConflictPanel({
               onClick={() => submit('merge')}
               disabled={submitting}
             >
-              <Merge size={13} /> Append &amp; retranslate
+              <Merge size={13} /> Append &amp; translate new part
             </button>
             <button
               className="btn-secondary flex items-center gap-1.5"
@@ -252,6 +268,10 @@ export default function ChapterConflictPanel({
             <button
               className="btn-danger flex items-center gap-1.5"
               onClick={() => submit('proceed')}
+              onMouseEnter={() => setHoverHint('overwrite')}
+              onMouseLeave={() => setHoverHint(null)}
+              onFocus={() => setHoverHint('overwrite')}
+              onBlur={() => setHoverHint(null)}
               disabled={submitting}
             >
               <Check size={13} /> Overwrite existing
@@ -260,6 +280,42 @@ export default function ChapterConflictPanel({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * ConflictArrow — thick directional arrow drawn across the split view to
+ * hint which pane "wins" for the hovered action.
+ *   direction 'left'  → overwrite: incoming (right pane) replaces existing.
+ *   direction 'right' → skip: existing (left pane) is kept.
+ */
+function ConflictArrow({ direction }) {
+  const isLeft = direction === 'left'
+  const color = isLeft ? '#f43f5e' : '#34d399' // rose-500 / emerald-400
+  const label = isLeft ? 'Incoming overwrites existing' : 'Existing chapter is kept'
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <svg
+        viewBox="0 0 300 120"
+        className={`w-[58%] max-w-[460px] ${isLeft ? 'conflict-arrow-left' : 'conflict-arrow-right'}`}
+        style={{ filter: `drop-shadow(0 0 12px ${color})` }}
+      >
+        <polygon
+          points="8,38 178,38 178,8 292,60 178,112 178,82 8,82"
+          fill={color}
+          stroke="#0f172a"
+          strokeWidth="5"
+          strokeLinejoin="round"
+          transform={isLeft ? 'translate(300,0) scale(-1,1)' : undefined}
+        />
+      </svg>
+      <span
+        className="text-xs font-semibold px-2.5 py-1 rounded border bg-slate-950/90"
+        style={{ color, borderColor: color }}
+      >
+        {label}
+      </span>
     </div>
   )
 }

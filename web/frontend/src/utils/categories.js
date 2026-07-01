@@ -3,6 +3,23 @@ export const DEFAULT_CATEGORIES = [
   'titles', 'equipment', 'creatures'
 ]
 
+// Categories that are gender-tracked by default when a book exposes no explicit
+// per-category attribute map (mirrors backend DEFAULT_GENDERED_CATEGORIES).
+export const DEFAULT_GENDERED_CATEGORIES = ['characters']
+
+/**
+ * Whether a category is gender-tracked, given a book's category-attributes map
+ * (as returned by GET /api/books/{id}/categories — { category: [attrs] }).
+ * Falls back to the "characters" default when no attribute map is available.
+ */
+export function isGenderedCategory(category, attributes) {
+  if (!category) return false
+  if (attributes && Object.prototype.hasOwnProperty.call(attributes, category)) {
+    return (attributes[category] || []).includes('gender')
+  }
+  return DEFAULT_GENDERED_CATEGORIES.includes(category)
+}
+
 // rgba-based colors for entity highlighting overlays (used in ChapterEditor, Reader)
 export const CATEGORY_COLORS = {
   characters:    { bg: 'rgba(99,102,241,0.28)',  border: 'rgba(99,102,241,0.6)' },   // indigo
