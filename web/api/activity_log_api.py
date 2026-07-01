@@ -1,5 +1,5 @@
 """Activity log API endpoints."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 router = APIRouter()
 
@@ -12,8 +12,8 @@ def init(entity_manager):
 
 
 @router.get("/api/activity-log")
-async def get_activity_log():
-    entries = _entity_manager.get_activity_log()
+async def get_activity_log(limit: int = Query(200, ge=1, le=1000)):
+    entries = _entity_manager.get_activity_log(limit=limit)
     return {"entries": entries}
 
 

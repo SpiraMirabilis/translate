@@ -100,38 +100,50 @@ async def list_entities(
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     origin_chapter: Optional[int] = Query(None),
+    limit: Optional[int] = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ):
     conn = _entity_manager.get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    query = "SELECT id, category, untranslated, translation, last_chapter, gender, incorrect_translation, book_id, origin_chapter, note FROM entities WHERE 1=1"
+    where = " WHERE 1=1"
     params = []
 
     if global_only:
-        query += " AND book_id IS NULL"
+        where += " AND book_id IS NULL"
     elif book_id is not None and include_global:
-        query += " AND (book_id = ? OR book_id IS NULL)"
+        where += " AND (book_id = ? OR book_id IS NULL)"
         params.append(book_id)
     elif book_id is not None:
-        query += " AND book_id = ?"
+        where += " AND book_id = ?"
         params.append(book_id)
     if category:
-        query += " AND category = ?"
+        where += " AND category = ?"
         params.append(category)
     if search:
-        query += " AND (untranslated LIKE ? OR translation LIKE ?)"
+        where += " AND (untranslated LIKE ? OR translation LIKE ?)"
         params.extend([f"%{search}%", f"%{search}%"])
     if origin_chapter is not None:
-        query += " AND origin_chapter = ?"
+        where += " AND origin_chapter = ?"
         params.append(origin_chapter)
 
-    query += " ORDER BY category, untranslated"
+    query = ("SELECT id, category, untranslated, translation, last_chapter, gender, "
+             "incorrect_translation, book_id, origin_chapter, note FROM entities"
+             + where + " ORDER BY category, untranslated")
+
+    out = {}
+    if limit is not None:
+        # Paginated mode: include the unpaginated total so clients can page.
+        cursor.execute("SELECT COUNT(*) FROM entities" + where, params)
+        out["total"] = cursor.fetchone()[0]
+        query += " LIMIT ? OFFSET ?"
+        params = params + [limit, offset]
 
     cursor.execute(query, params)
-    rows = [dict(r) for r in cursor.fetchall()]
+    out["entities"] = [dict(r) for r in cursor.fetchall()]
     conn.close()
-    return {"entities": rows}
+    return out
 
 
 @router.get("/origin-chapters")

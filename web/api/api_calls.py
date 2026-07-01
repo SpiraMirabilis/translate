@@ -19,8 +19,9 @@ class ApiCallUpdate(BaseModel):
 
 
 @router.get("/api/api-calls")
-async def list_all_api_calls(book_id: Optional[int] = Query(None)):
-    rows = _entity_manager.get_all_api_calls(book_id=book_id)
+async def list_all_api_calls(book_id: Optional[int] = Query(None),
+                             limit: int = Query(500, ge=1, le=1000)):
+    rows = _entity_manager.get_all_api_calls(book_id=book_id, limit=limit)
     sessions = []
     seen_sessions = {}
     for row in rows:
@@ -43,8 +44,9 @@ async def list_all_api_calls(book_id: Optional[int] = Query(None)):
 
 
 @router.get("/api/api-calls/{book_id}")
-async def list_api_calls(book_id: int, chapter_number: Optional[int] = Query(None)):
-    rows = _entity_manager.get_api_calls(book_id, chapter_number=chapter_number)
+async def list_api_calls(book_id: int, chapter_number: Optional[int] = Query(None),
+                         limit: int = Query(500, ge=1, le=1000)):
+    rows = _entity_manager.get_api_calls(book_id, chapter_number=chapter_number, limit=limit)
     # Group by session_id, preserving the DB ordering (newest sessions first)
     sessions = []
     seen_sessions = {}
