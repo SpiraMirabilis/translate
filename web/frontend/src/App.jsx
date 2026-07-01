@@ -3,7 +3,10 @@ import {
   Route, Navigate, Outlet,
 } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { queryClient } from './lib/queryClient'
 import Layout from './components/Layout'
+import WsQueryBridge from './components/WsQueryBridge'
 import Dashboard from './pages/Dashboard'
 import Books from './pages/Books'
 import ChapterEditor from './pages/ChapterEditor'
@@ -123,6 +126,7 @@ function AdminGate() {
   }
   return (
     <WsProvider>
+      <WsQueryBridge />
       <Outlet />
     </WsProvider>
   )
@@ -209,10 +213,12 @@ export default function App() {
   const handleLoginSuccess = () => setAuthState({ ...authState, authenticated: true })
 
   return (
-    <SiteProvider>
-      <AuthContext.Provider value={{ authState, onLoginSuccess: handleLoginSuccess }}>
-        <RouterProvider router={router} />
-      </AuthContext.Provider>
-    </SiteProvider>
+    <QueryClientProvider client={queryClient}>
+      <SiteProvider>
+        <AuthContext.Provider value={{ authState, onLoginSuccess: handleLoginSuccess }}>
+          <RouterProvider router={router} />
+        </AuthContext.Provider>
+      </SiteProvider>
+    </QueryClientProvider>
   )
 }
