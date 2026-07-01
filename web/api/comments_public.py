@@ -27,16 +27,13 @@ import os
 import re
 import hmac
 import hashlib
-import time
-import threading
-from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from web.services import automod, turnstile
+from web.services import automod, public_guard, turnstile
 from web.services.email_tokens import verify_unsubscribe_token
 from web.services.ip import client_ip
 from web.services.notifications import notify_reply
@@ -55,72 +52,38 @@ def init(db_manager, config=None):
 
 
 # ------------------------------------------------------------------
-# Origin / Referer guard (mirrors web/api/public.py)
+# Origin / rate-limit / captcha-skip guards (shared, web/services/public_guard.py)
 # ------------------------------------------------------------------
 
-def _origin_check(request: Request):
-    origin = request.headers.get("origin")
-    referer = request.headers.get("referer")
-    host = request.headers.get("host", "")
-    allowed = set()
-    if host:
-        allowed.add(f"http://{host}")
-        allowed.add(f"https://{host}")
-    allowed.add("http://localhost:5173")
-    allowed.add("http://127.0.0.1:5173")
-    allowed.add("http://localhost:8000")
-    allowed.add("http://127.0.0.1:8000")
-    if origin and any(origin.startswith(a) for a in allowed):
-        return
-    if referer and any(referer.startswith(a) for a in allowed):
-        return
-    if not origin and not referer:
-        return
-    raise HTTPException(status_code=403, detail="Forbidden")
+_origin_check = public_guard.origin_check
+
+_RATE_DETAIL = "Too many comments. Slow down."
+_hits_ip_short   = public_guard.SlidingWindowLimiter(60,   5,  _RATE_DETAIL)
+_hits_ip_long    = public_guard.SlidingWindowLimiter(3600, 30, _RATE_DETAIL)
+_hits_uuid_short = public_guard.SlidingWindowLimiter(60,   5,  _RATE_DETAIL)
+_hits_uuid_long  = public_guard.SlidingWindowLimiter(3600, 30, _RATE_DETAIL)
 
 
-# ------------------------------------------------------------------
-# Rate limiting — per-IP and per-UUID, sliding windows
-# ------------------------------------------------------------------
-
-_RATE_SHORT_WINDOW = 60
-_RATE_SHORT_LIMIT = 5
-_RATE_LONG_WINDOW = 3600
-_RATE_LONG_LIMIT = 30
-
-_hits_ip_short: dict[str, list[float]] = defaultdict(list)
-_hits_ip_long:  dict[str, list[float]] = defaultdict(list)
-_hits_uuid_short: dict[str, list[float]] = defaultdict(list)
-_hits_uuid_long:  dict[str, list[float]] = defaultdict(list)
-_lock = threading.Lock()
+def _rate_check(ip: str, uuid: str):
+    _hits_ip_short.check(ip)
+    _hits_ip_long.check(ip)
+    _hits_uuid_short.check(uuid)
+    _hits_uuid_long.check(uuid)
 
 
-# ------------------------------------------------------------------
 # Captcha-skip cache: once a UUID has solved Turnstile successfully
 # we don't re-prompt for an hour. Trusted UUIDs (those with at least
 # one approved comment) skip Turnstile entirely.
-# ------------------------------------------------------------------
 
-_HUMAN_VERIFY_TTL = 3600  # seconds
-_human_verified: dict[str, float] = {}
+_human_verified = public_guard.TTLSet(3600)
 
 
 def _is_human_verified(uuid: Optional[str]) -> bool:
-    if not uuid:
-        return False
-    with _lock:
-        exp = _human_verified.get(uuid, 0)
-        if exp > time.time():
-            return True
-        _human_verified.pop(uuid, None)
-        return False
+    return uuid in _human_verified
 
 
 def _mark_human_verified(uuid: Optional[str]):
-    if not uuid:
-        return
-    with _lock:
-        _human_verified[uuid] = time.time() + _HUMAN_VERIFY_TTL
+    _human_verified.add(uuid)
 
 
 def _captcha_required_for(uuid: Optional[str]) -> bool:
@@ -139,24 +102,6 @@ def _viewer_meta(uuid: Optional[str]) -> dict:
         "is_trusted": bool(_db.is_commenter_trusted(uuid)),
         "captcha_required": _captcha_required_for(uuid),
     }
-
-
-def _check_rate(key: str, hits: dict, window: int, limit: int):
-    now = time.time()
-    cutoff = now - window
-    bucket = [t for t in hits[key] if t > cutoff]
-    if len(bucket) >= limit:
-        raise HTTPException(status_code=429, detail="Too many comments. Slow down.")
-    bucket.append(now)
-    hits[key] = bucket
-
-
-def _rate_check(ip: str, uuid: str):
-    with _lock:
-        _check_rate(ip,   _hits_ip_short,   _RATE_SHORT_WINDOW, _RATE_SHORT_LIMIT)
-        _check_rate(ip,   _hits_ip_long,    _RATE_LONG_WINDOW,  _RATE_LONG_LIMIT)
-        _check_rate(uuid, _hits_uuid_short, _RATE_SHORT_WINDOW, _RATE_SHORT_LIMIT)
-        _check_rate(uuid, _hits_uuid_long,  _RATE_LONG_WINDOW,  _RATE_LONG_LIMIT)
 
 
 # ------------------------------------------------------------------

@@ -4,13 +4,12 @@ Public endpoint for submitting novel translation recommendations.
 Protected by Cloudflare Turnstile and rate limiting.
 """
 import os
-import time
-import threading
-import httpx
-from collections import defaultdict
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
+
+from web.services import public_guard, turnstile
+from web.services.ip import client_ip
 
 router = APIRouter(prefix="/api/public")
 
@@ -22,47 +21,9 @@ def init(db_manager):
     _db = db_manager
 
 
-# ------------------------------------------------------------------
-# Rate limiting — stricter than the general public API
-# ------------------------------------------------------------------
-
-_RATE_WINDOW = 3600       # 1 hour
-_RATE_LIMIT  = 5          # max 5 submissions per hour per IP
-_hits: dict[str, list[float]] = defaultdict(list)
-_lock = threading.Lock()
-
-
-def _rate_check(ip: str):
-    now = time.time()
-    cutoff = now - _RATE_WINDOW
-    with _lock:
-        bucket = _hits[ip]
-        _hits[ip] = bucket = [t for t in bucket if t > cutoff]
-        if len(bucket) >= _RATE_LIMIT:
-            raise HTTPException(status_code=429, detail="Too many submissions. Please try again later.")
-        bucket.append(now)
-
-
-# ------------------------------------------------------------------
-# Turnstile verification
-# ------------------------------------------------------------------
-
-_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
-
-
-async def _verify_turnstile(token: str, ip: str) -> bool:
-    secret = os.getenv("CF_TURNSTILE_SECRET_KEY", "")
-    if not secret:
-        # If no secret configured, skip verification (dev mode)
-        return True
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(_TURNSTILE_VERIFY_URL, data={
-            "secret": secret,
-            "response": token,
-            "remoteip": ip,
-        })
-        result = resp.json()
-        return result.get("success", False)
+# Rate limiting — stricter than the general public API: 5 submissions/hour/IP.
+_limiter = public_guard.SlidingWindowLimiter(
+    3600, 5, "Too many submissions. Please try again later.")
 
 
 # ------------------------------------------------------------------
@@ -83,11 +44,11 @@ class RecommendationRequest(BaseModel):
 
 @router.post("/recommendations")
 async def submit_recommendation(req: RecommendationRequest, request: Request):
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
-    _rate_check(ip)
+    ip = client_ip(request)
+    _limiter.check(ip)
 
-    # Verify Turnstile
-    valid = await _verify_turnstile(req.turnstile_token, ip)
+    # Verify Turnstile (shared helper: 5s timeout, fails closed on network error)
+    valid, _err = await turnstile.verify(req.turnstile_token, ip)
     if not valid:
         raise HTTPException(status_code=400, detail="CAPTCHA verification failed. Please try again.")
 

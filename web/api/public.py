@@ -7,10 +7,7 @@ Protected by:
 """
 import os
 import re
-import time
-import threading
 import logging
-from collections import defaultdict
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from xml.etree import ElementTree as ET
@@ -18,6 +15,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+
+from web.services import public_guard
+from web.services.ip import client_ip
 
 _log = logging.getLogger(__name__)
 
@@ -144,74 +144,14 @@ async def site_info(response: Response):
 
 
 # ------------------------------------------------------------------
-# Rate limiting — simple in-memory sliding window per IP
+# Rate limiting + Origin/Referer guard (shared, web/services/public_guard.py)
 # ------------------------------------------------------------------
 
-_RATE_WINDOW = 60        # seconds
-_RATE_LIMIT  = 60        # requests per window
-_hits: dict[str, list[float]] = defaultdict(list)
-_lock = threading.Lock()
+_public_limiter = public_guard.SlidingWindowLimiter(60, 60)
 
-
-def _rate_check(ip: str):
-    now = time.time()
-    cutoff = now - _RATE_WINDOW
-    with _lock:
-        bucket = _hits[ip]
-        # Prune old entries
-        _hits[ip] = bucket = [t for t in bucket if t > cutoff]
-        if len(bucket) >= _RATE_LIMIT:
-            raise HTTPException(status_code=429, detail="Too many requests")
-        bucket.append(now)
-
-
-# ------------------------------------------------------------------
-# Origin / Referer guard
-# ------------------------------------------------------------------
-
-def _origin_check(request: Request):
-    """
-    Reject requests that don't originate from a browser viewing our site.
-    This blocks casual scripted access while remaining transparent to
-    normal page visitors.  Not a security boundary — just a speed bump.
-    """
-    origin = request.headers.get("origin")
-    referer = request.headers.get("referer")
-    host = request.headers.get("host", "")
-
-    # Build set of acceptable origins from the Host header
-    allowed = set()
-    if host:
-        allowed.add(f"http://{host}")
-        allowed.add(f"https://{host}")
-    # Dev origins
-    allowed.add("http://localhost:5173")
-    allowed.add("http://127.0.0.1:5173")
-    allowed.add("http://localhost:8000")
-    allowed.add("http://127.0.0.1:8000")
-
-    # Accept if either Origin or Referer matches
-    if origin and any(origin.startswith(a) for a in allowed):
-        return
-    if referer and any(referer.startswith(a) for a in allowed):
-        return
-
-    # Also allow if neither header is present (direct browser navigation
-    # to JSON endpoint — uncommon but harmless for read-only data)
-    if not origin and not referer:
-        return
-
-    raise HTTPException(status_code=403, detail="Forbidden")
-
-
-# ------------------------------------------------------------------
-# Middleware-style guard applied to every endpoint
-# ------------------------------------------------------------------
 
 def _guard(request: Request):
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
-    _rate_check(ip)
-    _origin_check(request)
+    public_guard.guard(request, _public_limiter)
 
 
 # ------------------------------------------------------------------
@@ -338,7 +278,7 @@ async def get_chapters_batch(book_id: int, nums: str, request: Request, response
     if len(wanted) > _BATCH_MAX:
         raise HTTPException(status_code=400, detail=f"At most {_BATCH_MAX} chapters per batch")
     out = []
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+    ip = client_ip(request)
     for n in wanted:
         ch = _db.get_chapter(book_id=book_id, chapter_number=n)
         if not ch:
@@ -356,7 +296,7 @@ async def get_chapter(book_id: int, chapter_number: int, request: Request, respo
     ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number)
     if not ch:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+    ip = client_ip(request)
     _db.log_reader_view(book_id, chapter_number, ip)
     return _shape_public_chapter(ch, book_id)
 
@@ -419,7 +359,7 @@ async def download_epub(book_id: int, request: Request):
     _guard(request)
     book = _get_public_book(book_id)
 
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+    ip = client_ip(request)
 
     # If Spaces holds the current content version, redirect to the immutable CDN
     # URL — the VM serves no bytes.
