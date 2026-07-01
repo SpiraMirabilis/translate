@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from PIL import Image
 from database import DEFAULT_CATEGORIES
+from web.api.deps import get_book_or_404
+from web.services import media_urls
 
 
 def _content_disposition(filename: str) -> str:
@@ -271,17 +273,13 @@ def get_default_prompt():
 
 @router.get("/{book_id}")
 def get_book(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     return _attach_cover_urls(book)
 
 
 @router.put("/{book_id}")
 def update_book(book_id: int, req: BookUpdate):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     dump = req.model_dump()
     # Allow total_source_chapters=null to clear the value
     nullable_fields = {'total_source_chapters', 'trad_to_simp', 'modules'}
@@ -345,9 +343,7 @@ def set_module_settings(book_id: int, module_id: str, req: ModuleSettingsUpdate)
     Unknown keys (not in the module's ``settings_schema``) are dropped. Returns
     the resolved settings (schema defaults merged with the saved values).
     """
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     from modules import REGISTRY
     module = REGISTRY.get(module_id)
     if module is None:
@@ -369,9 +365,7 @@ def set_module_settings(book_id: int, module_id: str, req: ModuleSettingsUpdate)
 
 @router.delete("/{book_id}")
 def delete_book(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     # Clean up cover + thumbnail files (local + Spaces)
     _remove_cover_files(book, book_id)
     # Best-effort purge of this book's illustration + EPUB objects from Spaces.
@@ -419,63 +413,24 @@ def _spaces_delete(rel_path):
         pass
 
 
+# Shared cover/illustration CDN helpers (web/services/media_urls.py); thin
+# delegates keep the existing call sites unchanged.
+
 def _cdn_url(rel_path):
-    """CDN URL for a local relative media path, or None when Spaces is disabled."""
-    if not rel_path:
-        return None
-    try:
-        import spaces
-        return spaces.url_for_relpath(_entity_manager.config, rel_path)
-    except Exception:
-        return None
+    return media_urls.cdn_url(_entity_manager, rel_path)
 
 
 def _attach_cover_urls(book):
-    """Add cover_url / cover_medium_url / cover_thumb_url CDN fields in place."""
-    if isinstance(book, dict) and book.get("cover_image"):
-        book["cover_url"] = _cdn_url(book["cover_image"])
-        book["cover_medium_url"] = _cdn_url(f"covers/{book['id']}_medium.webp")
-        book["cover_thumb_url"] = _cdn_url(f"covers/{book['id']}_thumb.webp")
-    return book
+    return media_urls.attach_cover_urls(_entity_manager, book)
 
 
 def _attach_illustrations(book_id, ch):
-    """Add an {marker_id: cdn_url} map to a chapter dict in place (Spaces only)."""
-    try:
-        import spaces
-        if not isinstance(ch, dict) or not spaces.is_enabled(_entity_manager.config):
-            return ch
-        from illustrations import markers_in
-        out = {}
-        for lines in (ch.get("content"), ch.get("untranslated")):
-            for mid in markers_in(lines or []):
-                if mid in out:
-                    continue
-                row = _entity_manager.get_book_illustration(book_id, mid)
-                if row and row.get("filename"):
-                    out[mid] = spaces.url_for_relpath(_entity_manager.config, row["filename"])
-        if out:
-            ch["illustrations"] = out
-    except Exception:
-        pass
-    return ch
+    return media_urls.attach_illustrations(_entity_manager, book_id, ch)
 
 
 def _cdn_redirect_or_file(rel_path, local_filepath, media_type=None):
-    """Redirect to the CDN object if present, else serve the local file."""
-    from fastapi.responses import RedirectResponse
-    try:
-        import spaces
-        cfg = _entity_manager.config
-        if spaces.is_enabled(cfg):
-            key = spaces.key_for(cfg, rel_path)
-            if spaces.exists(cfg, key):
-                return RedirectResponse(spaces.public_url(cfg, key), status_code=302)
-    except Exception:
-        pass
-    if not os.path.exists(local_filepath):
-        raise HTTPException(status_code=404, detail="File missing.")
-    return FileResponse(local_filepath, media_type=media_type) if media_type else FileResponse(local_filepath)
+    return media_urls.cdn_redirect_or_file(_entity_manager, rel_path, local_filepath,
+                                           media_type=media_type)
 
 
 def _generate_cover_derivatives(book_id, cover_rel):
@@ -501,9 +456,7 @@ def _remove_cover_files(book, book_id):
 
 @router.post("/{book_id}/cover")
 async def upload_cover(book_id: int, file: UploadFile = File(...)):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
 
     ct = file.content_type or ""
     if not ct.startswith("image/"):
@@ -534,9 +487,7 @@ async def upload_cover(book_id: int, file: UploadFile = File(...)):
 
 @router.get("/{book_id}/cover")
 def get_cover(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     if not book.get("cover_image"):
         raise HTTPException(status_code=404, detail="No cover image.")
     filepath = os.path.join(_entity_manager.config.script_dir, book["cover_image"])
@@ -547,9 +498,7 @@ def _serve_cover_derivative(book_id, kind):
     """Serve a cover derivative (thumb|medium), generating it on the fly if
     missing, with CDN redirect + full-cover fallback."""
     import cover_images
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     if not book.get("cover_image"):
         raise HTTPException(status_code=404, detail="No cover image.")
     path = cover_images.ensure_derivative(_entity_manager.config, book, kind)
@@ -576,9 +525,7 @@ def get_cover_medium(book_id: int):
 
 @router.delete("/{book_id}/cover")
 def delete_cover(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     _remove_cover_files(book, book_id)
     _entity_manager.update_book(book_id, cover_image="")
     return {"status": "ok"}
@@ -606,18 +553,14 @@ def get_illustration(book_id: int, marker_id: str):
 
 @router.get("/{book_id}/prompt")
 def get_prompt(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     template = _entity_manager.get_book_prompt_template(book_id)
     return {"template": template or ""}
 
 
 @router.put("/{book_id}/prompt")
 def set_prompt(book_id: int, req: PromptUpdate):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     success = _entity_manager.set_book_prompt_template(book_id, req.template)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to save prompt template.")
@@ -626,9 +569,7 @@ def set_prompt(book_id: int, req: PromptUpdate):
 
 @router.delete("/{book_id}/prompt")
 def reset_prompt(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     _entity_manager.set_book_prompt_template(book_id, None)
     return {"status": "ok"}
 
@@ -639,9 +580,7 @@ def reset_prompt(book_id: int):
 
 @router.get("/{book_id}/categories")
 def get_categories(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     meta = _entity_manager.get_book_categories_meta(book_id)
     is_default = book.get("categories") is None
     return {
@@ -653,9 +592,7 @@ def get_categories(book_id: int):
 
 @router.put("/{book_id}/categories")
 def set_categories(book_id: int, req: CategoriesUpdate):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     # Validate + attach per-category attributes. When `attributes` is omitted
     # (legacy clients), pass bare names so normalize_categories applies gender
     # defaults instead of silently stripping gender from characters.
@@ -686,9 +623,7 @@ def set_categories(book_id: int, req: CategoriesUpdate):
 
 @router.delete("/{book_id}/categories")
 def reset_categories(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     _entity_manager.set_book_categories(book_id, None)
     return {"status": "ok"}
 
@@ -712,9 +647,7 @@ def category_entity_counts(book_id: int):
 
 @router.post("/{book_id}/search")
 def search_book(book_id: int, req: BookSearchRequest):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     if not req.query:
         return {"results": [], "total_matches": 0}
     results = _entity_manager.search_book_chapters(
@@ -726,9 +659,7 @@ def search_book(book_id: int, req: BookSearchRequest):
 
 @router.post("/{book_id}/replace")
 def replace_in_book(book_id: int, req: BookReplaceRequest):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     if not req.query:
         return {"status": "ok", "affected_chapters": 0, "total_replacements": 0}
     result = _entity_manager.replace_in_chapters(
@@ -754,9 +685,7 @@ def undo_replace(book_id: int):
 
 @router.get("/{book_id}/chapters")
 def list_chapters(book_id: int):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     chapters = _entity_manager.list_chapters(book_id)
     return {"chapters": chapters or []}
 
@@ -766,9 +695,7 @@ _BATCH_CHAPTER_MAX = 10
 
 @router.get("/{book_id}/chapters/batch")
 def get_chapters_batch(book_id: int, nums: str):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
     try:
         wanted = [int(n) for n in nums.split(",") if n.strip()]
     except ValueError:
@@ -879,9 +806,7 @@ def batch_proofread_chapters(book_id: int, req: BatchProofreadAction):
 
 @router.post("/{book_id}/chapters/batch-requeue")
 def batch_requeue_chapters(book_id: int, req: BatchRequeueAction):
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
 
     queued = 0
     errors = []
@@ -1046,9 +971,7 @@ def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from output_formatter import OutputFormatter
 
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
 
     chapters = _entity_manager.list_chapters(book_id)
     if not chapters:
@@ -1194,9 +1117,7 @@ def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", 
 def invalidate_epub_cache(book_id: int):
     """Drop the cached EPUB for a book — local disk file and Spaces blob(s) —
     so the next export regenerates it from scratch."""
-    book = _entity_manager.get_book(book_id=book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found.")
+    book = get_book_or_404(book_id)
 
     # Combined invalidation: drops the local epub_cache/{book_id}.epub file and,
     # when enabled, best-effort purges this book's EPUB blobs from Spaces/CDN.

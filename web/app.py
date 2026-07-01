@@ -44,6 +44,8 @@ def create_app() -> FastAPI:
     job_manager.db_manager = entity_manager
 
     # Wire up API modules
+    from web.api import deps
+    deps.init(entity_manager)
     translation.init(web_interface, job_manager)
     books.init(entity_manager, translator, logger)
     entities.init(entity_manager, translator)

@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from web.services import public_guard
+from web.services import media_urls, public_guard
 from web.services.ip import client_ip
 
 _log = logging.getLogger(__name__)
@@ -81,74 +81,25 @@ def _bump_book_view(book_id: int):
 
 
 # ------------------------------------------------------------------
-# Spaces / CDN helpers
+# Spaces / CDN helpers — shared with the admin router
+# (web/services/media_urls.py); thin delegates keep call sites unchanged.
 # ------------------------------------------------------------------
 
 def _cdn_url(rel_path):
-    """CDN URL for a local relative media path, or None when Spaces is disabled."""
-    if not rel_path:
-        return None
-    try:
-        import spaces
-        return spaces.url_for_relpath(_db.config, rel_path)
-    except Exception:
-        return None
+    return media_urls.cdn_url(_db, rel_path)
 
 
 def _cover_urls(book):
-    """Return (cover_url, cover_medium_url, cover_thumb_url) CDN urls, or Nones."""
-    if not book.get("cover_image"):
-        return None, None, None
-    return (
-        _cdn_url(book["cover_image"]),
-        _cdn_url(f"covers/{book['id']}_medium.webp"),
-        _cdn_url(f"covers/{book['id']}_thumb.webp"),
-    )
+    return media_urls.cover_urls(_db, book)
 
 
 def _illustration_map(book_id, *line_lists):
-    """Map {marker_id: cdn_url} for markers in the given content arrays.
-
-    Returns None when Spaces is disabled (frontend then falls back to the API
-    route), so image-free / local-only deployments carry no extra payload.
-    """
-    try:
-        import spaces
-        if not spaces.is_enabled(_db.config):
-            return None
-        from illustrations import markers_in
-        out = {}
-        for lines in line_lists:
-            for mid in markers_in(lines or []):
-                if mid in out:
-                    continue
-                row = _db.get_book_illustration(book_id, mid)
-                if row and row.get("filename"):
-                    out[mid] = spaces.url_for_relpath(_db.config, row["filename"])
-        return out or None
-    except Exception:
-        return None
+    return media_urls.illustration_map(_db, book_id, *line_lists)
 
 
 def _cdn_redirect_or_file(rel_path, local_filepath, headers=None):
-    """Redirect to the CDN object if present, else serve the local file.
-
-    Used by the legacy /cover|/illustration routes as a fallback path (the
-    frontend prefers the CDN URL baked into payloads).
-    """
-    from fastapi.responses import RedirectResponse, FileResponse as _FR
-    try:
-        import spaces
-        cfg = _db.config
-        if spaces.is_enabled(cfg):
-            key = spaces.key_for(cfg, rel_path)
-            if spaces.exists(cfg, key):
-                return RedirectResponse(spaces.public_url(cfg, key), status_code=302)
-    except Exception:
-        pass
-    if not os.path.exists(local_filepath):
-        raise HTTPException(status_code=404, detail="File missing")
-    return _FR(local_filepath, headers=headers or {})
+    return media_urls.cdn_redirect_or_file(_db, rel_path, local_filepath,
+                                           headers=headers or {})
 
 
 @router.get("/site_info")
