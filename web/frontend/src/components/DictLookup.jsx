@@ -2,7 +2,7 @@
  * Shared dictionary lookup components.
  * Extracted from ChapterEditor for reuse in entity review/edit modals.
  */
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { BookOpen, X, Loader2 } from 'lucide-react'
 import { api } from '../services/api'
 

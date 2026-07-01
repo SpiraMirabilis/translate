@@ -21,7 +21,6 @@ export default function CommentItem({
   onEdit,
   onDelete,
   theme = {},
-  level = 0,
 }) {
   const [editing, setEditing] = useState(false)
   const [editBody, setEditBody] = useState(comment.body || '')

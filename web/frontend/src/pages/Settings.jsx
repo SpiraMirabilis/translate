@@ -184,7 +184,7 @@ export default function Settings() {
                 onChange={e => setSettings(s => ({ ...s, json_fix_timeout_seconds: parseInt(e.target.value || '0', 10) }))}
                 placeholder="300"
               />
-              <p className="text-xs text-slate-500 mt-1">How long the JSON Fix modal waits for manual input before defaulting to "Retry Chunk" so unattended jobs don't hang. 0 = wait forever.</p>
+              <p className="text-xs text-slate-500 mt-1">How long the JSON Fix modal waits for manual input before defaulting to &quot;Retry Chunk&quot; so unattended jobs don&apos;t hang. 0 = wait forever.</p>
             </div>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
@@ -215,7 +215,7 @@ export default function Settings() {
                 onChange={e => setSettings(s => ({ ...s, email_from: e.target.value }))}
                 placeholder="noreply@yourdomain.com"
               />
-              <p className="text-xs text-slate-500 mt-1">Must be a domain Postfix is authorized to send from. Notifications won't deliver if this is unset.</p>
+              <p className="text-xs text-slate-500 mt-1">Must be a domain Postfix is authorized to send from. Notifications won&apos;t deliver if this is unset.</p>
             </div>
             <div>
               <label className="label">Site base URL (SITE_BASE_URL)</label>
@@ -594,7 +594,7 @@ function WordPressSection() {
       <div className="card p-4 space-y-3">
         <p className="text-xs text-slate-500">
           Connect to a WordPress site with the Fictioneer theme to publish books and chapters.
-          Use an <a href="https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/" target="_blank" rel="noopener" className="text-blue-400 hover:underline">Application Password</a> for authentication.
+          Use an <a href="https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Application Password</a> for authentication.
         </p>
         <div>
           <label className="label">WordPress Site URL</label>

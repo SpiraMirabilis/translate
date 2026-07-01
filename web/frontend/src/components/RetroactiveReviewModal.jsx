@@ -237,7 +237,7 @@ export default function RetroactiveReviewModal({ book, onClose }) {
   )
 }
 
-function EntityRow({ row, categories, categoryAttributes, onUpdate, onSave, onAdvice, onDelete, bookId }) {
+function EntityRow({ row, categories, categoryAttributes, onUpdate, onSave, onAdvice, onDelete }) {
   const [showAdvice, setShowAdvice] = useState(false)
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -499,7 +499,7 @@ function PropagateOverlay({ entityId, oldTranslation, newTranslation, untranslat
               <div>
                 <p className="text-sm font-medium text-slate-200">Find and replace from chapter {fromChapter} forward</p>
                 <p className="text-xs text-slate-500">
-                  Replace every occurrence of "{oldTranslation}" with "{newTranslation}" in translated chapter text.
+                  Replace every occurrence of &quot;{oldTranslation}&quot; with &quot;{newTranslation}&quot; in translated chapter text.
                   <span className="text-amber-400"> Use with caution for generic terms.</span>
                 </p>
               </div>
@@ -514,7 +514,7 @@ function PropagateOverlay({ entityId, oldTranslation, newTranslation, untranslat
               <div>
                 <p className="text-sm font-medium text-slate-200">Flag chapters from {fromChapter} forward for retranslation</p>
                 <p className="text-xs text-slate-500">
-                  Find every chapter from {fromChapter} onward whose original text contains "{untranslated}" and add it to the translation queue.
+                  Find every chapter from {fromChapter} onward whose original text contains &quot;{untranslated}&quot; and add it to the translation queue.
                 </p>
               </div>
             </button>

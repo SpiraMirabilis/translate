@@ -71,7 +71,7 @@ export default function RecommendModal({ onClose, theme }) {
   useEffect(() => {
     return () => {
       if (widgetIdRef.current != null && window.turnstile) {
-        try { window.turnstile.remove(widgetIdRef.current) } catch {}
+        try { window.turnstile.remove(widgetIdRef.current) } catch { /* ignore */ }
         widgetIdRef.current = null
       }
     }
@@ -132,7 +132,7 @@ export default function RecommendModal({ onClose, theme }) {
         <div className={`${modalBg} rounded-xl p-8 shadow-2xl max-w-sm w-full text-center`} onClick={e => e.stopPropagation()}>
           <CheckCircle size={48} className="mx-auto mb-4 text-emerald-500" />
           <h3 className={`text-xl font-bold ${modalText} mb-2`}>Thank you!</h3>
-          <p className={subtleText}>Your recommendation has been submitted. We'll review it soon.</p>
+          <p className={subtleText}>Your recommendation has been submitted. We&apos;ll review it soon.</p>
         </div>
       </div>
     )

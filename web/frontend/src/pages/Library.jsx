@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link, useSearchParams, useNavigate } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, X } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -120,7 +120,6 @@ export default function Library() {
   const { site_name, public_site_name } = useSite()
   const t = T[prefs.theme] || T.light
   const [searchParams, setSearchParams] = useSearchParams()
-  const navigate = useNavigate()
   const activeTag = searchParams.get('tag')?.toLowerCase() || ''
 
   useEffect(() => {

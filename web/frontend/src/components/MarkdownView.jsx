@@ -25,7 +25,7 @@ const PURIFY_CONFIG = {
   ALLOWED_TAGS: ['p', 'em', 'strong', 'code', 'a', 'br'],
   ALLOWED_ATTR: ['href', 'target', 'rel'],
   // Force javascript:/data: schemes to be stripped
-  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 }
 
 // Tighten links: every <a> opens in a new tab and gets a non-followed,
@@ -48,7 +48,7 @@ export default function MarkdownView({ source, className = '' }) {
   return (
     <div
       className={`markdown-view ${className}`}
-      // eslint-disable-next-line react/no-danger
+       
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, AlertTriangle,
-  X, Check, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
+  X, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
   Pin, CheckSquare, Square, FolderInput, ArrowRightLeft, Download
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps, isGenderedCategory } from '../utils/categories'
@@ -149,10 +149,6 @@ export default function Entities() {
       return next
     })
   }, [])
-
-  const toggleSelectAll = useCallback(() => {
-    setSelected(prev => prev.size === entities.length ? new Set() : new Set(entities.map(e => e.id)))
-  }, [entities])
 
   const clearSelection = useCallback(() => setSelected(new Set()), [])
 
@@ -734,7 +730,7 @@ function BatchBookModal({ count, books, onClose, onConfirm }) {
 
 function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
   const [dupUntranslated, setDupUntranslated] = useState(duplicates.duplicate_untranslated || [])
-  const [dupTranslations, setDupTranslations] = useState(duplicates.duplicate_translations || [])
+  const [dupTranslations] = useState(duplicates.duplicate_translations || [])
   const scrollRef = useRef(null)
   const nextItemRef = useRef(null)
 
@@ -757,8 +753,6 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
   }
 
   const handleUntranslatedResolved = (untranslated, bookId) => {
-    // Find the index of the resolved item so we can scroll to the next one
-    const idx = dupUntranslated.findIndex(d => d.untranslated === untranslated && d.book_id === bookId)
     setDupUntranslated(prev => prev.filter(d => !(d.untranslated === untranslated && d.book_id === bookId)))
     onResolved()
     // After state update, scroll to the next item
@@ -767,9 +761,6 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
 
   const untranslatedByBook = groupByBook(dupUntranslated)
   const translationsByBook = groupByBook(dupTranslations)
-
-  // Flatten untranslated items to assign nextItemRef to the one after a resolved item
-  const allUntranslatedItems = untranslatedByBook.flatMap(g => g.items)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -819,7 +810,7 @@ function DuplicatesModal({ duplicates, books, onClose, onResolved }) {
                     <div className="space-y-2">
                       {group.items.map(dup => (
                         <div key={dup.translation} className="card p-3">
-                          <p className="text-sm font-medium text-slate-200 mb-2">"{dup.translation}"</p>
+                          <p className="text-sm font-medium text-slate-200 mb-2">&quot;{dup.translation}&quot;</p>
                           <div className="space-y-1">
                             {dup.instances.map(inst => (
                               <div key={inst.id} className="flex items-center gap-2 text-xs text-slate-400">

@@ -10,14 +10,14 @@ function loadIdentity() {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object' && parsed.uuid) return parsed
-  } catch {}
+  } catch { /* ignore */ }
   return null
 }
 
 function saveIdentity(identity) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(identity))
-  } catch {}
+  } catch { /* ignore */ }
 }
 
 function makeUuid() {

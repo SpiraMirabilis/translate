@@ -5,7 +5,7 @@
  * Right panel: persistent activity log + progress
  * Bottom:      entity review panel (modal overlay when entities need review)
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useWs } from '../App'
 import { api } from '../services/api'
@@ -236,7 +236,7 @@ export default function Dashboard() {
         no_clean: noClean,
         no_stream: noStream,
       })
-    } catch (e) {
+    } catch {
       setJobStatus('error')
     }
   }
@@ -423,7 +423,7 @@ export default function Dashboard() {
                 <span className="relative group">
                   <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
                   <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                    Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won't update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
+                    Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won&apos;t update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
                   </span>
                 </span>
               </label>

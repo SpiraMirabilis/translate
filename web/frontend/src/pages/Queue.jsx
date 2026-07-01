@@ -187,7 +187,7 @@ export default function Queue() {
             <button
               className="btn-danger flex items-center gap-1.5"
               onClick={async () => {
-                try { await api.stopAutoProcess() } catch {}
+                try { await api.stopAutoProcess() } catch { /* ignore */ }
                 setAutoProcess(false)
               }}
               title="Finish the current chapter then stop"
@@ -313,7 +313,7 @@ export default function Queue() {
             <span className="relative group">
               <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
               <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
-                Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won't update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
+                Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won&apos;t update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
               </span>
             </span>
           </label>

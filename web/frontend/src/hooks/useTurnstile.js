@@ -52,7 +52,7 @@ export function useTurnstile(siteKey, themeName = 'auto') {
   useEffect(() => {
     return () => {
       if (widgetIdRef.current != null && window.turnstile) {
-        try { window.turnstile.remove(widgetIdRef.current) } catch {}
+        try { window.turnstile.remove(widgetIdRef.current) } catch { /* ignore */ }
         widgetIdRef.current = null
       }
     }

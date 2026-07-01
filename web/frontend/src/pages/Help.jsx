@@ -59,8 +59,8 @@ export default function Help() {
               <p className="font-medium text-slate-200">Set up your book</p>
               <p className="text-slate-400">
                 Go to <Ref to="/books">Books</Ref> and create a new book. Pick a genre preset &mdash; the genre
-                determines the source language and loads an optimized system prompt (e.g. "Chinese Xianxia" includes
-                cultivation terminology, "Japanese Light Novel" handles honorifics). You can also choose "Custom"
+                determines the source language and loads an optimized system prompt (e.g. &quot;Chinese Xianxia&quot; includes
+                cultivation terminology, &quot;Japanese Light Novel&quot; handles honorifics). You can also choose &quot;Custom&quot;
                 and write your own prompt later.
               </p>
             </div>
@@ -71,7 +71,7 @@ export default function Help() {
             <div>
               <p className="font-medium text-slate-200">Upload chapters to the queue</p>
               <p className="text-slate-400">
-                Go to <Ref to="/queue">Queue</Ref> and use "Upload File" to add text files, or "Upload EPUB" to
+                Go to <Ref to="/queue">Queue</Ref> and use &quot;Upload File&quot; to add text files, or &quot;Upload EPUB&quot; to
                 import an entire novel at once. Assign them to your book. You can upload many chapters at once &mdash;
                 the queue processes them in order. Chapter numbers are auto-detected from filenames when possible.
               </p>
@@ -83,7 +83,7 @@ export default function Help() {
             <div>
               <p className="font-medium text-slate-200">Start queue processing</p>
               <p className="text-slate-400">
-                Select your models and hit "Process Next" or enable "Auto-process" to translate chapters
+                Select your models and hit &quot;Process Next&quot; or enable &quot;Auto-process&quot; to translate chapters
                 back-to-back. The queue will pause when new entities are found that need review.
               </p>
             </div>
@@ -107,9 +107,9 @@ export default function Help() {
               <p className="font-medium text-slate-200">Proofread while the next chapter translates</p>
               <p className="text-slate-400">
                 After a chapter finishes, go to <Ref to="/books">Books</Ref>, expand the book, and click
-                "Edit" on the just-translated chapter. The Chapter Editor shows the source text on the left and
+                &quot;Edit&quot; on the just-translated chapter. The Chapter Editor shows the source text on the left and
                 English on the right &mdash; you can proofread and fix the translation while the next chapter
-                processes in the background. Mark it proofread when you're satisfied.
+                processes in the background. Mark it proofread when you&apos;re satisfied.
               </p>
             </div>
           </div>
@@ -137,14 +137,14 @@ export default function Help() {
         <div className="space-y-2">
           <p className="font-medium text-slate-200">Options</p>
           <ul className="list-disc list-inside space-y-1 text-slate-400">
-            <li><span className="text-slate-300">Book</span> &mdash; assigns the chapter to a book and uses that book's entities and custom system prompt.</li>
+            <li><span className="text-slate-300">Book</span> &mdash; assigns the chapter to a book and uses that book&apos;s entities and custom system prompt.</li>
             <li><span className="text-slate-300">Chapter #</span> &mdash; the chapter number. Auto-increments if left blank.</li>
             <li><span className="text-slate-300">Translation model</span> &mdash; the AI model used for the main translation. Overrides the default from Settings.</li>
             <li><span className="text-slate-300">Advice model</span> &mdash; a secondary model consulted for entity translation suggestions (e.g. name romanization). Can be a smaller, cheaper model.</li>
             <li><span className="text-slate-300">Cleaning model</span> &mdash; a lightweight model that double-checks whether newly found entities are actually proper nouns. Recommended for DeepSeek or smaller models which often misidentify common words as entities.</li>
             <li><span className="text-slate-300">Skip entity review</span> &mdash; automatically accept all new entities without pausing for review. Faster, but you lose the chance to fix mistakes before they propagate.</li>
             <li><span className="text-slate-300">Skip entity cleaning</span> &mdash; disable the cleaning pass. Saves a small amount of time/tokens if your translation model is already accurate at identifying entities.</li>
-            <li><span className="text-slate-300">Skip partial repair</span> &mdash; after translation, any lines that still contain source-language characters are automatically retranslated using the cleaning model. This is most useful with Chinese-native models like DeepSeek, which occasionally leave fragments untranslated. No extra API calls are used unless untranslated characters are actually detected, so it's safe to leave enabled.</li>
+            <li><span className="text-slate-300">Skip partial repair</span> &mdash; after translation, any lines that still contain source-language characters are automatically retranslated using the cleaning model. This is most useful with Chinese-native models like DeepSeek, which occasionally leave fragments untranslated. No extra API calls are used unless untranslated characters are actually detected, so it&apos;s safe to leave enabled.</li>
             <li><span className="text-slate-300">Skip unit conversion</span> &mdash; disable the post-translation unit conversion pass. See the Unit Conversion section below for details.</li>
           </ul>
         </div>
@@ -176,7 +176,7 @@ export default function Help() {
             <li><span className="text-slate-300">Genre presets</span> &mdash; when creating a book, pick a genre (Chinese Xianxia, Japanese Light Novel, Korean Web Novel, etc.) to load an optimized system prompt and entity categories. You can customize the prompt after creation.</li>
             <li><span className="text-slate-300">Cover image</span> &mdash; upload a cover image for the book. Used in EPUB exports and the public library.</li>
             <li><span className="text-slate-300">System prompt</span> &mdash; each book can have a custom system prompt that overrides the default translation instructions. Useful for book-specific tone, style, or terminology rules.</li>
-            <li><span className="text-slate-300">Entity categories</span> &mdash; customize which entity categories are available for the book (e.g. add "cultivation ranks" for xianxia, or remove unused categories).</li>
+            <li><span className="text-slate-300">Entity categories</span> &mdash; customize which entity categories are available for the book (e.g. add &quot;cultivation ranks&quot; for xianxia, or remove unused categories).</li>
             <li><span className="text-slate-300">Export EPUB</span> &mdash; generates an EPUB file from all translated chapters.</li>
             <li><span className="text-slate-300">WordPress publish</span> &mdash; publish to a WordPress/Fictioneer site (see the WordPress section below).</li>
           </ul>
@@ -195,7 +195,7 @@ export default function Help() {
         <div className="space-y-2">
           <p className="font-medium text-slate-200">Global search</p>
           <p className="text-slate-400">
-            Click the search icon next to "New Book" (or press <Kbd>Ctrl+F</Kbd> on the Books page) to open the
+            Click the search icon next to &quot;New Book&quot; (or press <Kbd>Ctrl+F</Kbd> on the Books page) to open the
             global search modal. Select a book, type a query, and results appear grouped by chapter with match counts.
             Click a result to jump directly into the Chapter Editor with the search pre-loaded and positioned on the
             first match, ready to navigate forward through the book.
@@ -215,7 +215,7 @@ export default function Help() {
             <li><span className="text-slate-300">Entity highlighting</span> &mdash; toggle to highlight known entities in both panels with category-specific colors. Click a highlighted entity to edit it inline.</li>
             <li><span className="text-slate-300">Dictionary lookup</span> &mdash; select text and use the toolbar button to look it up in CC-CEDICT (Chinese dictionary).</li>
             <li><span className="text-slate-300">LLM retranslation</span> &mdash; select a source passage and request an AI retranslation. The result appears as ruby text above the original, so you can compare the new translation with the current one.</li>
-            <li><span className="text-slate-300">Proofread toggle</span> &mdash; mark the chapter as proofread when you're satisfied with the translation.</li>
+            <li><span className="text-slate-300">Proofread toggle</span> &mdash; mark the chapter as proofread when you&apos;re satisfied with the translation.</li>
           </ul>
         </div>
 
@@ -260,11 +260,11 @@ export default function Help() {
             <li><span className="text-slate-300">Categories</span> &mdash; characters, places, organizations, abilities, titles, equipment, creatures (customizable per book).</li>
             <li><span className="text-slate-300">Book scope</span> &mdash; entities can be book-specific or global (shared across all books).</li>
             <li><span className="text-slate-300">Gender</span> &mdash; for character entities, helps the AI use correct pronouns.</li>
-            <li><span className="text-slate-300">Notes</span> &mdash; per-entity translation guidance that gets included in the AI prompt. Keep notes brief and specific, e.g. "Use female pronouns in narration." Noted entities are pinned to the top of each category for visibility.</li>
+            <li><span className="text-slate-300">Notes</span> &mdash; per-entity translation guidance that gets included in the AI prompt. Keep notes brief and specific, e.g. &quot;Use female pronouns in narration.&quot; Noted entities are pinned to the top of each category for visibility.</li>
             <li><span className="text-slate-300">AI advice</span> &mdash; ask a secondary AI model for translation suggestions on any entity.</li>
-            <li><span className="text-slate-300">Dictionary lookup</span> &mdash; look up an entity's source text in CC-CEDICT.</li>
+            <li><span className="text-slate-300">Dictionary lookup</span> &mdash; look up an entity&apos;s source text in CC-CEDICT.</li>
             <li><span className="text-slate-300">Duplicate detection</span> &mdash; find entities that share the same source or English text, which may indicate a problem.</li>
-            <li><span className="text-slate-300">Propagation</span> &mdash; when you change an entity's translation, you're offered the option to find-and-replace the old translation across all chapters, or re-queue affected chapters for retranslation.</li>
+            <li><span className="text-slate-300">Propagation</span> &mdash; when you change an entity&apos;s translation, you&apos;re offered the option to find-and-replace the old translation across all chapters, or re-queue affected chapters for retranslation.</li>
           </ul>
         </div>
 
@@ -288,8 +288,8 @@ export default function Help() {
         <div className="space-y-2">
           <p className="font-medium text-slate-200">Upload</p>
           <p className="text-slate-400">
-            Use "Upload File" to add <span className="text-slate-300">.txt</span> files (single or batch), or
-            "Upload EPUB" to import an entire novel &mdash; each chapter is extracted and added as a separate queue item.
+            Use &quot;Upload File&quot; to add <span className="text-slate-300">.txt</span> files (single or batch), or
+            &quot;Upload EPUB&quot; to import an entire novel &mdash; each chapter is extracted and added as a separate queue item.
             Assign a book and starting chapter number during upload. When uploading EPUB files, you can also create a
             new book directly from the EPUB metadata.
           </p>
@@ -299,14 +299,14 @@ export default function Help() {
           <p className="font-medium text-slate-200">Processing options</p>
           <ul className="list-disc list-inside space-y-1 text-slate-400">
             <li><span className="text-slate-300">Filter by book</span> &mdash; only show and process queue items for a specific book.</li>
-            <li><span className="text-slate-300">Auto-process</span> &mdash; after each chapter finishes, automatically start the next one. The queue pauses for entity review or when you click "Stop after current."</li>
+            <li><span className="text-slate-300">Auto-process</span> &mdash; after each chapter finishes, automatically start the next one. The queue pauses for entity review or when you click &quot;Stop after current.&quot;</li>
             <li><span className="text-slate-300">Model selectors</span> &mdash; same as the Dashboard: translation, advice, and cleaning models. These persist in your browser.</li>
             <li><span className="text-slate-300">Skip review / Skip cleaning / Skip partial repair / Skip unit conversion</span> &mdash; same as the Dashboard options.</li>
           </ul>
         </div>
 
         <p className="text-slate-400">
-          When entity review is needed during queue processing, you'll be redirected to the Dashboard to review.
+          When entity review is needed during queue processing, you&apos;ll be redirected to the Dashboard to review.
           After approving, translation resumes and the queue continues.
         </p>
       </Section>
@@ -321,7 +321,7 @@ export default function Help() {
             <span className="text-slate-300">Google Gemini</span>, and{' '}
             <span className="text-slate-300">OpenRouter</span>.
             Each provider needs an API key set either here or via environment variables.
-            Use the "Test" button to verify your keys work.
+            Use the &quot;Test&quot; button to verify your keys work.
           </p>
         </div>
 
@@ -340,13 +340,13 @@ export default function Help() {
             Unit conversion automatically converts Chinese units (li, jin, zhang, etc.) to metric equivalents
             in the translated text. It works in two steps: first, a regular expression scans for unit patterns;
             then, all matches are sent to the <span className="text-slate-300">cleaning model</span> to filter out
-            false positives (e.g. idiomatic phrases that aren't actual measurements). If no cleaning model is set,
+            false positives (e.g. idiomatic phrases that aren&apos;t actual measurements). If no cleaning model is set,
             the filtering step is skipped and all regex matches are converted directly.
           </p>
           <p className="text-slate-400">
             The editable JSON block on this page controls conversion factors and the action for each
             unit: <span className="text-slate-300">annotate</span> (keeps the original text and adds a parenthetical,
-            e.g. "thirty li (15 km)") or <span className="text-slate-300">replace</span> (substitutes the converted
+            e.g. &quot;thirty li (15 km)&quot;) or <span className="text-slate-300">replace</span> (substitutes the converted
             value directly). You can also configure whether to use Arabic numerals or English words for converted
             values. Unit conversion can be toggled on or off per translation.
           </p>
@@ -379,7 +379,7 @@ export default function Help() {
       <Section title="Reader">
         <p>
           A clean, distraction-free reading interface for translated books. Accessible from the Books page
-          (click "Read") or from the public Library if enabled.
+          (click &quot;Read&quot;) or from the public Library if enabled.
         </p>
 
         <div className="space-y-2">
@@ -475,11 +475,11 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
             <li>Log in to WP Admin.</li>
             <li>Go to <span className="text-slate-300">Users &gt; Profile</span>.</li>
             <li>Scroll to <span className="text-slate-300">Application Passwords</span>.</li>
-            <li>Enter a name (e.g. "{site_name}") and click <span className="text-slate-300">Add New Application Password</span>.</li>
+            <li>Enter a name (e.g. &quot;{site_name}&quot;) and click <span className="text-slate-300">Add New Application Password</span>.</li>
             <li>Copy the generated password &mdash; it is only shown once.</li>
           </ol>
           <p className="text-slate-500 text-xs mt-1">
-            For local/dev setups without HTTPS, add <span className="font-mono">define('WP_ENVIRONMENT_TYPE', 'local');</span> to
+            For local/dev setups without HTTPS, add <span className="font-mono">define(&apos;WP_ENVIRONMENT_TYPE&apos;, &apos;local&apos;);</span> to
             your <span className="font-mono">wp-config.php</span>.
           </p>
         </div>
@@ -519,7 +519,7 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
           <ul className="list-disc list-inside space-y-1 text-slate-400">
             <li><span className="text-slate-300">Test connection returns 401</span> &mdash; verify the Application Password is correct and HTTPS is enabled.</li>
             <li><span className="text-slate-300">Chapters show 0 words</span> &mdash; this means the word-count step failed. Re-publish to fix, or use the recalculate endpoint on the WordPress server.</li>
-            <li><span className="text-slate-300">Duplicate stories</span> &mdash; if a publish fails midway, re-publishing may create a duplicate story. Delete the extra in WP Admin and clear the publish state: <span className="font-mono text-xs">sqlite3 database.db "DELETE FROM wp_publish_state WHERE book_id = X;"</span></li>
+            <li><span className="text-slate-300">Duplicate stories</span> &mdash; if a publish fails midway, re-publishing may create a duplicate story. Delete the extra in WP Admin and clear the publish state: <span className="font-mono text-xs">sqlite3 database.db &quot;DELETE FROM wp_publish_state WHERE book_id = X;&quot;</span></li>
             <li><span className="text-slate-300">Plugin not working after update</span> &mdash; re-run the install script or re-upload the plugin file. The plugin has no settings of its own.</li>
           </ul>
         </div>
@@ -552,7 +552,7 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
             character or term.
           </li>
           <li>
-            <span className="text-slate-300">Check for duplicates periodically.</span> The "Check Duplicates"
+            <span className="text-slate-300">Check for duplicates periodically.</span> The &quot;Check Duplicates&quot;
             button on the Entities page finds entities that might have been double-entered under different
             categories.
           </li>
@@ -562,7 +562,7 @@ ssh user@wp-server 'bash -s' < deploy/install-wp-plugin.sh /path/to/wordpress`}
           </li>
           <li>
             <span className="text-slate-300">Leave partial repair enabled.</span> It only costs extra tokens
-            when untranslated characters are actually found, so there's no downside to keeping it on.
+            when untranslated characters are actually found, so there&apos;s no downside to keeping it on.
           </li>
         </ul>
       </Section>

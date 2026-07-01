@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
+import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -82,7 +82,6 @@ export default function Reader({ isPublic = false }) {
     : null
 
   const contentRef = useRef(null)
-  const barTimer = useRef(null)
   // In-memory cache of prefetched chapters, keyed by `${bookId}:${num}`.
   // Populated by the next-N prefetch after each successful load so that
   // tap-next/tap-prev resolves instantly without another round trip.
@@ -471,7 +470,7 @@ export default function Reader({ isPublic = false }) {
           </div>
         ) : chapterError || !chapter ? (
           <div className="flex flex-col items-center justify-center py-32 text-center px-6">
-            <p className={`${theme.text} text-lg mb-2`}>Couldn't load this chapter</p>
+            <p className={`${theme.text} text-lg mb-2`}>Couldn&apos;t load this chapter</p>
             <p className={`text-sm opacity-70 ${theme.text} mb-6`}>
               The connection may have dropped. Try again, or use Previous/Next to reload.
             </p>

@@ -119,7 +119,7 @@ export default function ChapterConflictPanel({
           <h2 className="text-sm font-semibold text-slate-200 flex-1">
             Chapter Conflict
             {chNum != null && (
-              <span className="text-slate-400 font-normal"> — Chapter {chNum} of "{bTitle || `Book ${bookId}`}"</span>
+              <span className="text-slate-400 font-normal"> — Chapter {chNum} of &quot;{bTitle || `Book ${bookId}`}&quot;</span>
             )}
           </h2>
           <span className="badge-amber text-xs">Confirm before overwrite</span>
@@ -216,11 +216,11 @@ export default function ChapterConflictPanel({
         ) : (
           <div className="px-5 py-4 border-t border-slate-700 shrink-0">
             <div className="text-xs text-slate-500 mb-3">
-              "Skip" drops the queue item. "Append &amp; translate new part" keeps the existing
+              &quot;Skip&quot; drops the queue item. &quot;Append &amp; translate new part&quot; keeps the existing
               translation and only translates the appended source, joining the two.
-              "Renumber" moves either chapter to a new number. "Insert &amp; shift queue" translates
+              &quot;Renumber&quot; moves either chapter to a new number. &quot;Insert &amp; shift queue&quot; translates
               this item as the next chapter and bumps every later queue item up by one.
-              "Overwrite" replaces the existing chapter.
+              &quot;Overwrite&quot; replaces the existing chapter.
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
             <button

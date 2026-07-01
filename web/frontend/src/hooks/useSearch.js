@@ -215,7 +215,6 @@ export function useSearch() {
     var replacement = replaceText
     if (isRegex) {
       try {
-        var re = new RegExp(query, 'gi')
         replacement = matched.replace(new RegExp(query, 'i'), replaceText)
       } catch { /* fall back to literal replaceText */ }
     }

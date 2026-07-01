@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { X, MessageCircle, Loader2 } from 'lucide-react'
 import CommentForm, { loadIdentity } from './CommentForm'
-import CommentItem from './CommentItem'
 import CommentTree from './CommentTree'
 
 async function commentRequest(method, path, body, uuid, opts = {}) {
@@ -22,7 +21,7 @@ async function commentRequest(method, path, body, uuid, opts = {}) {
   return res.json()
 }
 
-export default function ReaderComments({ open, onClose, bookId, chapterNumber, theme, themeMode = 'light' }) {
+export default function ReaderComments({ open, onClose, bookId, chapterNumber, themeMode = 'light' }) {
   const [comments, setComments] = useState([])
   const [enabled, setEnabled] = useState(true)
   const [viewer, setViewer] = useState({ is_trusted: false, captcha_required: true })

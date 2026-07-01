@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../services/api'
-import { Search, X, Loader2, BookOpen, ChevronRight } from 'lucide-react'
+import { Search, X, Loader2, ChevronRight } from 'lucide-react'
 
 export default function GlobalSearchModal({ books, onClose }) {
   var [query, setQuery] = useState('')

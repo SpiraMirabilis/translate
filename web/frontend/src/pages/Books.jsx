@@ -5,7 +5,7 @@ import { bustUrl } from '../services/cacheBust'
 import { useWs } from '../App'
 import {
   Plus, Trash2, Edit2, Download, ChevronDown, ChevronRight,
-  BookOpen, FileText, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, SquareMinus, Code, MessageCircle, MessageCircleOff, Boxes, RefreshCw, Settings
+  BookOpen, X, Check, Loader2, ScrollText, CheckCircle2, Sparkles, Globe, Tags, Search, Eye, EyeOff, ListChecks, Square, CheckSquare, Code, MessageCircle, MessageCircleOff, Boxes, RefreshCw, Settings
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps } from '../utils/categories'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -722,7 +722,7 @@ function BookFormModal({ book, onClose, onSaved }) {
     try {
       if (book) {
         // Don't send genre or source_language on edit
-        const { genre, source_language, ...editForm } = form
+        const { genre: _genre, source_language: _source_language, ...editForm } = form
         editForm.total_source_chapters = editForm.total_source_chapters ? parseInt(editForm.total_source_chapters, 10) : null
         await api.updateBook(book.id, editForm)
       } else {
@@ -1105,7 +1105,7 @@ function BookModulesModal({ book, onClose, onSaved }) {
           <div>
             <h2 className="font-semibold text-slate-200">Modules — {book.title}</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              <span className="font-medium">Auto</span> matches the book's Source URL against each module's site.
+              <span className="font-medium">Auto</span> matches the book&apos;s Source URL against each module&apos;s site.
               Set <span className="font-medium">On</span>/<span className="font-medium">Off</span> to override for this book.
             </p>
           </div>
@@ -1571,7 +1571,7 @@ function WordPressPublishModal({ book, onClose }) {
   }
 
   const handleCancel = async () => {
-    try { await api.wpCancelPublish(book.id) } catch {}
+    try { await api.wpCancelPublish(book.id) } catch { /* ignore */ }
   }
 
   const statusBadge = (s) => {
