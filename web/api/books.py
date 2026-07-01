@@ -696,14 +696,13 @@ async def reset_categories(book_id: int):
 @router.get("/{book_id}/categories/entity-counts")
 async def category_entity_counts(book_id: int):
     """Return the count of entities per category for a book (includes global)."""
-    conn = _entity_manager.get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT category, COUNT(*) FROM entities WHERE book_id = ? OR book_id IS NULL GROUP BY category",
-        (book_id,),
-    )
-    counts = {row[0]: row[1] for row in cursor.fetchall()}
-    conn.close()
+    with _entity_manager._conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT category, COUNT(*) FROM entities WHERE book_id = ? OR book_id IS NULL GROUP BY category",
+            (book_id,),
+        )
+        counts = {row[0]: row[1] for row in cursor.fetchall()}
     return {"counts": counts}
 
 
@@ -817,17 +816,14 @@ async def update_chapter_translation(book_id: int, chapter_number: int, req: Cha
 async def set_proofread(book_id: int, chapter_number: int, req: ChapterProofreadUpdate):
     fmt = '%Y-%m-%d %H:%M:%S' if _entity_manager.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
     now = datetime.datetime.utcnow().strftime(fmt) if req.is_proofread else None
-    conn = _entity_manager.get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
-        (now, book_id, chapter_number),
-    )
-    if cursor.rowcount == 0:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Chapter not found.")
-    conn.commit()
-    conn.close()
+    with _entity_manager._conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
+            (now, book_id, chapter_number),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Chapter not found.")
     return {"status": "ok", "is_proofread": now}
 
 
@@ -869,17 +865,15 @@ async def batch_delete_chapters(book_id: int, req: BatchChapterAction):
 async def batch_proofread_chapters(book_id: int, req: BatchProofreadAction):
     fmt = '%Y-%m-%d %H:%M:%S' if _entity_manager.backend.name == 'mysql' else '%Y-%m-%dT%H:%M:%SZ'
     now = datetime.datetime.utcnow().strftime(fmt) if req.is_proofread else None
-    conn = _entity_manager.get_connection()
-    cursor = conn.cursor()
-    updated = 0
-    for num in req.chapters:
-        cursor.execute(
-            "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
-            (now, book_id, num),
-        )
-        updated += cursor.rowcount
-    conn.commit()
-    conn.close()
+    with _entity_manager._conn() as conn:
+        cursor = conn.cursor()
+        updated = 0
+        for num in req.chapters:
+            cursor.execute(
+                "UPDATE chapters SET is_proofread = ? WHERE book_id = ? AND chapter_number = ?",
+                (now, book_id, num),
+            )
+            updated += cursor.rowcount
     return {"status": "ok", "updated": updated}
 
 
@@ -940,20 +934,19 @@ async def list_gendered_entities_in_chapter(book_id: int, chapter_number: int):
 
     gendered_cats = _entity_manager.get_book_gendered_categories(book_id) or ['characters']
     placeholders = ",".join("?" for _ in gendered_cats)
-    conn = _entity_manager.backend.get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        f"""
-        SELECT id, untranslated, translation, gender
-        FROM entities
-        WHERE book_id = ? AND category IN ({placeholders})
-              AND gender IN ('male', 'female', 'neutral')
-              AND translation IS NOT NULL AND translation != ''
-        """,
-        (book_id, *gendered_cats),
-    )
-    rows = cursor.fetchall()
-    conn.close()
+    with _entity_manager._conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT id, untranslated, translation, gender
+            FROM entities
+            WHERE book_id = ? AND category IN ({placeholders})
+                  AND gender IN ('male', 'female', 'neutral')
+                  AND translation IS NOT NULL AND translation != ''
+            """,
+            (book_id, *gendered_cats),
+        )
+        rows = cursor.fetchall()
 
     import re
     out = []
@@ -984,14 +977,13 @@ async def pronoun_repair_chapter(book_id: int, chapter_number: int, req: Pronoun
         raise HTTPException(status_code=404, detail="Chapter not found.")
 
     # Verify the entity belongs to this book and has the data pronoun_repair needs
-    conn = _entity_manager.backend.get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT untranslated, translation, gender, book_id FROM entities WHERE id = ?",
-        (req.entity_id,),
-    )
-    row = cursor.fetchone()
-    conn.close()
+    with _entity_manager._conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT untranslated, translation, gender, book_id FROM entities WHERE id = ?",
+            (req.entity_id,),
+        )
+        row = cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail=f"Entity {req.entity_id} not found.")
     if isinstance(row, dict):

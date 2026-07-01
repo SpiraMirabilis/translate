@@ -12,6 +12,8 @@ when DB_BACKEND=mysql is configured.
 
 import os
 import sqlite3
+import threading
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -111,13 +113,18 @@ class _MySQLConnectionWrapper:
             self._use_dict_cursor = False
 
     def cursor(self):
+        # buffered=True: the driver drains every result set immediately, so a
+        # caller that doesn't fetch all rows (or fetches none, like the health
+        # probe) can't leave "unread result" state on the connection. Harmless
+        # for direct connections; ESSENTIAL for pooled ones, which get reused —
+        # an undrained result poisons the next checkout ("Unread result found").
         if self._use_dict_cursor:
-            return _MySQLDictCursorWrapper(self._conn.cursor())
-        return _MySQLCursorWrapper(self._conn.cursor())
+            return _MySQLDictCursorWrapper(self._conn.cursor(buffered=True))
+        return _MySQLCursorWrapper(self._conn.cursor(buffered=True))
 
     def dict_cursor(self):
         """Return a cursor whose fetch* methods return dicts."""
-        return _MySQLDictCursorWrapper(self._conn.cursor())
+        return _MySQLDictCursorWrapper(self._conn.cursor(buffered=True))
 
     def commit(self):
         return self._conn.commit()
@@ -148,8 +155,22 @@ class SQLiteBackend:
         self.db_path = db_path
 
     def get_connection(self):
-        """Return a plain sqlite3 connection."""
-        return sqlite3.connect(self.db_path)
+        """Return a sqlite3 connection hardened for concurrent access.
+
+        WAL lets readers proceed while the translation thread writes (and is
+        a prerequisite for serving requests from a threadpool); busy_timeout
+        makes writers wait out short lock contention instead of raising
+        'database is locked' immediately. WAL persists in the DB file but
+        setting it is idempotent.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error:
+            pass
+        return conn
 
     # -- Dialect helpers ----------------------------------------------------
 
@@ -224,10 +245,52 @@ class MySQLBackend:
             collation='utf8mb4_unicode_ci',
         )
         self.db_path = f"mysql://{user}@{host}:{port}/{database}"
+        self._pool = None
+        self._pool_disabled = False
+        self._pool_lock = threading.Lock()
+
+    def _get_pool(self):
+        """Lazily create the connection pool (avoids a handshake per query)."""
+        if self._pool is None:
+            with self._pool_lock:
+                if self._pool is None:
+                    from mysql.connector.pooling import MySQLConnectionPool
+                    self._pool = MySQLConnectionPool(
+                        pool_name="t9",
+                        pool_size=int(os.getenv("MYSQL_POOL_SIZE", "10")),
+                        pool_reset_session=True,
+                        **self._connect_args,
+                    )
+        return self._pool
 
     def get_connection(self):
-        """Return a wrapped mysql.connector connection."""
+        """Return a wrapped pooled connection (.close() returns it to the pool).
+
+        On pool exhaustion, retries briefly, then falls back to a one-off
+        direct connection rather than failing the request.
+        """
         import mysql.connector
+        from mysql.connector.errors import PoolError
+
+        if not self._pool_disabled:
+            try:
+                pool = self._get_pool()
+            except Exception as e:
+                # Pool construction failed (e.g. connector version quirk) —
+                # fall back to direct connections permanently.
+                print(f"[db_backend] MySQL pool unavailable, using direct connections: {e}")
+                self._pool_disabled = True
+            else:
+                deadline = time.monotonic() + 5.0
+                while True:
+                    try:
+                        return _MySQLConnectionWrapper(pool.get_connection())
+                    except PoolError:
+                        if time.monotonic() >= deadline:
+                            print("[db_backend] MySQL pool exhausted for 5s — using one-off connection")
+                            break
+                        time.sleep(0.1)
+
         raw = mysql.connector.connect(**self._connect_args)
         return _MySQLConnectionWrapper(raw)
 

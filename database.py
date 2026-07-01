@@ -4,6 +4,7 @@ import unicodedata
 import sqlite3
 import os
 import datetime
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Any, Union, Tuple
 from itertools import zip_longest
 import re
@@ -86,131 +87,37 @@ class DatabaseManager:
     def get_connection(self):
         """Return a new database connection via the configured backend."""
         return self.backend.get_connection()
+
+    @contextmanager
+    def _conn(self, dict_rows: bool = False):
+        """Yield a connection; commit on clean exit, rollback on exception,
+        always close (for MySQL, close returns the connection to the pool).
+
+        This is the standard connection scope for DatabaseManager methods —
+        it guarantees no leaked connections and no half-committed writes on
+        the error path. dict_rows=True sets sqlite3.Row (the MySQL wrapper
+        honors row_factory equivalently).
+        """
+        conn = self.backend.get_connection()
+        if dict_rows:
+            conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
     
     def _initialize_database(self):
-        """Initialize the database with proper schema if it doesn't exist"""
+        """Initialize the database schema via the versioned migration runner."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-
-            # Create all tables using backend-specific DDL
-            for ddl in self.backend.create_tables_ddl():
-                try:
-                    cursor.execute(ddl)
-                except Exception:
-                    # Index may already exist (MySQL raises on IF NOT EXISTS for some index forms)
-                    pass
-
-            # Migrations: add columns if missing
-            entity_cols = self.backend.get_table_columns(conn, 'entities')
-            if 'origin_chapter' not in entity_cols:
-                cursor.execute("ALTER TABLE entities ADD COLUMN origin_chapter INTEGER")
-                self.logger.info("Added origin_chapter column to entities table")
-            # Backfill: set origin_chapter = last_chapter for entities missing it
-            # Only copy values that are actually numeric (SQLite allows text in INTEGER columns, MySQL doesn't)
-            if self.backend.name == 'mysql':
-                cursor.execute("UPDATE entities SET origin_chapter = CAST(last_chapter AS SIGNED) WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL AND last_chapter REGEXP '^[0-9]+$'")
-            else:
-                cursor.execute("UPDATE entities SET origin_chapter = last_chapter WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL")
-            if cursor.rowcount > 0:
-                self.logger.info(f"Backfilled origin_chapter for {cursor.rowcount} entities")
-            if 'note' not in entity_cols:
-                cursor.execute("ALTER TABLE entities ADD COLUMN note TEXT")
-                self.logger.info("Added note column to entities table")
-
-            chapter_cols = self.backend.get_table_columns(conn, 'chapters')
-            if 'is_proofread' not in chapter_cols:
-                if self.backend.name == 'mysql':
-                    cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread DATETIME NULL")
-                else:
-                    cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread TEXT")
-                self.logger.info("Added is_proofread column to chapters table")
-            else:
-                # Migrate from INTEGER (0/1) to timestamp if needed
-                if self.backend.name == 'mysql':
-                    # Check if column is still INT and needs conversion to DATETIME
-                    cursor.execute("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chapters' AND COLUMN_NAME = 'is_proofread'")
-                    row = cursor.fetchone()
-                    if row and row[0] == 'int':
-                        now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-                        # Add a temp DATETIME column, copy data, swap
-                        cursor.execute("ALTER TABLE chapters ADD COLUMN is_proofread_new DATETIME NULL")
-                        cursor.execute("UPDATE chapters SET is_proofread_new = ? WHERE is_proofread = 1", (now,))
-                        cursor.execute("ALTER TABLE chapters DROP COLUMN is_proofread")
-                        cursor.execute("ALTER TABLE chapters CHANGE COLUMN is_proofread_new is_proofread DATETIME NULL")
-                        self.logger.info("Migrated is_proofread from INT to DATETIME (MySQL)")
-                else:
-                    cursor.execute("SELECT COUNT(*) FROM chapters WHERE is_proofread = '1' OR is_proofread = '0'")
-                    count = cursor.fetchone()[0]
-                    if count > 0:
-                        now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-                        cursor.execute("UPDATE chapters SET is_proofread = ? WHERE is_proofread = '1'", (now,))
-                        cursor.execute("UPDATE chapters SET is_proofread = NULL WHERE is_proofread = '0'")
-                        self.logger.info("Migrated is_proofread from boolean to timestamp")
-
-            book_cols = self.backend.get_table_columns(conn, 'books')
-            if 'cover_image' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN cover_image TEXT")
-                self.logger.info("Added cover_image column to books table")
-            if 'categories' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN categories TEXT")
-                self.logger.info("Added categories column to books table")
-            if 'is_public' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN is_public INTEGER DEFAULT 1")
-                self.logger.info("Added is_public column to books table")
-            if 'total_source_chapters' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN total_source_chapters INTEGER")
-                self.logger.info("Added total_source_chapters column to books table")
-            if 'status' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN status TEXT DEFAULT 'ongoing'")
-                self.logger.info("Added status column to books table")
-            if 'comments_enabled' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN comments_enabled INTEGER DEFAULT 1")
-                self.logger.info("Added comments_enabled column to books table")
-            if 'source_url' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
-                self.logger.info("Added source_url column to books table")
-            if 'notes' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN notes TEXT")
-                self.logger.info("Added notes column to books table")
-            if 'view_count' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0")
-                self.logger.info("Added view_count column to books table")
-                cursor.execute("""
-                    UPDATE books
-                    SET view_count = COALESCE(
-                        (SELECT COUNT(*) FROM reader_log WHERE reader_log.book_id = books.id),
-                        0
-                    )
-                """)
-                self.logger.info("Backfilled view_count from reader_log")
-            if 'trad_to_simp' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN trad_to_simp INTEGER DEFAULT NULL")
-                self.logger.info("Added trad_to_simp column to books table")
-            if 'tags' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN tags TEXT")
-                self.logger.info("Added tags column to books table")
-            if 'modules' not in book_cols:
-                cursor.execute("ALTER TABLE books ADD COLUMN modules TEXT")
-                self.logger.info("Added modules column to books table")
-
-            comment_cols = self.backend.get_table_columns(conn, 'comments')
-            if 'notify_replies' not in comment_cols:
-                cursor.execute("ALTER TABLE comments ADD COLUMN notify_replies INTEGER NOT NULL DEFAULT 0")
-                self.logger.info("Added notify_replies column to comments table")
-
-            queue_cols = self.backend.get_table_columns(conn, 'queue')
-            if 'retranslation_reason' not in queue_cols:
-                cursor.execute("ALTER TABLE queue ADD COLUMN retranslation_reason TEXT")
-                self.logger.info("Added retranslation_reason column to queue table")
-
-            wp_state_cols = self.backend.get_table_columns(conn, 'wp_publish_state')
-            if 'wp_link' not in wp_state_cols:
-                cursor.execute("ALTER TABLE wp_publish_state ADD COLUMN wp_link TEXT")
-                self.logger.info("Added wp_link column to wp_publish_state table")
-            if 'wp_slug' not in wp_state_cols:
-                cursor.execute("ALTER TABLE wp_publish_state ADD COLUMN wp_slug TEXT")
-                self.logger.info("Added wp_slug column to wp_publish_state table")
+            from db.migrations import run_migrations
+            run_migrations(self.backend, self.logger)
 
             # Create covers + illustrations directories (only meaningful for local installs)
             if self.backend.name == 'sqlite':
@@ -220,8 +127,6 @@ class DatabaseManager:
             os.makedirs(os.path.join(media_base, "covers"), exist_ok=True)
             os.makedirs(os.path.join(media_base, "illustrations"), exist_ok=True)
 
-            conn.commit()
-            conn.close()
             self.logger.info("Database initialized successfully")
         except Exception as e:
             self.logger.error(f"Database initialization error: {e}")
@@ -244,30 +149,27 @@ class DatabaseManager:
             int: Book ID if successful, None otherwise
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Check if book already exists
-            cursor.execute("SELECT id FROM books WHERE title = ?", (title,))
-            existing = cursor.fetchone()
-            
-            if existing:
-                self.logger.info(f"Book '{title}' already exists with ID {existing[0]}")
-                conn.close()
-                return existing[0]
-            
-            # Current timestamp
-            timestamp = datetime.datetime.now().isoformat()
-            
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Check if book already exists
+                cursor.execute("SELECT id FROM books WHERE title = ?", (title,))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    self.logger.info(f"Book '{title}' already exists with ID {existing[0]}")
+                    return existing[0]
+                
+                # Current timestamp
+                timestamp = datetime.datetime.now().isoformat()
+                
+                cursor.execute('''
             INSERT INTO books
             (title, author, language, description, created_date, modified_date, source_language, target_language)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (title, author, language, description, timestamp, timestamp, source_language, target_language))
-            
-            book_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
+                
+                book_id = cursor.lastrowid
             
             self.logger.info(f"Created new book: '{title}' with ID {book_id}")
             return book_id
@@ -285,16 +187,15 @@ class DatabaseManager:
         Returns None if no custom template is set.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
             SELECT prompt_template FROM books
             WHERE id = ?
             ''', (book_id,))
-            
-            result = cursor.fetchone()
-            conn.close()
+                
+                result = cursor.fetchone()
             
             if result and result[0]:
                 return result[0]
@@ -308,17 +209,14 @@ class DatabaseManager:
         Set the prompt template for a specific book.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
             UPDATE books
             SET prompt_template = ?
             WHERE id = ?
             ''', (prompt_template, book_id))
-            
-            conn.commit()
-            conn.close()
             
             return True
         except Exception as e:
@@ -329,11 +227,10 @@ class DatabaseManager:
 
     def _get_raw_book_categories(self, book_id):
         """Return the raw stored categories value (parsed JSON) or None if unset."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT categories FROM books WHERE id = ?", (book_id,))
-        row = cursor.fetchone()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT categories FROM books WHERE id = ?", (book_id,))
+            row = cursor.fetchone()
         if row and row[0]:
             return json.loads(row[0])
         return None
@@ -376,15 +273,13 @@ class DatabaseManager:
         the value is normalized to the attribute-carrying form before storage.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if categories is None:
-                value = None
-            else:
-                value = json.dumps(normalize_categories(categories))
-            cursor.execute("UPDATE books SET categories = ? WHERE id = ?", (value, book_id))
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if categories is None:
+                    value = None
+                else:
+                    value = json.dumps(normalize_categories(categories))
+                cursor.execute("UPDATE books SET categories = ? WHERE id = ?", (value, book_id))
             return True
         except Exception as e:
             self.logger.error(f"Error setting book categories: {e}\n{traceback.format_exc()}")
@@ -395,11 +290,10 @@ class DatabaseManager:
     def get_book_tags(self, book_id):
         """Get the tag list for a book. Returns [] if unset."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT tags FROM books WHERE id = ?", (book_id,))
-            row = cursor.fetchone()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT tags FROM books WHERE id = ?", (book_id,))
+                row = cursor.fetchone()
             if row and row[0]:
                 return json.loads(row[0])
             return []
@@ -410,12 +304,10 @@ class DatabaseManager:
     def set_book_tags(self, book_id, tags):
         """Set tags for a book. Pass None or [] to clear."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            value = json.dumps(tags) if tags else None
-            cursor.execute("UPDATE books SET tags = ? WHERE id = ?", (value, book_id))
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                value = json.dumps(tags) if tags else None
+                cursor.execute("UPDATE books SET tags = ? WHERE id = ?", (value, book_id))
             return True
         except Exception as e:
             self.logger.error(f"Error setting book tags: {e}\n{traceback.format_exc()}")
@@ -426,21 +318,20 @@ class DatabaseManager:
     def get_all_tags(self):
         """Return the deduped, sorted union of tags across all books."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT tags FROM books WHERE tags IS NOT NULL")
-            seen = set()
-            for row in cursor.fetchall():
-                raw = row[0]
-                if not raw:
-                    continue
-                try:
-                    for tag in json.loads(raw):
-                        if isinstance(tag, str) and tag.strip():
-                            seen.add(tag)
-                except (ValueError, TypeError):
-                    continue
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT tags FROM books WHERE tags IS NOT NULL")
+                seen = set()
+                for row in cursor.fetchall():
+                    raw = row[0]
+                    if not raw:
+                        continue
+                    try:
+                        for tag in json.loads(raw):
+                            if isinstance(tag, str) and tag.strip():
+                                seen.add(tag)
+                    except (ValueError, TypeError):
+                        continue
             return sorted(seen)
         except Exception as e:
             self.logger.error(f"Error listing all tags: {e}")
@@ -462,11 +353,11 @@ class DatabaseManager:
             return None
             
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            if book_id:
-                cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                if book_id:
+                    cursor.execute('''
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
@@ -474,8 +365,8 @@ class DatabaseManager:
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
@@ -484,8 +375,7 @@ class DatabaseManager:
                 WHERE title = ?
                 ''', (title,))
 
-            row = cursor.fetchone()
-            conn.close()
+                row = cursor.fetchone()
 
             if not row:
                 return None
@@ -543,61 +433,55 @@ class DatabaseManager:
             # enabled set beforehand so we can fire add/remove events on the diff.
             module_trigger = ('modules' in kwargs) or ('source_url' in kwargs)
             before_ids = resolve_module_ids(self.get_book(book_id=book_id)) if module_trigger else set()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+                # Check if book exists
+                cursor.execute("SELECT 1 FROM books WHERE id = ?", (book_id,))
+                if not cursor.fetchone():
+                    self.logger.warning(f"Book with ID {book_id} not found")
+                    return False
 
-            # Check if book exists
-            cursor.execute("SELECT 1 FROM books WHERE id = ?", (book_id,))
-            if not cursor.fetchone():
-                self.logger.warning(f"Book with ID {book_id} not found")
-                conn.close()
-                return False
+                # Build the SET clause dynamically based on provided kwargs
+                set_clause = []
+                values = []
 
-            # Build the SET clause dynamically based on provided kwargs
-            set_clause = []
-            values = []
+                # Update modified_date automatically
+                kwargs["modified_date"] = datetime.datetime.now().isoformat()
 
-            # Update modified_date automatically
-            kwargs["modified_date"] = datetime.datetime.now().isoformat()
-
-            for key, value in kwargs.items():
-                if key in ['title', 'author', 'language', 'description', 'source_language',
-                        'target_language', 'modified_date', 'cover_image', 'is_public',
-                        'total_source_chapters', 'status', 'comments_enabled',
-                        'source_url', 'notes', 'trad_to_simp', 'tags', 'modules']:
-                    set_clause.append(f"{key} = ?")
-                    if key in ('is_public', 'comments_enabled'):
-                        values.append(int(bool(value)))
-                    elif key == 'total_source_chapters':
-                        values.append(int(value) if value is not None else None)
-                    elif key == 'trad_to_simp':
-                        if value is None:
-                            values.append(None)
-                        else:
+                for key, value in kwargs.items():
+                    if key in ['title', 'author', 'language', 'description', 'source_language',
+                            'target_language', 'modified_date', 'cover_image', 'is_public',
+                            'total_source_chapters', 'status', 'comments_enabled',
+                            'source_url', 'notes', 'trad_to_simp', 'tags', 'modules']:
+                        set_clause.append(f"{key} = ?")
+                        if key in ('is_public', 'comments_enabled'):
                             values.append(int(bool(value)))
-                    elif key in ('tags', 'modules'):
-                        values.append(json.dumps(value) if value else None)
-                    else:
-                        values.append(value)
+                        elif key == 'total_source_chapters':
+                            values.append(int(value) if value is not None else None)
+                        elif key == 'trad_to_simp':
+                            if value is None:
+                                values.append(None)
+                            else:
+                                values.append(int(bool(value)))
+                        elif key in ('tags', 'modules'):
+                            values.append(json.dumps(value) if value else None)
+                        else:
+                            values.append(value)
 
-            if not set_clause:
-                self.logger.warning("No valid fields to update")
-                conn.close()
-                return False
+                if not set_clause:
+                    self.logger.warning("No valid fields to update")
+                    return False
 
-            # Complete the parameter list with book_id
-            values.append(book_id)
+                # Complete the parameter list with book_id
+                values.append(book_id)
 
-            # Execute the update
-            cursor.execute(f'''
+                # Execute the update
+                cursor.execute(f'''
             UPDATE books
             SET {', '.join(set_clause)}
             WHERE id = ?
             ''', values)
-
-            conn.commit()
-            conn.close()
 
             # Invalidate cached EPUB if metadata that affects it changed
             epub_fields = {'title', 'author', 'language', 'description', 'cover_image'}
@@ -633,30 +517,29 @@ class DatabaseManager:
         """
         result = {}
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if module_id is not None:
-                cursor.execute(
-                    "SELECT setting_key, value_json FROM book_module_settings "
-                    "WHERE book_id = ? AND module_id = ?",
-                    (book_id, module_id))
-                for skey, raw in cursor.fetchall():
-                    try:
-                        result[skey] = json.loads(raw) if raw is not None else None
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-            else:
-                cursor.execute(
-                    "SELECT module_id, setting_key, value_json FROM book_module_settings "
-                    "WHERE book_id = ?",
-                    (book_id,))
-                for mid, skey, raw in cursor.fetchall():
-                    try:
-                        val = json.loads(raw) if raw is not None else None
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    result.setdefault(mid, {})[skey] = val
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if module_id is not None:
+                    cursor.execute(
+                        "SELECT setting_key, value_json FROM book_module_settings "
+                        "WHERE book_id = ? AND module_id = ?",
+                        (book_id, module_id))
+                    for skey, raw in cursor.fetchall():
+                        try:
+                            result[skey] = json.loads(raw) if raw is not None else None
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                else:
+                    cursor.execute(
+                        "SELECT module_id, setting_key, value_json FROM book_module_settings "
+                        "WHERE book_id = ?",
+                        (book_id,))
+                    for mid, skey, raw in cursor.fetchall():
+                        try:
+                            val = json.loads(raw) if raw is not None else None
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        result.setdefault(mid, {})[skey] = val
         except Exception as e:
             self.logger.error(f"Error loading module settings for book {book_id}: {e}")
         return result
@@ -672,18 +555,16 @@ class DatabaseManager:
         if settings is None:
             settings = {}
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM book_module_settings WHERE book_id = ? AND module_id = ?",
-                (book_id, module_id))
-            for skey, value in settings.items():
+            with self._conn() as conn:
+                cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT INTO book_module_settings "
-                    "(book_id, module_id, setting_key, value_json) VALUES (?, ?, ?, ?)",
-                    (book_id, module_id, skey, json.dumps(value)))
-            conn.commit()
-            conn.close()
+                    "DELETE FROM book_module_settings WHERE book_id = ? AND module_id = ?",
+                    (book_id, module_id))
+                for skey, value in settings.items():
+                    cursor.execute(
+                        "INSERT INTO book_module_settings "
+                        "(book_id, module_id, setting_key, value_json) VALUES (?, ?, ?, ?)",
+                        (book_id, module_id, skey, json.dumps(value)))
             return True
         except Exception as e:
             self.logger.error(
@@ -715,10 +596,10 @@ class DatabaseManager:
         }
         clause = ORDER_CLAUSES.get(order_by, ORDER_CLAUSES['title'])
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute(f'''
+                cursor.execute(f'''
             SELECT id, title, author, language, created_date, cover_image, categories,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count,
                 description, is_public, total_source_chapters, status, comments_enabled,
@@ -728,8 +609,7 @@ class DatabaseManager:
             ORDER BY {clause}
             ''')
 
-            rows = cursor.fetchall()
-            conn.close()
+                rows = cursor.fetchall()
 
             result = []
             for row in rows:
@@ -790,31 +670,27 @@ class DatabaseManager:
             bool: True if successful, False otherwise
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Check if book exists
-            cursor.execute("SELECT title FROM books WHERE id = ?", (book_id,))
-            book = cursor.fetchone()
-            
-            if not book:
-                self.logger.warning(f"Book with ID {book_id} not found")
-                conn.close()
-                return False
-            
-            book_title = book[0]
-            
-            # Enable foreign key constraints
-            self.backend.enable_foreign_keys(conn)
-            
-            # Delete book (will cascade to chapters)
-            cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
-            
-            # Also delete book-specific entities
-            cursor.execute("DELETE FROM entities WHERE book_id = ?", (book_id,))
-            
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Check if book exists
+                cursor.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+                book = cursor.fetchone()
+                
+                if not book:
+                    self.logger.warning(f"Book with ID {book_id} not found")
+                    return False
+                
+                book_title = book[0]
+                
+                # Enable foreign key constraints
+                self.backend.enable_foreign_keys(conn)
+                
+                # Delete book (will cascade to chapters)
+                cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
+                
+                # Also delete book-specific entities
+                cursor.execute("DELETE FROM entities WHERE book_id = ?", (book_id,))
             self.invalidate_epub_cache(book_id)
 
             self.logger.info(f"Deleted book '{book_title}' (ID: {book_id}) and all its chapters")
@@ -905,60 +781,61 @@ class DatabaseManager:
             if translation_model is None:
                 translation_model = self.config.translation_model
                 
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Check if chapter already exists
-            cursor.execute('''
-            SELECT id FROM chapters 
-            WHERE book_id = ? AND chapter_number = ?
-            ''', (book_id, chapter_number))
-            
-            existing = cursor.fetchone()
-            
-            if existing:
-                # Update existing chapter
-                chapter_id = existing[0]
-                
+            # Post-commit side effects (cache invalidation, illustration links,
+            # footnote re-render) stay OUTSIDE this scope: they must only run
+            # once the chapter row is durably committed.
+            with self._conn() as conn:
+                cursor = conn.cursor()
+
+                # Check if chapter already exists
                 cursor.execute('''
-                UPDATE chapters
-                SET title = ?, untranslated_content = ?, translated_content = ?, 
-                    summary = ?, translation_date = ?, translation_model = ?
-                WHERE id = ?
-                ''', (title, untranslated_text, translated_text, summary, timestamp, 
-                    translation_model, chapter_id))
-                    
-                # Update book modified date
-                cursor.execute('''
-                UPDATE books
-                SET modified_date = ?
-                WHERE id = ?
-                ''', (timestamp, book_id))
-                
-                self.logger.info(f"Updated chapter {chapter_number} for book ID {book_id}")
-            else:
-                # Insert new chapter
-                cursor.execute('''
-                INSERT INTO chapters
-                (book_id, chapter_number, title, untranslated_content, translated_content, 
-                summary, translation_date, translation_model)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (book_id, chapter_number, title, untranslated_text, translated_text, 
-                    summary, timestamp, translation_model))
-                    
-                chapter_id = cursor.lastrowid
-                
-                # Update book modified date
-                cursor.execute('''
-                UPDATE books
-                SET modified_date = ?
-                WHERE id = ?
-                ''', (timestamp, book_id))
-                
-                self.logger.info(f"Added chapter {chapter_number} to book ID {book_id}")
-            
-            conn.commit()
-            conn.close()
+                SELECT id FROM chapters
+                WHERE book_id = ? AND chapter_number = ?
+                ''', (book_id, chapter_number))
+
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Update existing chapter
+                    chapter_id = existing[0]
+
+                    cursor.execute('''
+                    UPDATE chapters
+                    SET title = ?, untranslated_content = ?, translated_content = ?,
+                        summary = ?, translation_date = ?, translation_model = ?
+                    WHERE id = ?
+                    ''', (title, untranslated_text, translated_text, summary, timestamp,
+                        translation_model, chapter_id))
+
+                    # Update book modified date
+                    cursor.execute('''
+                    UPDATE books
+                    SET modified_date = ?
+                    WHERE id = ?
+                    ''', (timestamp, book_id))
+
+                    self.logger.info(f"Updated chapter {chapter_number} for book ID {book_id}")
+                else:
+                    # Insert new chapter
+                    cursor.execute('''
+                    INSERT INTO chapters
+                    (book_id, chapter_number, title, untranslated_content, translated_content,
+                    summary, translation_date, translation_model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (book_id, chapter_number, title, untranslated_text, translated_text,
+                        summary, timestamp, translation_model))
+
+                    chapter_id = cursor.lastrowid
+
+                    # Update book modified date
+                    cursor.execute('''
+                    UPDATE books
+                    SET modified_date = ?
+                    WHERE id = ?
+                    ''', (timestamp, book_id))
+
+                    self.logger.info(f"Added chapter {chapter_number} to book ID {book_id}")
+
             self.invalidate_epub_cache(book_id)
 
             # Link any illustration rows referenced by this chapter's content
@@ -1011,11 +888,11 @@ class DatabaseManager:
             return None
             
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            if chapter_id:
-                cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                if chapter_id:
+                    cursor.execute('''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content,
                     c.translated_content, c.summary, c.translation_date, c.translation_model,
                     b.title as book_title, c.is_proofread
@@ -1023,8 +900,8 @@ class DatabaseManager:
                 JOIN books b ON c.book_id = b.id
                 WHERE c.id = ?
                 ''', (chapter_id,))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content,
                     c.translated_content, c.summary, c.translation_date, c.translation_model,
                     b.title as book_title, c.is_proofread
@@ -1032,9 +909,8 @@ class DatabaseManager:
                 JOIN books b ON c.book_id = b.id
                 WHERE c.book_id = ? AND c.chapter_number = ?
                 ''', (book_id, chapter_number))
-            
-            row = cursor.fetchone()
-            conn.close()
+                
+                row = cursor.fetchone()
             
             if not row:
                 return None
@@ -1087,11 +963,11 @@ class DatabaseManager:
                   get_chapter(); a row that fails entirely is skipped, not fatal.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            src_col = ", c.untranslated_content" if include_untranslated else ""
-            base = f'''
+                src_col = ", c.untranslated_content" if include_untranslated else ""
+                base = f'''
             SELECT c.id, c.book_id, c.chapter_number, c.title,
                 c.translated_content, c.summary, c.translation_date,
                 c.translation_model, b.title as book_title, c.is_proofread{src_col}
@@ -1099,22 +975,21 @@ class DatabaseManager:
             JOIN books b ON c.book_id = b.id
             WHERE c.book_id = ?'''
 
-            rows = []
-            if chapter_numbers is None:
-                cursor.execute(base + " ORDER BY c.chapter_number", (book_id,))
-                rows = cursor.fetchall()
-            else:
-                nums = list(chapter_numbers)
-                # Chunk the IN list to stay well under parameter limits
-                for i in range(0, len(nums), 500):
-                    chunk = nums[i:i + 500]
-                    placeholders = ",".join("?" * len(chunk))
-                    cursor.execute(
-                        base + f" AND c.chapter_number IN ({placeholders})"
-                        " ORDER BY c.chapter_number",
-                        [book_id] + chunk)
-                    rows.extend(cursor.fetchall())
-            conn.close()
+                rows = []
+                if chapter_numbers is None:
+                    cursor.execute(base + " ORDER BY c.chapter_number", (book_id,))
+                    rows = cursor.fetchall()
+                else:
+                    nums = list(chapter_numbers)
+                    # Chunk the IN list to stay well under parameter limits
+                    for i in range(0, len(nums), 500):
+                        chunk = nums[i:i + 500]
+                        placeholders = ",".join("?" * len(chunk))
+                        cursor.execute(
+                            base + f" AND c.chapter_number IN ({placeholders})"
+                            " ORDER BY c.chapter_number",
+                            [book_id] + chunk)
+                        rows.extend(cursor.fetchall())
 
             def _decode(raw):
                 try:
@@ -1170,25 +1045,23 @@ class DatabaseManager:
             if not book:
                 self.logger.warning(f"Book with ID {book_id} not found")
                 return []
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-
-            query = '''
+                query = '''
             SELECT id, chapter_number, title, translation_date, translation_model, is_proofread
             FROM chapters
             WHERE book_id = ?
             ORDER BY chapter_number
             '''
-            params = [book_id]
-            if limit is not None:
-                query += ' LIMIT ? OFFSET ?'
-                params.extend([int(limit), int(offset)])
+                params = [book_id]
+                if limit is not None:
+                    query += ' LIMIT ? OFFSET ?'
+                    params.extend([int(limit), int(offset)])
 
-            cursor.execute(query, params)
+                cursor.execute(query, params)
 
-            rows = cursor.fetchall()
-            conn.close()
+                rows = cursor.fetchall()
 
             result = []
             for row in rows:
@@ -1216,9 +1089,9 @@ class DatabaseManager:
         DESC matches chronological DESC.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            sql = '''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                sql = '''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.summary,
                        c.translation_date, b.title AS book_title, b.author AS book_author
                 FROM chapters c
@@ -1226,15 +1099,14 @@ class DatabaseManager:
                 WHERE b.is_public = 1
                   AND c.translation_date IS NOT NULL
             '''
-            params = []
-            if book_id is not None:
-                sql += ' AND c.book_id = ?'
-                params.append(book_id)
-            sql += ' ORDER BY c.translation_date DESC LIMIT ?'
-            params.append(limit)
-            cursor.execute(sql, tuple(params))
-            rows = cursor.fetchall()
-            conn.close()
+                params = []
+                if book_id is not None:
+                    sql += ' AND c.book_id = ?'
+                    params.append(book_id)
+                sql += ' ORDER BY c.translation_date DESC LIMIT ?'
+                params.append(limit)
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
             return [
                 {
                     "id": row[0],
@@ -1273,14 +1145,13 @@ class DatabaseManager:
             response size (truncated=True is set on the chapter dict in that case).
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
                 SELECT chapter_number, title, untranslated_content, translated_content
                 FROM chapters WHERE book_id = ? ORDER BY chapter_number
             ''', (book_id,))
-            rows = cursor.fetchall()
-            conn.close()
+                rows = cursor.fetchall()
 
             if is_regex:
                 try:
@@ -1387,76 +1258,72 @@ class DatabaseManager:
             dict with affected_chapters, total_replacements, and can_undo flag
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            sql = 'SELECT id, chapter_number, translated_content FROM chapters WHERE book_id = ?'
-            params = [book_id]
-            if chapter_numbers:
-                placeholders = ','.join('?' * len(chapter_numbers))
-                sql += f' AND chapter_number IN ({placeholders})'
-                params.extend(chapter_numbers)
-            sql += ' ORDER BY chapter_number'
+                sql = 'SELECT id, chapter_number, translated_content FROM chapters WHERE book_id = ?'
+                params = [book_id]
+                if chapter_numbers:
+                    placeholders = ','.join('?' * len(chapter_numbers))
+                    sql += f' AND chapter_number IN ({placeholders})'
+                    params.extend(chapter_numbers)
+                sql += ' ORDER BY chapter_number'
 
-            cursor.execute(sql, params)
-            rows = cursor.fetchall()
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
 
-            if is_regex:
-                try:
-                    pattern = re.compile(query, re.IGNORECASE)
-                except re.error:
-                    conn.close()
-                    return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
+                if is_regex:
+                    try:
+                        pattern = re.compile(query, re.IGNORECASE)
+                    except re.error:
+                        return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
 
-            affected = 0
-            total = 0
-            snapshots = []
+                affected = 0
+                total = 0
+                snapshots = []
 
-            for ch_id, ch_num, raw_content in rows:
-                try:
-                    lines = json.loads(raw_content) if raw_content else []
-                except (json.JSONDecodeError, TypeError):
-                    lines = raw_content.split('\n') if raw_content else []
+                for ch_id, ch_num, raw_content in rows:
+                    try:
+                        lines = json.loads(raw_content) if raw_content else []
+                    except (json.JSONDecodeError, TypeError):
+                        lines = raw_content.split('\n') if raw_content else []
 
-                ch_replacements = 0
-                new_lines = []
-                for line in lines:
-                    if is_regex:
-                        new_line, count = pattern.subn(replacement, line)
-                    else:
-                        count = 0
-                        new_line = line
-                        lower_line = new_line.lower()
-                        query_lower = query.lower()
-                        pos = 0
-                        result_parts = []
-                        while True:
-                            idx = lower_line.find(query_lower, pos)
-                            if idx == -1:
-                                result_parts.append(new_line[pos:])
-                                break
-                            result_parts.append(new_line[pos:idx])
-                            result_parts.append(replacement)
-                            count += 1
-                            pos = idx + len(query)
-                        if count > 0:
-                            new_line = ''.join(result_parts)
+                    ch_replacements = 0
+                    new_lines = []
+                    for line in lines:
+                        if is_regex:
+                            new_line, count = pattern.subn(replacement, line)
+                        else:
+                            count = 0
+                            new_line = line
+                            lower_line = new_line.lower()
+                            query_lower = query.lower()
+                            pos = 0
+                            result_parts = []
+                            while True:
+                                idx = lower_line.find(query_lower, pos)
+                                if idx == -1:
+                                    result_parts.append(new_line[pos:])
+                                    break
+                                result_parts.append(new_line[pos:idx])
+                                result_parts.append(replacement)
+                                count += 1
+                                pos = idx + len(query)
+                            if count > 0:
+                                new_line = ''.join(result_parts)
 
-                    new_lines.append(new_line)
-                    ch_replacements += count
+                        new_lines.append(new_line)
+                        ch_replacements += count
 
-                if ch_replacements > 0:
-                    # Snapshot the original content before overwriting
-                    snapshots.append((ch_id, raw_content))
-                    cursor.execute(
-                        'UPDATE chapters SET translated_content = ? WHERE id = ?',
-                        (json.dumps(new_lines, ensure_ascii=False), ch_id)
-                    )
-                    affected += 1
-                    total += ch_replacements
-
-            conn.commit()
-            conn.close()
+                    if ch_replacements > 0:
+                        # Snapshot the original content before overwriting
+                        snapshots.append((ch_id, raw_content))
+                        cursor.execute(
+                            'UPDATE chapters SET translated_content = ? WHERE id = ?',
+                            (json.dumps(new_lines, ensure_ascii=False), ch_id)
+                        )
+                        affected += 1
+                        total += ch_replacements
 
             if affected > 0:
                 self.invalidate_epub_cache(book_id)
@@ -1490,15 +1357,13 @@ class DatabaseManager:
             return None
 
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            for ch_id, old_content in undo['snapshots']:
-                cursor.execute(
-                    'UPDATE chapters SET translated_content = ? WHERE id = ?',
-                    (old_content, ch_id)
-                )
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                for ch_id, old_content in undo['snapshots']:
+                    cursor.execute(
+                        'UPDATE chapters SET translated_content = ? WHERE id = ?',
+                        (old_content, ch_id)
+                    )
             self.invalidate_epub_cache(book_id)
             return {'restored_chapters': len(undo['snapshots'])}
         except Exception as e:
@@ -1526,48 +1391,44 @@ class DatabaseManager:
             return False
             
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Get chapter details first (for logging)
-            if chapter_id:
-                cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Get chapter details first (for logging)
+                if chapter_id:
+                    cursor.execute('''
                 SELECT book_id, chapter_number, title FROM chapters WHERE id = ?
                 ''', (chapter_id,))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT id, title FROM chapters WHERE book_id = ? AND chapter_number = ?
                 ''', (book_id, chapter_number))
+                    
+                chapter = cursor.fetchone()
                 
-            chapter = cursor.fetchone()
-            
-            if not chapter:
-                self.logger.warning("Chapter not found")
-                conn.close()
-                return False
-                
-            # Delete the chapter
-            if chapter_id:
-                cursor.execute("DELETE FROM chapters WHERE id = ?", (chapter_id,))
-            else:
-                cursor.execute('''
+                if not chapter:
+                    self.logger.warning("Chapter not found")
+                    return False
+                    
+                # Delete the chapter
+                if chapter_id:
+                    cursor.execute("DELETE FROM chapters WHERE id = ?", (chapter_id,))
+                else:
+                    cursor.execute('''
                 DELETE FROM chapters WHERE book_id = ? AND chapter_number = ?
                 ''', (book_id, chapter_number))
-            
-            # Update book modified date
-            timestamp = datetime.datetime.now().isoformat()
-            
-            if chapter_id:
-                book_id = chapter[0]
-            
-            cursor.execute('''
+                
+                # Update book modified date
+                timestamp = datetime.datetime.now().isoformat()
+                
+                if chapter_id:
+                    book_id = chapter[0]
+                
+                cursor.execute('''
             UPDATE books
             SET modified_date = ?
             WHERE id = ?
             ''', (timestamp, book_id))
-            
-            conn.commit()
-            conn.close()
             self.invalidate_epub_cache(book_id)
 
             if chapter_id:
@@ -1598,59 +1459,53 @@ class DatabaseManager:
         if new_chapter_number == chapter_number:
             return True, None
 
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute(
-                "SELECT id FROM chapters WHERE book_id = ? AND chapter_number = ?",
-                (book_id, chapter_number),
-            )
-            if not cursor.fetchone():
-                conn.close()
-                return False, "not_found"
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id FROM chapters WHERE book_id = ? AND chapter_number = ?",
+                    (book_id, chapter_number),
+                )
+                if not cursor.fetchone():
+                    return False, "not_found"
 
-            cursor.execute(
-                "SELECT id FROM chapters WHERE book_id = ? AND chapter_number = ?",
-                (book_id, new_chapter_number),
-            )
-            if cursor.fetchone():
-                conn.close()
-                return False, "target_exists"
+                cursor.execute(
+                    "SELECT id FROM chapters WHERE book_id = ? AND chapter_number = ?",
+                    (book_id, new_chapter_number),
+                )
+                if cursor.fetchone():
+                    return False, "target_exists"
 
-            cursor.execute(
-                "UPDATE chapters SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
-                (new_chapter_number, book_id, chapter_number),
-            )
-            cursor.execute(
-                "UPDATE wp_publish_state SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
-                (new_chapter_number, book_id, chapter_number),
-            )
-            cursor.execute(
-                "UPDATE comments SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
-                (new_chapter_number, book_id, chapter_number),
-            )
-            cursor.execute(
-                "UPDATE api_calls SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
-                (new_chapter_number, book_id, chapter_number),
-            )
-            cursor.execute(
-                "UPDATE reader_log SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
-                (new_chapter_number, book_id, chapter_number),
-            )
-            # activity_log uses column name `chapter`, not `chapter_number`
-            cursor.execute(
-                "UPDATE activity_log SET chapter = ? WHERE book_id = ? AND chapter = ?",
-                (new_chapter_number, book_id, chapter_number),
-            )
-            conn.commit()
+                cursor.execute(
+                    "UPDATE chapters SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE wp_publish_state SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE comments SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE api_calls SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE reader_log SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                # activity_log uses column name `chapter`, not `chapter_number`
+                cursor.execute(
+                    "UPDATE activity_log SET chapter = ? WHERE book_id = ? AND chapter = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
         except Exception as e:
-            conn.rollback()
-            conn.close()
             self.logger.error(f"Error renumbering chapter {chapter_number} -> {new_chapter_number}: {e}\n{traceback.format_exc()}")
             if self.strict_writes:
                 raise
             return False, str(e)
-        conn.close()
         self.invalidate_epub_cache(book_id)
         self.logger.info(f"Renumbered chapter {chapter_number} -> {new_chapter_number} for book ID {book_id}")
         return True, None
@@ -1666,57 +1521,51 @@ class DatabaseManager:
             return 0
         if not isinstance(from_chapter, int) or from_chapter < 1:
             return 0
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        try:
-            if exclude_queue_id is not None:
-                cursor.execute(
-                    "UPDATE queue SET chapter_number = chapter_number + ? "
-                    "WHERE book_id = ? AND chapter_number IS NOT NULL "
-                    "AND chapter_number >= ? AND id != ?",
-                    (delta, book_id, from_chapter, exclude_queue_id),
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            try:
+                if exclude_queue_id is not None:
+                    cursor.execute(
+                        "UPDATE queue SET chapter_number = chapter_number + ? "
+                        "WHERE book_id = ? AND chapter_number IS NOT NULL "
+                        "AND chapter_number >= ? AND id != ?",
+                        (delta, book_id, from_chapter, exclude_queue_id),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE queue SET chapter_number = chapter_number + ? "
+                        "WHERE book_id = ? AND chapter_number IS NOT NULL "
+                        "AND chapter_number >= ?",
+                        (delta, book_id, from_chapter),
+                    )
+                affected = cursor.rowcount
+            except Exception as e:
+                conn.rollback()
+                self.logger.error(
+                    f"shift_queue_chapter_numbers failed (book={book_id}, "
+                    f"from={from_chapter}, delta={delta}): {e}"
                 )
-            else:
-                cursor.execute(
-                    "UPDATE queue SET chapter_number = chapter_number + ? "
-                    "WHERE book_id = ? AND chapter_number IS NOT NULL "
-                    "AND chapter_number >= ?",
-                    (delta, book_id, from_chapter),
-                )
-            affected = cursor.rowcount
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            self.logger.error(
-                f"shift_queue_chapter_numbers failed (book={book_id}, "
-                f"from={from_chapter}, delta={delta}): {e}"
-            )
-            return -1
-        conn.close()
+                return -1
         return affected
 
     def update_queue_chapter_number(self, queue_id, new_chapter_number):
         """Update a single queue row's chapter_number. Returns True on success."""
         if not isinstance(new_chapter_number, int) or new_chapter_number < 1:
             return False
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "UPDATE queue SET chapter_number = ? WHERE id = ?",
-                (new_chapter_number, queue_id),
-            )
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            self.logger.error(
-                f"update_queue_chapter_number failed (queue_id={queue_id}, "
-                f"new={new_chapter_number}): {e}"
-            )
-            return False
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "UPDATE queue SET chapter_number = ? WHERE id = ?",
+                    (new_chapter_number, queue_id),
+                )
+            except Exception as e:
+                conn.rollback()
+                self.logger.error(
+                    f"update_queue_chapter_number failed (queue_id={queue_id}, "
+                    f"new={new_chapter_number}): {e}"
+                )
+                return False
         return True
 
     # Illustration management section
@@ -1729,26 +1578,23 @@ class DatabaseManager:
         ⟦IMG:<marker_id>⟧ (see illustrations.py).
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id FROM illustrations WHERE book_id = ? AND marker_id = ?',
-                (book_id, marker_id),
-            )
-            if cursor.fetchone():
-                conn.close()
-                return False
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id FROM illustrations WHERE book_id = ? AND marker_id = ?',
+                    (book_id, marker_id),
+                )
+                if cursor.fetchone():
+                    return False
 
-            from datetime import datetime
-            cursor.execute('''
+                from datetime import datetime
+                cursor.execute('''
                 INSERT INTO illustrations
                     (book_id, marker_id, filename, alt, original_href, ordinal,
                      queue_id, chapter_id, created_date)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (book_id, marker_id, filename, alt, original_href, ordinal,
-                  queue_id, chapter_id, datetime.now().isoformat()))
-            conn.commit()
-            conn.close()
+                      queue_id, chapter_id, datetime.now().isoformat()))
             return True
         except Exception as e:
             self.logger.error(f"Error adding illustration {marker_id} for book {book_id}: {e}")
@@ -1757,16 +1603,15 @@ class DatabaseManager:
     def get_book_illustration(self, book_id, marker_id):
         """Return a single illustration row as a dict, or None."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id, book_id, marker_id, filename, alt, original_href, '
-                'ordinal, queue_id, chapter_id FROM illustrations '
-                'WHERE book_id = ? AND marker_id = ?',
-                (book_id, marker_id),
-            )
-            row = cursor.fetchone()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id, book_id, marker_id, filename, alt, original_href, '
+                    'ordinal, queue_id, chapter_id FROM illustrations '
+                    'WHERE book_id = ? AND marker_id = ?',
+                    (book_id, marker_id),
+                )
+                row = cursor.fetchone()
             if not row:
                 return None
             cols = ['id', 'book_id', 'marker_id', 'filename', 'alt',
@@ -1779,16 +1624,15 @@ class DatabaseManager:
     def get_chapter_illustrations(self, book_id, chapter_id):
         """Return a chapter's illustration rows (list of dicts), ordered by ordinal."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id, book_id, marker_id, filename, alt, original_href, '
-                'ordinal, queue_id, chapter_id FROM illustrations '
-                'WHERE book_id = ? AND chapter_id = ? ORDER BY ordinal',
-                (book_id, chapter_id),
-            )
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id, book_id, marker_id, filename, alt, original_href, '
+                    'ordinal, queue_id, chapter_id FROM illustrations '
+                    'WHERE book_id = ? AND chapter_id = ? ORDER BY ordinal',
+                    (book_id, chapter_id),
+                )
+                rows = cursor.fetchall()
             cols = ['id', 'book_id', 'marker_id', 'filename', 'alt',
                     'original_href', 'ordinal', 'queue_id', 'chapter_id']
             return [dict(zip(cols, r)) for r in rows]
@@ -1806,17 +1650,15 @@ class DatabaseManager:
         if not marker_ids:
             return 0
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            placeholders = ','.join('?' for _ in marker_ids)
-            cursor.execute(
-                f'UPDATE illustrations SET chapter_id = ? '
-                f'WHERE book_id = ? AND marker_id IN ({placeholders})',
-                (chapter_id, book_id, *marker_ids),
-            )
-            n = cursor.rowcount
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                placeholders = ','.join('?' for _ in marker_ids)
+                cursor.execute(
+                    f'UPDATE illustrations SET chapter_id = ? '
+                    f'WHERE book_id = ? AND marker_id IN ({placeholders})',
+                    (chapter_id, book_id, *marker_ids),
+                )
+                n = cursor.rowcount
             return n
         except Exception as e:
             self.logger.error(f"Error linking illustrations to chapter {chapter_id}: {e}")
@@ -1843,34 +1685,30 @@ class DatabaseManager:
         try:
             from datetime import datetime
             now = datetime.now().isoformat()
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id FROM footnotes WHERE chapter_id = ? AND is_source = ? '
-                'AND anchor = ? AND occurrence = ?',
-                (chapter_id, is_source, anchor, occurrence),
-            )
-            existing = cursor.fetchone()
-            if existing:
-                fid = existing[0]
+            with self._conn() as conn:
+                cursor = conn.cursor()
                 cursor.execute(
-                    'UPDATE footnotes SET body = ?, source_term = ?, sort_order = ?, '
-                    'status = ?, modified_date = ? WHERE id = ?',
-                    (body, source_term, sort_order, status, now, fid),
+                    'SELECT id FROM footnotes WHERE chapter_id = ? AND is_source = ? '
+                    'AND anchor = ? AND occurrence = ?',
+                    (chapter_id, is_source, anchor, occurrence),
                 )
-                conn.commit()
-                conn.close()
-                return fid
-            cursor.execute(
-                'INSERT INTO footnotes (book_id, chapter_id, anchor, source_term, body, '
-                'occurrence, status, is_source, sort_order, created_date, modified_date) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                (book_id, chapter_id, anchor, source_term, body, occurrence, status,
-                 is_source, sort_order, now, now),
-            )
-            fid = cursor.lastrowid
-            conn.commit()
-            conn.close()
+                existing = cursor.fetchone()
+                if existing:
+                    fid = existing[0]
+                    cursor.execute(
+                        'UPDATE footnotes SET body = ?, source_term = ?, sort_order = ?, '
+                        'status = ?, modified_date = ? WHERE id = ?',
+                        (body, source_term, sort_order, status, now, fid),
+                    )
+                    return fid
+                cursor.execute(
+                    'INSERT INTO footnotes (book_id, chapter_id, anchor, source_term, body, '
+                    'occurrence, status, is_source, sort_order, created_date, modified_date) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    (book_id, chapter_id, anchor, source_term, body, occurrence, status,
+                     is_source, sort_order, now, now),
+                )
+                fid = cursor.lastrowid
             return fid
         except Exception as e:
             self.logger.error(f"Error adding footnote for chapter {chapter_id}: {e}")
@@ -1879,22 +1717,21 @@ class DatabaseManager:
     def get_chapter_footnotes(self, chapter_id, *, is_source=None, status=None):
         """Return a chapter's footnote rows (list of dicts), ordered by id."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            q = ('SELECT id, book_id, chapter_id, anchor, source_term, body, '
-                 'occurrence, status, is_source, sort_order FROM footnotes '
-                 'WHERE chapter_id = ?')
-            params = [chapter_id]
-            if is_source is not None:
-                q += ' AND is_source = ?'
-                params.append(is_source)
-            if status is not None:
-                q += ' AND status = ?'
-                params.append(status)
-            q += ' ORDER BY id'
-            cursor.execute(q, tuple(params))
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                q = ('SELECT id, book_id, chapter_id, anchor, source_term, body, '
+                     'occurrence, status, is_source, sort_order FROM footnotes '
+                     'WHERE chapter_id = ?')
+                params = [chapter_id]
+                if is_source is not None:
+                    q += ' AND is_source = ?'
+                    params.append(is_source)
+                if status is not None:
+                    q += ' AND status = ?'
+                    params.append(status)
+                q += ' ORDER BY id'
+                cursor.execute(q, tuple(params))
+                rows = cursor.fetchall()
             return [dict(zip(self._FOOTNOTE_COLS, r)) for r in rows]
         except Exception as e:
             self.logger.error(f"Error fetching footnotes for chapter {chapter_id}: {e}")
@@ -1903,20 +1740,19 @@ class DatabaseManager:
     def get_book_footnotes(self, book_id, *, status=None):
         """Return a book's footnote rows joined with chapter_number, for reports."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            q = ('SELECT f.id, f.book_id, f.chapter_id, c.chapter_number, f.anchor, '
-                 'f.source_term, f.body, f.occurrence, f.status, f.is_source, f.sort_order '
-                 'FROM footnotes f JOIN chapters c ON c.id = f.chapter_id '
-                 'WHERE f.book_id = ?')
-            params = [book_id]
-            if status is not None:
-                q += ' AND f.status = ?'
-                params.append(status)
-            q += ' ORDER BY c.chapter_number, f.id'
-            cursor.execute(q, tuple(params))
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                q = ('SELECT f.id, f.book_id, f.chapter_id, c.chapter_number, f.anchor, '
+                     'f.source_term, f.body, f.occurrence, f.status, f.is_source, f.sort_order '
+                     'FROM footnotes f JOIN chapters c ON c.id = f.chapter_id '
+                     'WHERE f.book_id = ?')
+                params = [book_id]
+                if status is not None:
+                    q += ' AND f.status = ?'
+                    params.append(status)
+                q += ' ORDER BY c.chapter_number, f.id'
+                cursor.execute(q, tuple(params))
+                rows = cursor.fetchall()
             cols = ['id', 'book_id', 'chapter_id', 'chapter_number', 'anchor',
                     'source_term', 'body', 'occurrence', 'status', 'is_source', 'sort_order']
             return [dict(zip(cols, r)) for r in rows]
@@ -1940,12 +1776,10 @@ class DatabaseManager:
             sets.append('modified_date = ?')
             params.append(datetime.now().isoformat())
             params.append(footnote_id)
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(f'UPDATE footnotes SET {", ".join(sets)} WHERE id = ?', tuple(params))
-            n = cursor.rowcount
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'UPDATE footnotes SET {", ".join(sets)} WHERE id = ?', tuple(params))
+                n = cursor.rowcount
             return n > 0
         except Exception as e:
             self.logger.error(f"Error updating footnote {footnote_id}: {e}")
@@ -1955,14 +1789,12 @@ class DatabaseManager:
         """Set a footnote's status ('active' | 'orphaned'). Returns True on success."""
         try:
             from datetime import datetime
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE footnotes SET status = ?, modified_date = ? WHERE id = ?',
-                (status, datetime.now().isoformat(), footnote_id),
-            )
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE footnotes SET status = ?, modified_date = ? WHERE id = ?',
+                    (status, datetime.now().isoformat(), footnote_id),
+                )
             return True
         except Exception as e:
             self.logger.error(f"Error setting footnote {footnote_id} status: {e}")
@@ -1971,12 +1803,10 @@ class DatabaseManager:
     def delete_footnote(self, footnote_id):
         """Delete a footnote row. Returns True if a row was removed."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM footnotes WHERE id = ?', (footnote_id,))
-            n = cursor.rowcount
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM footnotes WHERE id = ?', (footnote_id,))
+                n = cursor.rowcount
             return n > 0
         except Exception as e:
             self.logger.error(f"Error deleting footnote {footnote_id}: {e}")
@@ -1995,34 +1825,32 @@ class DatabaseManager:
             chapter = self.get_chapter(chapter_id=chapter_id)
             if not chapter:
                 return False
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            wrote = False
-            for is_source in (0, 1):
-                rows = self.get_chapter_footnotes(chapter_id, is_source=is_source)
-                if not rows:
-                    continue
-                key = 'untranslated' if is_source else 'content'
-                column = 'untranslated_content' if is_source else 'translated_content'
-                base = content_to_list(chapter.get(key))
-                new_lines, orphans = render_footnotes(base, rows)
-                orphan_ids = {o['id'] for o in orphans}
-                from datetime import datetime
-                now = datetime.now().isoformat()
-                for r in rows:
-                    want = 'orphaned' if r['id'] in orphan_ids else 'active'
-                    if r.get('status') != want:
-                        cursor.execute(
-                            'UPDATE footnotes SET status = ?, modified_date = ? WHERE id = ?',
-                            (want, now, r['id']),
-                        )
-                cursor.execute(
-                    f'UPDATE chapters SET {column} = ? WHERE id = ?',
-                    (json.dumps(new_lines, ensure_ascii=False), chapter_id),
-                )
-                wrote = True
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                wrote = False
+                for is_source in (0, 1):
+                    rows = self.get_chapter_footnotes(chapter_id, is_source=is_source)
+                    if not rows:
+                        continue
+                    key = 'untranslated' if is_source else 'content'
+                    column = 'untranslated_content' if is_source else 'translated_content'
+                    base = content_to_list(chapter.get(key))
+                    new_lines, orphans = render_footnotes(base, rows)
+                    orphan_ids = {o['id'] for o in orphans}
+                    from datetime import datetime
+                    now = datetime.now().isoformat()
+                    for r in rows:
+                        want = 'orphaned' if r['id'] in orphan_ids else 'active'
+                        if r.get('status') != want:
+                            cursor.execute(
+                                'UPDATE footnotes SET status = ?, modified_date = ? WHERE id = ?',
+                                (want, now, r['id']),
+                            )
+                    cursor.execute(
+                        f'UPDATE chapters SET {column} = ? WHERE id = ?',
+                        (json.dumps(new_lines, ensure_ascii=False), chapter_id),
+                    )
+                    wrote = True
             if wrote:
                 self.invalidate_epub_cache(chapter['book_id'])
             return True
@@ -2058,46 +1886,43 @@ class DatabaseManager:
 
             # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
             content = apply_source_ingest(book, content, self.config, self.logger, db=self)
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+                if priority:
+                    # Place at front: use min(position) - 1
+                    cursor.execute('SELECT MIN(position) FROM queue')
+                    min_pos = cursor.fetchone()[0]
+                    next_position = (min_pos - 1) if min_pos is not None else 0
+                else:
+                    # Place at back: use max(position) + 1
+                    cursor.execute('SELECT MAX(position) FROM queue')
+                    max_pos = cursor.fetchone()[0]
+                    next_position = (max_pos + 1) if max_pos is not None else 0
 
-            if priority:
-                # Place at front: use min(position) - 1
-                cursor.execute('SELECT MIN(position) FROM queue')
-                min_pos = cursor.fetchone()[0]
-                next_position = (min_pos - 1) if min_pos is not None else 0
-            else:
-                # Place at back: use max(position) + 1
-                cursor.execute('SELECT MAX(position) FROM queue')
-                max_pos = cursor.fetchone()[0]
-                next_position = (max_pos + 1) if max_pos is not None else 0
+                # Serialize content as JSON if list (like chapters table)
+                if isinstance(content, list):
+                    content_json = json.dumps(content, ensure_ascii=False)
+                else:
+                    content_json = content
 
-            # Serialize content as JSON if list (like chapters table)
-            if isinstance(content, list):
-                content_json = json.dumps(content, ensure_ascii=False)
-            else:
-                content_json = content
+                # Serialize metadata if provided
+                metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
 
-            # Serialize metadata if provided
-            metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+                # Get current timestamp
+                from datetime import datetime
+                created_date = datetime.now().isoformat()
 
-            # Get current timestamp
-            from datetime import datetime
-            created_date = datetime.now().isoformat()
+                # Normalize reason: treat empty/whitespace as None
+                reason = (retranslation_reason or "").strip() or None
 
-            # Normalize reason: treat empty/whitespace as None
-            reason = (retranslation_reason or "").strip() or None
-
-            # Insert queue item
-            cursor.execute('''
+                # Insert queue item
+                cursor.execute('''
             INSERT INTO queue (book_id, chapter_number, title, source, content, metadata, position, created_date, retranslation_reason)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (book_id, chapter_number, title or "Untitled", source, content_json, metadata_json, next_position, created_date, reason))
 
-            queue_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
+                queue_id = cursor.lastrowid
 
             self.logger.info(f"Added item to queue (ID: {queue_id}, position: {next_position}) for book '{book['title']}'")
             return queue_id
@@ -2119,12 +1944,12 @@ class DatabaseManager:
             dict: Queue item data or None if queue empty
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            # Build query with optional book_id filter
-            if book_id:
-                cursor.execute('''
+                # Build query with optional book_id filter
+                if book_id:
+                    cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
@@ -2134,8 +1959,8 @@ class DatabaseManager:
                 ORDER BY q.position ASC
                 LIMIT 1
                 ''', (book_id,))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
@@ -2145,8 +1970,7 @@ class DatabaseManager:
                 LIMIT 1
                 ''')
 
-            row = cursor.fetchone()
-            conn.close()
+                row = cursor.fetchone()
 
             if not row:
                 return None
@@ -2196,25 +2020,21 @@ class DatabaseManager:
             bool: True if successful
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            # Get the position of the item being removed
-            cursor.execute('SELECT position FROM queue WHERE id = ?', (queue_id,))
-            row = cursor.fetchone()
+                # Get the position of the item being removed
+                cursor.execute('SELECT position FROM queue WHERE id = ?', (queue_id,))
+                row = cursor.fetchone()
 
-            if not row:
-                self.logger.warning(f"Queue item {queue_id} not found")
-                conn.close()
-                return False
+                if not row:
+                    self.logger.warning(f"Queue item {queue_id} not found")
+                    return False
 
-            removed_position = row[0]
+                removed_position = row[0]
 
-            # Delete the item (no need to reorder — gaps in position are fine)
-            cursor.execute('DELETE FROM queue WHERE id = ?', (queue_id,))
-
-            conn.commit()
-            conn.close()
+                # Delete the item (no need to reorder — gaps in position are fine)
+                cursor.execute('DELETE FROM queue WHERE id = ?', (queue_id,))
 
             self.logger.info(f"Removed queue item {queue_id} from position {removed_position}")
             return True
@@ -2241,14 +2061,14 @@ class DatabaseManager:
             list: List of queue item dicts ordered by position
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            content_cols = "q.content, q.metadata," if include_content else ""
+                content_cols = "q.content, q.metadata," if include_content else ""
 
-            # Build query with optional book_id filter
-            if book_id:
-                cursor.execute(f'''
+                # Build query with optional book_id filter
+                if book_id:
+                    cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
                        q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
@@ -2257,8 +2077,8 @@ class DatabaseManager:
                 WHERE q.book_id = ?
                 ORDER BY q.position ASC
                 ''', (book_id,))
-            else:
-                cursor.execute(f'''
+                else:
+                    cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
                        q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
@@ -2267,8 +2087,7 @@ class DatabaseManager:
                 ORDER BY q.position ASC
                 ''')
 
-            rows = cursor.fetchall()
-            conn.close()
+                rows = cursor.fetchall()
 
             result = []
             for row in rows:
@@ -2325,11 +2144,10 @@ class DatabaseManager:
             list[int]: Distinct book IDs present in the queue.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('SELECT DISTINCT book_id FROM queue')
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT DISTINCT book_id FROM queue')
+                rows = cursor.fetchall()
             return [row[0] for row in rows]
         except Exception as e:
             self.logger.error(f"Error getting queued book ids: {e}")
@@ -2350,24 +2168,21 @@ class DatabaseManager:
             (the API turns this into a 500 instead of falsely reporting success).
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            if book_id:
-                # Clear queue for specific book. Leave the remaining items'
-                # positions untouched — gaps are fine (same as remove_from_queue),
-                # and a sequential 0..n reassignment would collide with the
-                # UNIQUE constraint on queue.position mid-loop, raising a
-                # duplicate-key error that rolls back the DELETE.
-                cursor.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
-                count = cursor.rowcount
-            else:
-                # Clear entire queue
-                cursor.execute('DELETE FROM queue')
-                count = cursor.rowcount
-
-            conn.commit()
-            conn.close()
+                if book_id:
+                    # Clear queue for specific book. Leave the remaining items'
+                    # positions untouched — gaps are fine (same as remove_from_queue),
+                    # and a sequential 0..n reassignment would collide with the
+                    # UNIQUE constraint on queue.position mid-loop, raising a
+                    # duplicate-key error that rolls back the DELETE.
+                    cursor.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+                    count = cursor.rowcount
+                else:
+                    # Clear entire queue
+                    cursor.execute('DELETE FROM queue')
+                    count = cursor.rowcount
 
             self.logger.info(f"Cleared {count} items from queue" + (f" for book_id {book_id}" if book_id else ""))
             return count
@@ -2387,16 +2202,15 @@ class DatabaseManager:
             int: Number of items in queue
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            if book_id:
-                cursor.execute('SELECT COUNT(*) FROM queue WHERE book_id = ?', (book_id,))
-            else:
-                cursor.execute('SELECT COUNT(*) FROM queue')
+                if book_id:
+                    cursor.execute('SELECT COUNT(*) FROM queue WHERE book_id = ?', (book_id,))
+                else:
+                    cursor.execute('SELECT COUNT(*) FROM queue')
 
-            count = cursor.fetchone()[0]
-            conn.close()
+                count = cursor.fetchone()[0]
 
             return count
 
@@ -2416,14 +2230,13 @@ class DatabaseManager:
             bool: True if duplicate exists
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute('SELECT id FROM queue WHERE book_id = ? AND chapter_number = ?',
-                          (book_id, chapter_number))
+                cursor.execute('SELECT id FROM queue WHERE book_id = ? AND chapter_number = ?',
+                              (book_id, chapter_number))
 
-            result = cursor.fetchone()
-            conn.close()
+                result = cursor.fetchone()
 
             return result is not None
 
@@ -2438,19 +2251,17 @@ class DatabaseManager:
     def add_activity_log(self, type, message, book_id=None, chapter=None, book_name=None, entities=None):
         """Add an entry to the activity log. Returns the entry dict."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            created_at = datetime.datetime.now().isoformat()
-            entities_json = json.dumps(entities) if entities else None
-            cursor.execute(
-                'INSERT INTO activity_log (type, message, book_id, chapter, book_name, entities_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                (type, message, book_id, chapter, book_name, entities_json, created_at),
-            )
-            entry_id = cursor.lastrowid
-            # Cap at 500 rows
-            cursor.execute(self.backend.cap_activity_log_sql())
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                created_at = datetime.datetime.now().isoformat()
+                entities_json = json.dumps(entities) if entities else None
+                cursor.execute(
+                    'INSERT INTO activity_log (type, message, book_id, chapter, book_name, entities_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (type, message, book_id, chapter, book_name, entities_json, created_at),
+                )
+                entry_id = cursor.lastrowid
+                # Cap at 500 rows
+                cursor.execute(self.backend.cap_activity_log_sql())
             return {
                 'id': entry_id, 'type': type, 'message': message,
                 'book_id': book_id, 'chapter': chapter, 'book_name': book_name,
@@ -2463,11 +2274,10 @@ class DatabaseManager:
     def get_activity_log(self, limit=200):
         """Get recent activity log entries, oldest first."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, type, message, book_id, chapter, book_name, entities_json, created_at FROM activity_log ORDER BY id DESC LIMIT ?', (limit,))
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT id, type, message, book_id, chapter, book_name, entities_json, created_at FROM activity_log ORDER BY id DESC LIMIT ?', (limit,))
+                rows = cursor.fetchall()
             entries = []
             for row in reversed(rows):  # reverse so oldest is first
                 entries.append({
@@ -2484,10 +2294,8 @@ class DatabaseManager:
     def clear_activity_log(self):
         """Delete all activity log entries."""
         try:
-            conn = self.backend.get_connection()
-            conn.execute('DELETE FROM activity_log')
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                conn.execute('DELETE FROM activity_log')
         except Exception as e:
             self.logger.error(f"Error clearing activity log: {e}")
 
@@ -2498,18 +2306,16 @@ class DatabaseManager:
     def log_reader_view(self, book_id: int, chapter_number: int, ip: str):
         """Record a chapter view from the public reader and bump the book's view_count."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'INSERT INTO reader_log (book_id, chapter_number, ip, viewed_at) VALUES (?, ?, ?, ?)',
-                (book_id, chapter_number, ip, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
-            )
-            cursor.execute(
-                'UPDATE books SET view_count = view_count + 1 WHERE id = ?',
-                (book_id,)
-            )
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'INSERT INTO reader_log (book_id, chapter_number, ip, viewed_at) VALUES (?, ?, ?, ?)',
+                    (book_id, chapter_number, ip, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
+                )
+                cursor.execute(
+                    'UPDATE books SET view_count = view_count + 1 WHERE id = ?',
+                    (book_id,)
+                )
         except Exception as e:
             self.logger.error(f"Error logging reader view: {e}")
 
@@ -2523,8 +2329,7 @@ class DatabaseManager:
         """
         if not views and not book_bumps:
             return
-        conn = self.backend.get_connection()
-        try:
+        with self._conn() as conn:
             cursor = conn.cursor()
             if views:
                 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
@@ -2537,41 +2342,35 @@ class DatabaseManager:
                     'UPDATE books SET view_count = view_count + ? WHERE id = ?',
                     (int(count), book_id)
                 )
-            conn.commit()
-        finally:
-            conn.close()
 
     def increment_book_view_count(self, book_id: int):
         """Atomically bump books.view_count by 1. Does not write reader_log."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE books SET view_count = view_count + 1 WHERE id = ?',
-                (book_id,)
-            )
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE books SET view_count = view_count + 1 WHERE id = ?',
+                    (book_id,)
+                )
         except Exception as e:
             self.logger.error(f"Error incrementing view_count for book {book_id}: {e}")
 
     def get_reader_log(self, book_id: int = None, limit: int = 200):
         """Return recent reader log entries, optionally filtered by book."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if book_id is not None:
-                cursor.execute(
-                    'SELECT id, book_id, chapter_number, ip, viewed_at FROM reader_log WHERE book_id = ? ORDER BY id DESC LIMIT ?',
-                    (book_id, limit)
-                )
-            else:
-                cursor.execute(
-                    'SELECT id, book_id, chapter_number, ip, viewed_at FROM reader_log ORDER BY id DESC LIMIT ?',
-                    (limit,)
-                )
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if book_id is not None:
+                    cursor.execute(
+                        'SELECT id, book_id, chapter_number, ip, viewed_at FROM reader_log WHERE book_id = ? ORDER BY id DESC LIMIT ?',
+                        (book_id, limit)
+                    )
+                else:
+                    cursor.execute(
+                        'SELECT id, book_id, chapter_number, ip, viewed_at FROM reader_log ORDER BY id DESC LIMIT ?',
+                        (limit,)
+                    )
+                rows = cursor.fetchall()
             return [dict(r) for r in rows]
         except Exception as e:
             self.logger.error(f"Error reading reader log: {e}")
@@ -2615,49 +2414,47 @@ class DatabaseManager:
         default_entities = {cat: {} for cat in cats}
 
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            # Get all entities grouped by category
-            if book_id is not None:
-                cursor.execute('''
+                # Get all entities grouped by category
+                if book_id is not None:
+                    cursor.execute('''
                 SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note
                 FROM entities
                 WHERE book_id = ? OR book_id IS NULL
                 ''', (book_id,))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note
                 FROM entities
                 ''')
 
-            rows = cursor.fetchall()
+                rows = cursor.fetchall()
 
-            # Process results
-            entities = default_entities.copy()
-            for row in rows:
-                category, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id, note = row
+                # Process results
+                entities = default_entities.copy()
+                for row in rows:
+                    category, untranslated, translation, last_chapter, incorrect_translation, gender, entity_book_id, note = row
 
-                # Initialize category if needed (should be unnecessary with defaults)
-                entities.setdefault(category, {})
+                    # Initialize category if needed (should be unnecessary with defaults)
+                    entities.setdefault(category, {})
 
-                # Create entity entry
-                entity_data = {"translation": translation, "last_chapter": last_chapter}
+                    # Create entity entry
+                    entity_data = {"translation": translation, "last_chapter": last_chapter}
 
-                # Add optional attributes if they exist
-                if incorrect_translation:
-                    entity_data["incorrect_translation"] = incorrect_translation
-                if gender:
-                    entity_data["gender"] = gender
-                if entity_book_id:
-                    entity_data["book_id"] = entity_book_id
-                if note:
-                    entity_data["note"] = note
-                
-                # Add to our entities dictionary
-                entities[category][untranslated] = entity_data
-            
-            conn.close()
+                    # Add optional attributes if they exist
+                    if incorrect_translation:
+                        entity_data["incorrect_translation"] = incorrect_translation
+                    if gender:
+                        entity_data["gender"] = gender
+                    if entity_book_id:
+                        entity_data["book_id"] = entity_book_id
+                    if note:
+                        entity_data["note"] = note
+                    
+                    # Add to our entities dictionary
+                    entities[category][untranslated] = entity_data
             self.entities = entities
             self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities from database")
             return entities
@@ -2716,64 +2513,61 @@ class DatabaseManager:
     def save_entities(self):
         """Save the current entities cache to the SQLite database"""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Track which entities we've already saved to avoid duplicates
-            processed_entities = set()
-            
-            # For each category and entity in memory cache
-            for category, entities in self.entities.items():
-                for untranslated, entity_data in entities.items():
-                    translation = entity_data.get('translation', '')
-                    last_chapter = entity_data.get('last_chapter', '')
-                    incorrect_translation = entity_data.get('incorrect_translation', None)
-                    gender = entity_data.get('gender', None)
-                    book_id = entity_data.get('book_id', None)  # Include book_id
-                    note = entity_data.get('note', None)
-                    
-                    # Create a unique key to track this entity
-                    entity_key = (untranslated, book_id)
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Track which entities we've already saved to avoid duplicates
+                processed_entities = set()
+                
+                # For each category and entity in memory cache
+                for category, entities in self.entities.items():
+                    for untranslated, entity_data in entities.items():
+                        translation = entity_data.get('translation', '')
+                        last_chapter = entity_data.get('last_chapter', '')
+                        incorrect_translation = entity_data.get('incorrect_translation', None)
+                        gender = entity_data.get('gender', None)
+                        book_id = entity_data.get('book_id', None)  # Include book_id
+                        note = entity_data.get('note', None)
+                        
+                        # Create a unique key to track this entity
+                        entity_key = (untranslated, book_id)
 
-                    # Skip if we've already processed this entity
-                    if entity_key in processed_entities:
-                        continue
+                        # Skip if we've already processed this entity
+                        if entity_key in processed_entities:
+                            continue
 
-                    # Add to processed set
-                    processed_entities.add(entity_key)
+                        # Add to processed set
+                        processed_entities.add(entity_key)
 
-                    # Look for existing entity to determine whether to insert or update
-                    if book_id is not None:
-                        cursor.execute('''
+                        # Look for existing entity to determine whether to insert or update
+                        if book_id is not None:
+                            cursor.execute('''
                         SELECT id FROM entities
                         WHERE untranslated = ? AND book_id = ?
                         ''', (untranslated, book_id))
-                    else:
-                        cursor.execute('''
+                        else:
+                            cursor.execute('''
                         SELECT id FROM entities
                         WHERE untranslated = ? AND book_id IS NULL
                         ''', (untranslated,))
-                    
-                    existing = cursor.fetchone()
-                    
-                    if existing:
-                        # Update existing entity
-                        entity_id = existing[0]
-                        cursor.execute('''
+                        
+                        existing = cursor.fetchone()
+                        
+                        if existing:
+                            # Update existing entity
+                            entity_id = existing[0]
+                            cursor.execute('''
                         UPDATE entities
                         SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, note = ?
                         WHERE id = ?
                         ''', (category, translation, last_chapter, incorrect_translation, gender, note, entity_id))
-                    else:
-                        # Insert new entity
-                        cursor.execute('''
+                        else:
+                            # Insert new entity
+                            cursor.execute('''
                         INSERT INTO entities
                         (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note))
-            
-            conn.commit()
-            conn.close()
             self.logger.info("Entities saved to database successfully")
         except Exception as e:
             self.logger.error(f"Error saving entities to database: {e}\n{traceback.format_exc()}")
@@ -3003,49 +2797,46 @@ class DatabaseManager:
             gender: Entity gender (for characters)
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Check if entity already exists for this book (regardless of category)
-            if book_id is not None:
-                cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Check if entity already exists for this book (regardless of category)
+                if book_id is not None:
+                    cursor.execute('''
                 SELECT id, origin_chapter, category FROM entities
                 WHERE untranslated = ? AND book_id = ?
                 ''', (untranslated, book_id))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT id, origin_chapter, category FROM entities
                 WHERE untranslated = ? AND book_id IS NULL
                 ''', (untranslated,))
 
-            same_cat = cursor.fetchone()
-            if same_cat:
-                # Update existing — preserve origin_chapter, gender, and note if not explicitly provided
-                existing_id = same_cat[0]
-                effective_origin = origin_chapter if origin_chapter is not None else (same_cat[1] if same_cat[1] is not None else last_chapter)
-                if gender is None or note is None:
-                    cursor.execute('SELECT gender, note FROM entities WHERE id = ?', (existing_id,))
-                    existing = cursor.fetchone()
-                    if gender is None and existing:
-                        gender = existing[0]
-                    if note is None and existing:
-                        note = existing[1]
-                cursor.execute('''
+                same_cat = cursor.fetchone()
+                if same_cat:
+                    # Update existing — preserve origin_chapter, gender, and note if not explicitly provided
+                    existing_id = same_cat[0]
+                    effective_origin = origin_chapter if origin_chapter is not None else (same_cat[1] if same_cat[1] is not None else last_chapter)
+                    if gender is None or note is None:
+                        cursor.execute('SELECT gender, note FROM entities WHERE id = ?', (existing_id,))
+                        existing = cursor.fetchone()
+                        if gender is None and existing:
+                            gender = existing[0]
+                        if note is None and existing:
+                            note = existing[1]
+                    cursor.execute('''
                 UPDATE entities
                 SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?, note = ?
                 WHERE id = ?
                 ''', (category, translation, last_chapter, incorrect_translation, gender, effective_origin, note, existing_id))
-            else:
-                # Insert new entity — fall back to last_chapter if origin_chapter not specified
-                effective_origin = origin_chapter if origin_chapter is not None else last_chapter
-                cursor.execute('''
+                else:
+                    # Insert new entity — fall back to last_chapter if origin_chapter not specified
+                    effective_origin = origin_chapter if origin_chapter is not None else last_chapter
+                    cursor.execute('''
                 INSERT INTO entities
                 (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter, note)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, effective_origin, note))
-            
-            conn.commit()
-            conn.close()
             
             # Update the in-memory cache
             self.entities.setdefault(category, {})
@@ -3081,64 +2872,59 @@ class DatabaseManager:
         Returns True if the entity was updated, False if it wasn't found.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            # Check if book_id is the only field being updated (changing book assignment)
-            is_only_book_id = 'book_id' in kwargs and len(kwargs) == 1
+                # Check if book_id is the only field being updated (changing book assignment)
+                is_only_book_id = 'book_id' in kwargs and len(kwargs) == 1
 
-            # Build the SET clause dynamically based on provided kwargs
-            set_clause = []
-            values = []
-            where_book_id = None
+                # Build the SET clause dynamically based on provided kwargs
+                set_clause = []
+                values = []
+                where_book_id = None
 
-            for key, value in kwargs.items():
-                if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note', 'category']:
-                    set_clause.append(f"{key} = ?")
-                    values.append(value)
-                elif key == 'book_id':
-                    if is_only_book_id:
-                        # Changing book assignment - include in SET clause
+                for key, value in kwargs.items():
+                    if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note', 'category']:
                         set_clause.append(f"{key} = ?")
                         values.append(value)
+                    elif key == 'book_id':
+                        if is_only_book_id:
+                            # Changing book assignment - include in SET clause
+                            set_clause.append(f"{key} = ?")
+                            values.append(value)
+                        else:
+                            # Identifying which entity to update - use in WHERE clause
+                            where_book_id = value
+
+                if not set_clause:
+                    self.logger.warning("No valid fields to update")
+                    return False
+
+                # Build WHERE clause
+                where_clause = "WHERE category = ? AND untranslated = ?"
+                where_values = [category, untranslated]
+
+                # Include book_id in WHERE clause only if we're not changing it
+                if not is_only_book_id:
+                    if where_book_id is not None:
+                        where_clause += " AND book_id = ?"
+                        where_values.append(where_book_id)
                     else:
-                        # Identifying which entity to update - use in WHERE clause
-                        where_book_id = value
+                        where_clause += " AND book_id IS NULL"
 
-            if not set_clause:
-                self.logger.warning("No valid fields to update")
-                conn.close()
-                return False
+                # Complete the parameter list
+                values.extend(where_values)
 
-            # Build WHERE clause
-            where_clause = "WHERE category = ? AND untranslated = ?"
-            where_values = [category, untranslated]
-
-            # Include book_id in WHERE clause only if we're not changing it
-            if not is_only_book_id:
-                if where_book_id is not None:
-                    where_clause += " AND book_id = ?"
-                    where_values.append(where_book_id)
-                else:
-                    where_clause += " AND book_id IS NULL"
-
-            # Complete the parameter list
-            values.extend(where_values)
-
-            # Execute the update
-            cursor.execute(f'''
+                # Execute the update
+                cursor.execute(f'''
             UPDATE entities
             SET {', '.join(set_clause)}
             {where_clause}
             ''', values)
-            
-            if cursor.rowcount == 0:
-                self.logger.warning(f"Entity '{untranslated}' in category '{category}' not found for update")
-                conn.close()
-                return False
-            
-            conn.commit()
-            conn.close()
+                
+                if cursor.rowcount == 0:
+                    self.logger.warning(f"Entity '{untranslated}' in category '{category}' not found for update")
+                    return False
 
             # Update the in-memory cache
             if category in self.entities and untranslated in self.entities[category]:
@@ -3178,31 +2964,26 @@ class DatabaseManager:
             return 'unchanged'
 
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            book_clause = "book_id = ?" if book_id is not None else "book_id IS NULL"
-            book_params = (book_id,) if book_id is not None else ()
+                book_clause = "book_id = ?" if book_id is not None else "book_id IS NULL"
+                book_params = (book_id,) if book_id is not None else ()
 
-            cursor.execute(
-                f"SELECT 1 FROM entities WHERE untranslated = ? AND {book_clause}",
-                (new_untranslated,) + book_params,
-            )
-            if cursor.fetchone():
-                conn.close()
-                return 'conflict'
+                cursor.execute(
+                    f"SELECT 1 FROM entities WHERE untranslated = ? AND {book_clause}",
+                    (new_untranslated,) + book_params,
+                )
+                if cursor.fetchone():
+                    return 'conflict'
 
-            cursor.execute(
-                f"UPDATE entities SET untranslated = ? "
-                f"WHERE category = ? AND untranslated = ? AND {book_clause}",
-                (new_untranslated, category, old_untranslated) + book_params,
-            )
-            if cursor.rowcount == 0:
-                conn.close()
-                return 'not_found'
-
-            conn.commit()
-            conn.close()
+                cursor.execute(
+                    f"UPDATE entities SET untranslated = ? "
+                    f"WHERE category = ? AND untranslated = ? AND {book_clause}",
+                    (new_untranslated, category, old_untranslated) + book_params,
+                )
+                if cursor.rowcount == 0:
+                    return 'not_found'
 
             if category in self.entities and old_untranslated in self.entities[category]:
                 self.entities[category][new_untranslated] = self.entities[category].pop(old_untranslated)
@@ -3221,21 +3002,17 @@ class DatabaseManager:
         Returns True if the entity was deleted, False if it wasn't found.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
             DELETE FROM entities 
             WHERE category = ? AND untranslated = ?
             ''', (category, untranslated))
-            
-            if cursor.rowcount == 0:
-                self.logger.warning(f"Entity '{untranslated}' in category '{category}' not found for deletion")
-                conn.close()
-                return False
-            
-            conn.commit()
-            conn.close()
+                
+                if cursor.rowcount == 0:
+                    self.logger.warning(f"Entity '{untranslated}' in category '{category}' not found for deletion")
+                    return False
             
             # Update the in-memory cache
             if category in self.entities and untranslated in self.entities[category]:
@@ -3255,42 +3032,37 @@ class DatabaseManager:
         Returns True if the entity was moved, False otherwise.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Check if entity exists in the source category
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Check if entity exists in the source category
+                cursor.execute('''
             SELECT translation, last_chapter, incorrect_translation, gender 
             FROM entities 
             WHERE category = ? AND untranslated = ?
             ''', (old_category, untranslated))
-            
-            entity_data = cursor.fetchone()
-            if not entity_data:
-                self.logger.warning(f"Entity '{untranslated}' not found in category '{old_category}'")
-                conn.close()
-                return False
-            
-            # Check if entity already exists in the target category
-            cursor.execute('''
+                
+                entity_data = cursor.fetchone()
+                if not entity_data:
+                    self.logger.warning(f"Entity '{untranslated}' not found in category '{old_category}'")
+                    return False
+                
+                # Check if entity already exists in the target category
+                cursor.execute('''
             SELECT id FROM entities 
             WHERE category = ? AND untranslated = ?
             ''', (new_category, untranslated))
-            
-            if cursor.fetchone():
-                self.logger.warning(f"Entity '{untranslated}' already exists in target category '{new_category}'")
-                conn.close()
-                return False
-            
-            # Update the category
-            cursor.execute('''
+                
+                if cursor.fetchone():
+                    self.logger.warning(f"Entity '{untranslated}' already exists in target category '{new_category}'")
+                    return False
+                
+                # Update the category
+                cursor.execute('''
             UPDATE entities 
             SET category = ?
             WHERE category = ? AND untranslated = ?
             ''', (new_category, old_category, untranslated))
-            
-            conn.commit()
-            conn.close()
             
             # Update the in-memory cache
             if old_category in self.entities and untranslated in self.entities[old_category]:
@@ -3316,17 +3088,16 @@ class DatabaseManager:
         This is useful for finding duplicates by translation rather than by untranslated text.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
             SELECT category, untranslated, last_chapter, incorrect_translation, gender 
             FROM entities 
             WHERE translation = ?
             ''', (translation,))
-            
-            rows = cursor.fetchall()
-            conn.close()
+                
+                rows = cursor.fetchall()
             
             if not rows:
                 return None
@@ -3368,30 +3139,26 @@ class DatabaseManager:
             if not json_data:
                 self.logger.warning(f"No data found in JSON file '{filepath}'")
                 return False
-            
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            
-            # Clear existing data?
-            clear_first = False  # Could be a parameter
-            if clear_first:
-                cursor.execute('DELETE FROM entities')
-            
-            # Import each entity
-            count = 0
-            for category, entities in json_data.items():
-                for untranslated, entity_data in entities.items():
-                    translation = entity_data.get('translation', '')
-                    last_chapter = entity_data.get('last_chapter', '')
-                    incorrect_translation = entity_data.get('incorrect_translation', None)
-                    gender = entity_data.get('gender', None)
-                    
-                    cursor.execute(self.backend.upsert_entity_sql(),
-                        (category, untranslated, translation, last_chapter, incorrect_translation, gender))
-                    count += 1
-            
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                
+                # Clear existing data?
+                clear_first = False  # Could be a parameter
+                if clear_first:
+                    cursor.execute('DELETE FROM entities')
+                
+                # Import each entity
+                count = 0
+                for category, entities in json_data.items():
+                    for untranslated, entity_data in entities.items():
+                        translation = entity_data.get('translation', '')
+                        last_chapter = entity_data.get('last_chapter', '')
+                        incorrect_translation = entity_data.get('incorrect_translation', None)
+                        gender = entity_data.get('gender', None)
+                        
+                        cursor.execute(self.backend.upsert_entity_sql(),
+                            (category, untranslated, translation, last_chapter, incorrect_translation, gender))
+                        count += 1
             self.logger.info(f"Imported {count} entities from JSON file '{filepath}'")
             
             # Refresh the in-memory cache
@@ -3425,34 +3192,33 @@ class DatabaseManager:
         default_entities = {cat: {} for cat in cats}
 
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            # Build SQL query with filters
-            query = '''
+                # Build SQL query with filters
+                query = '''
                 SELECT category, untranslated, translation, last_chapter,
                        incorrect_translation, gender, book_id, note
                 FROM entities
                 WHERE 1=1
             '''
-            params = []
+                params = []
 
-            # Add book_id filter
-            if book_id is not None:
-                query += ' AND (book_id = ? OR book_id IS NULL)'
-                params.append(book_id)
+                # Add book_id filter
+                if book_id is not None:
+                    query += ' AND (book_id = ? OR book_id IS NULL)'
+                    params.append(book_id)
 
-            # Add category filter
-            if category is not None:
-                query += ' AND category = ?'
-                params.append(category)
+                # Add category filter
+                if category is not None:
+                    query += ' AND category = ?'
+                    params.append(category)
 
-            # Order for predictable listing
-            query += ' ORDER BY category, untranslated'
+                # Order for predictable listing
+                query += ' ORDER BY category, untranslated'
 
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            conn.close()
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
 
             # Process results
             entities = default_entities.copy()
@@ -3496,25 +3262,23 @@ class DatabaseManager:
         global aggregate (book_id=0).  Returns 1.0 when no data is available.
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            if book_id:
+                if book_id:
+                    cursor.execute(
+                        'SELECT total_input_chars, total_output_tokens FROM token_ratios WHERE book_id = ?',
+                        (book_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0] > 0:
+                        return row[1] / row[0]
+
+                # Fall back to global row
                 cursor.execute(
-                    'SELECT total_input_chars, total_output_tokens FROM token_ratios WHERE book_id = ?',
-                    (book_id,)
+                    'SELECT total_input_chars, total_output_tokens FROM token_ratios WHERE book_id = 0'
                 )
                 row = cursor.fetchone()
-                if row and row[0] > 0:
-                    conn.close()
-                    return row[1] / row[0]
-
-            # Fall back to global row
-            cursor.execute(
-                'SELECT total_input_chars, total_output_tokens FROM token_ratios WHERE book_id = 0'
-            )
-            row = cursor.fetchone()
-            conn.close()
 
             if row and row[0] > 0:
                 return row[1] / row[0]
@@ -3527,27 +3291,24 @@ class DatabaseManager:
     def update_token_ratio(self, book_id, input_chars, output_tokens):
         """Add a chapter's char/token counts to the running totals for book and global stats."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            upsert_sql = self.backend.upsert_token_ratio_sql()
+                upsert_sql = self.backend.upsert_token_ratio_sql()
 
-            if book_id:
-                cursor.execute(upsert_sql, (book_id, input_chars, output_tokens))
+                if book_id:
+                    cursor.execute(upsert_sql, (book_id, input_chars, output_tokens))
 
-            # Always update global aggregate
-            cursor.execute(upsert_sql, (0, input_chars, output_tokens))
+                # Always update global aggregate
+                cursor.execute(upsert_sql, (0, input_chars, output_tokens))
 
-            conn.commit()
-
-            # Log updated stats
-            lookup_id = book_id if book_id else 0
-            cursor.execute(
-                'SELECT total_input_chars, total_output_tokens, sample_count FROM token_ratios WHERE book_id = ?',
-                (lookup_id,)
-            )
-            row = cursor.fetchone()
-            conn.close()
+                # Log updated stats
+                lookup_id = book_id if book_id else 0
+                cursor.execute(
+                    'SELECT total_input_chars, total_output_tokens, sample_count FROM token_ratios WHERE book_id = ?',
+                    (lookup_id,)
+                )
+                row = cursor.fetchone()
 
             if row and row[0] > 0:
                 avg = row[1] / row[0]
@@ -3570,12 +3331,12 @@ class DatabaseManager:
             chapter_number, title, book_title
         """
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
+            with self._conn() as conn:
+                cursor = conn.cursor()
 
-            # Search in both untranslated and translated content
-            if book_id is not None:
-                cursor.execute('''
+                # Search in both untranslated and translated content
+                if book_id is not None:
+                    cursor.execute('''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, b.title as book_title
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
@@ -3583,8 +3344,8 @@ class DatabaseManager:
                 AND (c.untranslated_content LIKE ? OR c.translated_content LIKE ?)
                 ORDER BY c.chapter_number
                 ''', (book_id, f'%{untranslated_text}%', f'%{untranslated_text}%'))
-            else:
-                cursor.execute('''
+                else:
+                    cursor.execute('''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, b.title as book_title
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
@@ -3592,8 +3353,7 @@ class DatabaseManager:
                 ORDER BY b.title, c.chapter_number
                 ''', (f'%{untranslated_text}%', f'%{untranslated_text}%'))
 
-            rows = cursor.fetchall()
-            conn.close()
+                rows = cursor.fetchall()
 
             results = []
             for row in rows:
@@ -3618,22 +3378,21 @@ class DatabaseManager:
     def get_wp_state(self, book_id, chapter_number=None):
         """Get a single wp_publish_state record."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if chapter_number is None:
-                cursor.execute(
-                    "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
-                    "FROM wp_publish_state WHERE book_id = ? AND chapter_number IS NULL",
-                    (book_id,),
-                )
-            else:
-                cursor.execute(
-                    "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
-                    "FROM wp_publish_state WHERE book_id = ? AND chapter_number = ?",
-                    (book_id, chapter_number),
-                )
-            row = cursor.fetchone()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if chapter_number is None:
+                    cursor.execute(
+                        "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
+                        "FROM wp_publish_state WHERE book_id = ? AND chapter_number IS NULL",
+                        (book_id,),
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
+                        "FROM wp_publish_state WHERE book_id = ? AND chapter_number = ?",
+                        (book_id, chapter_number),
+                    )
+                row = cursor.fetchone()
             if not row:
                 return None
             return {
@@ -3648,13 +3407,11 @@ class DatabaseManager:
     def save_wp_state(self, book_id, chapter_number, wp_post_id, wp_post_type, content_hash):
         """Upsert a wp_publish_state record."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            now = datetime.datetime.utcnow().isoformat()
-            cursor.execute(self.backend.upsert_wp_state_sql(),
-                (book_id, chapter_number, wp_post_id, wp_post_type, now, content_hash))
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                now = datetime.datetime.utcnow().isoformat()
+                cursor.execute(self.backend.upsert_wp_state_sql(),
+                    (book_id, chapter_number, wp_post_id, wp_post_type, now, content_hash))
         except Exception as e:
             self.logger.error(f"Error saving wp state: {e}\n{traceback.format_exc()}")
             if self.strict_writes:
@@ -3663,15 +3420,14 @@ class DatabaseManager:
     def get_all_wp_states(self, book_id):
         """Get all wp_publish_state records for a book."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
-                "FROM wp_publish_state WHERE book_id = ?",
-                (book_id,),
-            )
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, book_id, chapter_number, wp_post_id, wp_post_type, last_published, content_hash "
+                    "FROM wp_publish_state WHERE book_id = ?",
+                    (book_id,),
+                )
+                rows = cursor.fetchall()
             return [
                 {
                     "id": r[0], "book_id": r[1], "chapter_number": r[2],
@@ -3687,31 +3443,27 @@ class DatabaseManager:
     def delete_wp_states(self, book_id):
         """Delete all wp_publish_state records for a book."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM wp_publish_state WHERE book_id = ?", (book_id,))
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM wp_publish_state WHERE book_id = ?", (book_id,))
         except Exception as e:
             self.logger.error(f"Error deleting wp states: {e}")
 
     def delete_wp_state_single(self, book_id, chapter_number=None):
         """Delete a single wp_publish_state record."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if chapter_number is None:
-                cursor.execute(
-                    "DELETE FROM wp_publish_state WHERE book_id = ? AND chapter_number IS NULL",
-                    (book_id,),
-                )
-            else:
-                cursor.execute(
-                    "DELETE FROM wp_publish_state WHERE book_id = ? AND chapter_number = ?",
-                    (book_id, chapter_number),
-                )
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if chapter_number is None:
+                    cursor.execute(
+                        "DELETE FROM wp_publish_state WHERE book_id = ? AND chapter_number IS NULL",
+                        (book_id,),
+                    )
+                else:
+                    cursor.execute(
+                        "DELETE FROM wp_publish_state WHERE book_id = ? AND chapter_number = ?",
+                        (book_id, chapter_number),
+                    )
         except Exception as e:
             self.logger.error(f"Error deleting wp state: {e}")
 
@@ -3725,22 +3477,20 @@ class DatabaseManager:
                      total_tokens=0, duration_ms=0, success=1, attempt=0):
         """Log an LLM API call. Returns the row id or None on failure."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            created_at = datetime.datetime.now().isoformat()
-            cursor.execute(
-                'INSERT INTO api_calls (session_id, book_id, chapter_number, chunk_index, '
-                'total_chunks, system_prompt, user_prompt, response_text, model_name, provider, '
-                'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                (session_id, book_id, chapter_number, chunk_index, total_chunks,
-                 system_prompt, user_prompt, response_text, model_name, provider,
-                 prompt_tokens, completion_tokens, total_tokens, duration_ms,
-                 success, attempt, created_at),
-            )
-            row_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                created_at = datetime.datetime.now().isoformat()
+                cursor.execute(
+                    'INSERT INTO api_calls (session_id, book_id, chapter_number, chunk_index, '
+                    'total_chunks, system_prompt, user_prompt, response_text, model_name, provider, '
+                    'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    (session_id, book_id, chapter_number, chunk_index, total_chunks,
+                     system_prompt, user_prompt, response_text, model_name, provider,
+                     prompt_tokens, completion_tokens, total_tokens, duration_ms,
+                     success, attempt, created_at),
+                )
+                row_id = cursor.lastrowid
             return row_id
         except Exception as e:
             self.logger.error(f"Error logging API call: {e}")
@@ -3749,31 +3499,30 @@ class DatabaseManager:
     def get_all_api_calls(self, book_id=None, limit=500):
         """Get API call logs across all books, optionally filtered by book_id."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if book_id is not None:
-                cursor.execute(
-                    'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
-                    'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
-                    'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
-                    'b.title as book_title '
-                    'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
-                    'WHERE ac.book_id = ? '
-                    'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
-                    (book_id, limit),
-                )
-            else:
-                cursor.execute(
-                    'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
-                    'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
-                    'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
-                    'b.title as book_title '
-                    'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
-                    'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
-                    (limit,),
-                )
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if book_id is not None:
+                    cursor.execute(
+                        'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
+                        'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
+                        'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
+                        'b.title as book_title '
+                        'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
+                        'WHERE ac.book_id = ? '
+                        'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
+                        (book_id, limit),
+                    )
+                else:
+                    cursor.execute(
+                        'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
+                        'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
+                        'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
+                        'b.title as book_title '
+                        'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
+                        'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
+                        (limit,),
+                    )
+                rows = cursor.fetchall()
             return [
                 {
                     'id': r[0], 'session_id': r[1], 'book_id': r[2],
@@ -3793,28 +3542,27 @@ class DatabaseManager:
     def get_api_calls(self, book_id, chapter_number=None, limit=500):
         """Get API call logs for a book, optionally filtered by chapter number."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            if chapter_number is not None:
-                cursor.execute(
-                    'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
-                    'system_prompt, user_prompt, response_text, model_name, provider, '
-                    'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
-                    'FROM api_calls WHERE book_id = ? AND chapter_number = ? '
-                    'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
-                    (book_id, chapter_number, limit),
-                )
-            else:
-                cursor.execute(
-                    'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
-                    'system_prompt, user_prompt, response_text, model_name, provider, '
-                    'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
-                    'FROM api_calls WHERE book_id = ? '
-                    'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
-                    (book_id, limit),
-                )
-            rows = cursor.fetchall()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                if chapter_number is not None:
+                    cursor.execute(
+                        'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
+                        'system_prompt, user_prompt, response_text, model_name, provider, '
+                        'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
+                        'FROM api_calls WHERE book_id = ? AND chapter_number = ? '
+                        'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
+                        (book_id, chapter_number, limit),
+                    )
+                else:
+                    cursor.execute(
+                        'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
+                        'system_prompt, user_prompt, response_text, model_name, provider, '
+                        'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
+                        'FROM api_calls WHERE book_id = ? '
+                        'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
+                        (book_id, limit),
+                    )
+                rows = cursor.fetchall()
             return [
                 {
                     'id': r[0], 'session_id': r[1], 'book_id': r[2],
@@ -3834,17 +3582,16 @@ class DatabaseManager:
     def get_api_call(self, call_id):
         """Get a single API call log entry by id."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
-                'system_prompt, user_prompt, response_text, model_name, provider, '
-                'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
-                'FROM api_calls WHERE id = ?',
-                (call_id,),
-            )
-            r = cursor.fetchone()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
+                    'system_prompt, user_prompt, response_text, model_name, provider, '
+                    'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
+                    'FROM api_calls WHERE id = ?',
+                    (call_id,),
+                )
+                r = cursor.fetchone()
             if not r:
                 return None
             return {
@@ -3863,14 +3610,12 @@ class DatabaseManager:
     def update_api_call_response(self, call_id, response_text):
         """Update the response_text of an API call log entry."""
         try:
-            conn = self.backend.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE api_calls SET response_text = ? WHERE id = ?',
-                (response_text, call_id),
-            )
-            conn.commit()
-            conn.close()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE api_calls SET response_text = ? WHERE id = ?',
+                    (response_text, call_id),
+                )
             return True
         except Exception as e:
             self.logger.error(f"Error updating API call response: {e}\n{traceback.format_exc()}")
@@ -3884,56 +3629,51 @@ class DatabaseManager:
 
     def create_recommendation(self, data: dict) -> int:
         """Insert a new recommendation and return its id."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO recommendations (novel_title, author, source_url, source_language, '
-            'description, requester_name, requester_email, notes, status, created_at) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (
-                data['novel_title'],
-                data.get('author'),
-                data['source_url'],
-                data.get('source_language', 'zh'),
-                data.get('description'),
-                data['requester_name'],
-                data['requester_email'],
-                data.get('notes'),
-                'new',
-                datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-            ),
-        )
-        rec_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO recommendations (novel_title, author, source_url, source_language, '
+                'description, requester_name, requester_email, notes, status, created_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (
+                    data['novel_title'],
+                    data.get('author'),
+                    data['source_url'],
+                    data.get('source_language', 'zh'),
+                    data.get('description'),
+                    data['requester_name'],
+                    data['requester_email'],
+                    data.get('notes'),
+                    'new',
+                    datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                ),
+            )
+            rec_id = cursor.lastrowid
         return rec_id
 
     def list_recommendations(self, status: str = None) -> list:
         """List recommendations, optionally filtered by status."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        if status:
-            cursor.execute(
-                'SELECT * FROM recommendations WHERE status = ? ORDER BY created_at DESC', (status,)
-            )
-        else:
-            cursor.execute('SELECT * FROM recommendations ORDER BY created_at DESC')
-        cols = [d[0] for d in cursor.description]
-        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute(
+                    'SELECT * FROM recommendations WHERE status = ? ORDER BY created_at DESC', (status,)
+                )
+            else:
+                cursor.execute('SELECT * FROM recommendations ORDER BY created_at DESC')
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         return rows
 
     def get_recommendation(self, rec_id: int):
         """Fetch a single recommendation by id."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM recommendations WHERE id = ?', (rec_id,))
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
-            return None
-        cols = [d[0] for d in cursor.description]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM recommendations WHERE id = ?', (rec_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
         return dict(zip(cols, row))
 
     def update_recommendation(self, rec_id: int, updates: dict):
@@ -3947,30 +3687,25 @@ class DatabaseManager:
         if not parts:
             return
         vals.append(rec_id)
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(f'UPDATE recommendations SET {", ".join(parts)} WHERE id = ?', vals)
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'UPDATE recommendations SET {", ".join(parts)} WHERE id = ?', vals)
 
     def delete_recommendation(self, rec_id: int):
         """Delete a recommendation."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM recommendations WHERE id = ?', (rec_id,))
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM recommendations WHERE id = ?', (rec_id,))
 
     def count_recommendations(self, status: str = None) -> int:
         """Count recommendations, optionally filtered by status."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        if status:
-            cursor.execute('SELECT COUNT(*) FROM recommendations WHERE status = ?', (status,))
-        else:
-            cursor.execute('SELECT COUNT(*) FROM recommendations')
-        count = cursor.fetchone()[0]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute('SELECT COUNT(*) FROM recommendations WHERE status = ?', (status,))
+            else:
+                cursor.execute('SELECT COUNT(*) FROM recommendations')
+            count = cursor.fetchone()[0]
         return count
 
     # ------------------------------------------------------------------
@@ -4001,58 +3736,53 @@ class DatabaseManager:
         """Return True if any of the provided identifiers is banned."""
         if not (uuid or email or ip):
             return False
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        clauses, vals = [], []
-        if uuid:
-            clauses.append('(kind = ? AND value = ?)'); vals.extend(('uuid', uuid))
-        if email:
-            clauses.append('(kind = ? AND value = ?)'); vals.extend(('email', email.lower()))
-        if ip:
-            clauses.append('(kind = ? AND value = ?)'); vals.extend(('ip', ip))
-        cursor.execute(f"SELECT 1 FROM comment_bans WHERE {' OR '.join(clauses)} LIMIT 1", vals)
-        hit = cursor.fetchone() is not None
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            clauses, vals = [], []
+            if uuid:
+                clauses.append('(kind = ? AND value = ?)'); vals.extend(('uuid', uuid))
+            if email:
+                clauses.append('(kind = ? AND value = ?)'); vals.extend(('email', email.lower()))
+            if ip:
+                clauses.append('(kind = ? AND value = ?)'); vals.extend(('ip', ip))
+            cursor.execute(f"SELECT 1 FROM comment_bans WHERE {' OR '.join(clauses)} LIMIT 1", vals)
+            hit = cursor.fetchone() is not None
         return hit
 
     def is_commenter_trusted(self, uuid: str) -> bool:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT is_trusted FROM commenters WHERE uuid = ?', (uuid,))
-        row = cursor.fetchone()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT is_trusted FROM commenters WHERE uuid = ?', (uuid,))
+            row = cursor.fetchone()
         return bool(row and row[0])
 
     def bump_commenter(self, uuid: str, display_name: str, email: str):
         """UPSERT a commenter row; refresh last_seen and increment comment_count."""
         now = self._now()
         email_norm = (email or '').strip().lower() or None
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT comment_count FROM commenters WHERE uuid = ?', (uuid,))
-        row = cursor.fetchone()
-        if row is None:
-            cursor.execute(
-                'INSERT INTO commenters (uuid, display_name, email, is_trusted, '
-                'first_seen, last_seen, comment_count) VALUES (?, ?, ?, 0, ?, ?, 1)',
-                (uuid, display_name, email_norm, now, now),
-            )
-        else:
-            cursor.execute(
-                'UPDATE commenters SET display_name = ?, email = ?, last_seen = ?, '
-                'comment_count = comment_count + 1 WHERE uuid = ?',
-                (display_name, email_norm, now, uuid),
-            )
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT comment_count FROM commenters WHERE uuid = ?', (uuid,))
+            row = cursor.fetchone()
+            if row is None:
+                cursor.execute(
+                    'INSERT INTO commenters (uuid, display_name, email, is_trusted, '
+                    'first_seen, last_seen, comment_count) VALUES (?, ?, ?, 0, ?, ?, 1)',
+                    (uuid, display_name, email_norm, now, now),
+                )
+            else:
+                cursor.execute(
+                    'UPDATE commenters SET display_name = ?, email = ?, last_seen = ?, '
+                    'comment_count = comment_count + 1 WHERE uuid = ?',
+                    (display_name, email_norm, now, uuid),
+                )
 
     def get_comment(self, comment_id: int) -> Optional[dict]:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM comments WHERE id = ?', (comment_id,))
-        row = cursor.fetchone()
-        result = self._row_to_dict(cursor, row)
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM comments WHERE id = ?', (comment_id,))
+            row = cursor.fetchone()
+            result = self._row_to_dict(cursor, row)
         return result
 
     def create_comment(self, data: dict) -> int:
@@ -4091,19 +3821,17 @@ class DatabaseManager:
             status = 'pending'
 
         now = self._now()
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO comments (book_id, chapter_number, parent_id, depth, root_id, '
-            'commenter_uuid, display_name, email, body, status, ip, user_agent, '
-            'notify_replies, created_at) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (book_id, chapter_number, parent_id, depth, root_id, uuid,
-             display_name, email, body, status, ip, user_agent, notify_replies, now),
-        )
-        new_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO comments (book_id, chapter_number, parent_id, depth, root_id, '
+                'commenter_uuid, display_name, email, body, status, ip, user_agent, '
+                'notify_replies, created_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (book_id, chapter_number, parent_id, depth, root_id, uuid,
+                 display_name, email, body, status, ip, user_agent, notify_replies, now),
+            )
+            new_id = cursor.lastrowid
 
         self.bump_commenter(uuid, display_name, email or '')
         return new_id
@@ -4116,60 +3844,57 @@ class DatabaseManager:
           - status='deleted' (rendered as [removed] to preserve thread)
           - status='pending' or 'blocked' (only if commenter_uuid == viewer_uuid)
         """
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        if viewer_uuid:
-            cursor.execute(
-                'SELECT * FROM comments WHERE book_id = ? AND chapter_number = ? '
-                "AND (status IN ('approved', 'deleted') OR commenter_uuid = ?) "
-                'ORDER BY COALESCE(root_id, id), created_at',
-                (book_id, chapter_number, viewer_uuid),
-            )
-        else:
-            cursor.execute(
-                'SELECT * FROM comments WHERE book_id = ? AND chapter_number = ? '
-                "AND status IN ('approved', 'deleted') "
-                'ORDER BY COALESCE(root_id, id), created_at',
-                (book_id, chapter_number),
-            )
-        cols = [d[0] for d in cursor.description]
-        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            if viewer_uuid:
+                cursor.execute(
+                    'SELECT * FROM comments WHERE book_id = ? AND chapter_number = ? '
+                    "AND (status IN ('approved', 'deleted') OR commenter_uuid = ?) "
+                    'ORDER BY COALESCE(root_id, id), created_at',
+                    (book_id, chapter_number, viewer_uuid),
+                )
+            else:
+                cursor.execute(
+                    'SELECT * FROM comments WHERE book_id = ? AND chapter_number = ? '
+                    "AND status IN ('approved', 'deleted') "
+                    'ORDER BY COALESCE(root_id, id), created_at',
+                    (book_id, chapter_number),
+                )
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         return rows
 
     def count_comments_visible(self, book_id: int, chapter_number: int,
                                viewer_uuid: Optional[str] = None) -> int:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        if viewer_uuid:
-            cursor.execute(
-                'SELECT COUNT(*) FROM comments WHERE book_id = ? AND chapter_number = ? '
-                "AND status != 'deleted' "
-                "AND (status = 'approved' OR commenter_uuid = ?)",
-                (book_id, chapter_number, viewer_uuid),
-            )
-        else:
-            cursor.execute(
-                'SELECT COUNT(*) FROM comments WHERE book_id = ? AND chapter_number = ? '
-                "AND status = 'approved'",
-                (book_id, chapter_number),
-            )
-        n = cursor.fetchone()[0]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            if viewer_uuid:
+                cursor.execute(
+                    'SELECT COUNT(*) FROM comments WHERE book_id = ? AND chapter_number = ? '
+                    "AND status != 'deleted' "
+                    "AND (status = 'approved' OR commenter_uuid = ?)",
+                    (book_id, chapter_number, viewer_uuid),
+                )
+            else:
+                cursor.execute(
+                    'SELECT COUNT(*) FROM comments WHERE book_id = ? AND chapter_number = ? '
+                    "AND status = 'approved'",
+                    (book_id, chapter_number),
+                )
+            n = cursor.fetchone()[0]
         return n
 
     def count_pending_comments(self, book_id: Optional[int] = None) -> int:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        if book_id is not None:
-            cursor.execute(
-                "SELECT COUNT(*) FROM comments WHERE status = 'pending' AND book_id = ?",
-                (book_id,),
-            )
-        else:
-            cursor.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'")
-        n = cursor.fetchone()[0]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            if book_id is not None:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM comments WHERE status = 'pending' AND book_id = ?",
+                    (book_id,),
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'")
+            n = cursor.fetchone()[0]
         return n
 
     def list_comments_admin(self, *, status: Optional[str] = None,
@@ -4185,12 +3910,11 @@ class DatabaseManager:
             clauses.append('chapter_number = ?'); vals.append(chapter_number)
         where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
         vals.extend((int(limit), int(offset)))
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(f'SELECT * FROM comments{where} ORDER BY created_at DESC LIMIT ? OFFSET ?', vals)
-        cols = [d[0] for d in cursor.description]
-        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'SELECT * FROM comments{where} ORDER BY created_at DESC LIMIT ? OFFSET ?', vals)
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         return rows
 
     def update_comment(self, comment_id: int, *, body: Optional[str] = None,
@@ -4244,11 +3968,9 @@ class DatabaseManager:
             return False
 
         vals.append(comment_id)
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE comments SET {', '.join(sets)} WHERE id = ?", vals)
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE comments SET {', '.join(sets)} WHERE id = ?", vals)
 
         # Trust escalation on approval
         if new_status == 'approved':
@@ -4259,27 +3981,22 @@ class DatabaseManager:
         return self.update_comment(comment_id, status=status)
 
     def _mark_uuid_trusted(self, uuid: str):
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('UPDATE commenters SET is_trusted = 1 WHERE uuid = ?', (uuid,))
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE commenters SET is_trusted = 1 WHERE uuid = ?', (uuid,))
 
     def hard_delete_comment(self, comment_id: int) -> bool:
         """
         Hard-delete a comment. Refuses if children exist (forces soft delete to
         preserve thread integrity).
         """
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM comments WHERE parent_id = ?', (comment_id,))
-        children = cursor.fetchone()[0]
-        if children:
-            conn.close()
-            return False
-        cursor.execute('DELETE FROM comments WHERE id = ?', (comment_id,))
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM comments WHERE parent_id = ?', (comment_id,))
+            children = cursor.fetchone()[0]
+            if children:
+                return False
+            cursor.execute('DELETE FROM comments WHERE id = ?', (comment_id,))
         return True
 
     # --- bans ---
@@ -4292,29 +4009,24 @@ class DatabaseManager:
         else:
             value = value.strip()
         now = self._now()
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        # Pre-check to keep behavior identical across SQLite/MySQL (avoid INSERT OR IGNORE)
-        cursor.execute('SELECT id FROM comment_bans WHERE kind = ? AND value = ?', (kind, value))
-        existing = cursor.fetchone()
-        if existing:
-            conn.close()
-            return int(existing[0])
-        cursor.execute(
-            'INSERT INTO comment_bans (kind, value, reason, cf_pushed, created_at) '
-            'VALUES (?, ?, ?, 0, ?)',
-            (kind, value, reason, now),
-        )
-        ban_id = cursor.lastrowid
-        conn.commit()
-        # Revoke trust for any commenter matching this identifier
-        if kind == 'uuid':
-            cursor.execute('UPDATE commenters SET is_trusted = 0 WHERE uuid = ?', (value,))
-            conn.commit()
-        elif kind == 'email':
-            cursor.execute('UPDATE commenters SET is_trusted = 0 WHERE email = ?', (value,))
-            conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            # Pre-check to keep behavior identical across SQLite/MySQL (avoid INSERT OR IGNORE)
+            cursor.execute('SELECT id FROM comment_bans WHERE kind = ? AND value = ?', (kind, value))
+            existing = cursor.fetchone()
+            if existing:
+                return int(existing[0])
+            cursor.execute(
+                'INSERT INTO comment_bans (kind, value, reason, cf_pushed, created_at) '
+                'VALUES (?, ?, ?, 0, ?)',
+                (kind, value, reason, now),
+            )
+            ban_id = cursor.lastrowid
+            # Revoke trust for any commenter matching this identifier
+            if kind == 'uuid':
+                cursor.execute('UPDATE commenters SET is_trusted = 0 WHERE uuid = ?', (value,))
+            elif kind == 'email':
+                cursor.execute('UPDATE commenters SET is_trusted = 0 WHERE email = ?', (value,))
         return ban_id
 
     def remove_ban(self, kind: str, value: str) -> bool:
@@ -4322,76 +4034,64 @@ class DatabaseManager:
             value = value.strip().lower()
         else:
             value = value.strip()
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM comment_bans WHERE kind = ? AND value = ?', (kind, value))
-        rc = cursor.rowcount
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM comment_bans WHERE kind = ? AND value = ?', (kind, value))
+            rc = cursor.rowcount
         return rc > 0
 
     def remove_ban_by_id(self, ban_id: int) -> Optional[dict]:
         """Remove a ban by id, returning the row that was deleted (for CF cleanup)."""
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM comment_bans WHERE id = ?', (ban_id,))
-        row = cursor.fetchone()
-        if row is None:
-            conn.close()
-            return None
-        cols = [d[0] for d in cursor.description]
-        ban = dict(zip(cols, row))
-        cursor.execute('DELETE FROM comment_bans WHERE id = ?', (ban_id,))
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM comment_bans WHERE id = ?', (ban_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cols = [d[0] for d in cursor.description]
+            ban = dict(zip(cols, row))
+            cursor.execute('DELETE FROM comment_bans WHERE id = ?', (ban_id,))
         return ban
 
     def list_bans(self) -> list:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM comment_bans ORDER BY created_at DESC')
-        cols = [d[0] for d in cursor.description]
-        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM comment_bans ORDER BY created_at DESC')
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         return rows
 
     def mark_cf_pushed(self, ban_id: int):
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('UPDATE comment_bans SET cf_pushed = 1 WHERE id = ?', (ban_id,))
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE comment_bans SET cf_pushed = 1 WHERE id = ?', (ban_id,))
 
     # --- per-book toggle ---
 
     def get_book_comments_enabled(self, book_id: int) -> bool:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT comments_enabled FROM books WHERE id = ?', (book_id,))
-        row = cursor.fetchone()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT comments_enabled FROM books WHERE id = ?', (book_id,))
+            row = cursor.fetchone()
         if row is None:
             return False
         return bool(row[0])
 
     def set_book_comments_enabled(self, book_id: int, enabled: bool):
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('UPDATE books SET comments_enabled = ? WHERE id = ?', (1 if enabled else 0, book_id))
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE books SET comments_enabled = ? WHERE id = ?', (1 if enabled else 0, book_id))
 
     # --- email suppressions ---
 
     def is_email_suppressed(self, email: str) -> bool:
         if not email:
             return False
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT 1 FROM email_suppressions WHERE email = ? LIMIT 1',
-                       (email.strip().lower(),))
-        hit = cursor.fetchone() is not None
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM email_suppressions WHERE email = ? LIMIT 1',
+                           (email.strip().lower(),))
+            hit = cursor.fetchone() is not None
         return hit
 
     def add_email_suppression(self, email: str, reason: str = 'unsubscribe') -> bool:
@@ -4399,38 +4099,32 @@ class DatabaseManager:
             return False
         norm = email.strip().lower()
         now = self._now()
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT 1 FROM email_suppressions WHERE email = ?', (norm,))
-        if cursor.fetchone():
-            conn.close()
-            return False
-        cursor.execute(
-            'INSERT INTO email_suppressions (email, reason, created_at) VALUES (?, ?, ?)',
-            (norm, reason, now),
-        )
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM email_suppressions WHERE email = ?', (norm,))
+            if cursor.fetchone():
+                return False
+            cursor.execute(
+                'INSERT INTO email_suppressions (email, reason, created_at) VALUES (?, ?, ?)',
+                (norm, reason, now),
+            )
         return True
 
     def remove_email_suppression(self, email: str) -> bool:
         if not email:
             return False
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM email_suppressions WHERE email = ?', (email.strip().lower(),))
-        rc = cursor.rowcount
-        conn.commit()
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM email_suppressions WHERE email = ?', (email.strip().lower(),))
+            rc = cursor.rowcount
         return rc > 0
 
     def list_email_suppressions(self) -> list:
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM email_suppressions ORDER BY created_at DESC')
-        cols = [d[0] for d in cursor.description]
-        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM email_suppressions ORDER BY created_at DESC')
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         return rows
 
     # --- notification idempotency log ---
@@ -4438,14 +4132,13 @@ class DatabaseManager:
     def was_notified(self, comment_id: int, recipient_email: str) -> bool:
         if not recipient_email:
             return False
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT 1 FROM email_notifications WHERE comment_id = ? AND recipient_email = ? LIMIT 1',
-            (comment_id, recipient_email.strip().lower()),
-        )
-        hit = cursor.fetchone() is not None
-        conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT 1 FROM email_notifications WHERE comment_id = ? AND recipient_email = ? LIMIT 1',
+                (comment_id, recipient_email.strip().lower()),
+            )
+            hit = cursor.fetchone() is not None
         return hit
 
     def record_notification(self, comment_id: int, recipient_email: str) -> bool:
@@ -4463,19 +4156,18 @@ class DatabaseManager:
             return False
         norm = recipient_email.strip().lower()
         now = self._now()
-        conn = self.backend.get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                'INSERT INTO email_notifications (comment_id, recipient_email, sent_at) '
-                'VALUES (?, ?, ?)',
-                (comment_id, norm, now),
-            )
-            conn.commit()
-            return True
-        except Exception:
-            # Duplicate — UNIQUE constraint violation
-            conn.rollback()
-            return False
-        finally:
-            conn.close()
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    'INSERT INTO email_notifications (comment_id, recipient_email, sent_at) '
+                    'VALUES (?, ?, ?)',
+                    (comment_id, norm, now),
+                )
+                return True
+            except Exception:
+                # Duplicate — UNIQUE constraint violation
+                conn.rollback()
+                return False
+            finally:
+                conn.close()
