@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { api, publicApi } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
@@ -42,16 +43,7 @@ export default function Reader({ isPublic = false }) {
   const libraryPrefix = location.pathname.startsWith('/library/')
   const backPath = isPublic ? '/library' : '/books'
 
-  const [book, setBook] = useState(null)
-  const [chapters, setChapters] = useState([])
   const [currentNum, setCurrentNum] = useState(null)
-  const [chapter, setChapter] = useState(null)
-  const [chapterError, setChapterError] = useState(null)
-  const [reloadTick, setReloadTick] = useState(0)
-  const [bookError, setBookError] = useState(null)
-  const [bookReloadTick, setBookReloadTick] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [chapterLoading, setChapterLoading] = useState(false)
   // Drawer overlays — URL-driven so the browser back button closes them
   const tocModal = useUrlModal('toc')
   const settingsModal = useUrlModal('settings')
@@ -75,43 +67,39 @@ export default function Reader({ isPublic = false }) {
     : null
 
   const contentRef = useRef(null)
-  // In-memory cache of prefetched chapters, keyed by `${bookId}:${num}`.
-  // Populated by the next-N prefetch after each successful load so that
-  // tap-next/tap-prev resolves instantly without another round trip.
-  const chapterCache = useRef(new Map())
+  const queryClient = useQueryClient()
+  // Cache scope: readerApi differs by isPublic, so keep the caches separate.
+  const scope = isPublic ? 'public' : 'admin'
 
   // Load book + chapter list
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setBookError(null)
-    async function load() {
-      try {
-        const [bookData, chData] = await Promise.all([
-          readerApi.getBook(bookId),
-          readerApi.listChapters(bookId),
-        ])
-        if (cancelled) return
-        setBook(bookData)
-        const sorted = (chData.chapters || []).sort((a, b) => a.chapter - b.chapter)
-        setChapters(sorted)
+  const bookQuery = useQuery({
+    queryKey: [scope, 'book', bookId],
+    queryFn: () => readerApi.getBook(bookId),
+  })
+  const chaptersQuery = useQuery({
+    queryKey: [scope, 'chapters', bookId],
+    queryFn: () => readerApi.listChapters(bookId),
+  })
+  const book = bookQuery.data ?? null
+  const chapters = useMemo(
+    () => (chaptersQuery.data?.chapters || []).slice().sort((a, b) => a.chapter - b.chapter),
+    [chaptersQuery.data]
+  )
+  const loading = bookQuery.isPending || chaptersQuery.isPending
+  // book not found, public library off, or connection error
+  const bookError = bookQuery.error || chaptersQuery.error
 
-        // Determine initial chapter
-        const fromRoute = chapterNumParam ? +chapterNumParam : null
-        const fromQuery = searchParams.get('chapter') ? +searchParams.get('chapter') : null
-        const fromStorage = progress[bookId]
-        const initial = fromRoute || fromQuery || fromStorage || sorted[0]?.chapter || 1
-        setCurrentNum(initial)
-      } catch (e) {
-        // book not found, public library off, or connection error
-        if (!cancelled) setBookError(e)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [bookId, bookReloadTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Determine the initial chapter once per book, after the chapter list loads.
+  // Guarded by ref so background refetches of the list never reset position.
+  const initializedBookRef = useRef(null)
+  useEffect(() => {
+    if (chaptersQuery.data == null || initializedBookRef.current === bookId) return
+    initializedBookRef.current = bookId
+    const fromRoute = chapterNumParam ? +chapterNumParam : null
+    const fromQuery = searchParams.get('chapter') ? +searchParams.get('chapter') : null
+    const fromStorage = progress[bookId]
+    setCurrentNum(fromRoute || fromQuery || fromStorage || chapters[0]?.chapter || 1)
+  }, [bookId, chaptersQuery.data, chapters]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check if user can edit entities (authenticated or auth disabled)
   useEffect(() => {
@@ -162,71 +150,42 @@ export default function Reader({ isPublic = false }) {
     [entities, currentNum, bookId]
   )
 
-  // Load chapter content. Retries once on transient failure (iOS Safari
-  // occasionally drops in-flight fetches mid-navigation, which previously
-  // surfaced as a blank "Chapter " page with no error.)
+  // Chapter content. Retries once after 600ms on transient failure (iOS
+  // Safari occasionally drops in-flight fetches mid-navigation, which
+  // previously surfaced as a blank "Chapter " page with no error.)
+  const chapterQuery = useQuery({
+    queryKey: [scope, 'chapter', bookId, currentNum],
+    queryFn: async () => {
+      const data = await readerApi.getChapter(bookId, currentNum)
+      if (!data) throw new Error('Empty response')
+      return data
+    },
+    enabled: currentNum != null,
+    retry: 1,
+    retryDelay: 600,
+  })
+  const chapter = chapterQuery.data ?? null
+  const chapterError = chapterQuery.error
+  const chapterLoading = currentNum == null || chapterQuery.isLoading
+
+  // Prefetch the next two chapters into the query cache so that tap-next is
+  // instant. One batched request; failures are silently ignored — this is
+  // strictly an optimization.
   useEffect(() => {
-    if (currentNum == null) return
-    let cancelled = false
-    const cacheKey = `${bookId}:${currentNum}`
-
-    async function prefetchAhead() {
-      // Prefetch the next two chapters into the in-memory cache so that
-      // tap-next is instant. Failures are silently ignored — this is
-      // strictly an optimization.
-      const idx = chapters.findIndex(c => c.chapter === currentNum)
-      if (idx < 0) return
-      const targets = chapters.slice(idx + 1, idx + 3).map(c => c.chapter)
-      const missing = targets.filter(n => !chapterCache.current.has(`${bookId}:${n}`))
-      if (missing.length === 0) return
-      try {
-        const data = await readerApi.getChaptersBatch(bookId, missing)
-        if (cancelled) return
+    if (currentNum == null || !chapterQuery.data) return
+    const idx = chapters.findIndex(c => c.chapter === currentNum)
+    if (idx < 0) return
+    const targets = chapters.slice(idx + 1, idx + 3).map(c => c.chapter)
+    const missing = targets.filter(n => !queryClient.getQueryData([scope, 'chapter', bookId, n]))
+    if (missing.length === 0) return
+    readerApi.getChaptersBatch(bookId, missing)
+      .then(data => {
         for (const ch of data?.chapters || []) {
-          chapterCache.current.set(`${bookId}:${ch.chapter}`, ch)
+          queryClient.setQueryData([scope, 'chapter', bookId, ch.chapter], ch)
         }
-      } catch {
-        // ignore — prefetch is best-effort
-      }
-    }
-
-    async function load() {
-      const cached = chapterCache.current.get(cacheKey)
-      if (cached) {
-        setChapter(cached)
-        setChapterError(null)
-        setChapterLoading(false)
-        prefetchAhead()
-        return
-      }
-      setChapterLoading(true)
-      setChapterError(null)
-      let lastErr = null
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (cancelled) return
-        try {
-          const data = await readerApi.getChapter(bookId, currentNum)
-          if (cancelled) return
-          if (!data) throw new Error('Empty response')
-          setChapter(data)
-          setChapterError(null)
-          setChapterLoading(false)
-          chapterCache.current.set(cacheKey, data)
-          prefetchAhead()
-          return
-        } catch (e) {
-          lastErr = e
-          if (attempt === 0) await new Promise(r => setTimeout(r, 600))
-        }
-      }
-      if (!cancelled) {
-        setChapterError(lastErr || new Error('Failed to load chapter'))
-        setChapterLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [bookId, currentNum, reloadTick, chapters, readerApi])
+      })
+      .catch(() => { /* ignore — prefetch is best-effort */ })
+  }, [bookId, currentNum, chapterQuery.data, chapters, readerApi, queryClient, scope])
 
   // Page title
   useEffect(() => {
@@ -390,7 +349,7 @@ export default function Reader({ isPublic = false }) {
           className={theme.text}
           message="Couldn't load this book"
           detail={bookError.message || 'The connection may have dropped. Try again.'}
-          onRetry={() => setBookReloadTick(t => t + 1)}
+          onRetry={() => { bookQuery.refetch(); chaptersQuery.refetch() }}
           buttonClassName={navBtnClass}
         />
         <div className="text-center -mt-24">
@@ -487,7 +446,7 @@ export default function Reader({ isPublic = false }) {
             className={theme.text}
             message="Couldn't load this chapter"
             detail="The connection may have dropped. Try again, or use Previous/Next to reload."
-            onRetry={() => setReloadTick(t => t + 1)}
+            onRetry={() => chapterQuery.refetch()}
             buttonClassName={navBtnClass}
           />
         ) : (
