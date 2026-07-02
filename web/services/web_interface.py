@@ -37,6 +37,7 @@ class WebInterface(UserInterface):
         self.no_review = False        # Entity review enabled
         self.two_pass = False         # Two-pass mode (entity review BEFORE translation)
         self.no_clean = False         # Auto-clean generic nouns before review
+        self.save_as_draft = False    # Save new chapters unpublished (publish manually)
         self.silent_notifications = True
         self.cleaning_model = None
         self.output_format = "text"

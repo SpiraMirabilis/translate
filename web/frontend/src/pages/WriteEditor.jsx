@@ -17,6 +17,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import WriteToolbar from '../components/write/WriteToolbar'
 import StatusBar from '../components/write/StatusBar'
 import RevisionsPanel from '../components/write/RevisionsPanel'
+import PublishMenu from '../components/PublishMenu'
 import { IllustrationUrlContext } from '../components/write/IllustrationNode'
 
 const IDLE_AUTOSAVE_MS = 30_000  // autosave after 30s without typing
@@ -56,6 +57,7 @@ export default function WriteEditor() {
   const [saveError, setSaveError] = useState(null)
   const [conflict, setConflict] = useState(null)
   const [draftOffer, setDraftOffer] = useState(null)
+  const [publishedAt, setPublishedAt] = useState(null)
   const [words, setWords] = useState(0)
   const [showPreview, setShowPreview] = useState(false)
   const [revisionsOpen, setRevisionsOpen] = useState(false)
@@ -175,6 +177,7 @@ export default function WriteEditor() {
         setBook(bk)
         setChapter(ch)
         setTitle(ch.title || '')
+        setPublishedAt(ch.published_at || null)
         setChapterList((chaps.chapters || []).map((c) => c.chapter).sort((a, b) => a - b))
         lockRef.current = ch.translation_date || null
 
@@ -472,6 +475,13 @@ export default function WriteEditor() {
         <span className="text-slate-600">·</span>
         <span className="text-slate-500">Chapter {chapterNum}</span>
         <div className="flex-1" />
+        <PublishMenu
+          bookId={parseInt(bookId)}
+          chapterNum={parseInt(chapterNum)}
+          publishedAt={publishedAt}
+          onChanged={setPublishedAt}
+          beforePublish={() => (dirtyRef.current ? doSave({ snapshot: true }) : Promise.resolve(true))}
+        />
         <Link
           to={`/read/${bookId}?chapter=${chapterNum}`}
           className="btn-ghost p-1.5" title="Read in the public reader"

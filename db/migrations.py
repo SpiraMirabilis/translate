@@ -219,6 +219,21 @@ def _m010_original_works(conn, cursor, backend, logger):
         pass
 
 
+def _m011_chapter_publishing(conn, cursor, backend, logger):
+    """Per-chapter publish state: published_at NULL = draft, future =
+    scheduled, past = publicly visible. Everything that existed before this
+    feature was already live, so backfill to the translation date."""
+    if add_column_if_missing(
+            conn, cursor, backend, "chapters", "published_at",
+            "ALTER TABLE chapters ADD COLUMN published_at TEXT",
+            "ALTER TABLE chapters ADD COLUMN published_at VARCHAR(50)"):
+        now = datetime.datetime.now().isoformat()
+        cursor.execute(
+            "UPDATE chapters SET published_at = COALESCE(translation_date, ?) "
+            "WHERE published_at IS NULL", (now,))
+        logger.info(f"Backfilled published_at for {cursor.rowcount} chapters")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -230,6 +245,7 @@ MIGRATIONS = [
     Migration(8, "queue_retranslation_reason", _m008_queue_retranslation_reason),
     Migration(9, "wp_state_link_slug", _m009_wp_state_link_slug),
     Migration(10, "original_works", _m010_original_works),
+    Migration(11, "chapter_publishing", _m011_chapter_publishing),
 ]
 
 

@@ -100,6 +100,19 @@ class ChapterProofreadUpdate(BaseModel):
     is_proofread: bool  # True sets timestamp, False clears it
 
 
+class ChapterPublishUpdate(BaseModel):
+    # ISO timestamp — now = publish immediately, future = scheduled;
+    # null/omitted = unpublish (back to draft). No separate boolean.
+    published_at: Optional[str] = None
+
+
+class BatchPublishAction(BaseModel):
+    chapters: List[int]
+    published_at: Optional[str] = None   # start time; omitted = now
+    interval_hours: Optional[float] = 0  # drip-release stagger per chapter (ascending)
+    unpublish: Optional[bool] = False    # true = set all selected back to draft
+
+
 class BatchChapterAction(BaseModel):
     chapters: List[int]
 
@@ -797,6 +810,56 @@ def update_chapter_translation(book_id: int, chapter_number: int, req: ChapterCo
 
     saved = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
     return {"status": "ok", "translation_date": saved.get("translation_date") if saved else None}
+
+
+def _normalize_publish_time(value: Optional[str]) -> Optional[str]:
+    """Parse/normalize a publish timestamp to naive server-local ISO format
+    (the same convention as translation_date, so string comparison works)."""
+    if not value:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid published_at timestamp.")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt.isoformat()
+
+
+@router.put("/{book_id}/chapters/{chapter_number}/publish")
+def set_chapter_publish(book_id: int, chapter_number: int, req: ChapterPublishUpdate):
+    """Set a chapter's publish time (now/scheduled) or clear it (draft)."""
+    value = _normalize_publish_time(req.published_at)
+    try:
+        stored = _entity_manager.set_chapter_published(book_id, chapter_number, value)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+    return {"status": "ok", "published_at": stored}
+
+
+@router.post("/{book_id}/chapters/batch-publish")
+def batch_publish(book_id: int, req: BatchPublishAction):
+    """Publish/schedule/unpublish many chapters at once.
+
+    With interval_hours set, chapters (ascending) get staggered publish times
+    start + i*interval — a drip release."""
+    get_book_or_404(book_id)
+    if not req.chapters:
+        raise HTTPException(status_code=400, detail="No chapters given.")
+    nums = sorted(set(req.chapters))
+    if req.unpublish:
+        schedule = [(n, None) for n in nums]
+    else:
+        start_s = _normalize_publish_time(req.published_at) or datetime.datetime.now().isoformat()
+        start = datetime.datetime.fromisoformat(start_s)
+        step = datetime.timedelta(hours=req.interval_hours or 0)
+        schedule = [(n, (start + i * step).isoformat()) for i, n in enumerate(nums)]
+    updated = _entity_manager.set_chapters_published(book_id, schedule)
+    return {
+        "status": "ok",
+        "updated": updated,
+        "schedule": [{"chapter": n, "published_at": t} for n, t in schedule],
+    }
 
 
 @router.put("/{book_id}/chapters/{chapter_number}/proofread")

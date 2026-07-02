@@ -264,6 +264,13 @@ async def create_comment(
     if not _db.get_book_comments_enabled(req.book_id):
         raise HTTPException(status_code=403, detail="Comments are disabled for this book.")
 
+    # Drafts and not-yet-due scheduled chapters aren't publicly visible — no
+    # comments on them. chapter_number 0 is the book-discussion pseudo-chapter.
+    if req.chapter_number and req.chapter_number > 0:
+        if not _db.get_chapter(book_id=req.book_id, chapter_number=req.chapter_number,
+                               published_only=True):
+            raise HTTPException(status_code=404, detail="Chapter not found.")
+
     # Real client IP + rate limits
     ip = client_ip(request)
     if not ip:

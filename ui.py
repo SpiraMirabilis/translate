@@ -470,7 +470,11 @@ class UserInterface(ABC):
                         chapter_number = getattr(self, 'chapter_number', 1)
                         self.logger.warning(f"Invalid chapter number in translation results, using {chapter_number}")
                     
-                    # Save chapter to database
+                    # Save chapter to database. publish: the save_as_draft run
+                    # option forces a draft; otherwise save_chapter's default
+                    # applies (publish now, unless the book is an original work).
+                    # Only affects newly created chapters — retranslations of
+                    # existing chapters never change publish state.
                     chapter_id = self.entity_manager.save_chapter(
                         self.book_id,
                         chapter_number,
@@ -478,7 +482,8 @@ class UserInterface(ABC):
                         chapter_text,  # untranslated content
                         end_object.get('content', []),  # translated content
                         summary=end_object.get('summary', ''),
-                        translation_model=self.translator.config.translation_model
+                        translation_model=self.translator.config.translation_model,
+                        publish=False if getattr(self, 'save_as_draft', False) else None
                     )
                     
                     if chapter_id:

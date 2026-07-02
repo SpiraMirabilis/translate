@@ -41,6 +41,7 @@ export default function Dashboard() {
   const setTwoPass = (v) => { setTwoPassRaw(v); if (v) setNoReviewRaw(false) }
   const [noClean, setNoClean] = useLocalStorage('dashboard.noClean', false)
   const [noStream, setNoStream] = useLocalStorage('dashboard.noStream', false)
+  const [saveAsDraft, setSaveAsDraft] = useLocalStorage('dashboard.saveAsDraft', false)
 
   const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
   const [chunkProgress, setChunkProgress] = useState(null)
@@ -243,6 +244,7 @@ export default function Dashboard() {
         two_pass: twoPass,
         no_clean: noClean,
         no_stream: noStream,
+        save_as_draft: saveAsDraft,
       })
     } catch {
       setJobStatus('error')
@@ -428,6 +430,21 @@ export default function Dashboard() {
                   <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
                   <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
                     A second pass using the cleaning model to ensure new entities are only proper nouns. Recommended when using DeepSeek or smaller parameter models, which tend to classify generic terms as entities. Uses very few output tokens, and cleaning model is recommended to be a mini-model like Claude Haiku or gpt-5-mini, or similar.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="rounded border-slate-600"
+                  checked={saveAsDraft}
+                  onChange={e => setSaveAsDraft(e.target.checked)}
+                />
+                Save as draft
+                <span className="relative group">
+                  <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                    The translated chapter is saved unpublished — invisible on the public site until you publish it (from the chapter editor or the Books page). Default is to publish immediately.
                   </span>
                 </span>
               </label>

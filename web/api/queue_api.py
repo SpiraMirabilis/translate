@@ -387,6 +387,7 @@ class ProcessNextRequest(BaseModel):
     two_pass: bool = False
     no_clean: bool = False
     no_stream: bool = False
+    save_as_draft: bool = False  # save new chapters unpublished (publish manually later)
     auto_process: bool = False
     max_chapters: Optional[int] = None  # Stop after N chapters (None = unlimited)
 
@@ -411,6 +412,7 @@ def _setup_job(queue_item, settings):
     _web_interface.two_pass = settings.get("two_pass", False) and not settings["no_review"]
     _web_interface.no_clean = settings["no_clean"]
     _web_interface.stream = not settings["no_stream"]
+    _web_interface.save_as_draft = settings.get("save_as_draft", False)
     _web_interface.retranslation_reason = queue_item.get("retranslation_reason") or None
     _web_interface._current_queue_item = queue_item
 
@@ -456,6 +458,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         "two_pass": req.two_pass,
         "no_clean": req.no_clean,
         "no_stream": req.no_stream,
+        "save_as_draft": req.save_as_draft,
     }
 
     _job_manager.clear_cancel()

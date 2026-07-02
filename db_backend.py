@@ -395,7 +395,7 @@ _COMMON_DDL_SQLITE = [
         UNIQUE(title)
     )''',
 
-    # chapters
+    # chapters — published_at: NULL = draft, future = scheduled, past = live
     '''CREATE TABLE IF NOT EXISTS chapters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         book_id INTEGER NOT NULL,
@@ -406,6 +406,7 @@ _COMMON_DDL_SQLITE = [
         summary TEXT,
         translation_date TEXT,
         translation_model TEXT,
+        published_at TEXT,
         UNIQUE(book_id, chapter_number),
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     )''',
@@ -711,7 +712,8 @@ _COMMON_DDL_MYSQL = [
         UNIQUE KEY uq_title (title(500))
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
-    # chapters — LONGTEXT for potentially huge content
+    # chapters — LONGTEXT for potentially huge content;
+    # published_at: NULL = draft, future = scheduled, past = live
     '''CREATE TABLE IF NOT EXISTS chapters (
         id INTEGER PRIMARY KEY AUTO_INCREMENT,
         book_id INTEGER NOT NULL,
@@ -722,6 +724,7 @@ _COMMON_DDL_MYSQL = [
         summary TEXT,
         translation_date VARCHAR(50),
         translation_model VARCHAR(255),
+        published_at VARCHAR(50),
         UNIQUE KEY uq_chapter (book_id, chapter_number),
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',

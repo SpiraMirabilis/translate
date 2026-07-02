@@ -91,6 +91,8 @@ export const api = {
   renumberChapter:     (bookId, num, newNum) => post(`/api/books/${bookId}/chapters/${num}/renumber`, { new_chapter_number: newNum }),
   deleteChapter:       (bookId, num)  => del(`/api/books/${bookId}/chapters/${num}`),
   setProofread:        (bookId, num, isProofread) => put(`/api/books/${bookId}/chapters/${num}/proofread`, { is_proofread: isProofread }),
+  publishChapter:      (bookId, num, publishedAt) => put(`/api/books/${bookId}/chapters/${num}/publish`, { published_at: publishedAt }),
+  batchPublish:        (bookId, body) => post(`/api/books/${bookId}/chapters/batch-publish`, body),
   batchDeleteChapters: (bookId, chapters) => post(`/api/books/${bookId}/chapters/batch-delete`, { chapters }),
   batchProofread:      (bookId, chapters, isProofread) => post(`/api/books/${bookId}/chapters/batch-proofread`, { chapters, is_proofread: isProofread }),
   batchRequeue:        (bookId, chapters, retranslationReason = null) => post(`/api/books/${bookId}/chapters/batch-requeue`, { chapters, retranslation_reason: retranslationReason }),

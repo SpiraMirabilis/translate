@@ -151,13 +151,14 @@ def list_books(request: Request, response: Response, sort: str = 'popular'):
             "cover_url": cover_url,
             "cover_medium_url": cover_medium_url,
             "cover_thumb_url": cover_thumb_url,
-            "chapter_count": b.get("chapter_count", 0),
+            # Public counts/dates exclude drafts and not-yet-due scheduled chapters
+            "chapter_count": b.get("published_chapter_count", 0),
             "total_source_chapters": b.get("total_source_chapters"),
             "status": b.get("status", "ongoing"),
             "source_language": b.get("source_language"),
             "tags": b.get("tags") or [],
             "created_date": b.get("created_date"),
-            "last_chapter_date": b.get("last_chapter_date"),
+            "last_chapter_date": b.get("last_published_date"),
         })
     return {"books": out}
 
@@ -202,7 +203,8 @@ def list_chapters(book_id: int, request: Request, response: Response,
     _get_public_book(book_id)
     if limit is not None:
         limit = max(1, min(int(limit), 5000))
-    chapters = _db.list_chapters(book_id, limit=limit, offset=max(0, int(offset)))
+    chapters = _db.list_chapters(book_id, limit=limit, offset=max(0, int(offset)),
+                                 published_only=True)
     return {"chapters": [
         {"chapter": c["chapter"], "title": c.get("title")}
         for c in chapters
@@ -250,7 +252,8 @@ def get_chapters_batch(book_id: int, nums: str, request: Request, response: Resp
         raise HTTPException(status_code=400, detail=f"At most {_BATCH_MAX} chapters per batch")
     out = []
     ip = client_ip(request)
-    for ch in _db.get_chapters_bulk(book_id, wanted, include_untranslated=True):
+    for ch in _db.get_chapters_bulk(book_id, wanted, include_untranslated=True,
+                                    published_only=True):
         _log_view(book_id, ch["chapter"], ip)
         out.append(_shape_public_chapter(ch, book_id))
     return {"chapters": out}
@@ -261,7 +264,8 @@ def get_chapter(book_id: int, chapter_number: int, request: Request, response: R
     _guard(request)
     _cache(response, _CACHE_LONG)
     _get_public_book(book_id)
-    ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number)
+    ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number,
+                         published_only=True)
     if not ch:
         raise HTTPException(status_code=404, detail="Chapter not found")
     ip = client_ip(request)
@@ -329,13 +333,21 @@ def download_epub(book_id: int, request: Request):
 
     ip = client_ip(request)
 
+    # Version basis for cached artifacts: the book's modified_date (bumped by
+    # every save and explicit publish/unpublish) OR the latest publish time
+    # that has already passed — so a scheduled chapter crossing its publish
+    # time changes the version and forces a regenerate, without any cron.
+    latest_published = _db.latest_published_at(book_id)
+    version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
+                        default=None)
+
     # If Spaces holds the current content version, redirect to the immutable CDN
     # URL — the VM serves no bytes.
     try:
         import spaces
         from fastapi.responses import RedirectResponse
         if spaces.is_enabled(_db.config):
-            ver = spaces.epub_version(book_id, book.get("modified_date"))
+            ver = spaces.epub_version(book_id, version_basis)
             key = spaces.epub_key(_db.config, book_id, ver)
             if spaces.exists(_db.config, key):
                 _log_view(book_id, 0, ip)
@@ -345,6 +357,16 @@ def download_epub(book_id: int, request: Request):
 
     cache_dir = _db._epub_cache_dir()
     cached_path = os.path.join(cache_dir, f"{book_id}.epub")
+
+    # Disk cache built before a scheduled chapter went live is stale — rebuild.
+    if os.path.exists(cached_path) and latest_published:
+        try:
+            import datetime as _dt
+            went_live = _dt.datetime.fromisoformat(latest_published).timestamp()
+            if os.path.getmtime(cached_path) < went_live:
+                os.remove(cached_path)
+        except (ValueError, OSError):
+            pass
 
     if not os.path.exists(cached_path):
         # Generate the EPUB on demand
@@ -371,7 +393,7 @@ def download_epub(book_id: int, request: Request):
                 "title": ch.get("title") or f"Chapter {ch['chapter']}",
                 "content": ch.get("content", []),
             }
-            for ch in _db.get_chapters_bulk(book_id)
+            for ch in _db.get_chapters_bulk(book_id, published_only=True)
         ]
         if not all_chapters:
             raise HTTPException(status_code=404, detail="No chapters available")
@@ -389,7 +411,7 @@ def download_epub(book_id: int, request: Request):
     try:
         import spaces
         if spaces.is_enabled(_db.config):
-            ver = spaces.epub_version(book_id, book.get("modified_date"))
+            ver = spaces.epub_version(book_id, version_basis)
             key = spaces.epub_key(_db.config, book_id, ver)
             if spaces.upload(_db.config, cached_path, key, "application/epub+zip"):
                 spaces.prune_epub_versions(_db.config, book_id, keep_key=key)
@@ -418,7 +440,8 @@ def search_book(book_id: int, req: PublicSearchRequest, request: Request):
     _get_public_book(book_id)
     if not req.query or len(req.query) < 2:
         return {"results": [], "total_matches": 0}
-    results = _db.search_book_chapters(book_id, req.query, scope="translated", is_regex=False)
+    results = _db.search_book_chapters(book_id, req.query, scope="translated", is_regex=False,
+                                       published_only=True)
     total = sum(r["match_count"] for r in results)
     return {"results": results, "total_matches": total}
 

@@ -476,6 +476,10 @@ class BooksRepo:
         }
         clause = ORDER_CLAUSES.get(order_by, ORDER_CLAUSES['title'])
         try:
+            # Publicly-visible chapters only (drafts/scheduled excluded) — the
+            # public Library uses these instead of the raw admin counts.
+            now = datetime.datetime.now().isoformat()
+            pub = "published_at IS NOT NULL AND published_at <= ?"
             with self._conn() as conn:
                 cursor = conn.cursor()
 
@@ -485,10 +489,12 @@ class BooksRepo:
                 description, is_public, total_source_chapters, status, comments_enabled,
                 source_url, notes, view_count, modified_date, trad_to_simp, tags, modules,
                 (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id) as last_chapter_date,
-                is_original
+                is_original,
+                (SELECT COUNT(*) FROM chapters WHERE book_id = books.id AND {pub}) as published_chapter_count,
+                (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id AND {pub}) as last_published_date
             FROM books
             ORDER BY {clause}
-            ''')
+            ''', (now, now))
 
                 rows = cursor.fetchall()
 
@@ -497,7 +503,8 @@ class BooksRepo:
                 (book_id, title, author, language, created_date, cover_image, raw_cats,
                  chapter_count, description, is_public, total_source_chapters, status,
                  comments_enabled, source_url, notes, view_count, modified_date,
-                 trad_to_simp, raw_tags, raw_modules, last_chapter_date, is_original) = row
+                 trad_to_simp, raw_tags, raw_modules, last_chapter_date, is_original,
+                 published_chapter_count, last_published_date) = row
                 try:
                     modules = json.loads(raw_modules) if raw_modules else None
                 except (json.JSONDecodeError, TypeError):
@@ -533,6 +540,8 @@ class BooksRepo:
                     "tags": tags,
                     "modules": modules,
                     "is_original": bool(is_original) if is_original is not None else False,
+                    "published_chapter_count": published_chapter_count or 0,
+                    "last_published_date": last_published_date,
                 })
 
             return result

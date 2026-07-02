@@ -8,12 +8,20 @@ from modules import apply_source_ingest
 class ChaptersRepo:
     """Chapter storage, retrieval, search/replace, and renumbering."""
 
+    @staticmethod
+    def _published_filter(prefix=""):
+        """SQL predicate (+ its parameter) selecting publicly-visible chapters:
+        published_at set and not in the future. NULL = draft, future =
+        scheduled — both invisible until their time comes, no cron needed."""
+        return (f"{prefix}published_at IS NOT NULL AND {prefix}published_at <= ?",
+                datetime.datetime.now().isoformat())
+
     # Chapter management section
     def save_chapter(self, book_id, chapter_number, title, untranslated_content, translated_content,
-                    summary=None, translation_model=None):
+                    summary=None, translation_model=None, publish=None):
         """
         Save a chapter to the database.
-        
+
         Args:
             book_id: Book ID
             chapter_number: Chapter number
@@ -22,7 +30,11 @@ class ChaptersRepo:
             translated_content: Translated text (list of lines)
             summary: Chapter summary (optional)
             translation_model: Model used for translation (optional)
-            
+            publish: Publish state for NEWLY created chapters — True publishes
+                immediately, False saves a draft, None (default) publishes
+                unless the book is an original work (drafts by default).
+                Re-saves of existing chapters never touch publish state.
+
         Returns:
             int: Chapter ID if successful, None otherwise
         """
@@ -90,14 +102,18 @@ class ChaptersRepo:
 
                     self.logger.info(f"Updated chapter {chapter_number} for book ID {book_id}")
                 else:
-                    # Insert new chapter
+                    # Insert new chapter. Publish state is decided only here —
+                    # updates (retranslation, editor saves) never change it.
+                    if publish is None:
+                        publish = not book.get("is_original", False)
+                    published_at = timestamp if publish else None
                     cursor.execute('''
                     INSERT INTO chapters
                     (book_id, chapter_number, title, untranslated_content, translated_content,
-                    summary, translation_date, translation_model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    summary, translation_date, translation_model, published_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (book_id, chapter_number, title, untranslated_text, translated_text,
-                        summary, timestamp, translation_model))
+                        summary, timestamp, translation_model, published_at))
 
                     chapter_id = cursor.lastrowid
 
@@ -145,45 +161,50 @@ class ChaptersRepo:
                 raise
             return None
 
-    def get_chapter(self, chapter_id=None, book_id=None, chapter_number=None):
+    def get_chapter(self, chapter_id=None, book_id=None, chapter_number=None, published_only=False):
         """
         Get chapter data from the database.
-        
+
         Args:
             chapter_id: Chapter ID (optional if book_id and chapter_number are provided)
             book_id: Book ID (required if chapter_id is not provided)
             chapter_number: Chapter number (required if chapter_id is not provided)
-            
+            published_only: Only return the chapter if it's publicly visible
+                (published_at set and not in the future) — the public API gate
+
         Returns:
             dict: Chapter data dictionary or None if not found
         """
         if not chapter_id and (not book_id or not chapter_number):
             self.logger.error("Either chapter_id or both book_id and chapter_number must be provided")
             return None
-            
+
         try:
+            pub_clause, pub_param = self._published_filter("c.")
+            gate = f" AND {pub_clause}" if published_only else ""
+            gate_params = (pub_param,) if published_only else ()
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
+
                 if chapter_id:
-                    cursor.execute('''
+                    cursor.execute(f'''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content,
                     c.translated_content, c.summary, c.translation_date, c.translation_model,
-                    b.title as book_title, c.is_proofread
+                    b.title as book_title, c.is_proofread, c.published_at
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
-                WHERE c.id = ?
-                ''', (chapter_id,))
+                WHERE c.id = ?{gate}
+                ''', (chapter_id,) + gate_params)
                 else:
-                    cursor.execute('''
+                    cursor.execute(f'''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.untranslated_content,
                     c.translated_content, c.summary, c.translation_date, c.translation_model,
-                    b.title as book_title, c.is_proofread
+                    b.title as book_title, c.is_proofread, c.published_at
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
-                WHERE c.book_id = ? AND c.chapter_number = ?
-                ''', (book_id, chapter_number))
-                
+                WHERE c.book_id = ? AND c.chapter_number = ?{gate}
+                ''', (book_id, chapter_number) + gate_params)
+
                 row = cursor.fetchone()
             
             if not row:
@@ -212,15 +233,17 @@ class ChaptersRepo:
                 "model": row[8],
                 "book_title": row[9],
                 "is_proofread": row[10],
+                "published_at": row[11],
             }
-            
+
             return chapter_data
             
         except Exception as e:
             self.logger.error(f"Error retrieving chapter data: {e}")
             return None
 
-    def get_chapters_bulk(self, book_id, chapter_numbers=None, include_untranslated=False):
+    def get_chapters_bulk(self, book_id, chapter_numbers=None, include_untranslated=False,
+                          published_only=False):
         """
         Fetch many chapters in one query (replaces per-chapter get_chapter loops
         in book export, EPUB generation and WordPress publishing).
@@ -229,6 +252,7 @@ class ChaptersRepo:
             book_id: Book ID
             chapter_numbers: Iterable of chapter numbers, or None for all chapters
             include_untranslated: Also decode + include the source text
+            published_only: Only publicly-visible chapters (public API / EPUB gate)
 
         Returns:
             list: Chapter dicts shaped like get_chapter() (minus "untranslated"
@@ -237,6 +261,9 @@ class ChaptersRepo:
                   get_chapter(); a row that fails entirely is skipped, not fatal.
         """
         try:
+            pub_clause, pub_param = self._published_filter("c.")
+            gate = f" AND {pub_clause}" if published_only else ""
+            gate_params = [pub_param] if published_only else []
             with self._conn() as conn:
                 cursor = conn.cursor()
 
@@ -244,14 +271,15 @@ class ChaptersRepo:
                 base = f'''
             SELECT c.id, c.book_id, c.chapter_number, c.title,
                 c.translated_content, c.summary, c.translation_date,
-                c.translation_model, b.title as book_title, c.is_proofread{src_col}
+                c.translation_model, b.title as book_title, c.is_proofread,
+                c.published_at{src_col}
             FROM chapters c
             JOIN books b ON c.book_id = b.id
-            WHERE c.book_id = ?'''
+            WHERE c.book_id = ?{gate}'''
 
                 rows = []
                 if chapter_numbers is None:
-                    cursor.execute(base + " ORDER BY c.chapter_number", (book_id,))
+                    cursor.execute(base + " ORDER BY c.chapter_number", [book_id] + gate_params)
                     rows = cursor.fetchall()
                 else:
                     nums = list(chapter_numbers)
@@ -262,7 +290,7 @@ class ChaptersRepo:
                         cursor.execute(
                             base + f" AND c.chapter_number IN ({placeholders})"
                             " ORDER BY c.chapter_number",
-                            [book_id] + chunk)
+                            [book_id] + gate_params + chunk)
                         rows.extend(cursor.fetchall())
 
             def _decode(raw):
@@ -285,9 +313,10 @@ class ChaptersRepo:
                         "model": row[7],
                         "book_title": row[8],
                         "is_proofread": row[9],
+                        "published_at": row[10],
                     }
                     if include_untranslated:
-                        chapter["untranslated"] = _decode(row[10])
+                        chapter["untranslated"] = _decode(row[11])
                     result.append(chapter)
                 except Exception as e:
                     self.logger.error(f"Skipping corrupt chapter row in bulk fetch: {e}")
@@ -301,7 +330,7 @@ class ChaptersRepo:
                 raise
             return []
 
-    def list_chapters(self, book_id, limit=None, offset=0):
+    def list_chapters(self, book_id, limit=None, offset=0, published_only=False):
         """
         List chapters for a specific book (all of them unless limit is given).
 
@@ -309,6 +338,7 @@ class ChaptersRepo:
             book_id: Book ID
             limit: Optional max rows to return (None = all, legacy behavior)
             offset: Rows to skip when limit is given
+            published_only: Only publicly-visible chapters (public API gate)
 
         Returns:
             list: List of chapter metadata dictionaries
@@ -319,16 +349,18 @@ class ChaptersRepo:
             if not book:
                 self.logger.warning(f"Book with ID {book_id} not found")
                 return []
+            pub_clause, pub_param = self._published_filter()
             with self._conn() as conn:
                 cursor = conn.cursor()
 
-                query = '''
-            SELECT id, chapter_number, title, translation_date, translation_model, is_proofread
+                query = f'''
+            SELECT id, chapter_number, title, translation_date, translation_model, is_proofread,
+                published_at
             FROM chapters
-            WHERE book_id = ?
+            WHERE book_id = ?{f" AND {pub_clause}" if published_only else ""}
             ORDER BY chapter_number
             '''
-                params = [book_id]
+                params = [book_id] + ([pub_param] if published_only else [])
                 if limit is not None:
                     query += ' LIMIT ? OFFSET ?'
                     params.extend([int(limit), int(offset)])
@@ -339,7 +371,7 @@ class ChaptersRepo:
 
             result = []
             for row in rows:
-                chapter_id, chapter_number, title, translation_date, model, is_proofread = row
+                chapter_id, chapter_number, title, translation_date, model, is_proofread, published_at = row
                 result.append({
                     "id": chapter_id,
                     "chapter": chapter_number,
@@ -347,10 +379,11 @@ class ChaptersRepo:
                     "translation_date": translation_date,
                     "model": model,
                     "is_proofread": is_proofread,
+                    "published_at": published_at,
                 })
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Error listing chapters: {e}")
             return []
@@ -363,17 +396,19 @@ class ChaptersRepo:
         DESC matches chronological DESC.
         """
         try:
+            pub_clause, pub_param = self._published_filter("c.")
             with self._conn() as conn:
                 cursor = conn.cursor()
-                sql = '''
+                sql = f'''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.summary,
                        c.translation_date, b.title AS book_title, b.author AS book_author
                 FROM chapters c
                 JOIN books b ON c.book_id = b.id
                 WHERE b.is_public = 1
                   AND c.translation_date IS NOT NULL
+                  AND {pub_clause}
             '''
-                params = []
+                params = [pub_param]
                 if book_id is not None:
                     sql += ' AND c.book_id = ?'
                     params.append(book_id)
@@ -406,7 +441,8 @@ class ChaptersRepo:
 
     SEARCH_MAX_TEXT_LEN = 500
 
-    def search_book_chapters(self, book_id, query, scope='both', is_regex=False):
+    def search_book_chapters(self, book_id, query, scope='both', is_regex=False,
+                             published_only=False):
         """Search all chapters of a book for a query string.
 
         Args:
@@ -414,6 +450,7 @@ class ChaptersRepo:
             query: Search string or regex pattern
             scope: 'translated', 'untranslated', or 'both'
             is_regex: Whether query is a regex pattern
+            published_only: Only search publicly-visible chapters (public API gate)
 
         Returns:
             list of dicts with chapter_number, title, match_count, matches.
@@ -421,12 +458,15 @@ class ChaptersRepo:
             response size (truncated=True is set on the chapter dict in that case).
         """
         try:
+            pub_clause, pub_param = self._published_filter()
+            gate = f" AND {pub_clause}" if published_only else ""
+            gate_params = (pub_param,) if published_only else ()
             with self._conn() as conn:
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute(f'''
                 SELECT chapter_number, title, untranslated_content, translated_content
-                FROM chapters WHERE book_id = ? ORDER BY chapter_number
-            ''', (book_id,))
+                FROM chapters WHERE book_id = ?{gate} ORDER BY chapter_number
+            ''', (book_id,) + gate_params)
                 rows = cursor.fetchall()
 
             if is_regex:
@@ -833,3 +873,67 @@ class ChaptersRepo:
                 )
                 updated += cursor.rowcount
         return updated, now
+
+    # ------------------------------------------------------------------
+    # Publishing (published_at: NULL = draft, future = scheduled, past = live)
+    # ------------------------------------------------------------------
+
+    def _post_publish_change(self, book_id):
+        """Publish-state changes alter the public artifact set: bump the book's
+        modified_date (feeds the Spaces EPUB version key) and drop the cached
+        EPUB so the next download regenerates with the new chapter set."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE books SET modified_date = ? WHERE id = ?",
+                           (datetime.datetime.now().isoformat(), book_id))
+        self.invalidate_epub_cache(book_id)
+
+    def set_chapter_published(self, book_id, chapter_number, published_at):
+        """Set (ISO timestamp — now or scheduled) or clear (None = back to
+        draft) a chapter's publish time. Returns the stored value.
+        Raises LookupError when the chapter doesn't exist."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE chapters SET published_at = ? WHERE book_id = ? AND chapter_number = ?",
+                (published_at, book_id, chapter_number),
+            )
+            if cursor.rowcount == 0:
+                raise LookupError(
+                    f"Chapter {chapter_number} not found for book {book_id}")
+        self._post_publish_change(book_id)
+        return published_at
+
+    def set_chapters_published(self, book_id, schedule):
+        """Bulk publish/schedule: `schedule` is [(chapter_number, published_at_or_None), ...]
+        (staggered drip-release sets a different time per chapter). Chapters
+        that don't exist contribute 0 to the count. Returns updated_count."""
+        updated = 0
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            for num, published_at in schedule:
+                cursor.execute(
+                    "UPDATE chapters SET published_at = ? WHERE book_id = ? AND chapter_number = ?",
+                    (published_at, book_id, num),
+                )
+                updated += cursor.rowcount
+        if updated:
+            self._post_publish_change(book_id)
+        return updated
+
+    def latest_published_at(self, book_id):
+        """Most recent publish time that has already passed, or None.
+        Used to detect when a scheduled chapter has crossed its publish time
+        so cached public artifacts (EPUB) regenerate."""
+        try:
+            pub_clause, pub_param = self._published_filter()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"SELECT MAX(published_at) FROM chapters WHERE book_id = ? AND {pub_clause}",
+                    (book_id, pub_param))
+                row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            self.logger.error(f"Error getting latest published time: {e}")
+            return None

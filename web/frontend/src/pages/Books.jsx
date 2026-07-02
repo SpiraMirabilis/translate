@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import {
-  Plus, Trash2, Edit2, ChevronDown, ChevronRight, PenLine,
+  Plus, Trash2, Edit2, ChevronDown, ChevronRight, PenLine, Globe, Clock,
   BookOpen, Loader2, CheckCircle2, Sparkles, Search, Eye, EyeOff, Square, CheckSquare, Code, MessageCircle, MessageCircleOff
 } from 'lucide-react'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -21,6 +21,8 @@ import CategoryManagerModal from '../components/books/CategoryManagerModal'
 import PronounRepairBookModal from '../components/books/PronounRepairBookModal'
 import RetranslateModal from '../components/books/RetranslateModal'
 import BatchRetranslateModal from '../components/books/BatchRetranslateModal'
+import BatchPublishModal from '../components/books/BatchPublishModal'
+import { publishStatus } from '../components/PublishMenu'
 
 export default function Books() {
   const { bookId: bookIdParam } = useParams()
@@ -45,6 +47,7 @@ export default function Books() {
   const [batchChaptersById, setBatchChaptersById] = useState({})
 
   const [exporting, setExporting] = useState(null) // 'bookId-format' or null
+  const [batchPublishFor, setBatchPublishFor] = useState(null) // bookId or null
   const [selected, setSelected] = useState({})    // { bookId: Set of chapter numbers }
   const [lastChecked, setLastChecked] = useState({}) // { bookId: chapter number }
   const [batchBusy, setBatchBusy] = useState(false)
@@ -377,6 +380,14 @@ export default function Books() {
                         {selectedCount(book.id) > 0 && (
                           <div className="flex items-center gap-1 ml-auto">
                             <button
+                              className="btn-ghost px-2 py-1 text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+                              disabled={batchBusy}
+                              onClick={() => setBatchPublishFor(book.id)}
+                              title="Publish, schedule, or unpublish selected chapters"
+                            >
+                              <Globe size={12} className="inline mr-1" />Publish
+                            </button>
+                            <button
                               className="btn-ghost px-2 py-1 text-xs text-emerald-400 hover:text-emerald-300 disabled:opacity-50"
                               disabled={batchBusy}
                               onClick={() => handleBatchProofread(book.id)}
@@ -439,7 +450,21 @@ export default function Books() {
                                     }
                                   </span>
                                 </td>
-                                <td className="py-2 text-slate-300 truncate max-w-[240px]">{ch.title}</td>
+                                <td className="py-2 text-slate-300 truncate max-w-[240px]">
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <span className="truncate">{ch.title}</span>
+                                    {publishStatus(ch.published_at) === 'draft' && (
+                                      <span className="shrink-0 px-1 py-px rounded text-[10px] font-medium bg-amber-500/15 text-amber-300 border border-amber-600/40"
+                                        title="Draft — not visible on the public site">draft</span>
+                                    )}
+                                    {publishStatus(ch.published_at) === 'scheduled' && (
+                                      <span className="shrink-0 px-1 py-px rounded text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-600/40 inline-flex items-center gap-0.5"
+                                        title={`Scheduled for ${new Date(ch.published_at).toLocaleString()}`}>
+                                        <Clock size={9} />{new Date(ch.published_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                                      </span>
+                                    )}
+                                  </span>
+                                </td>
                                 <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">{ch.model || '—'}</td>
                                 <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">
                                   {ch.translation_date ? new Date(ch.translation_date).toLocaleDateString() : '—'}
@@ -499,6 +524,20 @@ export default function Books() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Batch publish modal */}
+      {batchPublishFor != null && (
+        <BatchPublishModal
+          bookId={batchPublishFor}
+          chapters={[...getSelected(batchPublishFor)]}
+          onClose={() => setBatchPublishFor(null)}
+          onDone={() => {
+            setBatchPublishFor(null)
+            unselectAll(batchPublishFor)
+            invalidateChapters(batchPublishFor)
+          }}
+        />
       )}
 
       {/* Book form modal */}

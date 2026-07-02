@@ -28,6 +28,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useTransientFlag } from '../hooks/useTransientFlag'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
+import PublishMenu from '../components/PublishMenu'
 
 
 // ── Main Component ───────────────────────────────────────────────────
@@ -51,6 +52,7 @@ export default function ChapterEditor() {
   // accidental navigation.
   const draftKey = `chapterDraft:${bookId}:${chapterNum}`
   const [draftOffer, setDraftOffer] = useState(null) // { text, title, savedAt } or null
+  const [publishedAt, setPublishedAt] = useState(null) // chapter publish state (null = draft)
   // activeLine tracked in URL (replace mode — rapid clicks shouldn't flood history)
   const [activeLine, setActiveLine] = useUrlState('line', 0, {
     serialize: String,
@@ -171,6 +173,7 @@ export default function ChapterEditor() {
         setEntities(ents.entities || [])
         setChapterList((chaps.chapters || []).map(c => c.chapter).sort((a, b) => a - b))
         setIsProofread(!!ch.is_proofread)
+        setPublishedAt(ch.published_at || null)
         const content = Array.isArray(ch.content) ? ch.content : []
         const loadedText = trimEmptyLines(content).join('\n')
         setText(loadedText)
@@ -1129,6 +1132,14 @@ export default function ChapterEditor() {
           <Sparkles size={12} />
           Repair pronouns
         </button>
+
+        <PublishMenu
+          bookId={parseInt(bookId)}
+          chapterNum={parseInt(chapterNum)}
+          publishedAt={publishedAt}
+          onChanged={setPublishedAt}
+          beforePublish={async () => { if (dirty) await handleSave(); return true }}
+        />
 
         {wpConfigured && (
           <button

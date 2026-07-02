@@ -69,6 +69,7 @@ class TranslateRequest(BaseModel):
     two_pass: bool = False
     no_clean: bool = False
     no_stream: bool = False
+    save_as_draft: bool = False  # save new chapters unpublished (publish manually later)
 
 
 class ReviewSubmitRequest(BaseModel):
@@ -129,6 +130,7 @@ async def start_translation(req: TranslateRequest):
     _web_interface.two_pass = req.two_pass and not req.no_review
     _web_interface.no_clean = req.no_clean
     _web_interface.stream = not req.no_stream
+    _web_interface.save_as_draft = req.save_as_draft
 
     # Resolve book name for the activity log
     book_name = None

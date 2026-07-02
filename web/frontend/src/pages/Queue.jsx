@@ -33,6 +33,7 @@ export default function Queue() {
   }, [])
   const [noClean, setNoClean]                     = useLocalStorage('queue.noClean', false)
   const [noStream, setNoStream]                   = useLocalStorage('queue.noStream', false)
+  const [saveAsDraft, setSaveAsDraft]             = useLocalStorage('queue.saveAsDraft', false)
   const [autoProcess, setAutoProcess]             = useLocalStorage('queue.autoProcess', false)
   const [maxChapters, setMaxChapters]             = useLocalStorage('queue.maxChapters', '')
 
@@ -130,6 +131,7 @@ export default function Queue() {
         two_pass: twoPass,
         no_clean: noClean,
         no_stream: noStream,
+        save_as_draft: saveAsDraft,
         auto_process: autoProcess,
         max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
       })
@@ -307,6 +309,20 @@ export default function Queue() {
               <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
               <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
                 Wait for each chunk to complete before processing instead of streaming tokens. The progress bar won&apos;t update during generation, but useful for diagnosing provider issues or when streaming is unreliable.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={saveAsDraft}
+              onChange={e => setSaveAsDraft(e.target.checked)}
+            />
+            Save as drafts
+            <span className="relative group">
+              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                Translated chapters are saved unpublished — invisible on the public site until you publish them (per chapter, or batch-publish with a schedule from the Books page). Default is to publish immediately.
               </span>
             </span>
           </label>
