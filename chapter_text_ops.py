@@ -130,14 +130,30 @@ def build_case_preserving_replacer(old_translation, new_translation):
     return match_case
 
 
-def substitute_in_lines(lines, old, new):
+def build_substitution_pattern(old, word_boundary=False):
+    """Compiled case-insensitive pattern matching ``old``.
+
+    With ``word_boundary``, the match is fenced by ``(?<!\\w)``/``(?!\\w)``
+    lookarounds so ``old`` is only matched as a whole word — e.g. "Dai" no
+    longer matches inside "Daiyu". Lookarounds (rather than ``\\b``) keep the
+    fence working when ``old`` begins or ends with a non-word character, and
+    are zero-width so the matched text handed to the case-preserving replacer
+    is unchanged.
+    """
+    escaped = re.escape(old)
+    if word_boundary:
+        escaped = r"(?<!\w)" + escaped + r"(?!\w)"
+    return re.compile(escaped, re.IGNORECASE)
+
+
+def substitute_in_lines(lines, old, new, word_boundary=False):
     """Case-insensitively replace ``old`` with ``new`` in every line,
     preserving positional casing (see :func:`build_case_preserving_replacer`).
 
     Returns ``(new_lines, count)`` where ``count`` is the number of lines
     that changed.
     """
-    pattern = re.compile(re.escape(old), re.IGNORECASE)
+    pattern = build_substitution_pattern(old, word_boundary)
     match_case = build_case_preserving_replacer(old, new)
 
     count = 0

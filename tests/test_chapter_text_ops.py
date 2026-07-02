@@ -212,3 +212,39 @@ class TestSourceMentions:
     def test_empty_or_none_source(self):
         assert not source_mentions("", "张羽")
         assert not source_mentions(None, "张羽")
+
+
+class TestBuildSubstitutionPattern:
+    """Word-boundary fencing (used by correct_entity_translation.py -w)."""
+
+    def test_plain_pattern_matches_inside_words(self):
+        from chapter_text_ops import build_substitution_pattern
+        p = build_substitution_pattern("Dai")
+        assert p.search("Daiyu smiled")  # substring hit without fencing
+
+    def test_word_boundary_skips_embedded(self):
+        from chapter_text_ops import build_substitution_pattern
+        p = build_substitution_pattern("Dai", word_boundary=True)
+        assert p.search("Dai nodded")
+        assert p.search("with Dai.")
+        assert not p.search("Daiyu smiled")
+        assert not p.search("in Dailan city")
+
+    def test_word_boundary_with_nonword_edges(self):
+        # Lookarounds (not \b) so fencing works when the term starts/ends
+        # with a non-word character.
+        from chapter_text_ops import build_substitution_pattern
+        p = build_substitution_pattern("'Azure'", word_boundary=True)
+        assert p.search("the 'Azure' blade")
+
+    def test_case_insensitive(self):
+        from chapter_text_ops import build_substitution_pattern
+        p = build_substitution_pattern("Azure Sword", word_boundary=True)
+        assert p.search("the AZURE SWORD gleamed")
+
+    def test_substitute_in_lines_word_boundary_passthrough(self):
+        from chapter_text_ops import substitute_in_lines
+        lines = ["Dai nodded.", "Daiyu smiled."]
+        new_lines, count = substitute_in_lines(lines, "Dai", "Tai", word_boundary=True)
+        assert new_lines == ["Tai nodded.", "Daiyu smiled."]
+        assert count == 1
