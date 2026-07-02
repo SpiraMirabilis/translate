@@ -44,6 +44,7 @@ class JobManager:
     def reset(self):
         self.is_running = False
         self.status = "idle"  # idle | running | waiting | awaiting_review | complete | error
+        self._waiting_reason: Optional[str] = None  # 'session_limit' | 'overloaded' while status == waiting
         self.error: Optional[str] = None
         self.last_result: Optional[dict] = None
 
@@ -181,29 +182,43 @@ class JobManager:
 
     def on_progress(self, progress: dict):
         phase = progress.get("phase")
-        if phase == "session_limit":
-            # The translation thread is parked until the Claude Code session
-            # usage resets. Surface that as a distinct "waiting" status (so the
-            # UI doesn't look like it's stuck mid-chunk) and drop one activity
-            # log line per pause. The engine re-emits this phase each retry
-            # loop, so guard on the status transition to avoid log spam.
+        if phase in ("session_limit", "overloaded"):
+            # The translation thread is parked — either until the Claude Code
+            # session usage resets, or for the configured 529-overload retry
+            # interval (both the Anthropic API and Claude Code providers raise
+            # OverloadedError into the same engine retry loop). Surface that as
+            # a distinct "waiting" status (so the UI doesn't look like it's
+            # stuck mid-chunk) and drop one activity log line per pause. The
+            # engine re-emits this phase each retry loop, so guard on the
+            # status transition to avoid log spam.
             if self.status != "waiting":
                 self.status = "waiting"
+                self._waiting_reason = phase
                 wait = progress.get("wait_seconds")
                 mins = max(1, round(wait / 60)) if wait else None
-                msg = "Claude Code session limit reached — queue paused"
-                if mins:
-                    msg += f"; resuming in ~{mins} min"
+                if phase == "session_limit":
+                    msg = "Claude Code session limit reached — queue paused"
+                    if mins:
+                        msg += f"; resuming in ~{mins} min"
+                else:
+                    msg = "API overloaded (529) — translation paused"
+                    if mins:
+                        msg += f"; retrying in ~{mins} min"
                 self.log_activity(
                     type="warning", message=msg,
                     book_id=self.book_id, chapter=self.chapter_number,
                 )
         elif self.status == "waiting":
-            # Any other progress phase means the session reset and work has
+            # Any other progress phase means the pause ended and work has
             # resumed; flip back to running and note it on the activity log.
             self.status = "running"
+            if self._waiting_reason == "overloaded":
+                resume_msg = "API recovered from overload — translation resumed"
+            else:
+                resume_msg = "Session limit reset — queue resumed"
+            self._waiting_reason = None
             self.log_activity(
-                type="info", message="Session limit reset — queue resumed",
+                type="info", message=resume_msg,
                 book_id=self.book_id, chapter=self.chapter_number,
             )
         self.send_message_sync({"type": "progress", **progress})
