@@ -1,0 +1,598 @@
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useEditor, EditorContent } from '@tiptap/react'
+import {
+  ArrowLeft, ChevronLeft, ChevronRight, Loader2, Plus, BookOpen, X, Minimize2,
+  Languages,
+} from 'lucide-react'
+import { api } from '../services/api'
+import { buildWriteExtensions } from '../lib/writeExtensions'
+import { linesToDoc, docToLines, roundTrip } from '../lib/writeMarkdown'
+import { splitSegments, renderBlock } from '../lib/chapterMarkdown'
+import { trimEmptyLines } from '../lib/editorHighlights'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
+import { useTypewriterScroll } from '../hooks/useTypewriterScroll'
+import { useTransientFlag } from '../hooks/useTransientFlag'
+import { useLocalStorage } from '../hooks/useLocalStorage'
+import WriteToolbar from '../components/write/WriteToolbar'
+import StatusBar from '../components/write/StatusBar'
+import RevisionsPanel from '../components/write/RevisionsPanel'
+import { IllustrationUrlContext } from '../components/write/IllustrationNode'
+
+const IDLE_AUTOSAVE_MS = 30_000  // autosave after 30s without typing
+const MAX_AUTOSAVE_MS = 90_000   // …or at most 90s after edits began
+const DRAFT_DEBOUNCE_MS = 2_000
+
+function countWords(editor) {
+  const doc = editor.state.doc
+  const text = doc.textBetween(0, doc.content.size, '\n', ' ')
+  const m = text.match(/\S+/g)
+  return m ? m.length : 0
+}
+
+const todayKey = () => new Date().toISOString().slice(0, 10)
+
+/**
+ * WYSIWYG writing editor for original works (books.is_original). Content is
+ * stored in the same Markdown line-array format the translation pipeline
+ * uses, converted via lib/writeMarkdown — the Reader, EPUB export, and
+ * WordPress publishing are untouched. Every save is round-trip-verified;
+ * a mismatch blocks the save instead of corrupting the chapter.
+ */
+export default function WriteEditor() {
+  const { bookId, chapterNum } = useParams()
+  const navigate = useNavigate()
+  const draftKey = `chapterDraft:${bookId}:${chapterNum}`
+
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [book, setBook] = useState(null)
+  const [chapter, setChapter] = useState(null)
+  const [chapterList, setChapterList] = useState([])
+  const [title, setTitle] = useState('')
+  const [unsupported, setUnsupported] = useState([])
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState(null)
+  const [conflict, setConflict] = useState(null)
+  const [draftOffer, setDraftOffer] = useState(null)
+  const [words, setWords] = useState(0)
+  const [showPreview, setShowPreview] = useState(false)
+  const [revisionsOpen, setRevisionsOpen] = useState(false)
+  const [focusMode, setFocusMode] = useState(false)
+  const [, setTick] = useState(0) // re-render for toolbar isActive states
+  const [savedFlash, flashSaved] = useTransientFlag(2500)
+  const [autosavedFlash, flashAutosaved] = useTransientFlag(2500)
+
+  // Daily goal
+  const [dailyGoal, setDailyGoal] = useLocalStorage('write.dailyGoal', null)
+  const [dailyWords, setDailyWords] = useLocalStorage('write.dailyWords', { date: '', words: 0 })
+  const todayWords = dailyWords.date === todayKey() ? dailyWords.words : 0
+
+  // Refs for values read inside timers/editor callbacks (avoid stale closures)
+  const loadingRef = useRef(true)
+  const dirtyRef = useRef(false)
+  const savingRef = useRef(false)
+  const conflictRef = useRef(null)
+  const titleRef = useRef('')
+  const lockRef = useRef(null)         // translation_date optimistic-lock token
+  const baselineRef = useRef(0)        // words at load (session counter)
+  const lastCountedRef = useRef(0)     // words at last save (daily counter)
+  const idleTimerRef = useRef(null)
+  const maxTimerRef = useRef(null)
+  const draftTimerRef = useRef(null)
+  const doSaveRef = useRef(() => {})
+  const scrollRef = useRef(null)
+
+  const markDirty = useCallback((v) => { dirtyRef.current = v; setDirty(v) }, [])
+  titleRef.current = title
+  conflictRef.current = conflict
+
+  const clearAutosaveTimers = useCallback(() => {
+    clearTimeout(idleTimerRef.current)
+    clearTimeout(maxTimerRef.current)
+    idleTimerRef.current = null
+    maxTimerRef.current = null
+  }, [])
+
+  const scheduleAutosave = useCallback(() => {
+    clearTimeout(idleTimerRef.current)
+    idleTimerRef.current = setTimeout(() => doSaveRef.current({ autosave: true }), IDLE_AUTOSAVE_MS)
+    if (!maxTimerRef.current) {
+      maxTimerRef.current = setTimeout(() => {
+        maxTimerRef.current = null
+        doSaveRef.current({ autosave: true })
+      }, MAX_AUTOSAVE_MS)
+    }
+  }, [])
+
+  const editorRef = useRef(null)
+  const scheduleDraft = useCallback(() => {
+    clearTimeout(draftTimerRef.current)
+    draftTimerRef.current = setTimeout(() => {
+      const ed = editorRef.current
+      if (!ed || !dirtyRef.current) return
+      try {
+        localStorage.setItem(draftKey, JSON.stringify({
+          text: docToLines(ed.getJSON()).join('\n'),
+          title: titleRef.current,
+          savedAt: Date.now(),
+        }))
+      } catch { /* quota exceeded — ignore */ }
+    }, DRAFT_DEBOUNCE_MS)
+  }, [draftKey])
+
+  const extensions = useMemo(() => buildWriteExtensions(), [])
+  const editor = useEditor({
+    extensions,
+    content: { type: 'doc', content: [{ type: 'paragraph' }] },
+    editorProps: {
+      attributes: {
+        class: 'chapter-markdown outline-none min-h-[60vh] px-1 py-4 text-slate-200 text-[1.05rem] leading-relaxed caret-indigo-400',
+      },
+    },
+    onUpdate: ({ editor: ed }) => {
+      if (loadingRef.current) return
+      markDirty(true)
+      setSaveError(null)
+      setWords(countWords(ed))
+      scheduleAutosave()
+      scheduleDraft()
+      setTick((t) => t + 1)
+    },
+    onSelectionUpdate: () => setTick((t) => t + 1),
+  })
+  editorRef.current = editor
+
+  useUnsavedGuard(dirty)
+  useTypewriterScroll(editor, focusMode, scrollRef)
+
+  // ------------------------------------------------------------------
+  // Load
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!editor) return undefined
+    let cancelled = false
+    loadingRef.current = true
+    setLoading(true)
+    setError(null)
+    setUnsupported([])
+    setConflict(null)
+    setDraftOffer(null)
+    setShowPreview(false)
+    markDirty(false)
+    clearAutosaveTimers()
+
+    Promise.all([
+      api.getChapter(parseInt(bookId), parseInt(chapterNum)),
+      api.getBook(parseInt(bookId)),
+      api.listChapters(parseInt(bookId)),
+    ])
+      .then(([ch, bk, chaps]) => {
+        if (cancelled) return
+        // Translation books may use this editor too (opt-in via the Books
+        // page or URL) — their default entry stays the split-pane /edit.
+        setBook(bk)
+        setChapter(ch)
+        setTitle(ch.title || '')
+        setChapterList((chaps.chapters || []).map((c) => c.chapter).sort((a, b) => a - b))
+        lockRef.current = ch.translation_date || null
+
+        const lines = trimEmptyLines(Array.isArray(ch.content) ? ch.content : [])
+        const { doc, unsupported: unsup } = linesToDoc(lines)
+        setUnsupported(unsup)
+        if (!unsup.length) {
+          editor.commands.setContent(doc, { emitUpdate: false })
+          editor.commands.setTextSelection(0)
+          const w = countWords(editor)
+          setWords(w)
+          baselineRef.current = w
+          lastCountedRef.current = w
+        }
+
+        // Offer to restore an unsaved local draft (same semantics as
+        // ChapterEditor): skip when stale or identical to what's saved.
+        try {
+          const raw = localStorage.getItem(draftKey)
+          if (raw) {
+            const d = JSON.parse(raw)
+            const translatedAt = ch.translation_date ? Date.parse(ch.translation_date) : NaN
+            const stale = Number.isFinite(translatedAt) && d.savedAt <= translatedAt
+            const differs = d.text !== lines.join('\n') || (d.title != null && d.title !== ch.title)
+            if (!stale && differs && typeof d.text === 'string') setDraftOffer(d)
+            else localStorage.removeItem(draftKey)
+          }
+        } catch { /* corrupt draft — ignore */ }
+      })
+      .catch((e) => !cancelled && setError(e.message))
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+          loadingRef.current = false
+        }
+      })
+    return () => { cancelled = true }
+  }, [bookId, chapterNum, editor]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => () => {
+    clearAutosaveTimers()
+    clearTimeout(draftTimerRef.current)
+  }, [clearAutosaveTimers])
+
+  // ------------------------------------------------------------------
+  // Save
+  // ------------------------------------------------------------------
+  const addDailyWords = useCallback((delta) => {
+    setDailyWords((prev) => {
+      const t = todayKey()
+      return prev.date === t
+        ? { date: t, words: prev.words + delta }
+        : { date: t, words: delta }
+    })
+  }, [setDailyWords])
+
+  const doSave = useCallback(async ({ snapshot = false, autosave = false, force = false } = {}) => {
+    const ed = editorRef.current
+    if (!ed || savingRef.current || loadingRef.current) return false
+    if (autosave && (!dirtyRef.current || conflictRef.current)) return false
+    if (conflictRef.current && !force) return false
+
+    const rt = roundTrip(ed.getJSON())
+    if (!rt.ok) {
+      const detail = [...rt.warnings, ...rt.unsupported].join(', ')
+      setSaveError(`Save blocked: content wouldn't survive the markdown round-trip${detail ? ` (${detail})` : ''}. Your text is safe in the editor and the local draft — please report this.`)
+      return false
+    }
+
+    const docAtSave = ed.state.doc
+    const titleAtSave = titleRef.current
+    savingRef.current = true
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const res = await api.updateChapter(parseInt(bookId), parseInt(chapterNum), {
+        content: rt.lines,
+        title: titleAtSave,
+        snapshot,
+        autosave,
+        ...(force ? {} : { expected_translation_date: lockRef.current }),
+      })
+      lockRef.current = res.translation_date || lockRef.current
+      setConflict(null)
+      // Only mark clean if nothing changed while the request was in flight.
+      if (ed.state.doc.eq(docAtSave) && titleRef.current === titleAtSave) {
+        markDirty(false)
+        clearAutosaveTimers()
+        clearTimeout(draftTimerRef.current)
+        localStorage.removeItem(draftKey)
+      }
+      const w = countWords(ed)
+      const delta = w - lastCountedRef.current
+      if (delta > 0) addDailyWords(delta)
+      lastCountedRef.current = w
+      if (snapshot) flashSaved()
+      else flashAutosaved()
+      return true
+    } catch (e) {
+      if (e.status === 409) {
+        setConflict({ serverDate: e.detail?.translation_date || null })
+        clearAutosaveTimers()
+      } else {
+        setSaveError(e.message)
+      }
+      return false
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
+  }, [bookId, chapterNum, draftKey, addDailyWords, markDirty, clearAutosaveTimers, flashSaved, flashAutosaved])
+  useEffect(() => { doSaveRef.current = doSave }, [doSave])
+
+  const handleManualSave = useCallback(() => doSave({ snapshot: true }), [doSave])
+
+  // Conflict resolution
+  const reloadFromServer = useCallback(async () => {
+    try {
+      const ch = await api.getChapter(parseInt(bookId), parseInt(chapterNum))
+      const lines = trimEmptyLines(Array.isArray(ch.content) ? ch.content : [])
+      const { doc, unsupported: unsup } = linesToDoc(lines)
+      setUnsupported(unsup)
+      if (!unsup.length && editorRef.current) {
+        editorRef.current.commands.setContent(doc, { emitUpdate: false })
+        setWords(countWords(editorRef.current))
+      }
+      setChapter(ch)
+      setTitle(ch.title || '')
+      lockRef.current = ch.translation_date || null
+      setConflict(null)
+      markDirty(false)
+      localStorage.removeItem(draftKey)
+    } catch (e) {
+      setSaveError(e.message)
+    }
+  }, [bookId, chapterNum, draftKey, markDirty])
+
+  // ------------------------------------------------------------------
+  // Keyboard shortcuts
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (e) => {
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && e.key === 's') {
+        e.preventDefault()
+        doSaveRef.current({ snapshot: true })
+      } else if (mod && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        setFocusMode((f) => !f)
+      } else if (e.key === 'Escape') {
+        setFocusMode(false)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // ------------------------------------------------------------------
+  // Draft restore / revisions / preview / navigation helpers
+  // ------------------------------------------------------------------
+  const restoreDraft = useCallback(() => {
+    if (!draftOffer || !editorRef.current) return
+    const { doc, unsupported: unsup } = linesToDoc(draftOffer.text.split('\n'))
+    if (!unsup.length) {
+      editorRef.current.commands.setContent(doc, { emitUpdate: false })
+      setWords(countWords(editorRef.current))
+      if (draftOffer.title != null) setTitle(draftOffer.title)
+      markDirty(true)
+      scheduleAutosave()
+    }
+    setDraftOffer(null)
+  }, [draftOffer, markDirty, scheduleAutosave])
+
+  const discardDraft = useCallback(() => {
+    localStorage.removeItem(draftKey)
+    setDraftOffer(null)
+  }, [draftKey])
+
+  const handleRestoredRevision = useCallback((revision, translationDate) => {
+    const ed = editorRef.current
+    if (!ed) return
+    const { doc, unsupported: unsup } = linesToDoc(trimEmptyLines(revision.content || []))
+    if (!unsup.length) {
+      ed.commands.setContent(doc, { emitUpdate: false })
+      setWords(countWords(ed))
+    }
+    if (revision.title) setTitle(revision.title)
+    lockRef.current = translationDate || lockRef.current
+    setConflict(null)
+    markDirty(false)
+    localStorage.removeItem(draftKey)
+  }, [draftKey, markDirty])
+
+  const previewSegments = useMemo(() => {
+    if (!showPreview || !editor) return []
+    return splitSegments(docToLines(editor.getJSON()))
+  }, [showPreview, editor, dirty]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const chIdx = chapterList.indexOf(parseInt(chapterNum))
+  const prevCh = chIdx > 0 ? chapterList[chIdx - 1] : null
+  const nextCh = chIdx >= 0 && chIdx < chapterList.length - 1 ? chapterList[chIdx + 1] : null
+
+  const handleNewChapter = useCallback(async () => {
+    try {
+      const res = await api.createChapter(parseInt(bookId))
+      navigate(`/books/${bookId}/chapters/${res.chapter_number}/write`)
+    } catch (e) {
+      setSaveError(e.message)
+    }
+  }, [bookId, navigate])
+
+  const illustrationCtx = useMemo(
+    () => ({ urls: chapter?.illustrations || {}, bookId }),
+    [chapter, bookId])
+
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
+  if (loading) {
+    return <div className="flex justify-center py-24"><Loader2 size={28} className="animate-spin text-indigo-400" /></div>
+  }
+  if (error) {
+    return (
+      <div className="max-w-2xl mx-auto mt-12 card p-6">
+        <p className="text-rose-400">{error}</p>
+        <Link className="btn-secondary inline-block mt-4" to={`/books/${bookId}`}>Back to book</Link>
+      </div>
+    )
+  }
+  if (unsupported.length) {
+    return (
+      <div className="max-w-2xl mx-auto mt-12 card p-6 space-y-3">
+        <h2 className="font-semibold text-slate-200">Can’t open in the write editor</h2>
+        <p className="text-sm text-slate-400">
+          This chapter contains markdown constructs the write editor doesn’t support
+          ({unsupported.slice(0, 4).join(', ')}). Saving here would drop them.
+        </p>
+        <Link className="btn-primary inline-block" to={`/books/${bookId}/chapters/${chapterNum}/edit`}>
+          Open in the translation editor instead
+        </Link>
+      </div>
+    )
+  }
+
+  const statusBar = (
+    <StatusBar
+      words={words}
+      sessionWords={words - baselineRef.current}
+      dailyWords={todayWords}
+      dailyGoal={dailyGoal}
+      onSetGoal={setDailyGoal}
+      dirty={dirty}
+      saving={saving}
+      savedFlash={savedFlash}
+      autosavedFlash={autosavedFlash}
+      conflict={!!conflict}
+    />
+  )
+
+  const editorSurface = (
+    <IllustrationUrlContext.Provider value={illustrationCtx}>
+      <EditorContent editor={editor} />
+    </IllustrationUrlContext.Provider>
+  )
+
+  if (focusMode) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+          <div className="max-w-[70ch] mx-auto px-6 pt-[35vh] pb-[45vh]">
+            {editorSurface}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="fixed top-3 right-3 btn-ghost p-2 text-slate-600 hover:text-slate-300"
+          title="Exit focus mode (Esc)"
+          onClick={() => setFocusMode(false)}
+        >
+          <Minimize2 size={16} />
+        </button>
+        <div className="opacity-50 hover:opacity-100 transition-opacity">{statusBar}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto pb-4">
+      {/* Header: book nav + chapter prev/next */}
+      <div className="flex items-center gap-2 py-3 text-sm">
+        <Link to={`/books/${bookId}`} className="btn-ghost p-1.5" title="Back to book">
+          <ArrowLeft size={15} />
+        </Link>
+        <span className="text-slate-400 truncate">{book?.title}</span>
+        <span className="text-slate-600">·</span>
+        <span className="text-slate-500">Chapter {chapterNum}</span>
+        <div className="flex-1" />
+        <Link
+          to={`/read/${bookId}?chapter=${chapterNum}`}
+          className="btn-ghost p-1.5" title="Read in the public reader"
+        ><BookOpen size={14} /></Link>
+        {book && !book.is_original && (
+          <Link
+            to={`/books/${bookId}/chapters/${chapterNum}/edit`}
+            className="btn-ghost p-1.5" title="Open in translation editor (split-pane)"
+          ><Languages size={14} /></Link>
+        )}
+        {prevCh !== null && (
+          <Link to={`/books/${bookId}/chapters/${prevCh}/write`} className="btn-ghost p-1.5" title={`Chapter ${prevCh}`}>
+            <ChevronLeft size={15} />
+          </Link>
+        )}
+        {nextCh !== null ? (
+          <Link to={`/books/${bookId}/chapters/${nextCh}/write`} className="btn-ghost p-1.5" title={`Chapter ${nextCh}`}>
+            <ChevronRight size={15} />
+          </Link>
+        ) : book?.is_original ? (
+          <button className="btn-ghost p-1.5" title="New chapter" onClick={handleNewChapter}>
+            <Plus size={15} />
+          </button>
+        ) : null}
+      </div>
+
+      {/* Draft restore banner */}
+      {draftOffer && (
+        <div className="mb-3 px-4 py-2.5 rounded border border-amber-600/40 bg-amber-500/10 flex items-center gap-3 text-sm">
+          <span className="text-amber-200 flex-1">
+            An unsaved draft from {new Date(draftOffer.savedAt).toLocaleString()} was found.
+          </span>
+          <button className="btn-primary text-xs px-2.5 py-1" onClick={restoreDraft}>Restore</button>
+          <button className="btn-secondary text-xs px-2.5 py-1" onClick={discardDraft}>Discard</button>
+        </div>
+      )}
+
+      {/* Conflict banner */}
+      {conflict && (
+        <div className="mb-3 px-4 py-2.5 rounded border border-rose-600/50 bg-rose-500/10 text-sm space-y-2">
+          <p className="text-rose-200">
+            This chapter changed on the server since you loaded it (e.g. a restore in another tab).
+            Autosave is paused.
+          </p>
+          <div className="flex gap-2">
+            <button className="btn-secondary text-xs px-2.5 py-1" onClick={reloadFromServer}>
+              Load server version (discards my edits)
+            </button>
+            <button className="btn-primary text-xs px-2.5 py-1" onClick={() => doSave({ snapshot: true, force: true })}>
+              Overwrite with my version
+            </button>
+          </div>
+        </div>
+      )}
+
+      {saveError && (
+        <div className="mb-3 px-4 py-2.5 rounded border border-rose-600/50 bg-rose-500/10 flex items-start gap-2 text-sm">
+          <p className="text-rose-200 flex-1">{saveError}</p>
+          <button className="btn-ghost p-1" onClick={() => setSaveError(null)}><X size={13} /></button>
+        </div>
+      )}
+
+      <div className="card overflow-hidden">
+        <div className="px-3 py-2 border-b border-slate-700/60 bg-slate-800/60">
+          <WriteToolbar
+            editor={editor}
+            saving={saving}
+            dirty={dirty}
+            showPreview={showPreview}
+            onSave={handleManualSave}
+            onTogglePreview={() => setShowPreview((v) => !v)}
+            onToggleRevisions={() => setRevisionsOpen((v) => !v)}
+            onToggleFocus={() => setFocusMode(true)}
+          />
+        </div>
+
+        {/* Chapter title */}
+        <input
+          className="w-full bg-transparent px-6 pt-5 pb-1 text-xl font-semibold text-slate-100 outline-none placeholder:text-slate-600"
+          value={title}
+          placeholder="Chapter title"
+          onChange={(e) => {
+            setTitle(e.target.value)
+            markDirty(true)
+            scheduleAutosave()
+            scheduleDraft()
+          }}
+        />
+
+        <div className="px-6 pb-6">
+          {showPreview ? (
+            <div className="min-h-[60vh] py-4 text-slate-200 text-[1.05rem] leading-relaxed">
+              {previewSegments.map((seg, i) =>
+                seg.type === 'img' ? (
+                  <div key={i} className="my-4 flex justify-center">
+                    <img
+                      src={illustrationCtx.urls[seg.id] || `/api/books/${bookId}/illustration/${seg.id}`}
+                      alt="" className="max-h-[60vh] rounded"
+                    />
+                  </div>
+                ) : (
+                  <div key={i} className="chapter-markdown"
+                    dangerouslySetInnerHTML={{ __html: renderBlock(seg.md) }} />
+                ))}
+            </div>
+          ) : editorSurface}
+        </div>
+
+        {statusBar}
+      </div>
+
+      {revisionsOpen && (
+        <RevisionsPanel
+          bookId={parseInt(bookId)}
+          chapterNum={parseInt(chapterNum)}
+          currentWords={words}
+          illustrationUrls={illustrationCtx.urls}
+          onRestored={handleRestoredRevision}
+          onClose={() => setRevisionsOpen(false)}
+        />
+      )}
+    </div>
+  )
+}

@@ -176,6 +176,49 @@ def _m009_wp_state_link_slug(conn, cursor, backend, logger):
                           "ALTER TABLE wp_publish_state ADD COLUMN wp_slug TEXT")
 
 
+_CHAPTER_REVISIONS_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS chapter_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            title TEXT,
+            content TEXT NOT NULL,
+            word_count INTEGER,
+            kind TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS chapter_revisions (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            title VARCHAR(500),
+            content LONGTEXT NOT NULL,
+            word_count INTEGER,
+            kind VARCHAR(10) NOT NULL DEFAULT 'manual',
+            created_at VARCHAR(50) NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m010_original_works(conn, cursor, backend, logger):
+    if add_column_if_missing(conn, cursor, backend, "books", "is_original",
+                             "ALTER TABLE books ADD COLUMN is_original INTEGER NOT NULL DEFAULT 0"):
+        logger.info("Added is_original column to books table")
+    cursor.execute(_CHAPTER_REVISIONS_DDL[backend.name])
+    try:
+        cursor.execute("CREATE INDEX idx_chapter_revisions_chapter "
+                       "ON chapter_revisions(book_id, chapter_number)")
+    except Exception:
+        # Index already exists (fresh installs create it via baseline DDL)
+        pass
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -186,6 +229,7 @@ MIGRATIONS = [
     Migration(7, "comments_notify_replies", _m007_comments_notify_replies),
     Migration(8, "queue_retranslation_reason", _m008_queue_retranslation_reason),
     Migration(9, "wp_state_link_slug", _m009_wp_state_link_slug),
+    Migration(10, "original_works", _m010_original_works),
 ]
 
 

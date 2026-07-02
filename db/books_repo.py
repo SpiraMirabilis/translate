@@ -10,10 +10,10 @@ class BooksRepo:
     """Book CRUD, categories/tags, prompt templates, module settings, EPUB cache, token ratios."""
 
     # Book management section 
-    def create_book(self, title, author=None, language='en', description=None, source_language='zh', target_language='en'):
+    def create_book(self, title, author=None, language='en', description=None, source_language='zh', target_language='en', is_original=False):
         """
         Create a new book in the database.
-        
+
         Args:
             title: Book title
             author: Book author (optional)
@@ -21,30 +21,32 @@ class BooksRepo:
             description: Book description (optional)
             source_language: Source language code (default: zh)
             target_language: Target language code (default: en)
-            
+            is_original: True for original works written in the web editor
+                (no source text / translation pipeline)
+
         Returns:
             int: Book ID if successful, None otherwise
         """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
+
                 # Check if book already exists
                 cursor.execute("SELECT id FROM books WHERE title = ?", (title,))
                 existing = cursor.fetchone()
-                
+
                 if existing:
                     self.logger.info(f"Book '{title}' already exists with ID {existing[0]}")
                     return existing[0]
-                
+
                 # Current timestamp
                 timestamp = datetime.datetime.now().isoformat()
-                
+
                 cursor.execute('''
             INSERT INTO books
-            (title, author, language, description, created_date, modified_date, source_language, target_language)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (title, author, language, description, timestamp, timestamp, source_language, target_language))
+            (title, author, language, description, created_date, modified_date, source_language, target_language, is_original)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (title, author, language, description, timestamp, timestamp, source_language, target_language, int(bool(is_original))))
                 
                 book_id = cursor.lastrowid
             
@@ -237,7 +239,7 @@ class BooksRepo:
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
-                    view_count, trad_to_simp, tags, modules
+                    view_count, trad_to_simp, tags, modules, is_original
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
@@ -246,7 +248,7 @@ class BooksRepo:
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
-                    view_count, trad_to_simp, tags, modules
+                    view_count, trad_to_simp, tags, modules, is_original
                 FROM books
                 WHERE title = ?
                 ''', (title,))
@@ -285,6 +287,7 @@ class BooksRepo:
                 "trad_to_simp": row[18] if len(row) > 18 else None,
                 "tags": json.loads(raw_tags) if raw_tags else [],
                 "modules": modules,
+                "is_original": bool(row[21]) if len(row) > 21 and row[21] is not None else False,
             }
 
             return book_info
@@ -329,9 +332,10 @@ class BooksRepo:
                     if key in ['title', 'author', 'language', 'description', 'source_language',
                             'target_language', 'modified_date', 'cover_image', 'is_public',
                             'total_source_chapters', 'status', 'comments_enabled',
-                            'source_url', 'notes', 'trad_to_simp', 'tags', 'modules']:
+                            'source_url', 'notes', 'trad_to_simp', 'tags', 'modules',
+                            'is_original']:
                         set_clause.append(f"{key} = ?")
-                        if key in ('is_public', 'comments_enabled'):
+                        if key in ('is_public', 'comments_enabled', 'is_original'):
                             values.append(int(bool(value)))
                         elif key == 'total_source_chapters':
                             values.append(int(value) if value is not None else None)
@@ -480,7 +484,8 @@ class BooksRepo:
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id) as chapter_count,
                 description, is_public, total_source_chapters, status, comments_enabled,
                 source_url, notes, view_count, modified_date, trad_to_simp, tags, modules,
-                (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id) as last_chapter_date
+                (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id) as last_chapter_date,
+                is_original
             FROM books
             ORDER BY {clause}
             ''')
@@ -492,7 +497,7 @@ class BooksRepo:
                 (book_id, title, author, language, created_date, cover_image, raw_cats,
                  chapter_count, description, is_public, total_source_chapters, status,
                  comments_enabled, source_url, notes, view_count, modified_date,
-                 trad_to_simp, raw_tags, raw_modules, last_chapter_date) = row
+                 trad_to_simp, raw_tags, raw_modules, last_chapter_date, is_original) = row
                 try:
                     modules = json.loads(raw_modules) if raw_modules else None
                 except (json.JSONDecodeError, TypeError):
@@ -527,6 +532,7 @@ class BooksRepo:
                     "trad_to_simp": trad_to_simp,
                     "tags": tags,
                     "modules": modules,
+                    "is_original": bool(is_original) if is_original is not None else False,
                 })
 
             return result

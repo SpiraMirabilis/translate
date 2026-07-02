@@ -12,11 +12,12 @@ from db.comments_repo import CommentsRepo
 from db.recommendations_repo import RecommendationsRepo
 from db.logs_repo import LogsRepo
 from db.wp_repo import WpStateRepo
+from db.revisions_repo import ChapterRevisionsRepo
 
 
 class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
                       FootnotesRepo, CommentsRepo, RecommendationsRepo,
-                      LogsRepo, WpStateRepo, DatabaseCore):
+                      LogsRepo, WpStateRepo, ChapterRevisionsRepo, DatabaseCore):
     """Class to manage database operations including entities, books, and chapters using SQLite"""
 
     def __init__(self, config: 'TranslationConfig', logger: 'Logger', *, strict_writes: bool = False):

@@ -1,6 +1,7 @@
 """
 Book and chapter management endpoints.
 """
+import datetime
 import io
 import os
 import re
@@ -49,6 +50,7 @@ class BookCreate(BaseModel):
     genre: Optional[str] = None
     source_url: Optional[str] = None
     notes: Optional[str] = None
+    is_original: Optional[bool] = False  # original work written in the web editor
 
 
 class BookUpdate(BaseModel):
@@ -65,6 +67,7 @@ class BookUpdate(BaseModel):
     trad_to_simp: Optional[int] = None  # tri-state: null=inherit global, 0=off, 1=on
     tags: Optional[List[str]] = None
     modules: Optional[Dict[str, bool]] = None  # per-book override map {module_id: on}; {}/null = pure auto
+    is_original: Optional[bool] = None
 
 
 class ModuleSettingsUpdate(BaseModel):
@@ -78,6 +81,15 @@ class PromptUpdate(BaseModel):
 class ChapterContentUpdate(BaseModel):
     content: List[str]
     title: Optional[str] = None
+    # Write-editor extensions (absent = legacy behavior, used by ChapterEditor):
+    autosave: Optional[bool] = False   # background save; auto revision at most every 10 min
+    snapshot: Optional[bool] = False   # explicit save; always records a 'manual' revision
+    expected_translation_date: Optional[str] = None  # optimistic lock: 409 on mismatch
+
+
+class ChapterCreate(BaseModel):
+    title: Optional[str] = None
+    chapter_number: Optional[int] = None  # default: max existing + 1
 
 
 class ChapterRenumber(BaseModel):
@@ -139,9 +151,10 @@ def list_books():
 def create_book(req: BookCreate):
     source_lang = req.source_language or "zh"
 
-    # If a genre is specified, use its source_language as default
+    # If a genre is specified, use its source_language as default. Original
+    # works have no source text, so genre presets don't apply.
     genre_obj = None
-    if req.genre and req.genre != "custom":
+    if req.genre and req.genre != "custom" and not req.is_original:
         from genres import get_genre
         genre_obj = get_genre(_entity_manager.config.script_dir, req.genre)
         if genre_obj and genre_obj.get("source_language") and not req.source_language:
@@ -151,8 +164,9 @@ def create_book(req: BookCreate):
         title=req.title,
         author=req.author,
         language=req.language or "en",
-        source_language=source_lang,
+        source_language="en" if req.is_original else source_lang,
         description=req.description,
+        is_original=bool(req.is_original),
     )
     if not book_id:
         raise HTTPException(status_code=500, detail="Failed to create book.")
@@ -712,15 +726,57 @@ def get_chapter(book_id: int, chapter_number: int):
     return _attach_illustrations(book_id, chapter)
 
 
+@router.post("/{book_id}/chapters")
+def create_chapter(book_id: int, req: ChapterCreate):
+    """Create an empty chapter (write editor / original works).
+
+    Chapters are otherwise only born from the translation queue; original
+    works need a direct creation path.
+    """
+    get_book_or_404(book_id)
+    if req.chapter_number is not None:
+        if req.chapter_number < 1:
+            raise HTTPException(status_code=400, detail="Chapter number must be a positive integer.")
+        number = req.chapter_number
+    else:
+        existing = _entity_manager.list_chapters(book_id)
+        number = max((ch["chapter"] for ch in existing), default=0) + 1
+    if _entity_manager.get_chapter(book_id=book_id, chapter_number=number):
+        raise HTTPException(status_code=409, detail=f"Chapter {number} already exists.")
+    chapter_id = _entity_manager.save_chapter(
+        book_id=book_id,
+        chapter_number=number,
+        title=req.title or f"Chapter {number}",
+        untranslated_content=[],
+        translated_content=[],
+        translation_model="original",
+    )
+    if not chapter_id:
+        raise HTTPException(status_code=500, detail="Failed to create chapter.")
+    return {"status": "ok", "chapter_number": number, "id": chapter_id}
+
+
 @router.put("/{book_id}/chapters/{chapter_number}")
 def update_chapter_translation(book_id: int, chapter_number: int, req: ChapterContentUpdate):
     chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found.")
+
+    # Optimistic lock (write editor): reject if the chapter changed on the
+    # server since the client loaded it, so a stale autosave can't clobber
+    # e.g. a revision restore done in another tab.
+    if req.expected_translation_date is not None and \
+            req.expected_translation_date != chapter.get("translation_date"):
+        raise HTTPException(status_code=409, detail={
+            "message": "Chapter changed on server",
+            "translation_date": chapter.get("translation_date"),
+        })
+
+    title = req.title if req.title is not None else chapter.get("title", f"Chapter {chapter_number}")
     chapter_id = _entity_manager.save_chapter(
         book_id=book_id,
         chapter_number=chapter_number,
-        title=req.title if req.title is not None else chapter.get("title", f"Chapter {chapter_number}"),
+        title=title,
         untranslated_content=chapter.get("untranslated", []),
         translated_content=req.content,
         summary=chapter.get("summary"),
@@ -728,7 +784,19 @@ def update_chapter_translation(book_id: int, chapter_number: int, req: ChapterCo
     )
     if not chapter_id:
         raise HTTPException(status_code=500, detail="Failed to update chapter.")
-    return {"status": "ok"}
+
+    # Revision snapshots (write editor): explicit saves always record one;
+    # autosaves leave a coalesced breadcrumb trail (at most one per 10 min).
+    if req.snapshot:
+        _entity_manager.add_chapter_revision(book_id, chapter_number, title, req.content, kind='manual')
+    elif req.autosave:
+        last = _entity_manager.latest_revision_time(book_id, chapter_number)
+        cutoff = (datetime.datetime.now() - datetime.timedelta(minutes=10)).isoformat()
+        if not last or last < cutoff:
+            _entity_manager.add_chapter_revision(book_id, chapter_number, title, req.content, kind='auto')
+
+    saved = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+    return {"status": "ok", "translation_date": saved.get("translation_date") if saved else None}
 
 
 @router.put("/{book_id}/chapters/{chapter_number}/proofread")

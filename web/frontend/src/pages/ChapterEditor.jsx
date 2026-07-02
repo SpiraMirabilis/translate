@@ -7,7 +7,7 @@
  * Reached via /books/:bookId/chapters/:chapterNum/edit
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useParams, useNavigate, useSearchParams, useBlocker, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, Languages, CheckCircle2, Search, Pencil, Globe, Sparkles, Bold, Italic, Code, Link2, Heading, List, Quote, Minus, Eye } from 'lucide-react'
@@ -27,6 +27,7 @@ import { useUrlState, useUrlModal } from '../hooks/useUrlState'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useTransientFlag } from '../hooks/useTransientFlag'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 
 
 // ── Main Component ───────────────────────────────────────────────────
@@ -239,32 +240,16 @@ export default function ChapterEditor() {
     search.open()
   }, [loading])
 
-  useEffect(() => {
-    const handler = (e) => {
-      if (dirty) {
-        e.preventDefault()
-        e.returnValue = ''
-      }
-    }
-    window.addEventListener('beforeunload', handler)
-    return () => window.removeEventListener('beforeunload', handler)
-  }, [dirty])
+  // Unsaved-changes guard: beforeunload + in-app navigation blocker.
+  useUnsavedGuard(dirty)
 
-  // In-app navigation guard (data router). Only blocks when leaving this
-  // editor path with unsaved changes — same-path query-param changes
-  // (active line, modals, search) are never blocked.
-  const shouldBlock = useCallback(
-    ({ currentLocation, nextLocation }) =>
-      dirty && currentLocation.pathname !== nextLocation.pathname,
-    [dirty]
-  )
-  const blocker = useBlocker(shouldBlock)
+  // Original works belong to the write editor — /edit stays the universal
+  // deep-link entry (Dashboard, global search), so redirect after book load.
   useEffect(() => {
-    if (blocker.state === 'blocked') {
-      if (window.confirm('Discard unsaved changes?')) blocker.proceed()
-      else blocker.reset()
+    if (book?.is_original) {
+      navigate(`/books/${bookId}/chapters/${chapterNum}/write`, { replace: true })
     }
-  }, [blocker])
+  }, [book, bookId, chapterNum, navigate])
 
   // Draft autosave — while dirty, persist edited text + title (debounced 2s)
   // so session expiry or an accidental exit can be recovered.
@@ -324,7 +309,22 @@ export default function ChapterEditor() {
     const mirror = mirrorRef.current
     const ta = textareaRef.current
     if (!mirror || !ta) return
-    mirror.style.width = ta.clientWidth + 'px'
+    // Match the textarea's real wrapping geometry so the mirror wraps at exactly
+    // the same points. clientWidth already excludes the vertical scrollbar; the
+    // text wraps inside clientWidth minus the horizontal padding, and the wrap
+    // rules (font, letter-spacing, tab-size, word-break) must match too — otherwise
+    // long wrapped lines measure short and the gutter numbers drift.
+    const cs = getComputedStyle(ta)
+    const padL = parseFloat(cs.paddingLeft) || 0
+    const padR = parseFloat(cs.paddingRight) || 0
+    mirror.style.width = (ta.clientWidth - padL - padR) + 'px'
+    mirror.style.font = cs.font
+    mirror.style.letterSpacing = cs.letterSpacing
+    mirror.style.lineHeight = cs.lineHeight
+    mirror.style.tabSize = cs.tabSize
+    mirror.style.whiteSpace = cs.whiteSpace
+    mirror.style.overflowWrap = cs.overflowWrap
+    mirror.style.wordBreak = cs.wordBreak
     const lines = textLinesRef.current
     const heights = []
     mirror.textContent = ''

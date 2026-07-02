@@ -25,6 +25,7 @@ import { api } from './services/api'
 const Dashboard       = lazy(() => import('./pages/Dashboard'))
 const Books           = lazy(() => import('./pages/Books'))
 const ChapterEditor   = lazy(() => import('./pages/ChapterEditor'))
+const WriteEditor     = lazy(() => import('./pages/WriteEditor'))
 const Entities        = lazy(() => import('./pages/Entities'))
 const Queue           = lazy(() => import('./pages/Queue'))
 const Settings        = lazy(() => import('./pages/Settings'))
@@ -189,6 +190,7 @@ const router = createBrowserRouter(createRoutesFromElements(
         <Route path="books" element={lazyEl(<Books />)} />
         <Route path="books/:bookId" element={lazyEl(<Books />)} />
         <Route path="books/:bookId/chapters/:chapterNum/edit" element={lazyEl(<ChapterEditor />)} />
+        <Route path="books/:bookId/chapters/:chapterNum/write" element={lazyEl(<WriteEditor />)} />
         <Route path="books/:bookId/api-calls" element={lazyEl(<ApiCalls />)} />
         <Route path="api-logs" element={lazyEl(<ApiLogPage />)} />
         <Route path="reader-stats" element={lazyEl(<ReaderStats />)} />

@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import {
-  Plus, Trash2, Edit2, ChevronDown, ChevronRight,
+  Plus, Trash2, Edit2, ChevronDown, ChevronRight, PenLine,
   BookOpen, Loader2, CheckCircle2, Sparkles, Search, Eye, EyeOff, Square, CheckSquare, Code, MessageCircle, MessageCircleOff
 } from 'lucide-react'
 import GlobalSearchModal from '../components/GlobalSearchModal'
@@ -101,6 +101,16 @@ export default function Books() {
     if (!confirm(`Delete chapter ${num}?`)) return
     await api.deleteChapter(bookId, num)
     invalidateChapters(bookId)
+  }
+
+  // Original works: create an empty chapter and jump into the write editor.
+  const handleNewChapter = async (bookId) => {
+    try {
+      const res = await api.createChapter(bookId)
+      navigate(`/books/${bookId}/chapters/${res.chapter_number}/write`)
+    } catch (e) {
+      alert(`Failed to create chapter: ${e.message}`)
+    }
   }
 
   const handleExport = async (bookId, format) => {
@@ -340,6 +350,16 @@ export default function Books() {
               {/* Chapters */}
               {expandedBook === book.id && (
                 <div className="border-t border-slate-700 px-4 py-3">
+                  {book.is_original && (
+                    <div className="mb-2">
+                      <button
+                        className="btn-primary text-xs px-2.5 py-1 flex items-center gap-1"
+                        onClick={() => handleNewChapter(book.id)}
+                      >
+                        <Plus size={12} /> New Chapter
+                      </button>
+                    </div>
+                  )}
                   {(chapters[book.id] || []).length === 0 ? (
                     <p className="text-xs text-slate-500">No chapters yet.</p>
                   ) : (
@@ -433,20 +453,31 @@ export default function Books() {
                                     >
                                       <BookOpen size={12} />
                                     </Link>
-                                    <button
-                                      className="btn-ghost p-1"
-                                      title="Retranslate chapter"
-                                      onClick={() => retranslateModal.open({ book: book.id, ch: ch.chapter })}
-                                    >
-                                      <Sparkles size={12} />
-                                    </button>
+                                    {!book.is_original && (
+                                      <button
+                                        className="btn-ghost p-1"
+                                        title="Retranslate chapter"
+                                        onClick={() => retranslateModal.open({ book: book.id, ch: ch.chapter })}
+                                      >
+                                        <Sparkles size={12} />
+                                      </button>
+                                    )}
                                     <Link
-                                      to={`/books/${book.id}/chapters/${ch.chapter}/edit`}
+                                      to={`/books/${book.id}/chapters/${ch.chapter}/${book.is_original ? 'write' : 'edit'}`}
                                       className="btn-ghost p-1"
-                                      title="Edit translation"
+                                      title={book.is_original ? 'Write' : 'Edit translation'}
                                     >
                                       <Edit2 size={12} />
                                     </Link>
+                                    {!book.is_original && (
+                                      <Link
+                                        to={`/books/${book.id}/chapters/${ch.chapter}/write`}
+                                        className="btn-ghost p-1"
+                                        title="Open in write editor (WYSIWYG)"
+                                      >
+                                        <PenLine size={12} />
+                                      </Link>
+                                    )}
                                     <button
                                       className="btn-ghost p-1 hover:text-rose-400"
                                       title="Delete chapter"

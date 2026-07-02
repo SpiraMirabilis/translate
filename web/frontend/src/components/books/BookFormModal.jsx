@@ -15,6 +15,7 @@ export default function BookFormModal({ book, onClose, onSaved }) {
     source_url: book?.source_url || '',
     notes: book?.notes || '',
     tags: Array.isArray(book?.tags) ? book.tags : [],
+    is_original: book?.is_original || false,
   })
   const [genres, setGenres] = useState([])
   const [saving, setSaving] = useState(false)
@@ -126,8 +127,19 @@ export default function BookFormModal({ book, onClose, onSaved }) {
         </div>
 
         <div className="px-6 py-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3">
-          {/* Genre selector — new books only */}
-          {!book && genres.length > 0 && (
+          {/* Original work toggle — hides the translation-pipeline fields */}
+          <label className="md:col-span-2 flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="accent-indigo-500"
+              checked={form.is_original}
+              onChange={e => setForm(f => ({ ...f, is_original: e.target.checked }))}
+            />
+            Original work (written here in the write editor — no source text or translation)
+          </label>
+
+          {/* Genre selector — new translated books only */}
+          {!book && !form.is_original && genres.length > 0 && (
             <div className="md:col-span-2">
               <label className="label">Genre Preset</label>
               <select
@@ -148,9 +160,13 @@ export default function BookFormModal({ book, onClose, onSaved }) {
 
           <div><label className="label">Title *</label><input className="input" value={form.title} onChange={e => setForm(f => ({...f, title: e.target.value}))} /></div>
           <div><label className="label">Author</label><input className="input" value={form.author} onChange={e => setForm(f => ({...f, author: e.target.value}))} /></div>
-          <div><label className="label">Source Language</label><input className="input" value={form.source_language} onChange={e => setForm(f => ({...f, source_language: e.target.value}))} placeholder="zh" /></div>
-          <div><label className="label">Target Language</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
-          <div><label className="label">Source URL</label><input className="input" value={form.source_url} onChange={e => setForm(f => ({...f, source_url: e.target.value}))} placeholder="https://..." /></div>
+          {!form.is_original && (
+            <div><label className="label">Source Language</label><input className="input" value={form.source_language} onChange={e => setForm(f => ({...f, source_language: e.target.value}))} placeholder="zh" /></div>
+          )}
+          <div><label className="label">{form.is_original ? 'Language' : 'Target Language'}</label><input className="input" value={form.language} onChange={e => setForm(f => ({...f, language: e.target.value}))} placeholder="en" /></div>
+          {!form.is_original && (
+            <div><label className="label">Source URL</label><input className="input" value={form.source_url} onChange={e => setForm(f => ({...f, source_url: e.target.value}))} placeholder="https://..." /></div>
+          )}
           <div>
             <label className="label">Status</label>
             <select className="input" value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}>

@@ -391,6 +391,7 @@ _COMMON_DDL_SQLITE = [
         trad_to_simp INTEGER DEFAULT NULL,
         tags TEXT,
         modules TEXT,
+        is_original INTEGER NOT NULL DEFAULT 0,
         UNIQUE(title)
     )''',
 
@@ -652,6 +653,23 @@ _COMMON_DDL_SQLITE = [
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     )''',
     'CREATE INDEX IF NOT EXISTS idx_book_module_settings_book ON book_module_settings(book_id)',
+
+    # chapter_revisions — saved-version history for chapters edited in the web
+    # editors (write editor snapshots on every explicit save, coalesced on
+    # autosave). content is a JSON line array, same encoding as
+    # chapters.translated_content. Pruned per (book, chapter) by kind.
+    '''CREATE TABLE IF NOT EXISTS chapter_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        title TEXT,
+        content TEXT NOT NULL,
+        word_count INTEGER,
+        kind TEXT NOT NULL DEFAULT 'manual',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_chapter_revisions_chapter ON chapter_revisions(book_id, chapter_number)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -689,6 +707,7 @@ _COMMON_DDL_MYSQL = [
         trad_to_simp INTEGER DEFAULT NULL,
         tags TEXT,
         modules TEXT,
+        is_original INTEGER NOT NULL DEFAULT 0,
         UNIQUE KEY uq_title (title(500))
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
@@ -939,6 +958,20 @@ _COMMON_DDL_MYSQL = [
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_book_module_settings_book ON book_module_settings(book_id)',
+
+    # chapter_revisions — saved-version history (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS chapter_revisions (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        title VARCHAR(500),
+        content LONGTEXT NOT NULL,
+        word_count INTEGER,
+        kind VARCHAR(10) NOT NULL DEFAULT 'manual',
+        created_at VARCHAR(50) NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_chapter_revisions_chapter ON chapter_revisions(book_id, chapter_number)',
 ]
 
 

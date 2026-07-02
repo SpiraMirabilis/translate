@@ -50,6 +50,16 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 })
 
+/**
+ * Parse a Markdown document into the raw markdown-it token stream, using the
+ * exact same parser instance/config the Reader renders with. Consumed by
+ * writeMarkdown.js (the WYSIWYG bridge) so parse behavior can never diverge
+ * from render behavior.
+ */
+export function parseMarkdownTokens(source) {
+  return md.parse(source || '', {})
+}
+
 /** Render a Markdown document (block-level) to sanitized HTML. */
 export function renderBlock(source) {
   if (!source || !source.trim()) return ''

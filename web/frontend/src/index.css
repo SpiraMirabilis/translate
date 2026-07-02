@@ -172,3 +172,24 @@
   content-visibility: auto;
   contain-intrinsic-size: auto 4rem;
 }
+
+/* Write editor (TipTap/ProseMirror surface). The content area reuses the
+   .chapter-markdown typography so what you write matches what the Reader
+   renders. */
+.ProseMirror { outline: none; white-space: pre-wrap; }
+.ProseMirror p { min-height: 1em; }
+.ProseMirror-selectednode { outline: 2px solid #6366f1; border-radius: 0.25rem; }
+.ProseMirror .ProseMirror-gapcursor:after { border-top: 1px solid #94a3b8; }
+
+/* Write editor tables: cells hold paragraphs in the editor (the Reader emits
+   inline cell content), so zero their margins; highlight cell selection. */
+.ProseMirror table { border-collapse: collapse; width: 100%; margin: 0 0 1rem; }
+.ProseMirror th p, .ProseMirror td p { margin: 0; min-height: 1.2em; }
+.ProseMirror th, .ProseMirror td { min-width: 3rem; position: relative; vertical-align: top; }
+.ProseMirror .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(99, 102, 241, 0.18);
+  pointer-events: none;
+}

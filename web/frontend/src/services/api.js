@@ -32,7 +32,10 @@ async function request(method, path, body, isFormData = false, extraHeaders = un
   if (!res.ok) {
     let msg
     try { msg = (await res.json()).detail } catch { msg = res.statusText }
-    throw new Error(msg || `HTTP ${res.status}`)
+    const err = new Error((typeof msg === 'string' && msg) || msg?.message || `HTTP ${res.status}`)
+    err.status = res.status
+    err.detail = msg
+    throw err
   }
   const ct = res.headers.get('content-type') || ''
   if (ct.includes('application/json')) return res.json()
@@ -79,6 +82,12 @@ export const api = {
   getChapter:          (bookId, num)  => get(`/api/books/${bookId}/chapters/${num}`),
   getChaptersBatch:    (bookId, nums) => get(`/api/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
   updateChapter:       (bookId, num, body) => put(`/api/books/${bookId}/chapters/${num}`, body),
+  createChapter:       (bookId, body = {}) => post(`/api/books/${bookId}/chapters`, body),
+
+  // Chapter revisions (write editor)
+  listRevisions:       (bookId, num)         => get(`/api/books/${bookId}/chapters/${num}/revisions`),
+  getRevision:         (bookId, num, revId)  => get(`/api/books/${bookId}/chapters/${num}/revisions/${revId}`),
+  restoreRevision:     (bookId, num, revId)  => post(`/api/books/${bookId}/chapters/${num}/revisions/${revId}/restore`, {}),
   renumberChapter:     (bookId, num, newNum) => post(`/api/books/${bookId}/chapters/${num}/renumber`, { new_chapter_number: newNum }),
   deleteChapter:       (bookId, num)  => del(`/api/books/${bookId}/chapters/${num}`),
   setProofread:        (bookId, num, isProofread) => put(`/api/books/${bookId}/chapters/${num}/proofread`, { is_proofread: isProofread }),

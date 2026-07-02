@@ -44,9 +44,10 @@ def test_fresh_db_applies_all_and_creates_schema(backend):
     assert _applied_versions(backend) == [m.version for m in MIGRATIONS]
     assert {"origin_chapter", "note"} <= _columns(backend, "entities")
     assert "is_proofread" in _columns(backend, "chapters")
-    assert {"cover_image", "view_count", "tags", "modules"} <= _columns(backend, "books")
+    assert {"cover_image", "view_count", "tags", "modules", "is_original"} <= _columns(backend, "books")
     assert "retranslation_reason" in _columns(backend, "queue")
     assert {"wp_link", "wp_slug"} <= _columns(backend, "wp_publish_state")
+    assert {"content", "word_count", "kind", "created_at"} <= _columns(backend, "chapter_revisions")
 
 
 def test_second_run_is_silent_noop(backend):
@@ -113,6 +114,24 @@ def test_partially_stripped_legacy_db_gets_columns(backend):
     cur.execute("SELECT view_count FROM books WHERE id = ?", (book_id,))
     assert cur.fetchone()[0] == 1  # backfilled from reader_log
     conn.close()
+
+
+def test_legacy_db_gains_original_works_schema(backend):
+    """Legacy DB predating m010: no is_original column, no chapter_revisions
+    table. The migration must add both."""
+    run_migrations(backend, CapturingLogger())
+    conn = backend.get_connection()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE schema_migrations")
+    cur.execute("DROP TABLE chapter_revisions")
+    cur.execute("ALTER TABLE books DROP COLUMN is_original")
+    conn.commit()
+    conn.close()
+
+    run_migrations(backend, CapturingLogger())
+
+    assert "is_original" in _columns(backend, "books")
+    assert {"content", "kind", "created_at"} <= _columns(backend, "chapter_revisions")
 
 
 def test_versions_are_unique_and_ordered():
