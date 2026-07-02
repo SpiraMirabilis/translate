@@ -2,29 +2,49 @@ import {
   createBrowserRouter, createRoutesFromElements, RouterProvider,
   Route, Navigate, Outlet,
 } from 'react-router-dom'
-import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
+import {
+  useState, useEffect, useRef, useCallback, createContext, useContext,
+  lazy, Suspense,
+} from 'react'
 import { QueryClientProvider } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { queryClient } from './lib/queryClient'
 import Layout from './components/Layout'
 import WsQueryBridge from './components/WsQueryBridge'
-import Dashboard from './pages/Dashboard'
-import Books from './pages/Books'
-import ChapterEditor from './pages/ChapterEditor'
-import Entities from './pages/Entities'
-import Queue from './pages/Queue'
-import Settings from './pages/Settings'
-import Help from './pages/Help'
-import Recommendations from './pages/Recommendations'
-import CommentsAdmin from './pages/CommentsAdmin'
-import ApiCalls from './pages/ApiCalls'
-import ApiLogPage from './pages/ApiLogPage'
-import ReaderStats from './pages/ReaderStats'
+// Public first-paint paths stay eager — readers should never wait on a
+// second round trip for the shell they landed on.
 import Reader from './pages/Reader'
 import Library from './pages/Library'
 import BookDetail from './pages/BookDetail'
 import Login from './pages/Login'
 import NotFound from './pages/NotFound'
 import { api } from './services/api'
+
+// Admin pages are route-split: they (and their heavy deps) load on demand,
+// keeping the entry chunk lean for public readers.
+const Dashboard       = lazy(() => import('./pages/Dashboard'))
+const Books           = lazy(() => import('./pages/Books'))
+const ChapterEditor   = lazy(() => import('./pages/ChapterEditor'))
+const Entities        = lazy(() => import('./pages/Entities'))
+const Queue           = lazy(() => import('./pages/Queue'))
+const Settings        = lazy(() => import('./pages/Settings'))
+const Help            = lazy(() => import('./pages/Help'))
+const Recommendations = lazy(() => import('./pages/Recommendations'))
+const CommentsAdmin   = lazy(() => import('./pages/CommentsAdmin'))
+const ApiCalls        = lazy(() => import('./pages/ApiCalls'))
+const ApiLogPage      = lazy(() => import('./pages/ApiLogPage'))
+const ReaderStats     = lazy(() => import('./pages/ReaderStats'))
+
+function PageSpinner() {
+  return (
+    <div className="flex justify-center items-center py-24">
+      <Loader2 size={28} className="animate-spin text-indigo-400" />
+    </div>
+  )
+}
+
+// Wrap a lazy route element in the shared Suspense fallback.
+const lazyEl = (el) => <Suspense fallback={<PageSpinner />}>{el}</Suspense>
 
 // ------------------------------------------------------------------
 // Site context — branding strings (site_name, public_site_name) shared app-wide
@@ -165,19 +185,19 @@ const router = createBrowserRouter(createRoutesFromElements(
         resolving to the Dashboard. */}
     <Route element={<AdminGate />}>
       <Route path="/" element={<Layout />}>
-        <Route index element={<Dashboard />} />
-        <Route path="books" element={<Books />} />
-        <Route path="books/:bookId" element={<Books />} />
-        <Route path="books/:bookId/chapters/:chapterNum/edit" element={<ChapterEditor />} />
-        <Route path="books/:bookId/api-calls" element={<ApiCalls />} />
-        <Route path="api-logs" element={<ApiLogPage />} />
-        <Route path="reader-stats" element={<ReaderStats />} />
-        <Route path="entities" element={<Entities />} />
-        <Route path="queue" element={<Queue />} />
-        <Route path="recommendations" element={<Recommendations />} />
-        <Route path="comments" element={<CommentsAdmin />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="help" element={<Help />} />
+        <Route index element={lazyEl(<Dashboard />)} />
+        <Route path="books" element={lazyEl(<Books />)} />
+        <Route path="books/:bookId" element={lazyEl(<Books />)} />
+        <Route path="books/:bookId/chapters/:chapterNum/edit" element={lazyEl(<ChapterEditor />)} />
+        <Route path="books/:bookId/api-calls" element={lazyEl(<ApiCalls />)} />
+        <Route path="api-logs" element={lazyEl(<ApiLogPage />)} />
+        <Route path="reader-stats" element={lazyEl(<ReaderStats />)} />
+        <Route path="entities" element={lazyEl(<Entities />)} />
+        <Route path="queue" element={lazyEl(<Queue />)} />
+        <Route path="recommendations" element={lazyEl(<Recommendations />)} />
+        <Route path="comments" element={lazyEl(<CommentsAdmin />)} />
+        <Route path="settings" element={lazyEl(<Settings />)} />
+        <Route path="help" element={lazyEl(<Help />)} />
       </Route>
     </Route>
     {/* Unknown URIs — redirect unauthenticated users to /library, else 404 */}

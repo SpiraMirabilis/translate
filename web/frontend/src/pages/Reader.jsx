@@ -518,7 +518,7 @@ export default function Reader({ isPublic = false }) {
                   const isEmpty = (!line || !line.trim()) && (!src || !src.trim())
                   if (isEmpty) return <div key={i} className="h-4" />
                   return (
-                    <div key={i} className="mb-4">
+                    <div key={i} className="cv-auto mb-4">
                       {src && src.trim() && (
                         <p className={`mb-1 text-[0.85em] ${isDark ? 'text-slate-500' : prefs.theme === 'sepia' ? 'text-amber-800/50' : 'text-gray-400'}`}>
                           {src}
@@ -538,7 +538,7 @@ export default function Reader({ isPublic = false }) {
                     <img key={i} src={illustrationSrc(seg.id)}
                       alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
                   ) : (
-                    <div key={i} className="chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderBlock(seg.md)) }} />
+                    <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderBlock(seg.md)) }} />
                   ))
               )}
             </div>

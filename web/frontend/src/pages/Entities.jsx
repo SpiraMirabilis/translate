@@ -612,7 +612,7 @@ function CategorySection({ category, gendered, entities, onEdit, onDelete, defau
             </thead>
             <tbody>
               {visible.map(e => (
-                <tr key={e.id} className={`border-b border-slate-800 last:border-0 hover:bg-slate-750/50${selected.has(e.id) ? ' !bg-indigo-950/30' : ''}${e.note ? ' bg-amber-950/10' : ''}`}>
+                <tr key={e.id} className={`cv-auto border-b border-slate-800 last:border-0 hover:bg-slate-750/50${selected.has(e.id) ? ' !bg-indigo-950/30' : ''}${e.note ? ' bg-amber-950/10' : ''}`}>
                   <td className="pl-4 pr-1 py-2 w-8">
                     <button className="flex items-center" onClick={() => onToggleSelect(e.id)}>
                       {selected.has(e.id)

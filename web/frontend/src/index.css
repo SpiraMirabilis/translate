@@ -165,3 +165,10 @@
 .chapter-markdown table { border-color: rgba(127, 127, 127, 0.4); }
 .chapter-markdown th,
 .chapter-markdown td { border-color: rgba(127, 127, 127, 0.4); }
+
+/* Long-list rendering: skip layout/paint for offscreen rows and reader
+   lines. contain-intrinsic-size keeps scrollbar geometry stable. */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 4rem;
+}
