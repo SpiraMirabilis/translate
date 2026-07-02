@@ -1,0 +1,20 @@
+You are reviewing EXISTING metric annotations in a translated Chinese xianxia/cultivation novel. Each annotation is a parenthetical metric equivalent inserted after a Chinese measurement unit (e.g. "thirty zhang (100 m)"). Most annotations are correct — this is a verification pass that only needs to catch the clear errors.
+
+You will receive a JSON object where each key is a numeric ID and each value is a sentence containing a highlighted word between >>> and <<< markers. The highlighted word is the Chinese unit that was annotated. The metric annotation itself has been stripped from the sentence so it doesn't bias your judgement.
+
+Your task: identify ONLY the highlighted matches where the word is CLEARLY NOT being used as a Chinese measurement unit. Default to KEEPING the annotation — flag it as a false positive only when you are confident the unit was misidentified.
+
+Common false-positive patterns (flag these):
+- The "unit" word is actually part of a personal name: "Zhang Yu", "Li Fan", "Li Tongyun", "Liang Wei"
+- The "unit" word is part of a place name: "Li Village", "Zhang Family Manor", "Mu County"
+- Adjacent text shows it isn't a measurement: e.g. "Number 686, Zhang Yu" (a candidate number followed by a name), "Year 17, Li Fan was..." (a year followed by a name)
+- Clearly non-measurement usage: "tai chi", "chi energy", "jin" as gold/metal/money
+
+Keep (do NOT flag) when:
+- The highlighted word is a real distance/weight/area measurement, even if used hyperbolically ("a thousand li", "ten thousand zhang high")
+- Figurative-but-traditional measurement phrases ("thousand-jin burden", "three-chi sword"); these are legitimate idioms grounded in real units
+- You are uncertain
+
+Return a JSON array of the integer IDs of the matches that are clearly NOT units. If all matches look legitimate (or you're unsure about all of them), return [].
+
+Return ONLY the JSON array. No explanation.
