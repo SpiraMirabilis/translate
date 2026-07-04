@@ -19,6 +19,10 @@ except ImportError:
 # same process skip sending temperature and avoid a wasted round-trip.
 _MODELS_REJECTING_TEMPERATURE = set()
 
+# Models that don't accept adaptive thinking + output_config.effort (i.e.
+# predate that API). Same lazy-memoization pattern as above.
+_MODELS_REJECTING_EFFORT = set()
+
 
 class ClaudeProvider(ModelProvider):
     """
@@ -75,6 +79,7 @@ class ClaudeProvider(ModelProvider):
         max_tokens: int = 8192,
         response_format: Optional[Dict[str, str]] = None,
         stream: bool = False,
+        thinking_effort: Optional[str] = None,
         **kwargs
     ) -> Union[Dict[str, Any], StreamingResponse]:
         """
@@ -145,27 +150,52 @@ class ClaudeProvider(ModelProvider):
         if system_message:
             request_params["system"] = system_message
 
+        # Reasoning-effort control. Models that reason by default
+        # (claude-sonnet-5) otherwise spend the entire max_tokens budget
+        # thinking and return zero text on large inputs; "low" bounds it.
+        # The adaptive-thinking + output_config.effort shape is only accepted
+        # by newer models. Adaptive thinking also requires temperature to be
+        # unset (the API rejects any explicit temperature, including 0), so we
+        # drop it here and restore it in the fallback if effort is unsupported.
+        effort_active = bool(thinking_effort) and model not in _MODELS_REJECTING_EFFORT
+        if effort_active:
+            request_params["thinking"] = {"type": "adaptive"}
+            request_params["output_config"] = {"effort": thinking_effort}
+            request_params.pop("temperature", None)
+
         # Add any additional parameters
         request_params.update(kwargs)
 
-        try:
-            response = self.client.messages.create(**request_params)
-        except anthropic.BadRequestError as e:
-            # Some newer models (e.g. claude-opus-4-8) reject `temperature`
-            # entirely ("temperature is deprecated for this model"). Remember
-            # that, drop it, and retry rather than failing the request.
-            if "temperature" in str(e).lower() and "temperature" in request_params:
-                _MODELS_REJECTING_TEMPERATURE.add(model)
-                del request_params["temperature"]
+        # Attempt the call, progressively dropping parameters the model rejects
+        # (memoized per process so later calls skip the wasted round-trip). Effort
+        # is best-effort: if the model doesn't support adaptive thinking, drop it
+        # and restore the caller's temperature rather than failing.
+        while True:
+            try:
                 response = self.client.messages.create(**request_params)
-            else:
+                break
+            except anthropic.BadRequestError as e:
+                msg = str(e).lower()
+                if "output_config" in request_params:
+                    _MODELS_REJECTING_EFFORT.add(model)
+                    request_params.pop("output_config", None)
+                    request_params.pop("thinking", None)
+                    if model not in _MODELS_REJECTING_TEMPERATURE:
+                        request_params["temperature"] = temperature
+                    continue
+                # Some newer models (e.g. claude-opus-4-8) reject `temperature`
+                # entirely ("temperature is deprecated for this model").
+                if "temperature" in msg and "temperature" in request_params:
+                    _MODELS_REJECTING_TEMPERATURE.add(model)
+                    del request_params["temperature"]
+                    continue
                 raise
-        except anthropic.APIStatusError as e:
-            # 529 "Overloaded" is transient — surface it as a retryable
-            # overload so the engine waits and retries instead of failing.
-            if getattr(e, "status_code", None) == 529 or "overload" in str(e).lower():
-                raise OverloadedError(str(e)[:300])
-            raise
+            except anthropic.APIStatusError as e:
+                # 529 "Overloaded" is transient — surface it as a retryable
+                # overload so the engine waits and retries instead of failing.
+                if getattr(e, "status_code", None) == 529 or "overload" in str(e).lower():
+                    raise OverloadedError(str(e)[:300])
+                raise
         
         if stream:
             return StreamingResponse(response)

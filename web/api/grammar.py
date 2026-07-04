@@ -354,6 +354,11 @@ def _polish_worker(job_id: int, text: str, system_prompt: str, provider, model_n
             model=model_name,
             temperature=0,
             response_format={"type": "json_object"},
+            # Polish is mechanical find/replace extraction — cap reasoning so
+            # thinking-by-default models (sonnet-5) don't burn the whole output
+            # budget on large chapters and return empty. Ignored by models that
+            # don't reason. See providers.base.chat_completion.
+            thinking_effort="low",
         )
         content = provider.get_response_content(response) or ""
     except Exception as e:

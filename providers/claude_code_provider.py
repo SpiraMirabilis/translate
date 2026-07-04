@@ -137,6 +137,7 @@ class ClaudeCodeProvider(ModelProvider):
         max_tokens: int = 8192,
         response_format: Optional[Dict[str, str]] = None,
         stream: bool = False,
+        thinking_effort: Optional[str] = None,  # absorbed; see base (no-op here)
         **kwargs,
     ) -> Union[Dict[str, Any], StreamingResponse]:
         json_mode = bool(response_format and response_format.get("type") == "json_object")

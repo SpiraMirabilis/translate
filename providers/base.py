@@ -190,11 +190,12 @@ class ModelProvider(ABC):
         max_tokens: int = 8192,
         response_format: Optional[Dict[str, str]] = None,
         stream: bool = False,
+        thinking_effort: Optional[str] = None,
         **kwargs
     ) -> Union[Dict[str, Any], StreamingResponse]:
         """
         Perform a chat completion request.
-        
+
         Args:
             messages: List of message dictionaries with 'role' and 'content'
             model: Model name to use
@@ -203,6 +204,12 @@ class ModelProvider(ABC):
             max_tokens: Maximum tokens to generate
             response_format: Optional response format specification
             stream: Whether to stream the response
+            thinking_effort: Reasoning effort — "low" | "medium" | "high", or
+                None for the model's default. Models that reason by default
+                (e.g. claude-sonnet-5) spend their whole output budget thinking
+                at the default effort on large inputs; "low" bounds it for
+                mechanical extraction tasks. Providers that don't reason, and
+                models that don't accept the control, ignore it.
             **kwargs: Additional provider-specific parameters
             
         Returns:
