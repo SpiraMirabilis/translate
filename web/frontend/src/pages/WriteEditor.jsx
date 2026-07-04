@@ -5,6 +5,7 @@ import {
   ArrowLeft, ChevronLeft, ChevronRight, Loader2, Plus, BookOpen, X, Languages,
 } from 'lucide-react'
 import { api } from '../services/api'
+import { useSite } from '../App'
 import { buildWriteExtensions } from '../lib/writeExtensions'
 import { linesToDoc, docToLines, roundTrip } from '../lib/writeMarkdown'
 import { cleanPastedHTML, cleanPastedText } from '../lib/pasteCleanup'
@@ -49,6 +50,7 @@ const todayKey = () => new Date().toISOString().slice(0, 10)
 export default function WriteEditor() {
   const { bookId, chapterNum } = useParams()
   const navigate = useNavigate()
+  const { site_name } = useSite()
   const draftKey = `chapterDraft:${bookId}:${chapterNum}`
 
   const [loading, setLoading] = useState(true)
@@ -154,6 +156,11 @@ export default function WriteEditor() {
     onSelectionUpdate: () => setTick((t) => t + 1),
   })
   editorRef.current = editor
+
+  useEffect(() => {
+    document.title = `Write: ${title || `Chapter ${chapterNum}`}`
+    return () => { document.title = site_name }
+  }, [title, chapterNum, site_name])
 
   useUnsavedGuard(dirty)
   useTypewriterScroll(editor, focusMode, scrollRef)
@@ -668,6 +675,13 @@ export default function WriteEditor() {
             markDirty(true)
             scheduleAutosave()
             scheduleDraft()
+          }}
+          onKeyDown={(e) => {
+            // Enter commits the title and drops the cursor into the body.
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              editorRef.current?.commands.focus('start')
+            }
           }}
         />
 
