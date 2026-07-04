@@ -27,7 +27,15 @@ export default function RevisionsPanel({ bookId, chapterNum, currentWords,
       .then((d) => setRevisions(d.revisions || []))
       .catch((e) => setError(e.message))
   }
-  useEffect(loadList, [bookId, chapterNum]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(loadList, [bookId, chapterNum])
+
+  // Esc closes the panel; the data-esc-guard attribute tells WriteEditor's
+  // window handler to leave focus mode alone while the panel is open.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   const openRevision = (rev) => {
     setLoadingRev(true)
@@ -56,7 +64,7 @@ export default function RevisionsPanel({ bookId, chapterNum, currentWords,
   }
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full sm:w-[28rem] bg-slate-900 border-l border-slate-700 shadow-2xl flex flex-col">
+    <div data-esc-guard className="fixed inset-y-0 right-0 z-40 w-full sm:w-[28rem] bg-slate-900 border-l border-slate-700 shadow-2xl flex flex-col">
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/60 shrink-0">
         <div className="flex items-center gap-2">
           {selected && (

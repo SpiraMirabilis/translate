@@ -237,6 +237,65 @@ export default function Settings() {
         </section>
       )}
 
+      {/* Grammar & Polish (write editor) */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Grammar & Polish</h2>
+          <div className="card p-4 space-y-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.grammar_check_enabled || false}
+                onChange={e => setSettings(s => ({ ...s, grammar_check_enabled: e.target.checked }))}
+              />
+              Enable grammar & spell check in the write editor
+              <span className="text-xs text-slate-500 font-normal">— needs the local LanguageTool service (deploy/languagetool.service)</span>
+            </label>
+            <div>
+              <label className="label">LanguageTool server URL</label>
+              <input
+                className="input font-mono text-sm"
+                value={settings.languagetool_url || ''}
+                onChange={e => setSettings(s => ({ ...s, languagetool_url: e.target.value }))}
+                placeholder="http://127.0.0.1:8081"
+              />
+            </div>
+            <div>
+              <label className="label">English variant</label>
+              <select
+                className="input text-sm"
+                value={settings.grammar_language || 'en-US'}
+                onChange={e => setSettings(s => ({ ...s, grammar_language: e.target.value }))}
+              >
+                <option value="en-US">American (en-US) — color, realize</option>
+                <option value="en-GB">British (en-GB) — colour; accepts both -ise and -ize</option>
+                <option value="en-AU">Australian (en-AU) — colour, realise (-ize flagged)</option>
+                <option value="en-NZ">New Zealand (en-NZ) — colour, realise (-ize flagged)</option>
+                <option value="en-CA">Canadian (en-CA)</option>
+                <option value="en-ZA">South African (en-ZA)</option>
+              </select>
+              <p className="text-xs text-slate-500 mt-1">Controls which spellings the checker flags. For strict -ise (realise/organise) pick Australian or New Zealand — British accepts Oxford -ize too. The polish model follows this choice.</p>
+            </div>
+            <div>
+              <label className="label">Polish model</label>
+              <input
+                className="input font-mono text-sm"
+                value={settings.polish_model || ''}
+                onChange={e => setSettings(s => ({ ...s, polish_model: e.target.value }))}
+                placeholder="e.g. claude:claude-sonnet-4-6"
+              />
+              <p className="text-xs text-slate-500 mt-1">Used by the ✦ polish button for the LLM line-editing pass. A strong model (Sonnet/Opus) is worth it here.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                <Check size={13} />
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Comment Moderation */}
       {settings && (
         <section>

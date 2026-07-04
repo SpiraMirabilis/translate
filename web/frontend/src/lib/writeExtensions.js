@@ -2,6 +2,7 @@ import StarterKit from '@tiptap/starter-kit'
 import Typography from '@tiptap/extension-typography'
 import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table'
 import { Illustration } from '../components/write/IllustrationNode'
+import { GrammarCheck } from './grammarExtension'
 
 // Markdown expresses column alignment via the table separator row (:---:),
 // which the bridge maps to an `align` attribute on cells. Extend TipTap's
@@ -56,5 +57,8 @@ export function buildWriteExtensions() {
     TableRow,
     AlignedTableHeader,
     AlignedTableCell,
+    // View-only decorations (grammar squiggles) — no doc/mark changes, so the
+    // round-trip guard is unaffected.
+    GrammarCheck,
   ]
 }

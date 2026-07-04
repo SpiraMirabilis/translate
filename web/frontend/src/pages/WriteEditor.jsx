@@ -2,19 +2,25 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useEditor, EditorContent } from '@tiptap/react'
 import {
-  ArrowLeft, ChevronLeft, ChevronRight, Loader2, Plus, BookOpen, X, Minimize2,
-  Languages,
+  ArrowLeft, ChevronLeft, ChevronRight, Loader2, Plus, BookOpen, X, Languages,
 } from 'lucide-react'
 import { api } from '../services/api'
 import { buildWriteExtensions } from '../lib/writeExtensions'
 import { linesToDoc, docToLines, roundTrip } from '../lib/writeMarkdown'
+import { cleanPastedHTML, cleanPastedText } from '../lib/pasteCleanup'
+import { docToBBCode } from '../lib/bbcode'
+import { copyToClipboard } from '../utils/clipboard'
 import { splitSegments, renderBlock } from '../lib/chapterMarkdown'
 import { trimEmptyLines } from '../lib/editorHighlights'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import { useTypewriterScroll } from '../hooks/useTypewriterScroll'
+import { useGrammarCheck } from '../hooks/useGrammarCheck'
 import { useTransientFlag } from '../hooks/useTransientFlag'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import WriteToolbar from '../components/write/WriteToolbar'
+import SelectionBubbleMenu from '../components/write/SelectionBubbleMenu'
+import FocusToolbar from '../components/write/FocusToolbar'
+import GrammarPopover from '../components/write/GrammarPopover'
 import StatusBar from '../components/write/StatusBar'
 import RevisionsPanel from '../components/write/RevisionsPanel'
 import PublishMenu from '../components/PublishMenu'
@@ -62,9 +68,10 @@ export default function WriteEditor() {
   const [showPreview, setShowPreview] = useState(false)
   const [revisionsOpen, setRevisionsOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(false)
-  const [, setTick] = useState(0) // re-render for toolbar isActive states
+  const [tick, setTick] = useState(0) // re-render for toolbar isActive states + preview freshness
   const [savedFlash, flashSaved] = useTransientFlag(2500)
   const [autosavedFlash, flashAutosaved] = useTransientFlag(2500)
+  const [bbcodeCopied, flashBBCodeCopied] = useTransientFlag(1500)
 
   // Daily goal
   const [dailyGoal, setDailyGoal] = useLocalStorage('write.dailyGoal', null)
@@ -132,6 +139,8 @@ export default function WriteEditor() {
       attributes: {
         class: 'chapter-markdown outline-none min-h-[60vh] px-1 py-4 text-slate-200 text-[1.05rem] leading-relaxed caret-indigo-400',
       },
+      transformPastedHTML: cleanPastedHTML,
+      transformPastedText: cleanPastedText,
     },
     onUpdate: ({ editor: ed }) => {
       if (loadingRef.current) return
@@ -148,6 +157,18 @@ export default function WriteEditor() {
 
   useUnsavedGuard(dirty)
   useTypewriterScroll(editor, focusMode, scrollRef)
+  const grammar = useGrammarCheck(editor, bookId)
+
+  // Native (OS/browser) spellcheck on the contenteditable can't see the book
+  // dictionary (entities), so it permanently squiggles OC/fandom terms and
+  // double-flags alongside LanguageTool. Hand the surface to our checker when
+  // it's enabled; fall back to the native one when it's not.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return
+    const dom = editor.view.dom
+    dom.setAttribute('spellcheck', grammar.enabled ? 'false' : 'true')
+    dom.setAttribute('autocorrect', grammar.enabled ? 'off' : 'on') // Safari/macOS
+  }, [editor, grammar.enabled])
 
   // ------------------------------------------------------------------
   // Load
@@ -242,8 +263,16 @@ export default function WriteEditor() {
 
     const rt = roundTrip(ed.getJSON())
     if (!rt.ok) {
+      const HINTS = {
+        'table:structure': 'a table is missing its header row — click into it and use the “Hdr” toggle in the table controls',
+        'table:merged-cells': 'a table contains merged cells, which markdown tables can’t express — split them first',
+      }
       const detail = [...rt.warnings, ...rt.unsupported].join(', ')
-      setSaveError(`Save blocked: content wouldn't survive the markdown round-trip${detail ? ` (${detail})` : ''}. Your text is safe in the editor and the local draft — please report this.`)
+      const hints = [...new Set(rt.warnings.map((w) => HINTS[w]).filter(Boolean))]
+      const where = rt.mismatch
+        ? ` The problem is in block ${rt.mismatch.index + 1}${rt.mismatch.excerpt ? ` (“${rt.mismatch.excerpt}…”)` : ''} — usually bold/italic wrapped around unusual punctuation; retyping that formatting fixes it.`
+        : ''
+      setSaveError(`Save blocked: content wouldn't survive the markdown round-trip${detail ? ` (${detail})` : ''}.${hints.length ? ` Fix: ${hints.join('; ')}.` : ''}${where} Your text is safe in the editor and the local draft.`)
       return false
     }
 
@@ -309,31 +338,44 @@ export default function WriteEditor() {
       lockRef.current = ch.translation_date || null
       setConflict(null)
       markDirty(false)
+      grammar.clearAll()
       localStorage.removeItem(draftKey)
     } catch (e) {
       setSaveError(e.message)
     }
-  }, [bookId, chapterNum, draftKey, markDirty])
+  }, [bookId, chapterNum, draftKey, markDirty, grammar.clearAll]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ------------------------------------------------------------------
   // Keyboard shortcuts
   // ------------------------------------------------------------------
   useEffect(() => {
     const handler = (e) => {
+      if (e.defaultPrevented) return
       const mod = e.ctrlKey || e.metaKey
-      if (mod && e.key === 's') {
+      // Ctrl+Alt combos: Ctrl+E is TipTap's inline-code toggle, and plain
+      // Ctrl+Shift+P/H hit browser defaults — Alt keeps these collision-free.
+      if (mod && !e.altKey && e.key === 's') {
         e.preventDefault()
         doSaveRef.current({ snapshot: true })
-      } else if (mod && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+      } else if (mod && !e.altKey && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
         setFocusMode((f) => !f)
+      } else if (mod && e.altKey && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault()
+        if (!focusMode) setShowPreview((v) => !v)
+      } else if (mod && e.altKey && (e.key === 'h' || e.key === 'H')) {
+        e.preventDefault()
+        setRevisionsOpen((v) => !v)
       } else if (e.key === 'Escape') {
+        // An open popover/panel (link editor, revisions, publish menu) owns
+        // Esc — only exit focus mode when nothing else is dismissible.
+        if (document.querySelector('[data-esc-guard]')) return
         setFocusMode(false)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [focusMode])
 
   // ------------------------------------------------------------------
   // Draft restore / revisions / preview / navigation helpers
@@ -344,12 +386,14 @@ export default function WriteEditor() {
     if (!unsup.length) {
       editorRef.current.commands.setContent(doc, { emitUpdate: false })
       setWords(countWords(editorRef.current))
+      setTick((t) => t + 1) // emitUpdate:false skips onUpdate — refresh preview/toolbar
+      grammar.clearAll() // decorations are meaningless after a full content swap
       if (draftOffer.title != null) setTitle(draftOffer.title)
       markDirty(true)
       scheduleAutosave()
     }
     setDraftOffer(null)
-  }, [draftOffer, markDirty, scheduleAutosave])
+  }, [draftOffer, markDirty, scheduleAutosave, grammar.clearAll]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const discardDraft = useCallback(() => {
     localStorage.removeItem(draftKey)
@@ -363,18 +407,22 @@ export default function WriteEditor() {
     if (!unsup.length) {
       ed.commands.setContent(doc, { emitUpdate: false })
       setWords(countWords(ed))
+      setTick((t) => t + 1) // emitUpdate:false skips onUpdate — refresh preview/toolbar
+      grammar.clearAll()
     }
     if (revision.title) setTitle(revision.title)
     lockRef.current = translationDate || lockRef.current
     setConflict(null)
     markDirty(false)
     localStorage.removeItem(draftKey)
-  }, [draftKey, markDirty])
+  }, [draftKey, markDirty, grammar.clearAll]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // `tick` bumps on every editor update, so reopening (or keeping) the
+  // preview always reflects the latest content — `dirty` only flips once.
   const previewSegments = useMemo(() => {
     if (!showPreview || !editor) return []
     return splitSegments(docToLines(editor.getJSON()))
-  }, [showPreview, editor, dirty]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showPreview, editor, tick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const chIdx = chapterList.indexOf(parseInt(chapterNum))
   const prevCh = chIdx > 0 ? chapterList[chIdx - 1] : null
@@ -392,6 +440,16 @@ export default function WriteEditor() {
   const illustrationCtx = useMemo(
     () => ({ urls: chapter?.illustrations || {}, bookId }),
     [chapter, bookId])
+
+  // Lives here (not in the toolbar): needs illustrationCtx, and the toolbar
+  // sits outside the IllustrationUrlContext provider.
+  const handleCopyBBCode = useCallback(() => {
+    const ed = editorRef.current
+    if (!ed) return
+    copyToClipboard(docToBBCode(ed.getJSON(), { illustrationUrls: illustrationCtx.urls }))
+      .then(() => flashBBCodeCopied())
+      .catch((e) => setSaveError(`Copy failed: ${e.message}`))
+  }, [illustrationCtx, flashBBCodeCopied])
 
   // ------------------------------------------------------------------
   // Render
@@ -437,9 +495,49 @@ export default function WriteEditor() {
     />
   )
 
+  // Save errors and conflicts float above the viewport bottom so they're
+  // visible wherever you're scrolled (and in focus mode, which renders no
+  // banners at all). z-50 sits above the sticky toolbar/popovers.
+  const alerts = (saveError || conflict) && (
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-2xl space-y-2">
+      {conflict && (
+        <div className="px-4 py-2.5 rounded-lg border border-rose-600/60 bg-slate-900/95 backdrop-blur shadow-2xl text-sm space-y-2">
+          <p className="text-rose-200">
+            This chapter changed on the server since you loaded it (e.g. a restore in another tab).
+            Autosave is paused.
+          </p>
+          <div className="flex gap-2">
+            <button className="btn-secondary text-xs px-2.5 py-1" onClick={reloadFromServer}>
+              Load server version (discards my edits)
+            </button>
+            <button className="btn-primary text-xs px-2.5 py-1" onClick={() => doSave({ snapshot: true, force: true })}>
+              Overwrite with my version
+            </button>
+          </div>
+        </div>
+      )}
+      {saveError && (
+        <div className="px-4 py-2.5 rounded-lg border border-rose-600/60 bg-slate-900/95 backdrop-blur shadow-2xl flex items-start gap-2 text-sm">
+          <p className="text-rose-200 flex-1">{saveError}</p>
+          <button className="btn-ghost p-1" onClick={() => setSaveError(null)}><X size={13} /></button>
+        </div>
+      )}
+    </div>
+  )
+
   const editorSurface = (
     <IllustrationUrlContext.Provider value={illustrationCtx}>
       <EditorContent editor={editor} />
+      <SelectionBubbleMenu editor={editor} />
+      {grammar.active && (
+        <GrammarPopover
+          active={grammar.active}
+          onApply={grammar.applySuggestion}
+          onDismiss={grammar.dismiss}
+          onClose={grammar.closePopover}
+          onAddToDictionary={grammar.addToDictionary}
+        />
+      )}
     </IllustrationUrlContext.Provider>
   )
 
@@ -451,15 +549,15 @@ export default function WriteEditor() {
             {editorSurface}
           </div>
         </div>
-        <button
-          type="button"
-          className="fixed top-3 right-3 btn-ghost p-2 text-slate-600 hover:text-slate-300"
-          title="Exit focus mode (Esc)"
-          onClick={() => setFocusMode(false)}
-        >
-          <Minimize2 size={16} />
-        </button>
+        <FocusToolbar
+          editor={editor}
+          dirty={dirty}
+          saving={saving}
+          savedFlash={savedFlash}
+          onExit={() => setFocusMode(false)}
+        />
         <div className="opacity-50 hover:opacity-100 transition-opacity">{statusBar}</div>
+        {alerts}
       </div>
     )
   }
@@ -519,35 +617,34 @@ export default function WriteEditor() {
         </div>
       )}
 
-      {/* Conflict banner */}
-      {conflict && (
-        <div className="mb-3 px-4 py-2.5 rounded border border-rose-600/50 bg-rose-500/10 text-sm space-y-2">
-          <p className="text-rose-200">
-            This chapter changed on the server since you loaded it (e.g. a restore in another tab).
-            Autosave is paused.
-          </p>
-          <div className="flex gap-2">
-            <button className="btn-secondary text-xs px-2.5 py-1" onClick={reloadFromServer}>
-              Load server version (discards my edits)
-            </button>
-            <button className="btn-primary text-xs px-2.5 py-1" onClick={() => doSave({ snapshot: true, force: true })}>
-              Overwrite with my version
-            </button>
+      {/* Polish suggestions whose text changed before the response arrived */}
+      {grammar.leftovers.length > 0 && (
+        <div className="mb-3 px-4 py-2.5 rounded border border-purple-600/40 bg-purple-500/10 text-sm space-y-1.5">
+          <div className="flex items-center">
+            <p className="text-purple-200 flex-1 text-xs font-medium">
+              {grammar.leftovers.length} polish suggestion{grammar.leftovers.length > 1 ? 's' : ''} couldn’t
+              be matched to the current text:
+            </p>
+            <button className="btn-ghost p-1" onClick={grammar.clearLeftovers}><X size={13} /></button>
           </div>
+          {grammar.leftovers.map((s, i) => (
+            <p key={i} className="text-xs text-slate-300">
+              <span className="line-through text-slate-500">{s.find}</span>
+              {' → '}
+              <span className="text-purple-200">{s.replace}</span>
+              {s.reason && <span className="text-slate-500"> — {s.reason}</span>}
+            </p>
+          ))}
         </div>
       )}
 
-      {saveError && (
-        <div className="mb-3 px-4 py-2.5 rounded border border-rose-600/50 bg-rose-500/10 flex items-start gap-2 text-sm">
-          <p className="text-rose-200 flex-1">{saveError}</p>
-          <button className="btn-ghost p-1" onClick={() => setSaveError(null)}><X size={13} /></button>
-        </div>
-      )}
-
-      <div className="card overflow-hidden">
-        <div className="px-3 py-2 border-b border-slate-700/60 bg-slate-800/60">
+      <div className="card">
+        {/* Sticky: opaque bg (content scrolls under it), top-12 clears the
+            fixed mobile top bar (matches main's pt-12 md:pt-0). */}
+        <div className="sticky top-12 md:top-0 z-20 px-3 py-2 border-b border-slate-700/60 bg-slate-800 rounded-t-lg">
           <WriteToolbar
             editor={editor}
+            tick={tick}
             saving={saving}
             dirty={dirty}
             showPreview={showPreview}
@@ -555,6 +652,9 @@ export default function WriteEditor() {
             onTogglePreview={() => setShowPreview((v) => !v)}
             onToggleRevisions={() => setRevisionsOpen((v) => !v)}
             onToggleFocus={() => setFocusMode(true)}
+            onCopyBBCode={handleCopyBBCode}
+            bbcodeCopied={bbcodeCopied}
+            grammar={grammar}
           />
         </div>
 
@@ -603,6 +703,7 @@ export default function WriteEditor() {
           onClose={() => setRevisionsOpen(false)}
         />
       )}
+      {alerts}
     </div>
   )
 }

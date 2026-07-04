@@ -161,6 +161,12 @@ export const api = {
   // Site info (public, unauthenticated)
   getSiteInfo:      ()           => get('/api/public/site_info'),
 
+  // Grammar / polish (write editor)
+  grammarStatus:     ()     => get('/api/grammar/status'),
+  grammarCheck:      (body) => post('/api/grammar/check', body),
+  grammarPolish:     (body) => post('/api/grammar/polish', body),
+  addDictionaryWord: (body) => post('/api/grammar/dictionary', body),
+
   // Settings
   getSettings:      ()           => get('/api/settings'),
   updateSettings:   (body)       => put('/api/settings', body),

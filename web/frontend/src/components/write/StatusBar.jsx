@@ -19,7 +19,7 @@ export default function StatusBar({ words, sessionWords, dailyWords, dailyGoal,
   const pct = dailyGoal ? Math.min(100, Math.round((dailyWords / dailyGoal) * 100)) : null
 
   return (
-    <div className="flex items-center gap-4 px-4 py-1.5 text-xs text-slate-500 border-t border-slate-800 bg-slate-900/80">
+    <div className="flex items-center gap-4 px-4 py-1.5 text-xs text-slate-500 border-t border-slate-800 bg-slate-900/80 rounded-b-lg">
       <span className="tabular-nums text-slate-400">{words.toLocaleString()} words</span>
       <span className="tabular-nums" title="Words written this session">
         session {sessionWords >= 0 ? '+' : ''}{sessionWords.toLocaleString()}

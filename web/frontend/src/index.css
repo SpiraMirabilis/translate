@@ -193,3 +193,19 @@
   background: rgba(99, 102, 241, 0.18);
   pointer-events: none;
 }
+
+/* Grammar-check squiggles (view-only decorations from grammarExtension.js).
+   Colors: typo rose-400, grammar sky-400, style amber-400, polish purple-400. */
+.gram-issue {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-skip-ink: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.gram-typo    { text-decoration-color: rgba(251, 113, 133, 0.85); }
+.gram-grammar { text-decoration-color: rgba(56, 189, 248, 0.85); }
+.gram-style   { text-decoration-color: rgba(251, 191, 36, 0.85); }
+.gram-polish  { text-decoration-color: rgba(192, 132, 252, 0.9); }
+.gram-active  { background: rgba(99, 102, 241, 0.18); border-radius: 2px; }

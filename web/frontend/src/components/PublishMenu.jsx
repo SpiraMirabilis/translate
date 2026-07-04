@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Globe, Clock, FileText, Loader2, ChevronDown } from 'lucide-react'
 import { api } from '../services/api'
 
@@ -38,6 +38,15 @@ export default function PublishMenu({ bookId, chapterNum, publishedAt, onChanged
   const status = publishStatus(publishedAt)
   const Icon = STATUS_ICON[status]
 
+  // Esc closes the dropdown; data-esc-guard (below) keeps other Esc handlers
+  // (e.g. the write editor's exit-focus-mode) from also firing.
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   const apply = async (value) => {
     setBusy(true)
     setError(null)
@@ -75,7 +84,7 @@ export default function PublishMenu({ bookId, chapterNum, publishedAt, onChanged
       {open && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 z-40 w-64 rounded border border-slate-700 bg-slate-800 shadow-xl p-3 space-y-2.5">
+          <div data-esc-guard className="absolute right-0 top-full mt-1 z-40 w-64 rounded border border-slate-700 bg-slate-800 shadow-xl p-3 space-y-2.5">
             {status !== 'published' && (
               <button
                 type="button"
