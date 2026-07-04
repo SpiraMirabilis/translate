@@ -37,7 +37,11 @@ export function linesToDoc(lines) {
   for (const seg of splitSegments(lines || [])) {
     if (seg.type === 'img') {
       content.push({ type: 'illustration', attrs: { id: seg.id } })
-    } else if (seg.md.trim()) {
+    // Blank check with markdown-it's semantics (space/tab-only lines), NOT
+    // String.trim(): JS also trims U+2028/U+2029/FEFF etc., which markdown-it
+    // treats as visible text — trim() here would drop segments the parser
+    // would keep, breaking round-trip symmetry.
+    } else if (/[^ \t\n]/.test(seg.md)) {
       content.push(...tokensToBlocks(parseMarkdownTokens(seg.md), unsupported))
     }
   }
@@ -210,7 +214,20 @@ function toSegments(content) {
     const seg = segments[segments.length - 1]
     if (node.type !== 'text') { seg.push({ unknown: node.type }); continue }
     const marks = sortMarks((node.marks || []).map(canonMark))
-    seg.push({ text: node.text, marks })
+    // Inside code spans U+2028/29 must become spaces: markdown-it's pad-strip
+    // regex (/^ (.+) $/) can't match across them (JS line terminators), so
+    // they'd break the code-span round-trip; the parser itself already maps
+    // \n inside code spans to a space.
+    const text = marks.some((m) => m.type === 'code')
+      ? node.text.replace(/[\u2028\u2029]/g, ' ')
+      : node.text
+    // Literal line terminators inside a text node reparse as line breaks —
+    // canonicalize them to segment (hard-break) boundaries up front.
+    const parts = text.split(/\r\n?|\n/)
+    parts.forEach((part, idx) => {
+      if (idx) segments.push([])
+      if (part) segments[segments.length - 1].push({ text: part, marks })
+    })
   }
   return segments.map(canonicalizeSegment)
 }
@@ -228,7 +245,20 @@ function mergeSpans(spans) {
   return merged.filter((s) => s.unknown || s.text)
 }
 
-const isWs = (ch) => ch === ' ' || ch === '\t'
+// Matches markdown-it's isWhiteSpace (inline set — line breaks can't occur in
+// inline text): a mark edge or line edge on any of these, incl. U+00A0, won't
+// survive reparse, so the canonical form must treat them as whitespace too.
+// eslint-disable-next-line no-control-regex -- \v \f are in markdown-it's whitespace set
+const isWs = (ch) => /[ \t\x0B\x0C\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/.test(ch)
+// markdown-it's paragraph/heading rules trim block content with JS
+// String.trim(), whose set is wider than inline whitespace (adds U+2028/29
+// line separators and the BOM). Unmarked chars in this set at a line edge
+// don't survive reparse.
+const isEdgeTrim = (ch) => isWs(ch) || ch === '\u2028' || ch === '\u2029' || ch === '\uFEFF'
+// CommonMark 0.31 "Unicode punctuation" for the flanking rules: P and S
+// general categories (markdown-it's ASCII punct set is a subset).
+const isPunct = (ch) => /[\p{P}\p{S}]/u.test(ch)
+const isWordish = (ch) => !isWs(ch) && !isPunct(ch)
 // Marks whose ranges markdown cannot open/close against whitespace.
 const SHRINKABLE = new Set(['bold', 'italic', 'strike'])
 const markKey = (m) => (m.type === 'link' ? `link:${m.attrs?.href || ''}` : m.type)
@@ -255,33 +285,116 @@ function canonicalizeSegment(spans) {
     for (const ch of s.text) chars.push({ ch, keys: new Set(s.marks.map(markKey)) })
   }
 
+  // Shrink emphasis ranges off characters the flanking rules would reject,
+  // to a global fixpoint (shrinking one mark can move another's boundaries):
+  //  - whitespace edges never parse ("*b *");
+  //  - an emphasis delimiter can't OPEN before punctuation when a word char
+  //    precedes it ("b*#x*"), nor CLOSE after punctuation when a word char
+  //    follows ("*x!*s") — CommonMark left/right-flanking. Any material
+  //    serialization inserts between neighbors (escapes, nested delimiters)
+  //    is itself punctuation, which only relaxes flanking, so judging on raw
+  //    chars errs safe;
+  //  - overlapping (non-nested) mark ranges are SPLIT at each other's
+  //    boundaries when serialized, and each split piece re-opens/closes a
+  //    delimiter there — whitespace adjacent to an interior split point is
+  //    fatal the same way an edge is (the neighbor across the split is a
+  //    delimiter, i.e. punctuation, so only the whitespace rule applies).
+  // Drop autolink marks FIRST: linkify recreates them at render time, so
+  // they're not canonical — and if they survived into the emphasis pass
+  // below, their range boundaries would trigger interior-split expulsion
+  // that the linkless side of the comparison never sees.
   for (const [key, mark] of markByKey) {
+    if (mark.type !== 'link') continue
     let i = 0
     while (i < chars.length) {
       if (!chars[i].keys.has(key)) { i += 1; continue }
       let j = i
       while (j < chars.length && chars[j].keys.has(key)) j += 1
-      if (SHRINKABLE.has(mark.type)) {
-        let a = i, b = j
-        while (a < b && isWs(chars[a].ch)) a += 1
-        while (b > a && isWs(chars[b - 1].ch)) b -= 1
-        for (let k = i; k < a; k += 1) chars[k].keys.delete(key)
-        for (let k = b; k < j; k += 1) chars[k].keys.delete(key)
-      } else if (mark.type === 'link') {
-        const rangeText = chars.slice(i, j).map((c) => c.ch).join('')
-        if (isAutoLink(mark.attrs?.href || '', rangeText)) {
-          for (let k = i; k < j; k += 1) chars[k].keys.delete(key)
-        }
+      const rangeText = chars.slice(i, j).map((c) => c.ch).join('')
+      if (isAutoLink(mark.attrs?.href || '', rangeText)) {
+        for (let k = i; k < j; k += 1) chars[k].keys.delete(key)
       }
       i = j
     }
   }
 
-  // Trim line-edge whitespace that no mark protects.
+  let changedAny = true
+  while (changedAny) {
+    changedAny = false
+    for (const [key, mark] of markByKey) {
+      let i = 0
+      while (i < chars.length) {
+        if (!chars[i].keys.has(key)) { i += 1; continue }
+        let j = i
+        while (j < chars.length && chars[j].keys.has(key)) j += 1
+        if (SHRINKABLE.has(mark.type)) {
+          const drop = (k) => { chars[k].keys.delete(key); changedAny = true }
+          // The serialized char adjacent to this mark's delimiter is punct
+          // not only when the raw edge char is punct, but also when another
+          // mark's range starts/ends at the edge — its delimiter (punct) is
+          // emitted between our delimiter and the text. Same-character
+          // delimiters (bold+italic, both '*'/'_') merge into ONE run that
+          // the parser analyzes whole, so only different-char delimiters
+          // (~~, `, [ ]) count.
+          const DELIM_CHAR = { bold: '*', italic: '*', strike: '~', code: '`', link: '[' }
+          const myDelim = DELIM_CHAR[mark.type]
+          const otherDelim = (k2) => DELIM_CHAR[k2.split(':')[0]] !== myDelim
+          const delimBefore = (idx) => [...chars[idx].keys].some((k2) =>
+            k2 !== key && otherDelim(k2) && (idx === 0 || !chars[idx - 1].keys.has(k2)))
+          const delimAfter = (idx) => [...chars[idx].keys].some((k2) =>
+            k2 !== key && otherDelim(k2) && (idx + 1 >= chars.length || !chars[idx + 1].keys.has(k2)))
+          let a = i, b = j
+          let edge = true
+          while (edge) {
+            edge = false
+            while (a < b && isWs(chars[a].ch)) { drop(a); a += 1; edge = true }
+            while (b > a && isWs(chars[b - 1].ch)) { drop(b - 1); b -= 1; edge = true }
+            if (a < b && a > 0 && isWordish(chars[a - 1].ch) &&
+                (isPunct(chars[a].ch) || delimBefore(a))) {
+              drop(a); a += 1; edge = true
+            }
+            if (b > a && b < chars.length && isWordish(chars[b].ch) &&
+                (isPunct(chars[b - 1].ch) || delimAfter(b - 1))) {
+              drop(b - 1); b -= 1; edge = true
+            }
+          }
+          // A mark k2 whose range PROPERLY overlaps ours (starts inside and
+          // ends beyond, or vice versa) forces the serializer to close and
+          // reopen one of the wraps at the crossing — whitespace next to that
+          // interior split point is as fatal as at an outer edge. Nested
+          // ranges (fully inside ours) do NOT split us and are exempt.
+          for (let p = a + 1; p < b; p += 1) {
+            let splits = false
+            for (const k2 of new Set([...chars[p - 1].keys, ...chars[p].keys])) {
+              if (k2 === key || chars[p - 1].keys.has(k2) === chars[p].keys.has(k2)) continue
+              if (chars[p].keys.has(k2)) {
+                // k2 starts at p — splits us if it runs past our end.
+                let e = p
+                while (e < chars.length && chars[e].keys.has(k2)) e += 1
+                if (e > b) { splits = true; break }
+              } else {
+                // k2 ends at p — splits us if it started before our start.
+                let s = p - 1
+                while (s >= 0 && chars[s].keys.has(k2)) s -= 1
+                if (s + 1 < a) { splits = true; break }
+              }
+            }
+            if (!splits) continue
+            for (let q = p - 1; q >= a && isWs(chars[q].ch) && chars[q].keys.has(key); q -= 1) drop(q)
+            for (let q = p; q < b && isWs(chars[q].ch) && chars[q].keys.has(key); q += 1) drop(q)
+          }
+        }
+        i = j
+      }
+    }
+  }
+
+  // Trim line-edge whitespace that no mark protects (JS-trim set — matches
+  // markdown-it's block-content .trim()).
   let start = 0
   let end = chars.length
-  while (start < end && isWs(chars[start].ch) && chars[start].keys.size === 0) start += 1
-  while (end > start && isWs(chars[end - 1].ch) && chars[end - 1].keys.size === 0) end -= 1
+  while (start < end && isEdgeTrim(chars[start].ch) && chars[start].keys.size === 0) start += 1
+  while (end > start && isEdgeTrim(chars[end - 1].ch) && chars[end - 1].keys.size === 0) end -= 1
 
   const out = []
   for (let i = start; i < end; i += 1) {
@@ -374,7 +487,14 @@ function normalizeBlocks(blocks, warnings) {
           .filter((r) => r.content.length)
         if (!rows.length) break
         // Markdown requires a header row and can't express header cells
-        // elsewhere — anything else has no pipe-table representation.
+        // elsewhere. A fully headerless table (all cells plain) has exactly
+        // one representable form — first row as header — so canonicalize it
+        // to that transparently. Anything else (header cells scattered in
+        // later rows, mixed rows) has no pipe-table representation.
+        const allPlain = rows.every((r) => r.content.every((c) => c.type === 'tableCell'))
+        if (allPlain) {
+          rows[0].content = rows[0].content.map((c) => ({ ...c, type: 'tableHeader' }))
+        }
         const headerFirst = rows[0].content.every((c) => c.type === 'tableHeader') &&
           rows.slice(1).every((r) => r.content.every((c) => c.type === 'tableCell'))
         if (!headerFirst) warnings.push('table:structure')
@@ -578,7 +698,19 @@ function serializeSpans(nodes, warnings) {
       i += 1
       continue
     }
-    const mark = sortMarks(marks)[0]
+    // Pick the outer wrap: the mark whose contiguous run over the following
+    // nodes is longest (ties broken by canonical MARK_ORDER). Wrapping a
+    // shorter-run mark first would split the longer range into fragments,
+    // producing adjacent delimiter runs ("***h****#d*") that CommonMark's
+    // rule-of-three pairs differently than intended.
+    const runLen = (m) => {
+      let k = i
+      while (k < nodes.length && nodes[k].type === 'text' &&
+             (nodes[k].marks || []).some((mm) => marksEqual([mm], [m]))) k += 1
+      return k - i
+    }
+    const mark = sortMarks(marks).reduce((best, m) =>
+      (runLen(m) > runLen(best) ? m : best))
     if (mark.type === 'code') {
       out += serializeCode(node.text)
       i += 1
@@ -595,16 +727,22 @@ function serializeSpans(nodes, warnings) {
         marks: (n.marks || []).filter((m) => !marksEqual([m], [mark])),
       })),
       warnings)
-    out += wrapMark(mark, inner, warnings)
+    const nextChar = (nodes[j] && nodes[j].type === 'text' && nodes[j].text[0]) || ''
+    out += wrapMark(mark, inner, warnings, out.slice(-1), nextChar)
     i = j
   }
   return out
 }
 
-function wrapMark(mark, inner, warnings) {
+function wrapMark(mark, inner, warnings, prevChar = '', nextChar = '') {
+  // An emphasis wrap directly after a '*' delimiter would merge into one
+  // ambiguous run ("**a***b*" → "*****"-style mispairing). Switch to the '_'
+  // family there — but only when no word char follows, since '_' can't close
+  // intraword. prevChar '*' is punctuation, so '_' can always open after it.
+  const underscore = prevChar === '*' && (!nextChar || !isWordish(nextChar))
   switch (mark.type) {
-    case 'bold': return `**${inner}**`
-    case 'italic': return `*${inner}*`
+    case 'bold': return underscore ? `__${inner}__` : `**${inner}**`
+    case 'italic': return underscore ? `_${inner}_` : `*${inner}*`
     case 'strike': return `~~${inner}~~`
     case 'link': {
       const href = mark.attrs?.href || ''
@@ -642,13 +780,18 @@ function escapeInline(text) {
 
 function escapeProse(text) {
   return text
-    // A literal backslash before escapable punctuation would eat the next char
-    .replace(/\\(?=[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g, '\\\\')
+    // Escape every literal backslash: escaping is span-local, so a trailing
+    // backslash can't know whether serialization appends escapable punctuation
+    // (or a mark delimiter) right after it.
+    .replace(/\\/g, '\\\\')
     .replace(/([*_`])/g, '\\$1')
-    // Strikethrough needs a ~~ pair; single tildes stay readable
-    .replace(/~(?=~)/g, '\\~')
-    // [ opens links/refs — but leave footnote refs [n] untouched (byte-exact)
+    // Escape every tilde: a bare ~ adjacent to a ~~ strike delimiter would
+    // merge into a ~~~ run that markdown-it refuses to reparse as strike.
+    .replace(/~/g, '\\~')
+    // [ opens links/refs and ] closes a link label early — but leave footnote
+    // refs [n] untouched (byte-exact)
     .replace(/\[(?!\d+\])/g, '\\[')
+    .replace(/(?<!\[\d+)\]/g, '\\]')
     // Literal HTML entities would decode on reparse
     .replace(/&(?=[a-zA-Z][a-zA-Z0-9]{1,31};|#\d{1,8};|#[xX][0-9a-fA-F]{1,8};)/g, '\\&')
     // <scheme:...> / <user@host> would autolink
@@ -683,7 +826,24 @@ export function roundTrip(doc) {
   const warnings = []
   const lines = docToLines(doc, warnings)
   const { doc: reparsed, unsupported } = linesToDoc(lines)
+  const canonDoc = normalizeDoc(doc)
+  const canonRe = normalizeDoc(reparsed)
   const ok = warnings.length === 0 && unsupported.length === 0 &&
-    JSON.stringify(normalizeDoc(reparsed)) === JSON.stringify(normalizeDoc(doc))
-  return { ok, lines, warnings: [...new Set(warnings)], unsupported }
+    JSON.stringify(canonRe) === JSON.stringify(canonDoc)
+  let mismatch = null
+  if (!ok && !warnings.length && !unsupported.length) {
+    // Pinpoint the first block whose canonical form diverges, so the save
+    // error can name the paragraph instead of just "somewhere".
+    const n = Math.max(canonDoc.content.length, canonRe.content.length)
+    for (let i = 0; i < n; i += 1) {
+      if (JSON.stringify(canonDoc.content[i]) !== JSON.stringify(canonRe.content[i])) {
+        const blockText = (canonDoc.content[i]?.content || [])
+          .map((node) => node.text || '')
+          .join('')
+        mismatch = { index: i, excerpt: blockText.slice(0, 60) }
+        break
+      }
+    }
+  }
+  return { ok, lines, warnings: [...new Set(warnings)], unsupported, mismatch }
 }

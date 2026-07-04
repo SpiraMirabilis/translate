@@ -218,8 +218,8 @@ describe('escaping (doc → lines guards)', () => {
     })
     expect(lines[0]).toContain('\\*here\\*')
     expect(lines[0]).toContain('\\`ticks\\`')
-    expect(lines[0]).toContain('\\~~tildes\\~~') // first tilde of each pair escaped
-    expect(lines[0]).toContain('\\[brackets](x)')
+    expect(lines[0]).toContain('\\~\\~tildes\\~\\~') // every tilde escaped (delimiter-adjacency safety)
+    expect(lines[0]).toContain('\\[brackets\\](x)')
   })
 
   it('does not escape footnote-style [n] refs', () => {
@@ -482,13 +482,38 @@ describe('tables', () => {
     expect(warnings).toContain('table:merged-cells')
   })
 
-  it('headerless tables block the save', () => {
+  it('fully headerless tables coerce their first row to a header transparently', () => {
+    const cell = (t) => ({ type: 'tableCell', content: [p(text(t))] })
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [cell('Name'), cell('HP')] },
+          { type: 'tableRow', content: [cell('Slime'), cell('10')] },
+        ],
+      }],
+    })
+    expect(lines).toEqual(['| Name | HP |', '| --- | --- |', '| Slime | 10 |'])
+    // Single headerless row → header-only table (both corpus-valid).
+    const solo = expectRoundTrip({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [{ type: 'tableRow', content: [cell('only')] }],
+      }],
+    })
+    expect(solo).toEqual(['| only |', '| --- |'])
+  })
+
+  it('header cells outside the first row still block the save', () => {
     const { ok, warnings } = roundTrip({
       type: 'doc',
       content: [{
         type: 'table',
         content: [
-          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('no header'))] }] },
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('h'))] }] },
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('another header'))] }] },
         ],
       }],
     })
@@ -540,5 +565,128 @@ describe('normalizeDoc canonical form', () => {
 
   it('empty doc normalizes to no blocks', () => {
     expect(normalizeDoc({ type: 'doc', content: [{ type: 'paragraph' }] }).content).toEqual([])
+  })
+})
+
+describe('non-breaking space canonicalization (Grammarly paste artifacts)', () => {
+  // markdown-it treats U+00A0 as whitespace: emphasis can't open/close against
+  // it, and an nbsp-only line parses to an empty paragraph. isWs must agree or
+  // roundTrip() blocks saves on content the user can't even see.
+  it('bold with a trailing nbsp inside the mark round-trips', () => {
+    expectRoundTrip({
+      type: 'doc',
+      content: [p(text('alpha\u00A0', { type: 'bold' }), text('beta'))],
+    })
+  })
+
+  it('an nbsp-only paragraph normalizes away instead of blocking the save', () => {
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [p(text('before')), p(text('\u00A0')), p(text('after'))],
+    })
+    expect(lines).toEqual(['before', '', 'after'])
+  })
+
+  it('interior nbsp between visible characters is preserved', () => {
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [p(text('a\u00A0b'))],
+    })
+    expect(lines).toEqual(['a\u00A0b'])
+    expectIdentity(lines)
+  })
+
+  it('nbsp-padded emphasis at line edges round-trips', () => {
+    expectRoundTrip({
+      type: 'doc',
+      content: [p(text('\u00A0lead', { type: 'italic' }), br, text('\u00A0'), text('tail\u00A0', { type: 'strike' }))],
+    })
+  })
+})
+
+describe('flanking/escaping asymmetries (fuzzer-found regressions)', () => {
+  // Each case here once made roundTrip() block a save. The classes:
+  // CommonMark emphasis flanking, delimiter-run merging, span-local escaping,
+  // and JS-vs-markdown whitespace semantics.
+  it('strike content starting with a tilde', () => {
+    expectRoundTrip({ type: 'doc', content: [p(text('~b', { type: 'strike' }))] })
+  })
+
+  it('emphasis on punctuation flush against a word char (flanking)', () => {
+    // opener can't sit between word char and punctuation: "b*#*"
+    expectRoundTrip({ type: 'doc', content: [p(text('b'), text('#', { type: 'italic' }))] })
+    // closer can't sit between punctuation and word char: "*x!*s"
+    expectRoundTrip({ type: 'doc', content: [p(text('x!', { type: 'italic' }), text('s'))] })
+  })
+
+  it('trailing backslash flush against a mark delimiter', () => {
+    expectRoundTrip({ type: 'doc', content: [p(text('\\'), text('x', { type: 'strike' }))] })
+  })
+
+  it('closing bracket inside a link label', () => {
+    expectRoundTrip({
+      type: 'doc',
+      content: [p(text('a]b', { type: 'link', attrs: { href: 'https://x.example/p' } }))],
+    })
+  })
+
+  it('footnote refs stay byte-exact despite bracket escaping', () => {
+    expectIdentity(['He waved[1] and left.', '', '[1] A cultural note.'])
+  })
+
+  it('overlapping (non-nested) bold/italic ranges with edge whitespace', () => {
+    // italic covers first two nodes, bold covers last two — the crossing
+    // splits bold; whitespace at the split point must be expelled.
+    expectRoundTrip({
+      type: 'doc',
+      content: [p(
+        text('alpha', { type: 'italic' }),
+        text('beta', { type: 'bold' }, { type: 'italic' }),
+        text(' gamma', { type: 'bold' }),
+      )],
+    })
+  })
+
+  it('nested italic inside bold keeps its surrounding spaces', () => {
+    // Regression guard for the overlap fix: nesting must NOT expel spaces.
+    expectIdentity(['Nested **bold with *italic* inside** it.'])
+  })
+
+  it('strike nested in italic followed by a non-space word char', () => {
+    expectRoundTrip({
+      type: 'doc',
+      content: [p(text('Q', { type: 'italic' }, { type: 'strike' }), text('s'))],
+    })
+  })
+
+  it('autolink-looking text inside emphasis does not desync (linkify)', () => {
+    expectRoundTrip({
+      type: 'doc',
+      content: [p(text('see r.it now', { type: 'bold' }, { type: 'italic' }))],
+    })
+  })
+})
+
+describe('line-terminator characters (JS vs markdown semantics)', () => {
+  const LS = String.fromCodePoint(0x2028)
+
+  it('U+2028-only paragraph normalizes away instead of blocking', () => {
+    const rt = roundTrip({ type: 'doc', content: [p(text('a')), p(text(LS))] })
+    expect(rt.ok).toBe(true)
+  })
+
+  it('U+2028 at a line edge is expelled; interior stays literal', () => {
+    expectRoundTrip({ type: 'doc', content: [p(text(`tail${LS}`))] })
+    expectRoundTrip({ type: 'doc', content: [p(text(`a${LS}b`))] })
+  })
+
+  it('raw newline in a text node becomes a line break', () => {
+    const rt = roundTrip({ type: 'doc', content: [p(text('a\nb'))] })
+    expect(rt.ok).toBe(true)
+    expect(rt.lines).toEqual(['a', 'b'])
+  })
+
+  it('U+2028 inside a code span becomes a space (pad-strip regex)', () => {
+    expectRoundTrip({ type: 'doc', content: [p(text(`${LS}\``, { type: 'code' }))] })
   })
 })
