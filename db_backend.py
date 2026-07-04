@@ -671,6 +671,37 @@ _COMMON_DDL_SQLITE = [
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     )''',
     'CREATE INDEX IF NOT EXISTS idx_chapter_revisions_chapter ON chapter_revisions(book_id, chapter_number)',
+
+    # polish_jobs / polish_suggestions — persisted LLM-polish runs for the
+    # write editor. Suggestions carry per-row resolution status so partially
+    # worked-through results survive navigation and restarts.
+    '''CREATE TABLE IF NOT EXISTS polish_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER,
+        chapter_number INTEGER,
+        status TEXT NOT NULL DEFAULT 'running',
+        model TEXT,
+        text_chars INTEGER,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_polish_jobs_chapter ON polish_jobs(book_id, chapter_number)',
+    '''CREATE TABLE IF NOT EXISTS polish_suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        ord INTEGER NOT NULL DEFAULT 0,
+        find_text TEXT NOT NULL,
+        replace_text TEXT NOT NULL,
+        reason TEXT,
+        occurrences INTEGER,
+        status TEXT NOT NULL DEFAULT 'open',
+        resolved_at TEXT,
+        FOREIGN KEY(job_id) REFERENCES polish_jobs(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_polish_suggestions_job ON polish_suggestions(job_id)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -975,6 +1006,35 @@ _COMMON_DDL_MYSQL = [
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_chapter_revisions_chapter ON chapter_revisions(book_id, chapter_number)',
+
+    # polish_jobs / polish_suggestions — persisted LLM-polish runs (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS polish_jobs (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER,
+        chapter_number INTEGER,
+        status VARCHAR(16) NOT NULL DEFAULT 'running',
+        model VARCHAR(100),
+        text_chars INTEGER,
+        truncated TINYINT NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at VARCHAR(50) NOT NULL,
+        finished_at VARCHAR(50),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_polish_jobs_chapter ON polish_jobs(book_id, chapter_number)',
+    '''CREATE TABLE IF NOT EXISTS polish_suggestions (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        job_id INTEGER NOT NULL,
+        ord INTEGER NOT NULL DEFAULT 0,
+        find_text TEXT NOT NULL,
+        replace_text TEXT NOT NULL,
+        reason TEXT,
+        occurrences INTEGER,
+        status VARCHAR(16) NOT NULL DEFAULT 'open',
+        resolved_at VARCHAR(50),
+        FOREIGN KEY(job_id) REFERENCES polish_jobs(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_polish_suggestions_job ON polish_suggestions(job_id)',
 ]
 
 

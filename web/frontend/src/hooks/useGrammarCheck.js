@@ -5,13 +5,26 @@ import { grammarPluginKey } from '../lib/grammarExtension'
 
 const IDLE_CHECK_MS = 4000
 const INITIAL_CHECK_MS = 1500
+const POLISH_POLL_MS = 3000
+const POLISH_POLL_MAX = 400            // ~20 min safety cap on client polling
+const POLISH_RESUME_MAX_AGE_MS = 7 * 24 * 3600 * 1000
+
+const polishDbId = (issueId) => {
+  const m = /^polish:(\d+)$/.exec(issueId || '')
+  return m ? parseInt(m[1]) : null
+}
 
 /**
  * Orchestrates grammar checking + the LLM polish pass for the write editor.
  * All issue positions live in the ProseMirror plugin state (decorations);
  * this hook only handles network, timers, and popover coordinates.
+ *
+ * Polish runs as a server-side background job (polish_jobs table): the POST
+ * returns a job id immediately and we poll. Suggestions persist with per-row
+ * status, so `contentReady` re-attaches the latest unresolved job when the
+ * editor mounts — navigating away and back never costs a second LLM call.
  */
-export function useGrammarCheck(editor, bookId) {
+export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
   const [enabled, setEnabled] = useState(false)
   const [checking, setChecking] = useState(false)
   const [ltDown, setLtDown] = useState(false)
@@ -26,7 +39,12 @@ export function useGrammarCheck(editor, bookId) {
   const ltDownRef = useRef(false)
   const enabledRef = useRef(false)
   const mountedRef = useRef(true)
-  useEffect(() => () => { mountedRef.current = false }, [])
+  const pollTimerRef = useRef(null)
+  const jobIdRef = useRef(null)        // job whose suggestions are on screen
+  useEffect(() => () => {
+    mountedRef.current = false
+    clearTimeout(pollTimerRef.current)
+  }, [])
 
   // Feature discovery — one cheap call per editor mount.
   useEffect(() => {
@@ -156,10 +174,15 @@ export function useGrammarCheck(editor, bookId) {
 
   const applySuggestion = useCallback((id, replacement) => {
     editor?.chain().focus().applyGrammarSuggestion(id, replacement).run()
+    // Persist polish resolutions; failures just mean it re-attaches next visit.
+    const dbId = polishDbId(id)
+    if (dbId) api.resolvePolishSuggestion(dbId, 'accepted').catch(() => {})
   }, [editor])
 
   const dismiss = useCallback((id) => {
     editor?.commands.dismissGrammarIssue(id)
+    const dbId = polishDbId(id)
+    if (dbId) api.resolvePolishSuggestion(dbId, 'dismissed').catch(() => {})
   }, [editor])
 
   const closePopover = useCallback(() => {
@@ -172,6 +195,88 @@ export function useGrammarCheck(editor, bookId) {
     editor?.commands.ignoreGrammarWord(word)
     api.addDictionaryWord({ word, book_id: global ? null : parseInt(bookId) }).catch(() => {})
   }, [editor, bookId])
+
+  // Load a job's open suggestions into decorations, locating against the
+  // CURRENT doc — the user may have kept writing (or edited elsewhere since;
+  // exact find-strings re-anchor across small drift). `fresh` polishes report
+  // unlocatable suggestions in the leftovers banner; silent re-attaches drop
+  // them — they're stale noise a week later, and they stay 'open' server-side.
+  const attachJob = useCallback((job, { fresh } = {}) => {
+    const ed = editor
+    if (!ed || ed.isDestroyed) return
+    jobIdRef.current = job.id
+    let blocks, meta
+    try {
+      ;({ blocks, meta } = extractDocBlocks(ed.state.doc))
+    } catch {
+      return
+    }
+    const entries = []
+    const missed = []
+    for (const s of (job.suggestions || [])) {
+      if (s.status !== 'open') continue
+      const posRange = locateFind(blocks, meta, s.find)
+      if (!posRange) {
+        missed.push(s)
+        continue
+      }
+      entries.push({
+        ...posRange,
+        issue: {
+          id: `polish:${s.id}`,
+          source: 'polish',
+          kind: 'polish',
+          message: s.reason || '',
+          shortMessage: 'Polish',
+          replacements: [s.replace],
+          ruleId: '',
+          originalText: s.find,
+        },
+      })
+    }
+    if (!fresh && !entries.length) return // nothing re-attachable — stay quiet
+    ed.commands.setGrammarResults('polish', entries)
+    setLeftovers(fresh ? missed : [])
+    setPolishStats(entries.length || (fresh && missed.length)
+      ? { total: entries.length, remaining: entries.length }
+      : null)
+    if (fresh && !entries.length && !missed.length) {
+      setPolishError((job.suggestions || []).length
+        ? 'Suggestions no longer match the text.'
+        : 'No suggestions — clean chapter!')
+    }
+  }, [editor])
+  const attachJobRef = useRef(attachJob)
+  useEffect(() => { attachJobRef.current = attachJob }, [attachJob])
+
+  const pollJob = useCallback((jobId, { fresh = true, attempt = 0 } = {}) => {
+    clearTimeout(pollTimerRef.current)
+    api.grammarPolishJob(jobId)
+      .then((job) => {
+        if (!mountedRef.current) return
+        if (job.status === 'running') {
+          if (attempt >= POLISH_POLL_MAX) {
+            setPolishing(false)
+            setPolishError('Polish is taking too long — check back later.')
+            return
+          }
+          pollTimerRef.current = setTimeout(
+            () => pollJob(jobId, { fresh, attempt: attempt + 1 }), POLISH_POLL_MS)
+          return
+        }
+        setPolishing(false)
+        if (job.status === 'error') {
+          setPolishError(job.error || 'Polish failed')
+          return
+        }
+        attachJobRef.current(job, { fresh })
+      })
+      .catch((e) => {
+        if (!mountedRef.current) return
+        setPolishing(false)
+        setPolishError(e.message || 'Polish failed')
+      })
+  }, [])
 
   const runPolish = useCallback(async () => {
     const ed = editor
@@ -188,50 +293,57 @@ export function useGrammarCheck(editor, bookId) {
     setPolishError(null)
     setLeftovers([])
     try {
-      const res = await api.grammarPolish({ text, book_id: parseInt(bookId) })
-      if (!mountedRef.current || ed.isDestroyed) return
-      // Locate against the CURRENT doc — the user may have kept writing.
-      const { blocks, meta } = extractDocBlocks(ed.state.doc)
-      const entries = []
-      const missed = []
-      ;(res.suggestions || []).forEach((s, i) => {
-        const posRange = locateFind(blocks, meta, s.find)
-        if (!posRange) {
-          missed.push(s)
-          return
-        }
-        entries.push({
-          ...posRange,
-          issue: {
-            id: `polish:${i}`,
-            source: 'polish',
-            kind: 'polish',
-            message: s.reason || '',
-            shortMessage: 'Polish',
-            replacements: [s.replace],
-            ruleId: '',
-            originalText: s.find,
-          },
-        })
+      const res = await api.grammarPolish({
+        text,
+        book_id: parseInt(bookId),
+        chapter_number: parseInt(chapterNum),
       })
-      ed.commands.setGrammarResults('polish', entries)
-      setLeftovers(missed)
-      setPolishStats(entries.length || missed.length
-        ? { total: entries.length, remaining: entries.length }
-        : null)
-      if (!entries.length && !missed.length) setPolishError('No suggestions — clean chapter!')
+      if (!mountedRef.current) return
+      jobIdRef.current = res.job_id
+      pollJob(res.job_id, { fresh: true })
     } catch (e) {
-      if (mountedRef.current) setPolishError(e.message || 'Polish failed')
-    } finally {
-      if (mountedRef.current) setPolishing(false)
+      if (mountedRef.current) {
+        setPolishError(e.message || 'Polish failed')
+        setPolishing(false)
+      }
     }
-  }, [editor, bookId, polishing])
+  }, [editor, bookId, chapterNum, polishing, pollJob])
+
+  // Re-attach the latest job once the chapter content is in the editor:
+  // resume polling if it's still running, or restore its unresolved
+  // suggestions (accepted/dismissed rows stay resolved server-side).
+  useEffect(() => {
+    if (!editor || !enabled || !contentReady || !bookId || !chapterNum) return undefined
+    let cancelled = false
+    api.grammarPolishLatest(parseInt(bookId), parseInt(chapterNum))
+      .then((job) => {
+        if (cancelled || !mountedRef.current || !job || !job.id) return
+        if (job.status === 'running') {
+          jobIdRef.current = job.id
+          setPolishing(true)
+          pollJob(job.id, { fresh: true })
+        } else if (job.status === 'done') {
+          const age = Date.now() - (Date.parse(job.created_at) || 0)
+          if (age < POLISH_RESUME_MAX_AGE_MS) attachJobRef.current(job, { fresh: false })
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      clearTimeout(pollTimerRef.current)
+    }
+  }, [editor, enabled, contentReady, bookId, chapterNum, pollJob])
 
   const clearPolish = useCallback(() => {
     editor?.commands.clearGrammar('polish')
     setPolishStats(null)
     setLeftovers([])
     setPolishError(null)
+    // Dismiss the remainder server-side so a cleared pass stays cleared.
+    if (jobIdRef.current) {
+      api.dismissPolishJob(jobIdRef.current).catch(() => {})
+      jobIdRef.current = null
+    }
   }, [editor])
 
   const navigatePolish = useCallback((dir) => {

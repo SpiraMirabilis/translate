@@ -5,20 +5,30 @@ Endpoints power the write editor's inline squiggles:
   GET  /api/grammar/status      — feature discovery (enabled? LT reachable?)
   POST /api/grammar/check       — proxy to LanguageTool /v2/check with
                                   entity-based known-term suppression
-  POST /api/grammar/polish      — one-shot LLM line-editing pass returning
-                                  per-suggestion {find, replace, reason} edits
+  POST /api/grammar/polish      — start an LLM line-editing pass as a
+                                  background job; returns {job_id} immediately
+  GET  /api/grammar/polish/jobs/{id}    — poll job status; when done, carries
+                                  per-suggestion {find, replace, reason,
+                                  status} rows persisted in polish_jobs /
+                                  polish_suggestions
+  GET  /api/grammar/polish/latest       — newest job for a chapter (editor
+                                  re-attach on mount)
+  PUT  /api/grammar/polish/suggestions/{id} — record accepted/dismissed
+  POST /api/grammar/polish/jobs/{id}/dismiss-open — bulk-dismiss remainder
   POST /api/grammar/dictionary  — add a word to the 'dictionary' entity
                                   category (book-scoped, or global when
                                   book_id is null)
 
 Handlers are sync `def` (anyio threadpool) — the provider SDK and the local
-LT call are blocking; precedent: settings_api.test_api_key. nginx read
-timeout is 3600s and the provider read timeout 600s, so a 1-2 minute polish
-request is safe end-to-end.
+LT call are blocking; precedent: settings_api.test_api_key. The polish LLM
+call itself runs in its own daemon thread so the POST returns immediately;
+that keeps every request comfortably inside the Apache reverse proxy's
+`Timeout 300` (no ProxyTimeout is set) no matter how slow the model is.
 """
 import bisect
 import json
 import re
+import threading
 import unicodedata
 from typing import Optional
 
@@ -50,6 +60,8 @@ def init(entity_manager, config):
     global _entity_manager, _config
     _entity_manager = entity_manager
     _config = config
+    # Any 'running' polish job at startup is an orphan of a previous process.
+    _entity_manager.fail_stale_polish_jobs()
 
 
 # ------------------------------------------------------------------
@@ -259,6 +271,7 @@ def _dialect_rule(language: str) -> str:
 class PolishRequest(BaseModel):
     text: str
     book_id: Optional[int] = None
+    chapter_number: Optional[int] = None
     model: Optional[str] = None
 
 
@@ -330,6 +343,38 @@ def _parse_suggestions(content: str, text: str) -> tuple:
     return out, truncated
 
 
+def _polish_worker(job_id: int, text: str, system_prompt: str, provider, model_name: str):
+    """Provider call + parse, off-request. All outcomes land on the job row."""
+    try:
+        response = provider.chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            model=model_name,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        content = provider.get_response_content(response) or ""
+    except Exception as e:
+        _entity_manager.fail_polish_job(job_id, f"Polish call failed: {str(e)[:200]}")
+        return
+
+    try:
+        suggestions, truncated = _parse_suggestions(content, text)
+    except ValueError:
+        _entity_manager.fail_polish_job(job_id, "Model returned invalid JSON.")
+        return
+
+    finish = ""
+    try:
+        finish = (response.get("choices") or [{}])[0].get("finish_reason") or ""
+    except (AttributeError, TypeError):
+        pass
+    _entity_manager.finish_polish_job(job_id, suggestions,
+                                      truncated=truncated or finish == "length")
+
+
 @router.post("/polish")
 def grammar_polish(req: PolishRequest):
     text = (req.text or "").strip()
@@ -355,32 +400,50 @@ def grammar_polish(req: PolishRequest):
     system_prompt = POLISH_SYSTEM_PROMPT.replace("{TERMS_RULE}", terms_rule)
     system_prompt += "\n\n" + _dialect_rule(getattr(_config, "grammar_language", "en-US"))
 
-    try:
-        response = provider.chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ],
-            model=model_name,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        content = provider.get_response_content(response) or ""
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Polish call failed: {str(e)[:200]}")
+    job_id = _entity_manager.create_polish_job(
+        req.book_id, req.chapter_number, spec, len(text))
+    if job_id is None:
+        raise HTTPException(status_code=500, detail="Failed to create polish job.")
 
-    try:
-        suggestions, truncated = _parse_suggestions(content, text)
-    except ValueError:
-        raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
+    threading.Thread(
+        target=_polish_worker,
+        args=(job_id, text, system_prompt, provider, model_name),
+        name=f"polish-job-{job_id}",
+        daemon=True,
+    ).start()
+    return {"job_id": job_id, "status": "running", "model": spec}
 
-    finish = ""
-    try:
-        finish = (response.get("choices") or [{}])[0].get("finish_reason") or ""
-    except (AttributeError, TypeError):
-        pass
-    return {"suggestions": suggestions, "model": spec,
-            "truncated": truncated or finish == "length"}
+
+@router.get("/polish/latest")
+def polish_latest(book_id: int, chapter_number: int):
+    """Newest job for a chapter (or JSON null) — the editor's re-attach probe."""
+    return _entity_manager.latest_polish_job(book_id, chapter_number)
+
+
+@router.get("/polish/jobs/{job_id}")
+def polish_job(job_id: int):
+    job = _entity_manager.get_polish_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Polish job not found.")
+    return job
+
+
+class SuggestionResolve(BaseModel):
+    status: str  # 'accepted' | 'dismissed' | 'open' (undo)
+
+
+@router.put("/polish/suggestions/{suggestion_id}")
+def resolve_suggestion(suggestion_id: int, req: SuggestionResolve):
+    if req.status not in ("open", "accepted", "dismissed"):
+        raise HTTPException(status_code=400, detail="Invalid suggestion status.")
+    if not _entity_manager.resolve_polish_suggestion(suggestion_id, req.status):
+        raise HTTPException(status_code=404, detail="Suggestion not found.")
+    return {"status": "ok"}
+
+
+@router.post("/polish/jobs/{job_id}/dismiss-open")
+def dismiss_open(job_id: int):
+    return {"dismissed": _entity_manager.dismiss_open_polish_suggestions(job_id)}
 
 
 # ------------------------------------------------------------------

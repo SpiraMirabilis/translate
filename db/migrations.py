@@ -234,6 +234,82 @@ def _m011_chapter_publishing(conn, cursor, backend, logger):
         logger.info(f"Backfilled published_at for {cursor.rowcount} chapters")
 
 
+_POLISH_JOBS_DDL = {
+    "sqlite": ["""
+        CREATE TABLE IF NOT EXISTS polish_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER,
+            chapter_number INTEGER,
+            status TEXT NOT NULL DEFAULT 'running',
+            model TEXT,
+            text_chars INTEGER,
+            truncated INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            finished_at TEXT,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+    """, """
+        CREATE TABLE IF NOT EXISTS polish_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            ord INTEGER NOT NULL DEFAULT 0,
+            find_text TEXT NOT NULL,
+            replace_text TEXT NOT NULL,
+            reason TEXT,
+            occurrences INTEGER,
+            status TEXT NOT NULL DEFAULT 'open',
+            resolved_at TEXT,
+            FOREIGN KEY(job_id) REFERENCES polish_jobs(id) ON DELETE CASCADE
+        )
+    """],
+    "mysql": ["""
+        CREATE TABLE IF NOT EXISTS polish_jobs (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            book_id INTEGER,
+            chapter_number INTEGER,
+            status VARCHAR(16) NOT NULL DEFAULT 'running',
+            model VARCHAR(100),
+            text_chars INTEGER,
+            truncated TINYINT NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at VARCHAR(50) NOT NULL,
+            finished_at VARCHAR(50),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """, """
+        CREATE TABLE IF NOT EXISTS polish_suggestions (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            job_id INTEGER NOT NULL,
+            ord INTEGER NOT NULL DEFAULT 0,
+            find_text TEXT NOT NULL,
+            replace_text TEXT NOT NULL,
+            reason TEXT,
+            occurrences INTEGER,
+            status VARCHAR(16) NOT NULL DEFAULT 'open',
+            resolved_at VARCHAR(50),
+            FOREIGN KEY(job_id) REFERENCES polish_jobs(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """],
+}
+
+
+def _m012_polish_jobs(conn, cursor, backend, logger):
+    """Persisted LLM-polish jobs + per-suggestion resolution state for the
+    write editor (results survive navigation and restarts)."""
+    for ddl in _POLISH_JOBS_DDL[backend.name]:
+        cursor.execute(ddl)
+    for index_ddl in (
+        "CREATE INDEX idx_polish_jobs_chapter ON polish_jobs(book_id, chapter_number)",
+        "CREATE INDEX idx_polish_suggestions_job ON polish_suggestions(job_id)",
+    ):
+        try:
+            cursor.execute(index_ddl)
+        except Exception:
+            # Index already exists (fresh installs create it via baseline DDL)
+            pass
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -246,6 +322,7 @@ MIGRATIONS = [
     Migration(9, "wp_state_link_slug", _m009_wp_state_link_slug),
     Migration(10, "original_works", _m010_original_works),
     Migration(11, "chapter_publishing", _m011_chapter_publishing),
+    Migration(12, "polish_jobs", _m012_polish_jobs),
 ]
 
 

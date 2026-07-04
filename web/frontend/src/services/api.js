@@ -165,6 +165,12 @@ export const api = {
   grammarStatus:     ()     => get('/api/grammar/status'),
   grammarCheck:      (body) => post('/api/grammar/check', body),
   grammarPolish:     (body) => post('/api/grammar/polish', body),
+  grammarPolishJob:  (id)   => get(`/api/grammar/polish/jobs/${id}`),
+  grammarPolishLatest: (bookId, chapterNumber) =>
+    get(`/api/grammar/polish/latest?book_id=${bookId}&chapter_number=${chapterNumber}`),
+  resolvePolishSuggestion: (id, status) =>
+    put(`/api/grammar/polish/suggestions/${id}`, { status }),
+  dismissPolishJob:  (id)   => post(`/api/grammar/polish/jobs/${id}/dismiss-open`, {}),
   addDictionaryWord: (body) => post('/api/grammar/dictionary', body),
 
   // Settings

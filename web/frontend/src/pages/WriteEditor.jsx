@@ -164,7 +164,8 @@ export default function WriteEditor() {
 
   useUnsavedGuard(dirty)
   useTypewriterScroll(editor, focusMode, scrollRef)
-  const grammar = useGrammarCheck(editor, bookId)
+  // `!loading` gates polish-job re-attach until the chapter is in the editor.
+  const grammar = useGrammarCheck(editor, bookId, chapterNum, !loading)
 
   // Native (OS/browser) spellcheck on the contenteditable can't see the book
   // dictionary (entities), so it permanently squiggles OC/fandom terms and

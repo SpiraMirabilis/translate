@@ -5,6 +5,7 @@ web.api.grammar); the polish provider is mocked via _config.get_client. The
 dictionary endpoint runs against the real tmp SQLite DB.
 """
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -168,7 +169,7 @@ def test_multiword_entity_words_are_known(grammar_client, fake_lt, db):
 
 
 # ------------------------------------------------------------------
-# /polish
+# /polish (background job flow)
 # ------------------------------------------------------------------
 
 class FakeProvider:
@@ -191,6 +192,23 @@ def install_provider(monkeypatch, provider):
                         lambda spec: (provider, "fake-model"), raising=False)
 
 
+def run_polish(client, payload, timeout=5.0):
+    """POST /polish, then poll the job until the worker thread finishes."""
+    res = client.post("/api/grammar/polish", json=payload)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "running" and body["job_id"]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job_res = client.get(f"/api/grammar/polish/jobs/{body['job_id']}")
+        assert job_res.status_code == 200
+        job = job_res.json()
+        if job["status"] != "running":
+            return job
+        time.sleep(0.02)
+    raise AssertionError("polish job never left 'running'")
+
+
 def test_polish_returns_validated_suggestions(grammar_client, monkeypatch):
     text = "He had went to the pavilion. She saw she saw the moon."
     content = json.dumps({"suggestions": [
@@ -200,14 +218,14 @@ def test_polish_returns_validated_suggestions(grammar_client, monkeypatch):
     ]})
     provider = FakeProvider(content)
     install_provider(monkeypatch, provider)
-    res = grammar_client.post("/api/grammar/polish", json={"text": text})
-    assert res.status_code == 200
-    body = res.json()
-    assert body["truncated"] is False
-    assert len(body["suggestions"]) == 1
-    s = body["suggestions"][0]
+    job = run_polish(grammar_client, {"text": text})
+    assert job["status"] == "done"
+    assert job["truncated"] is False
+    assert len(job["suggestions"]) == 1
+    s = job["suggestions"][0]
     assert s["find"] == "had went" and s["replace"] == "had gone"
     assert s["occurrences"] == 1
+    assert s["status"] == "open"
     # System prompt asks for JSON-only suggestions
     sys_msg = provider.calls[0]["messages"][0]
     assert sys_msg["role"] == "system" and "find" in sys_msg["content"]
@@ -217,9 +235,8 @@ def test_polish_injects_canonical_terms(grammar_client, monkeypatch, db):
     db.add_entity("characters", "张羽", "Zhang Yu", book_id=7)
     provider = FakeProvider(json.dumps({"suggestions": []}))
     install_provider(monkeypatch, provider)
-    res = grammar_client.post("/api/grammar/polish",
-                              json={"text": "Zhang Yu waited.", "book_id": 7})
-    assert res.status_code == 200
+    job = run_polish(grammar_client, {"text": "Zhang Yu waited.", "book_id": 7})
+    assert job["status"] == "done"
     assert "Zhang Yu" in provider.calls[0]["messages"][0]["content"]
 
 
@@ -228,25 +245,35 @@ def test_polish_salvages_truncated_json(grammar_client, monkeypatch):
     cut = ('{"suggestions": [{"find": "alpha", "replace": "Alpha", "reason": "caps"},'
            ' {"find": "beta", "repl')
     install_provider(monkeypatch, FakeProvider(cut, finish_reason="length"))
-    res = grammar_client.post("/api/grammar/polish", json={"text": text})
-    assert res.status_code == 200
-    body = res.json()
-    assert body["truncated"] is True
-    assert len(body["suggestions"]) == 1
-    assert body["suggestions"][0]["find"] == "alpha"
+    job = run_polish(grammar_client, {"text": text})
+    assert job["status"] == "done"
+    assert job["truncated"] is True
+    assert len(job["suggestions"]) == 1
+    assert job["suggestions"][0]["find"] == "alpha"
 
 
 def test_polish_fenced_json_ok(grammar_client, monkeypatch):
     content = '```json\n{"suggestions": [{"find": "teh", "replace": "the", "reason": "typo"}]}\n```'
     install_provider(monkeypatch, FakeProvider(content))
-    res = grammar_client.post("/api/grammar/polish", json={"text": "teh cat"})
-    assert len(res.json()["suggestions"]) == 1
+    job = run_polish(grammar_client, {"text": "teh cat"})
+    assert len(job["suggestions"]) == 1
 
 
-def test_polish_invalid_json_502(grammar_client, monkeypatch):
+def test_polish_invalid_json_fails_job(grammar_client, monkeypatch):
     install_provider(monkeypatch, FakeProvider("I refuse to answer in JSON."))
-    res = grammar_client.post("/api/grammar/polish", json={"text": "some text"})
-    assert res.status_code == 502
+    job = run_polish(grammar_client, {"text": "some text"})
+    assert job["status"] == "error"
+    assert "invalid JSON" in job["error"]
+
+
+def test_polish_provider_exception_fails_job(grammar_client, monkeypatch):
+    class BoomProvider(FakeProvider):
+        def chat_completion(self, **kwargs):
+            raise RuntimeError("connection reset")
+    install_provider(monkeypatch, BoomProvider(""))
+    job = run_polish(grammar_client, {"text": "some text"})
+    assert job["status"] == "error"
+    assert "connection reset" in job["error"]
 
 
 def test_polish_400_and_413(grammar_client, monkeypatch):
@@ -254,6 +281,50 @@ def test_polish_400_and_413(grammar_client, monkeypatch):
     assert grammar_client.post("/api/grammar/polish", json={"text": "  "}).status_code == 400
     big = "y" * (grammar_mod.MAX_POLISH_CHARS + 1)
     assert grammar_client.post("/api/grammar/polish", json={"text": big}).status_code == 413
+
+
+def test_polish_latest_and_resolution_lifecycle(grammar_client, monkeypatch):
+    text = "teh cat sat on teh mat. It was grate."
+    content = json.dumps({"suggestions": [
+        {"find": "teh cat", "replace": "the cat", "reason": "typo"},
+        {"find": "grate", "replace": "great", "reason": "homophone"},
+    ]})
+    install_provider(monkeypatch, FakeProvider(content))
+    job = run_polish(grammar_client,
+                     {"text": text, "book_id": 9, "chapter_number": 3})
+
+    # latest returns this job for the chapter, null elsewhere.
+    latest = grammar_client.get(
+        "/api/grammar/polish/latest?book_id=9&chapter_number=3").json()
+    assert latest["id"] == job["id"]
+    assert len(latest["suggestions"]) == 2
+    assert grammar_client.get(
+        "/api/grammar/polish/latest?book_id=9&chapter_number=4").json() is None
+
+    # Accept one, dismiss the remainder; resolution persists.
+    sid = latest["suggestions"][0]["id"]
+    res = grammar_client.put(f"/api/grammar/polish/suggestions/{sid}",
+                             json={"status": "accepted"})
+    assert res.status_code == 200
+    res = grammar_client.post(f"/api/grammar/polish/jobs/{job['id']}/dismiss-open")
+    assert res.json()["dismissed"] == 1
+    after = grammar_client.get(f"/api/grammar/polish/jobs/{job['id']}").json()
+    assert {s["status"] for s in after["suggestions"]} == {"accepted", "dismissed"}
+
+    # Validation / 404s
+    assert grammar_client.put(f"/api/grammar/polish/suggestions/{sid}",
+                              json={"status": "bogus"}).status_code == 400
+    assert grammar_client.put("/api/grammar/polish/suggestions/999999",
+                              json={"status": "dismissed"}).status_code == 404
+    assert grammar_client.get("/api/grammar/polish/jobs/999999").status_code == 404
+
+
+def test_stale_running_jobs_fail_on_startup(grammar_client, db):
+    job_id = db.create_polish_job(11, 1, "test:model", 100)
+    assert db.fail_stale_polish_jobs() >= 1
+    job = db.get_polish_job(job_id)
+    assert job["status"] == "error"
+    assert "restart" in job["error"].lower()
 
 
 # ------------------------------------------------------------------

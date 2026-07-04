@@ -134,7 +134,7 @@ export default function WriteToolbar({ editor, tick, saving, dirty, showPreview,
           </ToolButton>
           <ToolButton
             title={grammar.polishing
-              ? 'Polishing… (can take a minute or two — keep writing)'
+              ? 'Polishing… (runs in the background — you can navigate away and come back)'
               : 'LLM polish pass — per-suggestion review'}
             onClick={grammar.runPolish}
             disabled={grammar.polishing}
