@@ -170,7 +170,12 @@ class ClaudeProvider(ModelProvider):
         if stream:
             return StreamingResponse(response)
         else:
-            raw_content = response.content[0].text if response.content else ""
+            # Models with extended thinking (e.g. claude-sonnet-5) prepend
+            # ThinkingBlocks; collect only the text blocks.
+            raw_content = "".join(
+                block.text for block in (response.content or [])
+                if getattr(block, "type", None) == "text"
+            )
             if json_mode:
                 raw_content = self._strip_markdown_fences(raw_content)
 
