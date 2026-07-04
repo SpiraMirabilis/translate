@@ -59,6 +59,12 @@ class TranslationConfig:
         # Pronoun repair model — used by pronoun_repair.py to fix wrong-gender pronouns
         self.pronoun_repair_model = os.getenv("PRONOUN_REPAIR_MODEL", "claude:claude-haiku-4-5")
 
+        # Grammar/spell check (local LanguageTool server) + LLM polish pass
+        self.grammar_check_enabled = os.getenv("GRAMMAR_CHECK_ENABLED", "0").lower() in ("1", "true", "yes")
+        self.languagetool_url = os.getenv("LANGUAGETOOL_URL", "http://127.0.0.1:8081")
+        self.grammar_language = os.getenv("GRAMMAR_LANGUAGE", "en-US")
+        self.polish_model = os.getenv("POLISH_MODEL", "claude:claude-sonnet-4-6")
+
         # Traditional → Simplified Chinese preprocessing (global default; per-book overrides via books.trad_to_simp)
         self.trad_to_simp = os.getenv("TRAD_TO_SIMP", "0").lower() in ("1", "true", "yes")
 

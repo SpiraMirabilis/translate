@@ -40,6 +40,10 @@ SCHEMA = {
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),
     "wp_username":             ("WP_USERNAME",             "",                        str),
+    "grammar_check_enabled":   ("GRAMMAR_CHECK_ENABLED",   False,                     bool),
+    "languagetool_url":        ("LANGUAGETOOL_URL",        "http://127.0.0.1:8081",   str),
+    "grammar_language":        ("GRAMMAR_LANGUAGE",        "en-US",                   str),
+    "polish_model":            ("POLISH_MODEL",            "claude:claude-sonnet-4-6", str),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION

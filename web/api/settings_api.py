@@ -112,6 +112,10 @@ def get_settings():
             _config, "json_fix_timeout_seconds",
             int(os.getenv("JSON_FIX_TIMEOUT_SECONDS", "300")),
         ),
+        "grammar_check_enabled": getattr(_config, "grammar_check_enabled", False),
+        "languagetool_url": getattr(_config, "languagetool_url", "http://127.0.0.1:8081"),
+        "grammar_language": getattr(_config, "grammar_language", "en-US"),
+        "polish_model": getattr(_config, "polish_model", "claude:claude-sonnet-4-6"),
     }
 
 
@@ -132,6 +136,10 @@ class SettingsUpdate(BaseModel):
     disable_media_cache: Optional[bool] = None
     overload_retry_wait_seconds: Optional[int] = None
     json_fix_timeout_seconds: Optional[int] = None
+    grammar_check_enabled: Optional[bool] = None
+    languagetool_url: Optional[str] = None
+    grammar_language: Optional[str] = None
+    polish_model: Optional[str] = None
 
 
 @router.put("")

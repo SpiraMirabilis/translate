@@ -28,7 +28,7 @@ from translation_engine import TranslationEngine
 from web.services.job_manager import job_manager
 from web.services.view_logger import ViewLogger
 from web.services.web_interface import WebInterface
-from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public, recommendations_public, recommendations_admin, reader_stats_api, comments_public, comments_admin, revisions
+from web.api import translation, books, entities, queue_api, settings_api, dictionary_api, activity_log_api, api_calls, wordpress_api, health, public, recommendations_public, recommendations_admin, reader_stats_api, comments_public, comments_admin, revisions, grammar
 from web.auth import configure_auth, AuthMiddleware, router as auth_router
 
 # ------------------------------------------------------------------
@@ -49,6 +49,7 @@ def create_app(config=None, logger=None) -> FastAPI:
     translation.init(web_interface, job_manager)
     books.init(entity_manager, translator, logger)
     revisions.init(entity_manager)
+    grammar.init(entity_manager, config)
     entities.init(entity_manager, translator)
     queue_api.init(entity_manager, job_manager, web_interface)
     settings_api.init(config)
@@ -132,6 +133,7 @@ def create_app(config=None, logger=None) -> FastAPI:
     app.include_router(translation.router)
     app.include_router(books.router)
     app.include_router(revisions.router)
+    app.include_router(grammar.router)
     app.include_router(entities.router)
     app.include_router(queue_api.router)
     app.include_router(settings_api.router)

@@ -1,0 +1,34 @@
+# LanguageTool grammar server — systemd user service
+#
+# Install:
+#   cp deploy/languagetool.service ~/.config/systemd/user/
+#   cp deploy/languagetool-server.properties ~/languagetool/server.properties
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now languagetool
+#   journalctl --user -u languagetool -f
+#
+# Deliberately NOT coupled to t9.service: t9 must run when LanguageTool is
+# absent (grammar_check_enabled defaults off; the proxy degrades to 503).
+
+[Unit]
+Description=LanguageTool HTTP server (grammar/spell check for T9)
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/languagetool/LanguageTool-6.6
+# Loopback-only: no --public flag => server rejects non-localhost requests.
+# Heap 256m-2g; ngram Lucene indexes are mmap'd (page cache), not heap.
+ExecStart=/usr/bin/java -Xms256m -Xmx2g -cp %h/languagetool/LanguageTool-6.6/languagetool-server.jar org.languagetool.server.HTTPServer --config %h/languagetool/server.properties --port 8081
+Restart=on-failure
+RestartSec=5
+# JVM exits 143 on SIGTERM — treat as clean stop.
+SuccessExitStatus=143
+# Guard the 7.8G box: heap 2g + metaspace/threads headroom.
+MemoryMax=3G
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
