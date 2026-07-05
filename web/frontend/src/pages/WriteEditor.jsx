@@ -22,6 +22,7 @@ import WriteToolbar from '../components/write/WriteToolbar'
 import SelectionBubbleMenu from '../components/write/SelectionBubbleMenu'
 import FocusToolbar from '../components/write/FocusToolbar'
 import GrammarPopover from '../components/write/GrammarPopover'
+import SuggestionsPane from '../components/write/SuggestionsPane'
 import StatusBar from '../components/write/StatusBar'
 import RevisionsPanel from '../components/write/RevisionsPanel'
 import PublishMenu from '../components/PublishMenu'
@@ -69,6 +70,7 @@ export default function WriteEditor() {
   const [words, setWords] = useState(0)
   const [showPreview, setShowPreview] = useState(false)
   const [revisionsOpen, setRevisionsOpen] = useState(false)
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(false)
   const [tick, setTick] = useState(0) // re-render for toolbar isActive states + preview freshness
   const [savedFlash, flashSaved] = useTransientFlag(2500)
@@ -164,8 +166,19 @@ export default function WriteEditor() {
 
   useUnsavedGuard(dirty)
   useTypewriterScroll(editor, focusMode, scrollRef)
+  // Focus mode never renders the pane; close it so the popover (which the
+  // open pane suppresses) keeps working there.
+  useEffect(() => {
+    if (focusMode) setSuggestionsOpen(false)
+  }, [focusMode])
   // `!loading` gates polish-job re-attach until the chapter is in the editor.
   const grammar = useGrammarCheck(editor, bookId, chapterNum, !loading)
+
+  // The hook gates its scroll-close-popover behavior while the pane is open
+  // (scrolling would otherwise constantly clear the pane's selected row).
+  useEffect(() => {
+    grammar.setPaneOpen(suggestionsOpen)
+  }, [suggestionsOpen, grammar.setPaneOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Native (OS/browser) spellcheck on the contenteditable can't see the book
   // dictionary (entities), so it permanently squiggles OC/fandom terms and
@@ -381,6 +394,14 @@ export default function WriteEditor() {
       } else if (mod && e.altKey && (e.key === 'h' || e.key === 'H')) {
         e.preventDefault()
         setRevisionsOpen((v) => !v)
+      } else if (mod && e.altKey && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault()
+        if (!focusMode) {
+          setSuggestionsOpen((v) => !v)
+          // Pane rows scroll/select in the editor — a hidden editor (preview)
+          // would make that a no-op, so opening the pane exits preview.
+          setShowPreview(false)
+        }
       } else if (e.key === 'Escape') {
         // An open popover/panel (link editor, revisions, publish menu) owns
         // Esc — only exit focus mode when nothing else is dismissible.
@@ -544,13 +565,14 @@ export default function WriteEditor() {
     <IllustrationUrlContext.Provider value={illustrationCtx}>
       <EditorContent editor={editor} />
       <SelectionBubbleMenu editor={editor} />
-      {grammar.active && (
+      {grammar.active && !suggestionsOpen && (
         <GrammarPopover
           active={grammar.active}
           onApply={grammar.applySuggestion}
           onDismiss={grammar.dismiss}
           onClose={grammar.closePopover}
           onAddToDictionary={grammar.addToDictionary}
+          onIgnoreRule={grammar.ignoreRule}
         />
       )}
     </IllustrationUrlContext.Provider>
@@ -578,7 +600,9 @@ export default function WriteEditor() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto pb-4">
+    // Opening the suggestions pane widens the column and docks the pane on
+    // the right — the editor shifts left instead of being overlaid.
+    <div className={`${suggestionsOpen ? 'max-w-7xl' : 'max-w-4xl'} mx-auto pb-4`}>
       {/* Header: book nav + chapter prev/next */}
       <div className="flex items-center gap-2 py-3 text-sm">
         <Link to={`/books/${bookId}`} className="btn-ghost p-1.5" title="Back to book">
@@ -654,7 +678,8 @@ export default function WriteEditor() {
         </div>
       )}
 
-      <div className="card">
+      <div className="flex gap-4 items-start">
+      <div className="card flex-1 min-w-0">
         {/* Sticky: opaque bg (content scrolls under it), top-12 clears the
             fixed mobile top bar (matches main's pt-12 md:pt-0). */}
         <div className="sticky top-12 md:top-0 z-20 px-3 py-2 border-b border-slate-700/60 bg-slate-800 rounded-t-lg">
@@ -671,6 +696,11 @@ export default function WriteEditor() {
             onCopyBBCode={handleCopyBBCode}
             bbcodeCopied={bbcodeCopied}
             grammar={grammar}
+            suggestionsOpen={suggestionsOpen}
+            onToggleSuggestions={() => {
+              setSuggestionsOpen((v) => !v)
+              setShowPreview(false)
+            }}
           />
         </div>
 
@@ -714,6 +744,11 @@ export default function WriteEditor() {
         </div>
 
         {statusBar}
+      </div>
+
+      {suggestionsOpen && (
+        <SuggestionsPane grammar={grammar} onClose={() => setSuggestionsOpen(false)} />
+      )}
       </div>
 
       {revisionsOpen && (

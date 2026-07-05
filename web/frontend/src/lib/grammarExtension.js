@@ -8,11 +8,13 @@
 //     message, shortMessage, replacements: [string], ruleId, originalText }
 //
 // Meta actions ({ type, ... } via grammarPluginKey):
-//   set        { source, entries: [{ from, to, issue }] } — replace that source's decos
-//   dismiss    { id }               — remove deco + remember ignore key
-//   activate   { id | null }        — open/close the popover
-//   ignoreWord { word }             — drop all typo decos on that word (add-to-dictionary)
-//   clear      { source? }          — remove all (or one source's) decos
+//   set            { source, entries: [{ from, to, issue }] } — replace that source's decos
+//   dismiss        { id }           — remove deco + remember ignore key
+//   activate       { id | null }    — open/close the popover
+//   ignoreWord     { word }         — drop all typo decos on that word (add-to-dictionary)
+//   ignoreRule     { ruleId }       — drop all decos for that rule (persistence is the hook's job)
+//   setHiddenKinds { kinds: Set }   — kind-level view filter: decos stay (counts hold), squiggles hide
+//   clear          { source? }      — remove all (or one source's) decos
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
@@ -21,26 +23,27 @@ export const grammarPluginKey = new PluginKey('grammarCheck')
 
 const ignoreKey = (issue) => `${issue.ruleId || issue.source}|${issue.originalText}`
 
-const decoClass = (issue, active) =>
-  `gram-issue gram-${issue.kind}${active ? ' gram-active' : ''}`
+const decoClass = (issue, active, hidden) =>
+  `gram-issue gram-${issue.kind}${active ? ' gram-active' : ''}${hidden ? ' gram-hidden' : ''}`
 
-function makeDeco(from, to, issue, active = false) {
-  return Decoration.inline(from, to, { class: decoClass(issue, active) }, { issue })
+function makeDeco(from, to, issue, active = false, hidden = false) {
+  return Decoration.inline(from, to, { class: decoClass(issue, active, hidden) }, { issue })
 }
 
 const findById = (decos, id) =>
   decos.find(undefined, undefined, (spec) => spec.issue.id === id)[0] || null
 
 /** Rebuild one issue's decoration with/without the active highlight. */
-function setActiveClass(decos, doc, id, active) {
+function setActiveClass(decos, doc, id, active, hiddenKinds) {
   const deco = id ? findById(decos, id) : null
   if (!deco) return decos
-  const rebuilt = makeDeco(deco.from, deco.to, deco.spec.issue, active)
+  const issue = deco.spec.issue
+  const rebuilt = makeDeco(deco.from, deco.to, issue, active, hiddenKinds.has(issue.kind))
   return decos.remove([deco]).add(doc, [rebuilt])
 }
 
 function applyMeta(state, action, doc) {
-  let { decos, activeId, ignored, ignoredWords } = state
+  let { decos, activeId, ignored, ignoredWords, hiddenKinds } = state
   switch (action.type) {
     case 'set': {
       const stale = decos.find(undefined, undefined, (spec) => spec.issue.source === action.source)
@@ -48,7 +51,7 @@ function applyMeta(state, action, doc) {
       const fresh = (action.entries || [])
         .filter(({ issue }) => !ignored.has(ignoreKey(issue)) &&
           !ignoredWords.has((issue.originalText || '').toLowerCase()))
-        .map(({ from, to, issue }) => makeDeco(from, to, issue))
+        .map(({ from, to, issue }) => makeDeco(from, to, issue, false, hiddenKinds.has(issue.kind)))
       decos = decos.add(doc, fresh)
       if (activeId && !findById(decos, activeId)) activeId = null
       break
@@ -64,9 +67,32 @@ function applyMeta(state, action, doc) {
     }
     case 'activate': {
       if (activeId === action.id) break
-      decos = setActiveClass(decos, doc, activeId, false)
-      decos = setActiveClass(decos, doc, action.id, true)
+      decos = setActiveClass(decos, doc, activeId, false, hiddenKinds)
+      decos = setActiveClass(decos, doc, action.id, true, hiddenKinds)
       activeId = action.id
+      break
+    }
+    case 'ignoreRule': {
+      if (!action.ruleId) break
+      const gone = decos.find(undefined, undefined, (spec) => spec.issue.ruleId === action.ruleId)
+      decos = decos.remove(gone)
+      if (activeId && !findById(decos, activeId)) activeId = null
+      break
+    }
+    case 'setHiddenKinds': {
+      hiddenKinds = new Set(action.kinds || [])
+      // Rebuild every decoration so squiggle visibility matches the new set.
+      const all = decos.find()
+      decos = DecorationSet.create(doc, all.map((d) => {
+        const issue = d.spec.issue
+        return makeDeco(d.from, d.to, issue,
+          issue.id === activeId, hiddenKinds.has(issue.kind))
+      }))
+      const activeDeco = activeId ? findById(decos, activeId) : null
+      if (activeDeco && hiddenKinds.has(activeDeco.spec.issue.kind)) {
+        decos = setActiveClass(decos, doc, activeId, false, hiddenKinds)
+        activeId = null
+      }
       break
     }
     case 'ignoreWord': {
@@ -89,7 +115,7 @@ function applyMeta(state, action, doc) {
     default:
       break
   }
-  return { decos, activeId, ignored, ignoredWords }
+  return { decos, activeId, ignored, ignoredWords, hiddenKinds }
 }
 
 export const GrammarCheck = Extension.create({
@@ -105,6 +131,7 @@ export const GrammarCheck = Extension.create({
             activeId: null,
             ignored: new Set(),
             ignoredWords: new Set(),
+            hiddenKinds: new Set(),
           }),
           apply(tr, value) {
             let next = value
@@ -121,8 +148,9 @@ export const GrammarCheck = Extension.create({
             return grammarPluginKey.getState(state).decos
           },
           handleClick(view, pos) {
-            const { decos, activeId } = grammarPluginKey.getState(view.state)
-            const hit = decos.find(pos, pos)[0]
+            const { decos, activeId, hiddenKinds } = grammarPluginKey.getState(view.state)
+            const hit = decos.find(pos, pos)
+              .filter((d) => !hiddenKinds.has(d.spec.issue.kind))[0]
             const targetId = hit ? hit.spec.issue.id : null
             if (targetId !== activeId) {
               view.dispatch(view.state.tr.setMeta(grammarPluginKey, { type: 'activate', id: targetId }))
@@ -144,7 +172,22 @@ export const GrammarCheck = Extension.create({
       dismissGrammarIssue: (id) => meta({ type: 'dismiss', id }),
       activateGrammarIssue: (id) => meta({ type: 'activate', id }),
       ignoreGrammarWord: (word) => meta({ type: 'ignoreWord', word }),
+      ignoreGrammarRule: (ruleId) => meta({ type: 'ignoreRule', ruleId }),
+      setGrammarHiddenKinds: (kinds) => meta({ type: 'setHiddenKinds', kinds }),
       clearGrammar: (source) => meta({ type: 'clear', source }),
+
+      activateGrammarIssueById: (id) => ({ state, tr, dispatch }) => {
+        const { decos } = grammarPluginKey.getState(state)
+        const deco = findById(decos, id)
+        if (!deco) return false
+        if (dispatch) {
+          tr.setSelection(TextSelection.create(state.doc, deco.from))
+          tr.setMeta(grammarPluginKey, { type: 'activate', id })
+          tr.scrollIntoView()
+          dispatch(tr)
+        }
+        return true
+      },
 
       applyGrammarSuggestion: (id, replacement) => ({ state, tr, dispatch }) => {
         const { decos } = grammarPluginKey.getState(state)
@@ -158,12 +201,32 @@ export const GrammarCheck = Extension.create({
           return false
         }
         if (dispatch) {
-          if (replacement) {
-            // Preserve marks at the replaced position (bold/italic context).
-            const marks = state.doc.nodeAt(from)?.marks ?? state.doc.resolve(from).marks()
-            tr.replaceWith(from, to, state.schema.text(replacement, marks))
-          } else {
-            tr.delete(from, to)
+          // Replace only the characters that actually changed (common prefix/
+          // suffix diff). The check runs on plain text, so a flagged range can
+          // span formatting boundaries — rewriting all of it would flatten the
+          // marks to those of its first character. Untouched text is never
+          // rewritten (keeps its exact marks), and the changed core usually
+          // sits inside a single mark run, whose marks it inherits.
+          const original = issue.originalText
+          const repl = replacement || ''
+          const maxShared = Math.min(original.length, repl.length)
+          let p = 0
+          while (p < maxShared && original[p] === repl[p]) p++
+          let s = 0
+          while (s < maxShared - p &&
+            original[original.length - 1 - s] === repl[repl.length - 1 - s]) s++
+          const coreFrom = from + p
+          const coreTo = to - s
+          const coreText = repl.slice(p, repl.length - s)
+          if (coreText) {
+            // Pure insertion sits between two runs — take the marks active at
+            // the position (the preceding run's), not the following node's.
+            const marks = coreFrom < coreTo
+              ? state.doc.nodeAt(coreFrom)?.marks ?? state.doc.resolve(coreFrom).marks()
+              : state.doc.resolve(coreFrom).marks()
+            tr.replaceWith(coreFrom, coreTo, state.schema.text(coreText, marks))
+          } else if (coreFrom < coreTo) {
+            tr.delete(coreFrom, coreTo)
           }
           tr.setMeta(grammarPluginKey, { type: 'dismiss', id })
           dispatch(tr)
@@ -172,9 +235,10 @@ export const GrammarCheck = Extension.create({
       },
 
       activateNextGrammarIssue: (dir = 1, source = null) => ({ state, tr, dispatch }) => {
-        const { decos, activeId } = grammarPluginKey.getState(state)
+        const { decos, activeId, hiddenKinds } = grammarPluginKey.getState(state)
         const all = decos
-          .find(undefined, undefined, (spec) => !source || spec.issue.source === source)
+          .find(undefined, undefined, (spec) =>
+            (!source || spec.issue.source === source) && !hiddenKinds.has(spec.issue.kind))
           .sort((a, b) => a.from - b.from)
         if (!all.length) return false
         let idx

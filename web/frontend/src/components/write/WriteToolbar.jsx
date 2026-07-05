@@ -4,6 +4,7 @@ import {
   Link2, Undo2, Redo2, Save, Loader2, History, Eye, EyeOff, Maximize2,
   Table as TableIcon, Trash2, ClipboardCopy, SpellCheck, Sparkles,
   ChevronLeft, ChevronRight, X, Underline as UnderlineIcon, Baseline,
+  ListChecks,
 } from 'lucide-react'
 import LinkPopover from './LinkPopover'
 
@@ -118,7 +119,7 @@ export function MarkButtons({ editor, onEditLink }) {
 // eslint-disable-next-line no-unused-vars
 export default function WriteToolbar({ editor, tick, saving, dirty, showPreview,
   onSave, onTogglePreview, onToggleRevisions, onToggleFocus,
-  onCopyBBCode, bbcodeCopied, grammar }) {
+  onCopyBBCode, bbcodeCopied, grammar, suggestionsOpen, onToggleSuggestions }) {
   const [linkOpen, setLinkOpen] = useState(false)
   if (!editor) return null
   const c = () => editor.chain().focus()
@@ -205,7 +206,14 @@ export default function WriteToolbar({ editor, tick, saving, dirty, showPreview,
               ? <Loader2 size={15} className="animate-spin text-purple-300" />
               : <Sparkles size={15} />}
           </ToolButton>
-          {grammar.polishStats && (
+          <ToolButton
+            title="Suggestions pane (Ctrl+Alt+G) — work through grammar & polish suggestions"
+            active={suggestionsOpen}
+            onClick={onToggleSuggestions}
+          >
+            <ListChecks size={15} />
+          </ToolButton>
+          {grammar.polishStats && !suggestionsOpen && (
             <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-600/40 text-xs text-purple-200">
               ✦ {grammar.polishStats.remaining}/{grammar.polishStats.total}
               <button type="button" className="p-0.5 hover:text-white" title="Previous suggestion"

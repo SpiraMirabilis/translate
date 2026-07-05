@@ -209,3 +209,7 @@
 .gram-style   { text-decoration-color: rgba(251, 191, 36, 0.85); }
 .gram-polish  { text-decoration-color: rgba(192, 132, 252, 0.9); }
 .gram-active  { background: rgba(99, 102, 241, 0.18); border-radius: 2px; }
+/* Kind-level view filter (suggestions pane): decorations stay so counts hold,
+   but the squiggle disappears and the range stops looking clickable. */
+.gram-issue.gram-hidden { text-decoration-line: none; cursor: inherit; }
+.gram-issue.gram-hidden.gram-active { background: transparent; }

@@ -1,18 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, BookPlus, Globe } from 'lucide-react'
-
-const KIND_LABEL = {
-  typo: 'Spelling',
-  grammar: 'Grammar',
-  style: 'Style',
-  polish: 'Polish',
-}
-const KIND_DOT = {
-  typo: 'bg-rose-400',
-  grammar: 'bg-sky-400',
-  style: 'bg-amber-400',
-  polish: 'bg-purple-400',
-}
+import { X, BookPlus, Globe, EyeOff } from 'lucide-react'
+import { KIND_LABEL, KIND_DOT } from '../../lib/grammarKinds'
 
 const EST_WIDTH = 320
 const EST_HEIGHT = 190
@@ -23,7 +11,7 @@ const EST_HEIGHT = 190
  * handler from exiting focus mode while it's open; click-away closes without
  * a backdrop so the next editor click isn't eaten.
  */
-export default function GrammarPopover({ active, onApply, onDismiss, onClose, onAddToDictionary }) {
+export default function GrammarPopover({ active, onApply, onDismiss, onClose, onAddToDictionary, onIgnoreRule }) {
   const { issue, rect } = active
   const ref = useRef(null)
   const [added, setAdded] = useState(false)
@@ -98,6 +86,17 @@ export default function GrammarPopover({ active, onApply, onDismiss, onClose, on
         >
           Dismiss
         </button>
+        {issue.source === 'lt' && issue.ruleId && onIgnoreRule && (
+          <button
+            type="button"
+            className="btn-ghost text-xs px-1.5 py-1 flex items-center gap-1 text-slate-400 hover:text-slate-200"
+            title={`Never show this rule again (${issue.categoryName ? `${issue.categoryName} · ` : ''}${issue.ruleId})`}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => onIgnoreRule(issue)}
+          >
+            <EyeOff size={12} /> Ignore rule
+          </button>
+        )}
         {issue.kind === 'typo' && issue.originalText && !/\s/.test(issue.originalText) && (
           <>
             <div className="flex-1" />

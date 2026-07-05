@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { api } from '../services/api'
 import { extractDocBlocks, blockToPm, locateFind } from '../lib/grammarOffsets'
 import { grammarPluginKey } from '../lib/grammarExtension'
+import { useLocalStorage } from './useLocalStorage'
+import { KINDS } from '../lib/grammarKinds'
 
 const IDLE_CHECK_MS = 4000
 const INITIAL_CHECK_MS = 1500
@@ -13,6 +15,9 @@ const polishDbId = (issueId) => {
   const m = /^polish:(\d+)$/.exec(issueId || '')
   return m ? parseInt(m[1]) : null
 }
+
+const EXCERPT_CONTEXT = 25
+const ALL_KINDS_VISIBLE = Object.fromEntries(KINDS.map((k) => [k, true]))
 
 /**
  * Orchestrates grammar checking + the LLM polish pass for the write editor.
@@ -33,6 +38,13 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
   const [polishStats, setPolishStats] = useState(null) // { total, remaining }
   const [leftovers, setLeftovers] = useState([])       // unlocatable polish suggestions
   const [polishError, setPolishError] = useState(null)
+  const [issues, setIssues] = useState([])             // pane list: sorted issues + excerpts
+  const [activeId, setActiveId] = useState(null)
+
+  // Suggestion-class preferences (global — style nags are an author-level
+  // preference, and grammar_language is already a single global setting).
+  const [ignoredRules, setIgnoredRules] = useLocalStorage('write.grammar.ignoredRules', [])
+  const [kindVisibility, setKindVisibility] = useLocalStorage('write.grammar.kinds', ALL_KINDS_VISIBLE)
 
   const timerRef = useRef(null)
   const inFlightRef = useRef(false)
@@ -41,6 +53,12 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
   const mountedRef = useRef(true)
   const pollTimerRef = useRef(null)
   const jobIdRef = useRef(null)        // job whose suggestions are on screen
+  const ignoredRuleIdsRef = useRef(new Set())
+  useEffect(() => {
+    ignoredRuleIdsRef.current = new Set(ignoredRules.map((r) => r.ruleId))
+  }, [ignoredRules])
+  const paneOpenRef = useRef(false)    // suggestions pane docked open?
+  const prevDecosRef = useRef(null)
   useEffect(() => () => {
     mountedRef.current = false
     clearTimeout(pollTimerRef.current)
@@ -85,6 +103,7 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
       if (!ed.state.doc.eq(docAtRequest)) return // stale — idle timer re-arms on next edit
       const entries = []
       for (const m of res.matches || []) {
+        if (m.ruleId && ignoredRuleIdsRef.current.has(m.ruleId)) continue
         const posRange = blockToPm(meta, m.block, m.offset, m.length)
         if (!posRange) continue
         const originalText = (blocks[m.block] || '').slice(m.offset, m.offset + m.length)
@@ -98,6 +117,8 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
             shortMessage: m.shortMessage || '',
             replacements: (m.replacements || []).slice(0, 5),
             ruleId: m.ruleId || '',
+            categoryId: m.categoryId || '',
+            categoryName: m.categoryName || '',
             originalText,
           },
         })
@@ -134,7 +155,16 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
     }
   }, [editor, enabled])
 
-  // Popover state: mirror the plugin's activeId into { issue, rect }.
+  // Keep the plugin's kind-level view filter in step with the preference.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !enabled) return
+    const hidden = KINDS.filter((k) => kindVisibility[k] === false)
+    editor.commands.setGrammarHiddenKinds(hidden)
+  }, [editor, enabled, kindVisibility])
+
+  // Popover/pane state: mirror the plugin's activeId into { issue, rect },
+  // and rebuild the pane's issue list whenever the DecorationSet changes
+  // (identity check — plugin state is immutable per transaction).
   useEffect(() => {
     if (!editor || !enabled) return undefined
     const sync = () => {
@@ -148,6 +178,18 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
         if (!polishDecos.length) return prev ? { ...prev, remaining: 0 } : prev
         return { total: prev?.total ?? polishDecos.length, remaining: polishDecos.length }
       })
+      if (decos !== prevDecosRef.current) {
+        prevDecosRef.current = decos
+        const doc = editor.state.doc
+        const list = decos.find().sort((a, b) => a.from - b.from).map((d) => {
+          const text = doc.textBetween(d.from, d.to, '\n', '\n')
+          const before = doc.textBetween(Math.max(0, d.from - EXCERPT_CONTEXT), d.from, '\n', '\n')
+          const after = doc.textBetween(d.to, Math.min(doc.content.size, d.to + EXCERPT_CONTEXT), '\n', '\n')
+          return { ...d.spec.issue, from: d.from, to: d.to, excerpt: { before, text, after } }
+        })
+        setIssues(list)
+      }
+      setActiveId(activeId)
       if (!activeId) {
         setActive(null)
         return
@@ -164,10 +206,14 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
     return () => editor.off('transaction', sync)
   }, [editor, enabled])
 
-  // Close the popover on scroll (v1 — matches native spellcheckers).
+  // Close the popover on scroll (v1 — matches native spellcheckers). Gated
+  // while the pane is open: clearing activeId would kill the pane selection.
   useEffect(() => {
     if (!active || !editor) return undefined
-    const close = () => editor.commands.activateGrammarIssue(null)
+    const close = () => {
+      if (paneOpenRef.current) return
+      editor.commands.activateGrammarIssue(null)
+    }
     window.addEventListener('scroll', close, true)
     return () => window.removeEventListener('scroll', close, true)
   }, [active, editor])
@@ -188,6 +234,41 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
   const closePopover = useCallback(() => {
     editor?.commands.activateGrammarIssue(null)
   }, [editor])
+
+  const selectIssue = useCallback((id) => {
+    editor?.commands.activateGrammarIssueById(id)
+  }, [editor])
+
+  // Like selectIssue, but also hands keyboard focus to the editor so the
+  // caret lands at the issue — for "take me there to edit" clicks.
+  const jumpToIssue = useCallback((id) => {
+    editor?.chain().focus().activateGrammarIssueById(id).run()
+  }, [editor])
+
+  const setPaneOpen = useCallback((open) => {
+    paneOpenRef.current = open
+  }, [])
+
+  // "Never show this rule again" — persists globally (localStorage) and drops
+  // every current squiggle for the rule; future checks filter it at fetch time.
+  const ignoreRule = useCallback((issue) => {
+    if (!issue?.ruleId) return
+    setIgnoredRules((prev) => prev.some((r) => r.ruleId === issue.ruleId)
+      ? prev
+      : [...prev, {
+          ruleId: issue.ruleId,
+          categoryName: issue.categoryName || '',
+          sampleMessage: issue.shortMessage || issue.message || '',
+        }])
+    editor?.commands.ignoreGrammarRule(issue.ruleId)
+  }, [editor, setIgnoredRules])
+
+  const unignoreRule = useCallback((ruleId) => {
+    setIgnoredRules((prev) => prev.filter((r) => r.ruleId !== ruleId))
+    // Restored rules reappear on the next check.
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => checkNowRef.current(), INITIAL_CHECK_MS)
+  }, [setIgnoredRules])
 
   const addToDictionary = useCallback((word, { global = false } = {}) => {
     // Optimistic: drop every squiggle on this word now; a failed POST just
@@ -368,8 +449,10 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
 
   return {
     enabled, checking, ltDown, polishing, active, polishStats, leftovers, polishError,
+    issues, activeId, kindVisibility, setKindVisibility, ignoredRules,
     checkNow: () => checkNow({ manual: true }),
     runPolish, applySuggestion, dismiss, closePopover, addToDictionary,
     clearPolish, navigatePolish, clearAll, clearLeftovers,
+    selectIssue, jumpToIssue, setPaneOpen, ignoreRule, unignoreRule,
   }
 }
