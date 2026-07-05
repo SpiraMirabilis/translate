@@ -38,6 +38,7 @@ transform last means the table is assembled after spacing has settled.
 import json
 import re
 
+from .activity import log_module_activity
 from .base import TranslationModule
 
 # A whole-line notification: 【 … 】 or [ … ] alone on its line (surrounding
@@ -238,3 +239,5 @@ class MarkdownNotificationsModule(TranslationModule):
         if logger:
             logger.info(
                 f"markdown_notifications: {verb} {changed} chapter(s) for book {book_id}")
+        log_module_activity(
+            db, "info", f"{self.name}: {verb} {changed} chapter(s)", book_id)

@@ -161,6 +161,9 @@ async def start_translation(req: TranslateRequest):
             _job_manager.is_running = False
             if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
+            # Run boundary: summarize any module transforms from this run.
+            from modules import module_activity
+            module_activity.flush()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()

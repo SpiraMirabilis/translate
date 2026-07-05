@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel
 from typing import Optional
 
+from modules import module_activity
 from translation_engine import TranslationCancelled
 
 router = APIRouter(prefix="/api/queue")
@@ -84,6 +85,8 @@ def add_to_queue(req: QueueAddRequest):
     )
     if not queue_id:
         raise HTTPException(status_code=500, detail="Failed to add to queue.")
+    # Single-item boundary: log any module transform now, not on the timer.
+    module_activity.flush(req.book_id)
     return {"queue_id": queue_id, "count": _entity_manager.get_queue_count()}
 
 
@@ -117,6 +120,8 @@ async def upload_file_to_queue(
     )
     if not queue_id:
         raise HTTPException(status_code=500, detail="Failed to add to queue.")
+    # Single-item boundary: log any module transform now, not on the timer.
+    module_activity.flush(book_id)
     return {"queue_id": queue_id, "filename": file.filename, "count": _entity_manager.get_queue_count()}
 
 
@@ -191,6 +196,9 @@ async def upload_batch_to_queue(
         )
         if queue_id:
             added += 1
+
+    # Batch boundary: emit any pending module-transform summaries as one line.
+    module_activity.flush(book_id)
 
     return {
         "status": "ok",
@@ -275,6 +283,9 @@ async def upload_epub(
         success, num_chapters, message = processor.process_epub(tmp_path, book_id)
         if not success:
             raise HTTPException(status_code=500, detail=message)
+
+        # Batch boundary: emit pending module-transform summaries as one line.
+        module_activity.flush(book_id)
 
         return {
             "status": "ok",
@@ -363,6 +374,9 @@ async def upload_fb2(
         success, num_chapters, message = processor.process_fb2(tmp_path, book_id)
         if not success:
             raise HTTPException(status_code=500, detail=message)
+
+        # Batch boundary: emit pending module-transform summaries as one line.
+        module_activity.flush(book_id)
 
         return {
             "status": "ok",
@@ -519,6 +533,9 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
             _job_manager.auto_process = False
             if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
+            # Run boundary: summarize any module transforms from this run
+            # (translated-side ingests, plus any source re-ingests at save).
+            module_activity.flush()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()

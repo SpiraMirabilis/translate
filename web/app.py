@@ -42,6 +42,10 @@ def create_app(config=None, logger=None) -> FastAPI:
     translator = TranslationEngine(config, logger, entity_manager)
     web_interface = WebInterface(translator, entity_manager, logger, job_manager)
     job_manager.db_manager = entity_manager
+    # Module activity summaries go through job_manager so they hit the DB AND
+    # broadcast live over WebSocket (plain db.add_activity_log otherwise).
+    from modules import set_activity_notifier
+    set_activity_notifier(job_manager.log_activity)
 
     # Wire up API modules
     from web.api import deps

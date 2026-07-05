@@ -77,6 +77,7 @@ Modules dialog.
 import json
 import re
 
+from .activity import log_module_activity
 from .base import TranslationModule
 
 # Double-quote characters we treat as chat/notification quoting: straight (") and
@@ -361,3 +362,8 @@ class ChatgroupTransformerModule(TranslationModule):
         if logger:
             logger.info(
                 f"chatgroup_transformer: {verb} {changed} item(s) for book {book_id}")
+        # One summary line per backfill — these run as a single background
+        # task per toggle/settings change, so no debouncing is needed.
+        log_module_activity(
+            db, "info",
+            f"{self.name}: {verb} {changed} chapter(s)/queue item(s)", book_id)

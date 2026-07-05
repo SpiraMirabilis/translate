@@ -13,6 +13,8 @@ import json
 
 from .base import TranslationModule
 from .task_runner import ModuleTaskBusyError, module_task_runner
+from .activity import (module_activity, log_module_activity,
+                       set_activity_notifier)
 from .trad_to_simp_module import TradToSimpModule
 from .chatgroup_transformer_module import ChatgroupTransformerModule
 from .novel543 import Novel543Module
@@ -119,9 +121,16 @@ def _ctx(book, config, logger, db=None, **extra):
 
 def apply_source_ingest(book, content, config, logger, **extra):
     ctx = _ctx(book, config, logger, **extra)
+    book_id = book.get("id") if (book and hasattr(book, "get")) else None
     for mod in resolve_modules_for_book(book, ctx):
         try:
-            content = mod.transform_source_lines(content, ctx)
+            new = mod.transform_source_lines(content, ctx)
+            # A module that changed content gets counted toward a debounced
+            # activity-log summary (transforms return the original object on
+            # no-op, so this is usually a cheap identity comparison).
+            if new != content:
+                module_activity.record(ctx.get("db"), book_id, mod.id, "source")
+            content = new
         except Exception as e:  # noqa: BLE001 - never let a module break ingest
             logger.error(f"Module {mod.id}.transform_source_lines failed: {e}")
     return content
@@ -149,9 +158,13 @@ def apply_source_module(book, content, module_id, config, logger, **extra):
 
 def apply_translated_ingest(book, content, config, logger, **extra):
     ctx = _ctx(book, config, logger, **extra)
+    book_id = book.get("id") if (book and hasattr(book, "get")) else None
     for mod in resolve_modules_for_book(book, ctx):
         try:
-            content = mod.transform_translated_lines(content, ctx)
+            new = mod.transform_translated_lines(content, ctx)
+            if new != content:
+                module_activity.record(ctx.get("db"), book_id, mod.id, "translated")
+            content = new
         except Exception as e:  # noqa: BLE001
             logger.error(f"Module {mod.id}.transform_translated_lines failed: {e}")
     return content
