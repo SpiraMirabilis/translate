@@ -7,13 +7,16 @@ import httpx
 
 
 def content_to_html(content_lines: list[str]) -> str:
-    """Convert a list of paragraph strings to HTML <p> blocks."""
-    parts = []
-    for line in content_lines:
-        line = line.strip()
-        if line:
-            parts.append(f"<p>{line}</p>")
-    return "\n".join(parts)
+    """Render stored markdown lines to HTML for WordPress.
+
+    Full markdown rendering (paragraph grouping, pipe AND sentinel ⟦TABLE⟧
+    tables, lists, inline marks) via the shared renderer — previously lines
+    were wrapped in bare <p> tags, which published tables as literal pipes.
+    compute_hash is over the raw lines, so this changes nothing until a
+    chapter's content actually changes.
+    """
+    from output_formatter import render_lines_html
+    return render_lines_html(content_lines)
 
 
 def compute_hash(content_lines: list[str], title: str = "") -> str:

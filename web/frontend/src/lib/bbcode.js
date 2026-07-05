@@ -6,8 +6,24 @@
 // markdown-it instance — so BBCode output can never diverge from what the
 // Reader renders. The token walk below only needs to handle the node set
 // writeMarkdown.js can produce.
-import { parseMarkdownTokens, splitSegments } from './chapterMarkdown'
+import { parseMarkdownTokens, splitSegments, replaceInlineSentinels } from './chapterMarkdown'
 import { docToLines } from './writeMarkdown'
+
+// ⟦U⟧/⟦COLOR:#hex⟧ inline sentinels → XenForo tags. Markers ride through the
+// markdown token walk as literal text; balanced pairs are swapped at the end
+// (same pairing rules as the Reader, so output can't diverge from it).
+const BBCODE_SENTINEL_TAGS = {
+  uOpen: '[U]',
+  uClose: '[/U]',
+  colorOpen: (hex) => `[COLOR=${hex}]`,
+  colorClose: '[/COLOR]',
+}
+const BBCODE_SENTINEL_GUARDS = {
+  // Markers inside [ICODE]/[CODE] stay literal, matching the Reader.
+  code: /\[ICODE\][\s\S]*?\[\/ICODE\]|\[CODE(?:=[^\]]*)?\][\s\S]*?\[\/CODE\]/g,
+  block: null,
+}
+const bbSentinels = (s) => replaceInlineSentinels(s, BBCODE_SENTINEL_TAGS, BBCODE_SENTINEL_GUARDS)
 
 // XenForo [SIZE] runs 1–7 (body text ≈ 3). [HEADING=n] exists on XF 2.2+ but
 // bold+size renders everywhere and stays subdued in threadmarked chapters.
@@ -26,11 +42,13 @@ export function linesToBBCode(lines, { illustrationUrls = {}, title = null } = {
       blocks.push(url
         ? `[IMG]${url}[/IMG]`
         : `[Illustration ${seg.id} — no public image URL; attach manually]`)
+    } else if (seg.type === 'table') {
+      blocks.push(renderRichTable(seg))
     } else if (seg.md.trim()) {
       blocks.push(...renderBlocks(parseMarkdownTokens(seg.md)))
     }
   }
-  return blocks.join('\n\n')
+  return bbSentinels(blocks.join('\n\n'))
 }
 
 /** Convert a TipTap editor doc (via its markdown lines) to BBCode. */
@@ -132,6 +150,23 @@ function renderList(tokens, open, close, ordered) {
   }
   // XenForo numbers [LIST=1] items itself; a non-1 `start` has no BBCode form.
   return `[LIST${ordered ? '=1' : ''}]\n${items.join('\n')}\n[/LIST]`
+}
+
+// Sentinel ⟦TABLE⟧ segment → XenForo table BBCode. Cells carry full block
+// BBCode (lists, quotes, multi-line) — XenForo rows are explicitly terminated,
+// which is the whole reason the sentinel format exists. The storage markers
+// map 1:1 onto the BBCode tags.
+function renderRichTable(seg) {
+  const rows = (seg.rows || []).map((row) => {
+    const cells = row.cells.map((cell) => {
+      const tag = cell.header ? 'TH' : 'TD'
+      const md = cell.lines.join('\n')
+      const inner = md.trim() ? renderBlocks(parseMarkdownTokens(md)).join('\n\n') : ''
+      return `[${tag}]${inner}[/${tag}]`
+    })
+    return `[TR]${cells.join('')}[/TR]`
+  })
+  return `[TABLE]\n${rows.join('\n')}\n[/TABLE]`
 }
 
 function renderTable(tokens, open, close) {

@@ -11,7 +11,7 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { ArrowLeft, ChevronLeft, ChevronRight, Save, Loader2, Check, AlertCircle, X, Languages, CheckCircle2, Search, Pencil, Globe, Sparkles, Bold, Italic, Code, Link2, Heading, List, Quote, Minus, Eye } from 'lucide-react'
-import { renderBlock, splitSegments } from '../lib/chapterMarkdown'
+import { renderSegment, splitSegments } from '../lib/chapterMarkdown'
 import { trimEmptyLines, buildMatcher } from '../lib/editorHighlights'
 import DictModal from '../components/editor/DictModal'
 import RetranslateModal from '../components/editor/RetranslateModal'
@@ -245,14 +245,6 @@ export default function ChapterEditor() {
 
   // Unsaved-changes guard: beforeunload + in-app navigation blocker.
   useUnsavedGuard(dirty)
-
-  // Original works belong to the write editor — /edit stays the universal
-  // deep-link entry (Dashboard, global search), so redirect after book load.
-  useEffect(() => {
-    if (book?.is_original) {
-      navigate(`/books/${bookId}/chapters/${chapterNum}/write`, { replace: true })
-    }
-  }, [book, bookId, chapterNum, navigate])
 
   // Draft autosave — while dirty, persist edited text + title (debounced 2s)
   // so session expiry or an accidental exit can be recovered.
@@ -1067,21 +1059,22 @@ export default function ChapterEditor() {
           {showPreview ? 'Preview' : 'Preview off'}
         </button>
 
-        {/* Source panel toggle */}
-        {hasSource && (
-          <button
-            className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
-              showSource
+        {/* Source panel toggle — greyed out for original works (no source text) */}
+        <button
+          disabled={!hasSource}
+          className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
+            !hasSource
+              ? 'border-slate-800 text-slate-600 opacity-50 cursor-not-allowed'
+              : showSource
                 ? 'border-sky-500/50 bg-sky-500/10 text-sky-300'
                 : 'border-slate-700 text-slate-500 hover:text-slate-400'
-            }`}
-            onClick={() => setShowSource(!showSource)}
-            title={showSource ? 'Hide Chinese source' : 'Show Chinese source'}
-          >
-            <Languages size={12} />
-            {showSource ? 'Source' : 'Source off'}
-          </button>
-        )}
+          }`}
+          onClick={() => hasSource && setShowSource(!showSource)}
+          title={!hasSource ? 'No source text for original works' : showSource ? 'Hide Chinese source' : 'Show Chinese source'}
+        >
+          <Languages size={12} />
+          {hasSource && !showSource ? 'Source off' : 'Source'}
+        </button>
 
         {/* Entity highlight toggle */}
         {entityCount > 0 && (
@@ -1320,7 +1313,7 @@ export default function ChapterEditor() {
                   <img key={i} src={previewIllustrationSrc(seg.id)}
                     alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
                 ) : (
-                  <div key={i} dangerouslySetInnerHTML={{ __html: renderBlock(seg.md) }} />
+                  <div key={i} dangerouslySetInnerHTML={{ __html: renderSegment(seg) }} />
                 ))}
               </div>
             </div>
@@ -1377,7 +1370,11 @@ export default function ChapterEditor() {
                            resize-none outline-none border-0
                            selection:bg-indigo-600/40 ${hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}`}
                 style={{
-                  background: showEntities && englishMatcher.list.length > 0 ? 'transparent' : undefined,
+                  // Always transparent so the dark bg-slate-950 parent (and the
+                  // highlight backdrop, when present) shows through. Without this,
+                  // chapters with no entities — e.g. original works — render the
+                  // textarea's default white background.
+                  background: 'transparent',
                   caretColor: '#e2e8f0',
                 }}
                 value={text}

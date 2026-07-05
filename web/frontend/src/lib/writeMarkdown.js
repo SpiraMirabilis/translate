@@ -16,10 +16,28 @@
 // silently corrupting content. normalizeDoc() defines the canonical form both
 // sides are reduced to (mark order, merged text nodes, expelled edge
 // whitespace, paragraph splits at double breaks, …).
-import { parseMarkdownTokens, splitSegments } from './chapterMarkdown'
+import { parseMarkdownTokens, splitSegments, markerId, TABLE_MARKER_RE, INLINE_SENTINEL_RE } from './chapterMarkdown'
 
-// Fixed nesting order for mark delimiters: outermost first.
-const MARK_ORDER = { link: 0, bold: 1, italic: 2, strike: 3, code: 4 }
+// Fixed nesting order for mark delimiters: outermost first. textStyle (color)
+// and underline sit outside the emphasis family: their ⟦⟧ markers have no
+// flanking rules, so keeping them outer minimizes emphasis-adjacency cases.
+const MARK_ORDER = { link: 0, textStyle: 1, underline: 2, bold: 3, italic: 4, strike: 5, code: 6 }
+
+// Foreground color canonical form: lowercase #rrggbb. Accepts #rgb and
+// rgb()/rgba() (editor pickers emit hex; pasted HTML often carries rgb()).
+// Anything else has no canonical form → the mark is dropped.
+function normalizeColor(value) {
+  if (!value) return null
+  let v = String(value).trim().toLowerCase()
+  const rgb = v.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)
+  if (rgb) {
+    v = '#' + [rgb[1], rgb[2], rgb[3]]
+      .map((n) => Math.min(255, +n).toString(16).padStart(2, '0')).join('')
+  }
+  const short = v.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/)
+  if (short) v = `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`
+  return /^#[0-9a-f]{6}$/.test(v) ? v : null
+}
 
 // ---------------------------------------------------------------------------
 // lines → TipTap doc
@@ -37,16 +55,61 @@ export function linesToDoc(lines) {
   for (const seg of splitSegments(lines || [])) {
     if (seg.type === 'img') {
       content.push({ type: 'illustration', attrs: { id: seg.id } })
+    } else if (seg.type === 'table') {
+      content.push(tableSegmentToNode(seg, unsupported))
     // Blank check with markdown-it's semantics (space/tab-only lines), NOT
     // String.trim(): JS also trims U+2028/U+2029/FEFF etc., which markdown-it
     // treats as visible text — trim() here would drop segments the parser
     // would keep, breaking round-trip symmetry.
     } else if (/[^ \t\n]/.test(seg.md)) {
+      // A malformed ⟦TABLE⟧ run rides through as literal text; refuse to edit
+      // (saving from the WYSIWYG view could silently keep the broken markers).
+      if (seg.tableError) unsupported.push('table:malformed')
       content.push(...tokensToBlocks(parseMarkdownTokens(seg.md), unsupported))
     }
   }
   if (!content.length) content.push({ type: 'paragraph' })
   return { doc: { type: 'doc', content }, unsupported: [...new Set(unsupported)] }
+}
+
+// Block types a table cell may contain. Everything else has no sentinel-cell
+// form we're willing to support (headings/code/hr read badly in a cell; nested
+// tables and illustrations are grammar-level malformed).
+const CELL_BLOCK_TYPES = new Set(['paragraph', 'bulletList', 'orderedList', 'listItem', 'blockquote'])
+
+function validateCellBlocks(blocks, report) {
+  for (const b of blocks || []) {
+    if (!CELL_BLOCK_TYPES.has(b.type)) {
+      report(`table-cell:${b.type}`)
+      continue
+    }
+    if (b.type !== 'paragraph') validateCellBlocks(b.content, report)
+  }
+}
+
+// Sentinel-table segment ({rows: [{cells: [{header, align, lines}]}]}) →
+// TipTap table node. Cell interiors are ordinary markdown lines parsed by the
+// shared machinery, so cells hold full block content (the whole point of the
+// sentinel format — pipe tables can't express it).
+function tableSegmentToNode(seg, unsupported) {
+  return {
+    type: 'table',
+    content: seg.rows.map((row) => ({
+      type: 'tableRow',
+      content: row.cells.map((cell) => {
+        const md = cell.lines.join('\n')
+        const blocks = /[^ \t\n]/.test(md)
+          ? tokensToBlocks(parseMarkdownTokens(md), unsupported)
+          : []
+        validateCellBlocks(blocks, (w) => unsupported.push(w))
+        return {
+          type: cell.header ? 'tableHeader' : 'tableCell',
+          attrs: { align: cell.align || null },
+          content: blocks.length ? blocks : [{ type: 'paragraph' }],
+        }
+      }),
+    })),
+  }
 }
 
 // markdown-it marks column alignment on th/td tokens as an inline style.
@@ -124,12 +187,57 @@ function tokensToBlocks(tokens, unsupported) {
   return root.content
 }
 
+// Pre-scan an inline run's text tokens for ⟦U⟧/⟦COLOR:#hex⟧ markers and
+// stack-match them into pairs (same validity + misnesting rules as the
+// renderer's replaceInlineSentinels, so parse ≡ render). Returns a map of
+// token index → matched markers in order. Unmatched/invalid markers are NOT
+// in the map — they stay literal text (and block the save via the
+// sentinel:literal warning on serialize).
+function matchInlineSentinels(children) {
+  const occ = []
+  children.forEach((tok, ti) => {
+    if (tok.type !== 'text') return
+    for (const m of (tok.content || '').matchAll(new RegExp(INLINE_SENTINEL_RE.source, 'g'))) {
+      const close = m[1] === '/'
+      const hex = m[3] || null
+      occ.push({
+        ti, index: m.index, len: m[0].length, close, kind: m[2], hex,
+        valid: close ? !hex : (m[2] === 'U' ? !hex : !!hex), use: false,
+      })
+    }
+  })
+  const stack = []
+  for (const t of occ) {
+    if (!t.valid) continue
+    if (!t.close) { stack.push(t); continue }
+    const top = stack[stack.length - 1]
+    if (top && top.kind === t.kind) {
+      stack.pop()
+      top.use = t.use = true
+    }
+  }
+  const byToken = new Map()
+  for (const t of occ) {
+    if (!t.use) continue
+    if (!byToken.has(t.ti)) byToken.set(t.ti, [])
+    byToken.get(t.ti).push(t)
+  }
+  return byToken
+}
+
 function inlineToNodes(children, unsupported) {
   const nodes = []
   const active = [] // open mark stack
+  const sentinels = matchInlineSentinels(children)
+  let underlineDepth = 0
+  const colorStack = []
+  const customMarks = () => [
+    ...(colorStack.length ? [{ type: 'textStyle', attrs: { color: colorStack[colorStack.length - 1] } }] : []),
+    ...(underlineDepth > 0 ? [{ type: 'underline' }] : []),
+  ]
   const pushText = (text, extraMarks) => {
     if (!text) return
-    const marks = [...active, ...(extraMarks || [])].map((m) => ({ ...m }))
+    const marks = [...customMarks(), ...active, ...(extraMarks || [])].map((m) => ({ ...m }))
     const last = nodes[nodes.length - 1]
     if (last && last.type === 'text' && marksEqual(last.marks || [], marks)) {
       last.text += text
@@ -142,9 +250,22 @@ function inlineToNodes(children, unsupported) {
     if (idx !== -1) active.splice(idx, 1)
   }
 
-  for (const tok of children) {
+  children.forEach((tok, ti) => {
     switch (tok.type) {
-      case 'text':
+      case 'text': {
+        const markers = sentinels.get(ti)
+        if (!markers) { pushText(tok.content); break }
+        let pos = 0
+        for (const t of markers) {
+          pushText(tok.content.slice(pos, t.index))
+          if (t.kind === 'U') underlineDepth += t.close ? -1 : 1
+          else if (t.close) colorStack.pop()
+          else colorStack.push(t.hex)
+          pos = t.index + t.len
+        }
+        pushText(tok.content.slice(pos))
+        break
+      }
       case 'text_special':
         pushText(tok.content)
         break
@@ -168,7 +289,7 @@ function inlineToNodes(children, unsupported) {
       default:
         unsupported.push(tok.type)
     }
-  }
+  })
   return nodes
 }
 
@@ -176,8 +297,14 @@ function inlineToNodes(children, unsupported) {
 // Canonical form (shared by comparison + serialization)
 // ---------------------------------------------------------------------------
 
+// Returns null for marks with no canonical form (textStyle without a valid
+// color carries no information) — callers filter those out.
 function canonMark(mark) {
   if (mark.type === 'link') return { type: 'link', attrs: { href: mark.attrs?.href || '' } }
+  if (mark.type === 'textStyle') {
+    const color = normalizeColor(mark.attrs?.color)
+    return color ? { type: 'textStyle', attrs: { color } } : null
+  }
   return { type: mark.type }
 }
 
@@ -189,7 +316,9 @@ function sortMarks(marks) {
 
 function marksEqual(a, b) {
   if (a.length !== b.length) return false
-  return a.every((m, i) => m.type === b[i].type && (m.attrs?.href || '') === (b[i].attrs?.href || ''))
+  return a.every((m, i) => m.type === b[i].type &&
+    (m.attrs?.href || '') === (b[i].attrs?.href || '') &&
+    (m.attrs?.color || '') === (b[i].attrs?.color || ''))
 }
 
 // A link whose href is just the linkified form of its own text carries no
@@ -213,7 +342,7 @@ function toSegments(content) {
     if (node.type === 'hardBreak') { segments.push([]); continue }
     const seg = segments[segments.length - 1]
     if (node.type !== 'text') { seg.push({ unknown: node.type }); continue }
-    const marks = sortMarks((node.marks || []).map(canonMark))
+    const marks = sortMarks((node.marks || []).map(canonMark).filter(Boolean))
     // Inside code spans U+2028/29 must become spaces: markdown-it's pad-strip
     // regex (/^ (.+) $/) can't match across them (JS line terminators), so
     // they'd break the code-span round-trip; the parser itself already maps
@@ -261,7 +390,10 @@ const isPunct = (ch) => /[\p{P}\p{S}]/u.test(ch)
 const isWordish = (ch) => !isWs(ch) && !isPunct(ch)
 // Marks whose ranges markdown cannot open/close against whitespace.
 const SHRINKABLE = new Set(['bold', 'italic', 'strike'])
-const markKey = (m) => (m.type === 'link' ? `link:${m.attrs?.href || ''}` : m.type)
+const markKey = (m) => (
+  m.type === 'link' ? `link:${m.attrs?.href || ''}`
+    : m.type === 'textStyle' ? `textStyle:${m.attrs?.color || ''}`
+      : m.type)
 
 /**
  * Char-level canonicalization of one hardBreak-separated segment:
@@ -336,7 +468,7 @@ function canonicalizeSegment(spans) {
           // delimiters (bold+italic, both '*'/'_') merge into ONE run that
           // the parser analyzes whole, so only different-char delimiters
           // (~~, `, [ ]) count.
-          const DELIM_CHAR = { bold: '*', italic: '*', strike: '~', code: '`', link: '[' }
+          const DELIM_CHAR = { bold: '*', italic: '*', strike: '~', code: '`', link: '[', underline: '⟦', textStyle: '⟦' }
           const myDelim = DELIM_CHAR[mark.type]
           const otherDelim = (k2) => DELIM_CHAR[k2.split(':')[0]] !== myDelim
           const delimBefore = (idx) => [...chars[idx].keys].some((k2) =>
@@ -515,30 +647,20 @@ function normalizeBlocks(blocks, warnings) {
   return out
 }
 
-// Markdown table cells are single-line, inline-only: flatten the cell's
-// paragraphs (hard breaks and paragraph boundaries become spaces, like
-// headings). Merged cells have no pipe-table form — warn, which blocks saves.
+// Table cells hold block content (paragraphs with hard breaks, lists,
+// blockquotes) — normalized recursively like any block run. Types outside the
+// allowed cell set warn (blocks the save), as do merged cells (no
+// sentinel/pipe form for either).
 function normalizeTableCell(cell, warnings) {
   if ((cell.attrs?.colspan || 1) > 1 || (cell.attrs?.rowspan || 1) > 1) {
     warnings.push('table:merged-cells')
   }
-  const spans = []
-  for (const child of cell.content || []) {
-    if (child.type !== 'paragraph') {
-      warnings.push(`table-cell:${child.type}`)
-      continue
-    }
-    for (const seg of toSegments(child.content)) {
-      if (!seg.length) continue
-      if (spans.length) spans.push({ text: ' ', marks: [] })
-      spans.push(...seg)
-    }
-  }
-  const content = canonicalizeSegment(spans).map(spanToNode)
+  validateCellBlocks(cell.content, (w) => warnings.push(w))
+  const content = normalizeBlocks(cell.content || [], warnings)
   return {
     type: cell.type,
     attrs: { align: cell.attrs?.align ?? null },
-    content: [{ type: 'paragraph', content }],
+    content: content.length ? content : [{ type: 'paragraph', content: [] }],
   }
 }
 
@@ -589,7 +711,12 @@ export function docToLines(doc, warnings = []) {
 function serializeBlock(node, warnings) {
   switch (node.type) {
     case 'paragraph':
-      return segmentLines(node.content, warnings).map(guardLine)
+      return segmentLines(node.content, warnings).map(guardLine).map((l) => {
+        // A paragraph line that IS a table marker would open/derail a
+        // sentinel run on reparse; ⟦⟧ has no escaped form, so block the save.
+        if (TABLE_MARKER_RE.test(l)) warnings.push('sentinel:literal')
+        return l
+      })
     case 'heading': {
       const inner = segmentLines(node.content, warnings).join(' ')
       return [`${'#'.repeat(node.attrs.level)} ${inner}`.trimEnd()]
@@ -631,7 +758,25 @@ function serializeBlock(node, warnings) {
 // chatgroup script's explicit left-align uses "|:---|" (compact).
 const SEP_CELL = { left: ':---', center: ' :---: ', right: ' ---: ' }
 
+// A cell a pipe table can hold: exactly one paragraph, no hard breaks.
+function isSimpleCell(cell) {
+  return (cell.content || []).length === 1 &&
+    cell.content[0].type === 'paragraph' &&
+    !(cell.content[0].content || []).some((n) => n.type === 'hardBreak')
+}
+
+// All-simple tables keep the pipe form (corpus byte-parity); any cell with
+// breaks, extra paragraphs, lists, or quotes switches the whole table to the
+// sentinel ⟦TABLE⟧ form. parse(pipe) can only yield simple cells and
+// parse(sentinel) reproduces rich structure, so the classification is stable
+// across serialize→reparse — it flips only when the user genuinely adds or
+// removes rich content.
 function serializeTable(node, warnings) {
+  const simple = node.content.every((row) => row.content.every(isSimpleCell))
+  return simple ? serializePipeTable(node, warnings) : serializeRichTable(node, warnings)
+}
+
+function serializePipeTable(node, warnings) {
   const rowLine = (row) =>
     '|' + row.content.map((cell) => {
       const inner = serializeSpans(cell.content[0]?.content || [], warnings)
@@ -646,6 +791,39 @@ function serializeTable(node, warnings) {
     .map((c) => SEP_CELL[c.attrs.align] || ' --- ')
     .join('|') + '|'
   return [rowLine(header), sep, ...body.map(rowLine)]
+}
+
+function serializeRichTable(node, warnings) {
+  const lines = ['⟦TABLE⟧']
+  node.content.forEach((row, ri) => {
+    lines.push('⟦TR⟧')
+    for (const cell of row.content) {
+      const header = cell.type === 'tableHeader'
+      // Alignment is canonicalized per-column off the header row, so it is
+      // only ever emitted there — body cells reacquire it on reparse.
+      const align = ri === 0 && cell.attrs?.align ? `:${cell.attrs.align}` : ''
+      lines.push(`⟦${header ? 'TH' : 'TD'}${align}⟧`)
+      let inner = []
+      for (const child of cell.content || []) {
+        const childLines = serializeBlock(child, warnings)
+        if (!childLines.length) continue
+        if (inner.length) inner.push('')
+        inner.push(...childLines)
+      }
+      if (!inner.some((l) => l)) inner = [] // empty cell: nothing between markers
+      for (const l of inner) {
+        // A cell line that IS a marker would terminate the cell early (or
+        // malform the run) on reparse — no escaped form exists, so block.
+        if (TABLE_MARKER_RE.test(l) || markerId(l) !== null) {
+          warnings.push('table-cell:marker-literal')
+        }
+      }
+      lines.push(...inner, `⟦/${header ? 'TH' : 'TD'}⟧`)
+    }
+    lines.push('⟦/TR⟧')
+  })
+  lines.push('⟦/TABLE⟧')
+  return lines
 }
 
 function serializeList(items, start, warnings) {
@@ -693,6 +871,12 @@ function serializeSpans(nodes, warnings) {
       continue
     }
     const marks = node.marks || []
+    // Literal ⟦U⟧/⟦COLOR⟧ text (typed or pasted) would toggle formatting on
+    // reparse; ⟦⟧ has no escaped form, so block the save. Code spans are
+    // exempt — their content stays literal through parse and render.
+    if (!marks.some((m) => m.type === 'code') && INLINE_SENTINEL_RE.test(node.text)) {
+      warnings.push('sentinel:literal')
+    }
     if (!marks.length) {
       out += escapeInline(node.text)
       i += 1
@@ -709,7 +893,12 @@ function serializeSpans(nodes, warnings) {
              (nodes[k].marks || []).some((mm) => marksEqual([mm], [m]))) k += 1
       return k - i
     }
-    const mark = sortMarks(marks).reduce((best, m) =>
+    // code is always the innermost wrap (serializeCode is terminal — picking
+    // it as outer would silently drop the node's other marks), so it only
+    // competes when it's the node's sole mark.
+    const candidates = sortMarks(marks)
+    const nonCode = candidates.filter((m) => m.type !== 'code')
+    const mark = (nonCode.length ? nonCode : candidates).reduce((best, m) =>
       (runLen(m) > runLen(best) ? m : best))
     if (mark.type === 'code') {
       out += serializeCode(node.text)
@@ -744,6 +933,8 @@ function wrapMark(mark, inner, warnings, prevChar = '', nextChar = '') {
     case 'bold': return underscore ? `__${inner}__` : `**${inner}**`
     case 'italic': return underscore ? `_${inner}_` : `*${inner}*`
     case 'strike': return `~~${inner}~~`
+    case 'underline': return `⟦U⟧${inner}⟦/U⟧`
+    case 'textStyle': return `⟦COLOR:${mark.attrs?.color}⟧${inner}⟦/COLOR⟧`
     case 'link': {
       const href = mark.attrs?.href || ''
       const dest = /[\s()]/.test(href) ? `<${href}>` : href

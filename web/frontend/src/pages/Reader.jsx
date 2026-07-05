@@ -13,7 +13,7 @@ import ReaderComments from '../components/ReaderComments'
 import EntityFormModal from '../components/EntityFormModal'
 import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
-import { renderBlock, renderInline, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes } from '../lib/chapterMarkdown'
+import { renderBlock, renderInline, renderSegment, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes } from '../lib/chapterMarkdown'
 import FootnotePopover from '../components/FootnotePopover'
 import ErrorState from '../components/ErrorState'
 import { useSite } from '../App'
@@ -538,7 +538,7 @@ export default function Reader({ isPublic = false }) {
                     <img key={i} src={illustrationSrc(seg.id)}
                       alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
                   ) : (
-                    <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderBlock(seg.md)) }} />
+                    <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderSegment(seg)) }} />
                   ))
               )}
             </div>

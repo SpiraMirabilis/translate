@@ -64,8 +64,13 @@ class TestHtmlExport:
         assert '<h2 id="chapter-1">The Beginning</h2>' in html
         assert '<h2 id="chapter-2">Fangs & Claws</h2>' in html
 
-        # Body lines are HTML-escaped; empty lines dropped
-        assert "<p>He said &lt;hello&gt; &amp; waved.</p>" in html
+        # Body renders through the shared markdown pipeline: adjacent lines
+        # group into one <p> with <br> (nl2br), & is escaped, and raw
+        # HTML-ish tags like <hello> are stripped by bleach (parity with the
+        # EPUB path, which has always rendered this way).
+        assert "First line.<br" in html
+        assert "Second line.</p>" in html
+        assert "He said  &amp; waved." in html
         assert "<p></p>" not in html
 
         # Chapter order: ch1 heading precedes ch2 heading

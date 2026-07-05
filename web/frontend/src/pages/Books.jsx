@@ -488,21 +488,19 @@ export default function Books() {
                                       </button>
                                     )}
                                     <Link
-                                      to={`/books/${book.id}/chapters/${ch.chapter}/${book.is_original ? 'write' : 'edit'}`}
+                                      to={`/books/${book.id}/chapters/${ch.chapter}/edit`}
                                       className="btn-ghost p-1"
-                                      title={book.is_original ? 'Write' : 'Edit translation'}
+                                      title={book.is_original ? 'Edit (split-pane)' : 'Edit translation'}
                                     >
                                       <Edit2 size={12} />
                                     </Link>
-                                    {!book.is_original && (
-                                      <Link
-                                        to={`/books/${book.id}/chapters/${ch.chapter}/write`}
-                                        className="btn-ghost p-1"
-                                        title="Open in write editor (WYSIWYG)"
-                                      >
-                                        <PenLine size={12} />
-                                      </Link>
-                                    )}
+                                    <Link
+                                      to={`/books/${book.id}/chapters/${ch.chapter}/write`}
+                                      className="btn-ghost p-1"
+                                      title="Open in write editor (WYSIWYG)"
+                                    >
+                                      <PenLine size={12} />
+                                    </Link>
                                     <button
                                       className="btn-ghost p-1 hover:text-rose-400"
                                       title="Delete chapter"

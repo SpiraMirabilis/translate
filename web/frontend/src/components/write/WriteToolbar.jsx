@@ -3,7 +3,7 @@ import {
   Bold, Italic, Strikethrough, Code, Quote, Minus, List, ListOrdered,
   Link2, Undo2, Redo2, Save, Loader2, History, Eye, EyeOff, Maximize2,
   Table as TableIcon, Trash2, ClipboardCopy, SpellCheck, Sparkles,
-  ChevronLeft, ChevronRight, X,
+  ChevronLeft, ChevronRight, X, Underline as UnderlineIcon, Baseline,
 } from 'lucide-react'
 import LinkPopover from './LinkPopover'
 
@@ -26,6 +26,65 @@ export function ToolButton({ onClick, active, disabled, title, children }) {
 
 export const Divider = () => <div className="w-px h-5 bg-slate-700 mx-1" />
 
+// Foreground text colors: a small curated palette plus a native picker.
+// Stored as ⟦COLOR:#rrggbb⟧ sentinels; the bridge canonicalizes any input
+// to lowercase 6-digit hex.
+const PRESET_COLORS = [
+  '#e11d48', '#f97316', '#eab308', '#22c55e',
+  '#0ea5e9', '#8b5cf6', '#ec4899', '#94a3b8',
+]
+
+export function ColorButton({ editor }) {
+  const [open, setOpen] = useState(false)
+  const current = editor.getAttributes('textStyle')?.color || null
+  const c = () => editor.chain().focus()
+  return (
+    <span className="relative">
+      <ToolButton title="Text color" active={!!current} onClick={() => setOpen((v) => !v)}>
+        <Baseline size={15} style={current ? { color: current } : undefined} />
+      </ToolButton>
+      {open && (
+        <div
+          className="absolute top-full left-0 mt-1 z-30 p-2 rounded-lg bg-slate-800 border border-slate-700 shadow-xl flex flex-col gap-2"
+          data-esc-guard
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) } }}
+        >
+          <div className="flex gap-1">
+            {PRESET_COLORS.map((col) => (
+              <button
+                key={col}
+                type="button"
+                title={col}
+                className={`w-5 h-5 rounded-full border-2 ${current === col ? 'border-white' : 'border-transparent hover:border-slate-400'}`}
+                style={{ background: col }}
+                onMouseDown={(e) => e.preventDefault()} /* keep editor selection */
+                onClick={() => { c().setColor(col).run(); setOpen(false) }}
+              />
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={current || '#e11d48'}
+              className="w-6 h-6 rounded cursor-pointer bg-transparent border border-slate-600"
+              onChange={(e) => c().setColor(e.target.value).run()}
+              title="Custom color"
+            />
+            <button
+              type="button"
+              className="text-xs text-slate-400 hover:text-slate-200"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { c().unsetColor().run(); setOpen(false) }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
+  )
+}
+
 /**
  * The inline-mark button group (bold/italic/strike/code/link), shared by the
  * main toolbar, the selection bubble menu, and the focus-mode toolbar. The
@@ -41,6 +100,9 @@ export function MarkButtons({ editor, onEditLink }) {
         onClick={() => c().toggleItalic().run()}><Italic size={15} /></ToolButton>
       <ToolButton title="Strikethrough" active={editor.isActive('strike')}
         onClick={() => c().toggleStrike().run()}><Strikethrough size={15} /></ToolButton>
+      <ToolButton title="Underline (Ctrl+U)" active={editor.isActive('underline')}
+        onClick={() => c().toggleUnderline().run()}><UnderlineIcon size={15} /></ToolButton>
+      <ColorButton editor={editor} />
       <ToolButton title="Inline code" active={editor.isActive('code')}
         onClick={() => c().toggleCode().run()}><Code size={15} /></ToolButton>
       <ToolButton title="Link" active={editor.isActive('link')} onClick={onEditLink}>

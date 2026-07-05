@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Loader2, RotateCcw, ChevronLeft } from 'lucide-react'
 import { api } from '../../services/api'
-import { splitSegments, renderBlock } from '../../lib/chapterMarkdown'
+import { splitSegments, renderSegment } from '../../lib/chapterMarkdown'
 
 function fmtWhen(iso) {
   if (!iso) return ''
@@ -137,7 +137,7 @@ export default function RevisionsPanel({ bookId, chapterNum, currentWords,
                 </div>
               ) : (
                 <div key={i} className="chapter-markdown"
-                  dangerouslySetInnerHTML={{ __html: renderBlock(seg.md) }} />
+                  dangerouslySetInnerHTML={{ __html: renderSegment(seg) }} />
               ))}
           </div>
           <div className="px-4 py-3 border-t border-slate-700/60 flex justify-end gap-2 shrink-0">

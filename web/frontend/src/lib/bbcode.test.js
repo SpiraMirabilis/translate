@@ -64,6 +64,56 @@ describe('linesToBBCode', () => {
       .toBe('[TABLE]\n[TR][TH]Name[/TH][TH]HP[/TH][/TR]\n[TR][TD]Slime[/TD][TD]10[/TD][/TR]\n[/TABLE]')
   })
 
+  it('sentinel rich tables carry block content in cells', () => {
+    const lines = [
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH:center⟧', 'Stat', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', 'HP: 100', 'MP: 50', '', '- Fireball', '- Ice Lance', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ]
+    expect(linesToBBCode(lines)).toBe([
+      '[TABLE]',
+      '[TR][TH]Stat[/TH][/TR]',
+      '[TR][TD]HP: 100\nMP: 50\n\n[LIST]\n[*]Fireball\n[*]Ice Lance\n[/LIST][/TD][/TR]',
+      '[TR][TD][/TD][/TR]',
+      '[/TABLE]',
+    ].join('\n'))
+  })
+
+  it('sentinel table parity between stored lines and editor doc', () => {
+    const lines = [
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', 'h', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', 'a', 'b', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ]
+    const { doc, unsupported } = linesToDoc(lines)
+    expect(unsupported).toEqual([])
+    expect(docToBBCode(doc)).toBe(linesToBBCode(lines))
+    expect(docToBBCode(doc)).toContain('[TD]a\nb[/TD]')
+  })
+
+  it('underline and color sentinels map to [U] and [COLOR=…]', () => {
+    expect(linesToBBCode(['Some ⟦U⟧underlined⟦/U⟧ text.']))
+      .toBe('Some [U]underlined[/U] text.')
+    expect(linesToBBCode(['A ⟦COLOR:#ff0080⟧pink⟦/COLOR⟧ word.']))
+      .toBe('A [COLOR=#ff0080]pink[/COLOR] word.')
+    expect(linesToBBCode(['⟦U⟧**bold under**⟦/U⟧']))
+      .toBe('[U][B]bold under[/B][/U]')
+  })
+
+  it('sentinels inside inline code stay literal; pairs may span code', () => {
+    expect(linesToBBCode(['`⟦U⟧ raw ⟦/U⟧`']))
+      .toBe('[ICODE]⟦U⟧ raw ⟦/U⟧[/ICODE]')
+    expect(linesToBBCode(['⟦U⟧a `c` b⟦/U⟧']))
+      .toBe('[U]a [ICODE]c[/ICODE] b[/U]')
+  })
+
+  it('unmatched sentinels stay literal in bbcode output', () => {
+    expect(linesToBBCode(['stray ⟦U⟧ marker'])).toBe('stray ⟦U⟧ marker')
+  })
+
   it('explicit links become [URL=…], bare autolinks stay bare', () => {
     expect(linesToBBCode(['See [the wiki](https://example.com/wiki) for more.']))
       .toBe('See [URL=https://example.com/wiki]the wiki[/URL] for more.')

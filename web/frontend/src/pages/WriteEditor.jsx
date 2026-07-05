@@ -11,7 +11,7 @@ import { linesToDoc, docToLines, roundTrip } from '../lib/writeMarkdown'
 import { cleanPastedHTML, cleanPastedText } from '../lib/pasteCleanup'
 import { docToBBCode } from '../lib/bbcode'
 import { copyToClipboard } from '../utils/clipboard'
-import { splitSegments, renderBlock } from '../lib/chapterMarkdown'
+import { splitSegments, renderSegment } from '../lib/chapterMarkdown'
 import { trimEmptyLines } from '../lib/editorHighlights'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import { useTypewriterScroll } from '../hooks/useTypewriterScroll'
@@ -274,6 +274,13 @@ export default function WriteEditor() {
       const HINTS = {
         'table:structure': 'a table is missing its header row — click into it and use the “Hdr” toggle in the table controls',
         'table:merged-cells': 'a table contains merged cells, which markdown tables can’t express — split them first',
+        'table-cell:heading': 'a table cell contains a heading, which has no table form — convert it to bold text',
+        'table-cell:codeBlock': 'a table cell contains a code block, which has no table form — move it outside the table',
+        'table-cell:horizontalRule': 'a table cell contains a horizontal rule, which has no table form — remove it',
+        'table-cell:illustration': 'a table cell contains an illustration, which has no table form — move it outside the table',
+        'table-cell:table': 'a table is nested inside a table cell — flatten it',
+        'table-cell:marker-literal': 'a table cell contains literal ⟦…⟧ marker text, which would corrupt the stored table — remove or reword it',
+        'sentinel:literal': 'the text contains literal ⟦…⟧ marker characters (table, underline, or color markers), which would be misread as formatting — remove or reword them',
       }
       const detail = [...rt.warnings, ...rt.unsupported].join(', ')
       const hints = [...new Set(rt.warnings.map((w) => HINTS[w]).filter(Boolean))]
@@ -592,10 +599,11 @@ export default function WriteEditor() {
           to={`/read/${bookId}?chapter=${chapterNum}`}
           className="btn-ghost p-1.5" title="Read in the public reader"
         ><BookOpen size={14} /></Link>
-        {book && !book.is_original && (
+        {book && (
           <Link
             to={`/books/${bookId}/chapters/${chapterNum}/edit`}
-            className="btn-ghost p-1.5" title="Open in translation editor (split-pane)"
+            className="btn-ghost p-1.5"
+            title={book.is_original ? 'Open in split-pane editor' : 'Open in translation editor (split-pane)'}
           ><Languages size={14} /></Link>
         )}
         {prevCh !== null && (
@@ -699,7 +707,7 @@ export default function WriteEditor() {
                   </div>
                 ) : (
                   <div key={i} className="chapter-markdown"
-                    dangerouslySetInnerHTML={{ __html: renderBlock(seg.md) }} />
+                    dangerouslySetInnerHTML={{ __html: renderSegment(seg) }} />
                 ))}
             </div>
           ) : editorSurface}

@@ -31,6 +31,10 @@ const SAMPLE_LINES = [
   '',
   'A [link](https://example.com) and `code` and ~~strike~~.',
   '',
+  'Some ⟦U⟧underlined⟦/U⟧ and ⟦COLOR:#e11d48⟧colored⟦/COLOR⟧ text.',
+  '',
+  '⟦U⟧**bold under**⟦/U⟧ and `⟦U⟧ literal in code ⟦/U⟧` stay distinct.',
+  '',
   'She paid him[1] anyway.',
   '',
   '[1] - A footnote definition.',
@@ -43,6 +47,15 @@ const SAMPLE_LINES = [
   '',
   '| System notice: you have leveled up. |',
   '| --- |',
+  '',
+  '⟦TABLE⟧',
+  '⟦TR⟧',
+  '⟦TH:center⟧', 'Stat', '⟦/TH⟧',
+  '⟦/TR⟧',
+  '⟦TR⟧',
+  '⟦TD⟧', 'HP: 100', 'MP: 50', '', '- Fireball', '⟦/TD⟧',
+  '⟦/TR⟧',
+  '⟦/TABLE⟧',
   '',
   'Closing paragraph.',
 ]
@@ -89,6 +102,77 @@ describe('TipTap schema ⇄ writeMarkdown bridge', () => {
     }
   })
 
+  it('Enter inside a cell paragraph inserts a hard break (XenForo behavior)', () => {
+    const { doc } = linesToDoc(['| h |', '| --- |', '| body |'])
+    const editor = makeEditor(doc)
+    try {
+      // Place the caret inside the body cell's paragraph, after "body".
+      let pos = null
+      editor.state.doc.descendants((node, p) => {
+        if (node.isText && node.text === 'body') pos = p + node.nodeSize
+        return pos == null
+      })
+      editor.commands.setTextSelection(pos)
+      editor.view.someProp('handleKeyDown', (f) =>
+        f(editor.view, new KeyboardEvent('keydown', { key: 'Enter' })))
+      const rt = roundTrip(editor.getJSON())
+      expect(rt.ok).toBe(true)
+      // The cell became rich (trailing hard break canonicalizes away only if
+      // empty — type after the break to keep it observable)
+      editor.commands.insertContent('more')
+      const rt2 = roundTrip(editor.getJSON())
+      expect(rt2.ok).toBe(true)
+      expect(rt2.lines[0]).toBe('⟦TABLE⟧')
+      expect(rt2.lines).toContain('body')
+      expect(rt2.lines).toContain('more')
+    } finally {
+      editor.destroy()
+    }
+  })
+
+  it('Enter inside a list-in-cell splits the list item (list keymap wins)', () => {
+    const { doc } = linesToDoc([
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', 'h', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', '- item one', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ])
+    const editor = makeEditor(doc)
+    try {
+      let pos = null
+      editor.state.doc.descendants((node, p) => {
+        if (node.isText && node.text === 'item one') pos = p + node.nodeSize
+        return pos == null
+      })
+      editor.commands.setTextSelection(pos)
+      editor.view.someProp('handleKeyDown', (f) =>
+        f(editor.view, new KeyboardEvent('keydown', { key: 'Enter' })))
+      editor.commands.insertContent('item two')
+      const rt = roundTrip(editor.getJSON())
+      expect(rt.ok).toBe(true)
+      expect(rt.lines).toContain('- item one')
+      expect(rt.lines).toContain('- item two')
+    } finally {
+      editor.destroy()
+    }
+  })
+
+  it('Enter outside tables still splits the paragraph', () => {
+    const { doc } = linesToDoc(['first words'])
+    const editor = makeEditor(doc)
+    try {
+      editor.commands.setTextSelection(editor.state.doc.content.size - 1)
+      editor.view.someProp('handleKeyDown', (f) =>
+        f(editor.view, new KeyboardEvent('keydown', { key: 'Enter' })))
+      editor.commands.insertContent('second words')
+      const rt = roundTrip(editor.getJSON())
+      expect(rt.ok).toBe(true)
+      expect(rt.lines).toEqual(['first words', '', 'second words'])
+    } finally {
+      editor.destroy()
+    }
+  })
+
   it('editor-typed content (insert + marks) round-trips', () => {
     const editor = makeEditor({ type: 'doc', content: [{ type: 'paragraph' }] })
     try {
@@ -102,6 +186,43 @@ describe('TipTap schema ⇄ writeMarkdown bridge', () => {
       const rt = roundTrip(editor.getJSON())
       expect(rt.ok).toBe(true)
       expect(rt.lines).toEqual(['First paragraph. **bold words** after.'])
+    } finally {
+      editor.destroy()
+    }
+  })
+
+  it('toggleUnderline and setColor commands produce sentinel lines', () => {
+    const editor = makeEditor({ type: 'doc', content: [{ type: 'paragraph' }] })
+    try {
+      editor.chain()
+        .insertContent('plain ')
+        .setMark('underline')
+        .insertContent('under')
+        .unsetMark('underline')
+        .insertContent(' and ')
+        .setColor('#FF0080') // uppercase in, canonical lowercase out
+        .insertContent('pink')
+        .unsetColor()
+        .insertContent(' done.')
+        .run()
+      const rt = roundTrip(editor.getJSON())
+      expect(rt.warnings).toEqual([])
+      expect(rt.ok).toBe(true)
+      expect(rt.lines).toEqual(['plain ⟦U⟧under⟦/U⟧ and ⟦COLOR:#ff0080⟧pink⟦/COLOR⟧ done.'])
+    } finally {
+      editor.destroy()
+    }
+  })
+
+  it('code spans keep coexisting marks (FlexibleCode, no excludes stripping)', () => {
+    const { doc } = linesToDoc(['**`bold code`** and ⟦U⟧`under code`⟦/U⟧'])
+    const editor = makeEditor(doc)
+    try {
+      // Schema must not strip bold/underline off code text nodes.
+      expect(JSON.stringify(normalizeDoc(editor.getJSON()))).toBe(JSON.stringify(normalizeDoc(doc)))
+      const rt = roundTrip(editor.getJSON())
+      expect(rt.ok).toBe(true)
+      expect(rt.lines).toEqual(['**`bold code`** and ⟦U⟧`under code`⟦/U⟧'])
     } finally {
       editor.destroy()
     }

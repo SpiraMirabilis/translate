@@ -37,6 +37,12 @@ const MARK_SETS = [
   [{ type: 'italic' }, { type: 'strike' }],
   [{ type: 'link', attrs: { href: 'https://x.example/p' } }],
   [{ type: 'link', attrs: { href: 'https://x.example/p' } }, { type: 'bold' }],
+  [{ type: 'underline' }],
+  [{ type: 'textStyle', attrs: { color: '#a1b2c3' } }],
+  [{ type: 'underline' }, { type: 'bold' }],
+  [{ type: 'textStyle', attrs: { color: '#ff0080' } }, { type: 'italic' }],
+  [{ type: 'textStyle', attrs: { color: '#22cc88' } }, { type: 'underline' }],
+  [{ type: 'underline' }, { type: 'code' }],
 ]
 
 function randText(rnd, maxLen) {
@@ -187,6 +193,74 @@ describe('round-trip fuzz (prose-shaped — must pass)', () => {
         console.log('canon(reparse):', JSON.stringify(normalizeDoc(linesToDoc(mrt.lines).doc)))
       }
       expect(rt.ok, `prose iteration ${i}`).toBe(true)
+    }
+  })
+})
+
+// Rich-table fuzz: random header-first tables whose cells hold prose
+// paragraphs (with hard breaks) and lists — the block set sentinel cells
+// support. The prose alphabet contains no ⟦ (literal markers are a
+// deliberately blocked case, tested separately in writeMarkdown.test.js).
+function randCell(rnd, type) {
+  const blocks = []
+  const n = 1 + Math.floor(rnd() * 2)
+  let prevList = false
+  for (let i = 0; i < n; i += 1) {
+    // Never two adjacent lists: markdown reparses "list, blank, list" as ONE
+    // list (pre-existing top-level limitation too; TipTap merges them anyway).
+    if (!prevList && rnd() < 0.3) {
+      const items = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => ({
+        type: 'listItem', content: [randProseParagraph(rnd)],
+      }))
+      blocks.push({ type: 'bulletList', content: items })
+      prevList = true
+    } else {
+      blocks.push(randProseParagraph(rnd))
+      prevList = false
+    }
+  }
+  const align = ['left', 'center', 'right', null][Math.floor(rnd() * 4)]
+  return { type, attrs: { align }, content: blocks }
+}
+
+function randTableDoc(rnd) {
+  const cols = 1 + Math.floor(rnd() * 3)
+  const rows = [{
+    type: 'tableRow',
+    content: Array.from({ length: cols }, () => randCell(rnd, 'tableHeader')),
+  }]
+  const bodyRows = Math.floor(rnd() * 3)
+  for (let r = 0; r < bodyRows; r += 1) {
+    rows.push({
+      type: 'tableRow',
+      content: Array.from({ length: cols }, () => randCell(rnd, 'tableCell')),
+    })
+  }
+  return {
+    type: 'doc',
+    content: [randProseParagraph(rnd), { type: 'table', content: rows }, randProseParagraph(rnd)],
+  }
+}
+
+describe('round-trip fuzz (rich tables — must pass)', () => {
+  it('random rich tables survive roundTrip', { timeout: 120_000 }, () => {
+    const rnd = mulberry32(0x7AB1E5)
+    for (let i = 0; i < 4000; i += 1) {
+      const doc = randTableDoc(rnd)
+      const rt = roundTrip(doc)
+      if (!rt.ok) {
+        // eslint-disable-next-line no-console
+        console.log('TABLE FUZZ FAILURE at', i, JSON.stringify(doc))
+        // eslint-disable-next-line no-console
+        console.log('lines:', JSON.stringify(rt.lines))
+        // eslint-disable-next-line no-console
+        console.log('warnings:', rt.warnings, 'unsupported:', rt.unsupported)
+        // eslint-disable-next-line no-console
+        console.log('canon(doc):    ', JSON.stringify(normalizeDoc(doc)))
+        // eslint-disable-next-line no-console
+        console.log('canon(reparse):', JSON.stringify(normalizeDoc(linesToDoc(rt.lines).doc)))
+      }
+      expect(rt.ok, `table iteration ${i}`).toBe(true)
     }
   })
 })

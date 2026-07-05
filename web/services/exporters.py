@@ -9,6 +9,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+from output_formatter import render_lines_html, _MD_BLOCK_CSS
+
 
 @dataclass
 class ExportResult:
@@ -136,6 +138,7 @@ def _export_html(db, book, book_info) -> ExportResult:
         'h1 { text-align: center; margin: 1.5em 0 0.5em; }',
         'h2 { margin: 2em 0 0.5em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }',
         'p { text-indent: 1.5em; margin: 0.4em 0; }',
+        _MD_BLOCK_CSS,
         '.title-page { text-align: center; margin: 4em 0; }',
         '.title-page .author { font-size: 1.1em; color: #555; }',
         'nav { margin: 2em 0; }',
@@ -160,12 +163,7 @@ def _export_html(db, book, book_info) -> ExportResult:
     for ch_data in ch_list:
         anchor = f"chapter-{ch_data['number']}"
         html_parts.append(f'<h2 id="{anchor}">{ch_data["title"]}</h2>')
-        for line in ch_data["content"]:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            safe = stripped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            html_parts.append(f'<p>{safe}</p>')
+        html_parts.append(render_lines_html(ch_data["content"]))
 
     html_parts.append('</body></html>')
     filename = f"{book['title'].replace(' ', '_')}.html"

@@ -453,7 +453,7 @@ describe('tables', () => {
     expect(lines).toEqual(['| HP | MP |', '| --- | --- |', '| 100 |  |'])
   })
 
-  it('multi-paragraph cells flatten to one line with spaces', () => {
+  it('multi-paragraph / hard-break cells switch the table to sentinel form', () => {
     const lines = expectRoundTrip({
       type: 'doc',
       content: [{
@@ -464,7 +464,12 @@ describe('tables', () => {
         ],
       }],
     })
-    expect(lines).toEqual(['| a b |', '| --- |', '| c d |'])
+    expect(lines).toEqual([
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', 'a', '', 'b', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', 'c', 'd', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ])
   })
 
   it('merged cells block the save', () => {
@@ -522,6 +527,162 @@ describe('tables', () => {
   })
 })
 
+describe('sentinel (rich) tables', () => {
+  const RICH_LINES = [
+    'Prose before.',
+    '',
+    '⟦TABLE⟧',
+    '⟦TR⟧',
+    '⟦TH:center⟧', 'Stat', '⟦/TH⟧',
+    '⟦TH⟧', 'Value', '⟦/TH⟧',
+    '⟦/TR⟧',
+    '⟦TR⟧',
+    '⟦TD⟧', 'HP: 100', 'MP: 50', '', '- Fireball', '- Ice Lance', '⟦/TD⟧',
+    '⟦TD⟧', '⟦/TD⟧',
+    '⟦/TR⟧',
+    '⟦/TABLE⟧',
+    '',
+    'Prose after.',
+  ]
+
+  it('stored sentinel tables round-trip byte-identically', () => {
+    expectIdentity(RICH_LINES)
+  })
+
+  it('parses into a table node with block cell content and align', () => {
+    const { doc, unsupported } = linesToDoc(RICH_LINES)
+    expect(unsupported).toEqual([])
+    const table = doc.content.find((b) => b.type === 'table')
+    const [headRow, bodyRow] = table.content
+    expect(headRow.content[0].type).toBe('tableHeader')
+    expect(headRow.content[0].attrs.align).toBe('center')
+    const richCell = bodyRow.content[0]
+    expect(richCell.content.map((b) => b.type)).toEqual(['paragraph', 'bulletList'])
+    expect(richCell.content[0].content.some((n) => n.type === 'hardBreak')).toBe(true)
+    // empty cell → single empty paragraph
+    expect(bodyRow.content[1].content).toEqual([{ type: 'paragraph' }])
+  })
+
+  it('blockquotes and multiple paragraphs in cells round-trip', () => {
+    expectIdentity([
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', 'h', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', 'first para', '', '> quoted', '', 'second para', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ])
+  })
+
+  it('editor-born rich cell serializes to sentinel form and degrades back to pipe', () => {
+    const doc = {
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('h'))] }] },
+          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('a'), br, text('b'))] }] },
+        ],
+      }],
+    }
+    const lines = expectRoundTrip(doc)
+    expect(lines[0]).toBe('⟦TABLE⟧')
+    // Remove the hard break → simple again → pipe form, byte-identical emitter
+    const simple = {
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('h'))] }] },
+          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('a b'))] }] },
+        ],
+      }],
+    }
+    expect(expectRoundTrip(simple)).toEqual(['| h |', '| --- |', '| a b |'])
+  })
+
+  it('inline marks inside rich cells round-trip', () => {
+    expectIdentity([
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', 'h', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', '**bold** and *italic*', 'and `code`', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ])
+  })
+
+  it('disallowed block types in cells block the load', () => {
+    const { unsupported } = linesToDoc([
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', '# heading in cell', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ])
+    expect(unsupported).toContain('table-cell:heading')
+  })
+
+  it('disallowed block types in cells block the save', () => {
+    const { ok, warnings } = roundTrip({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [{
+          type: 'tableRow',
+          content: [{ type: 'tableHeader', content: [{ type: 'heading', attrs: { level: 1 }, content: [text('h')] }] }],
+        }],
+      }],
+    })
+    expect(ok).toBe(false)
+    expect(warnings).toContain('table-cell:heading')
+  })
+
+  it('malformed sentinel runs load read-only (table:malformed)', () => {
+    const { unsupported } = linesToDoc(['⟦TABLE⟧', '⟦TR⟧', 'no cell marker'])
+    expect(unsupported).toContain('table:malformed')
+  })
+
+  it('literal marker text in a cell blocks the save', () => {
+    const { ok, warnings } = roundTrip({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [{
+          type: 'tableRow',
+          content: [{ type: 'tableHeader', content: [p(text('⟦/TD⟧')), p(text('x'))] }],
+        }],
+      }],
+    })
+    expect(ok).toBe(false)
+    expect(warnings).toContain('table-cell:marker-literal')
+  })
+
+  it('literal marker text in a plain paragraph blocks the save', () => {
+    const { ok, warnings } = roundTrip({
+      type: 'doc',
+      content: [p(text('⟦TABLE⟧'))],
+    })
+    expect(ok).toBe(false)
+    expect(warnings).toContain('sentinel:literal')
+  })
+
+  it('align canonicalizes off the header row in sentinel form', () => {
+    const cell = (type, txt, align = null) => ({
+      type, attrs: { align }, content: [p(text(txt))],
+    })
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [cell('tableHeader', 'h', 'right')] },
+          {
+            type: 'tableRow',
+            content: [{ type: 'tableCell', attrs: { align: null }, content: [p(text('a'), br, text('b'))] }],
+          },
+        ],
+      }],
+    })
+    expect(lines).toContain('⟦TH:right⟧')
+    expect(lines).toContain('⟦TD⟧') // body cell: align never emitted
+  })
+})
+
 describe('unsupported content guards', () => {
 
   it('unknown node types trigger warnings on serialize', () => {
@@ -536,10 +697,127 @@ describe('unsupported content guards', () => {
   it('unknown marks trigger warnings on serialize', () => {
     const { ok, warnings } = roundTrip({
       type: 'doc',
-      content: [p(text('u', { type: 'underline' }))],
+      content: [p(text('h', { type: 'highlight' }))],
     })
     expect(ok).toBe(false)
-    expect(warnings).toContain('mark:underline')
+    expect(warnings).toContain('mark:highlight')
+  })
+})
+
+describe('underline and color (inline ⟦⟧ sentinels)', () => {
+  const u = { type: 'underline' }
+  const color = (c) => ({ type: 'textStyle', attrs: { color: c } })
+
+  it('stored marker pairs round-trip byte-identically', () => {
+    expectIdentity([
+      'Plain then ⟦U⟧underlined⟦/U⟧ then plain.',
+      '',
+      'A ⟦COLOR:#ff0000⟧red word⟦/COLOR⟧ here.',
+      '',
+      '⟦COLOR:#00aaff⟧⟦U⟧both⟦/U⟧⟦/COLOR⟧ at once.',
+    ])
+  })
+
+  it('editor-born underline and color serialize to markers', () => {
+    expect(expectRoundTrip({
+      type: 'doc',
+      content: [p(text('a '), text('u', u), text(' b'))],
+    })).toEqual(['a ⟦U⟧u⟦/U⟧ b'])
+    expect(expectRoundTrip({
+      type: 'doc',
+      content: [p(text('x', color('#ff0000')))],
+    })).toEqual(['⟦COLOR:#ff0000⟧x⟦/COLOR⟧'])
+  })
+
+  it('combines with markdown marks', () => {
+    expectIdentity(['⟦U⟧**bold under**⟦/U⟧ and ⟦COLOR:#112233⟧*tinted italic*⟦/COLOR⟧'])
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [p(text('bu', { type: 'bold' }, u))],
+    })
+    expect(lines).toEqual(['⟦U⟧**bu**⟦/U⟧'])
+  })
+
+  it('a pair may span a code mark', () => {
+    expectIdentity(['⟦U⟧a `code` b⟦/U⟧'])
+  })
+
+  it('markers inside code spans stay literal', () => {
+    expectIdentity(['`⟦U⟧ literal ⟦/U⟧`'])
+    const { doc } = linesToDoc(['`⟦U⟧ literal ⟦/U⟧`'])
+    const codeNode = doc.content[0].content[0]
+    expect(codeNode.marks).toEqual([{ type: 'code' }])
+    expect(codeNode.text).toBe('⟦U⟧ literal ⟦/U⟧')
+  })
+
+  it('color normalization: #RGB and rgb() → #rrggbb, invalid dropped', () => {
+    expect(expectRoundTrip({
+      type: 'doc',
+      content: [p(text('x', color('#A1C')))],
+    })).toEqual(['⟦COLOR:#aa11cc⟧x⟦/COLOR⟧'])
+    expect(expectRoundTrip({
+      type: 'doc',
+      content: [p(text('x', color('rgb(255, 0, 128)')))],
+    })).toEqual(['⟦COLOR:#ff0080⟧x⟦/COLOR⟧'])
+    // Unparseable color: mark carries no canonical form → plain text
+    expect(expectRoundTrip({
+      type: 'doc',
+      content: [p(text('x', color('salmon')))],
+    })).toEqual(['x'])
+  })
+
+  it('underline over a hard break closes and reopens per line', () => {
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [p(text('one', u), { type: 'hardBreak' }, text('two', u))],
+    })
+    expect(lines).toEqual(['⟦U⟧one⟦/U⟧', '⟦U⟧two⟦/U⟧'])
+  })
+
+  it('adjacent different colors emit separate pairs', () => {
+    const lines = expectRoundTrip({
+      type: 'doc',
+      content: [p(text('red', color('#ff0000')), text('blue', color('#0000ff')))],
+    })
+    expect(lines).toEqual(['⟦COLOR:#ff0000⟧red⟦/COLOR⟧⟦COLOR:#0000ff⟧blue⟦/COLOR⟧'])
+  })
+
+  it('underline/color work inside table cells (pipe and sentinel)', () => {
+    expectIdentity([
+      '| h |',
+      '| --- |',
+      '| ⟦U⟧cell⟦/U⟧ |',
+    ])
+    expectIdentity([
+      '⟦TABLE⟧',
+      '⟦TR⟧', '⟦TH⟧', 'h', '⟦/TH⟧', '⟦/TR⟧',
+      '⟦TR⟧', '⟦TD⟧', '⟦COLOR:#22cc88⟧HP⟦/COLOR⟧: 100', 'MP: 50', '⟦/TD⟧', '⟦/TR⟧',
+      '⟦/TABLE⟧',
+    ])
+  })
+
+  it('underline in headings and blockquotes round-trips', () => {
+    expectIdentity(['# ⟦U⟧Title⟦/U⟧', '', '> ⟦COLOR:#993300⟧warm⟦/COLOR⟧ quote'])
+  })
+
+  it('literal/unmatched marker text blocks the save', () => {
+    const { doc } = linesToDoc(['stray ⟦U⟧ marker without close'])
+    const rt = roundTrip(doc)
+    expect(rt.ok).toBe(false)
+    expect(rt.warnings).toContain('sentinel:literal')
+    // misnested pairs also stay literal → blocked
+    const { doc: doc2 } = linesToDoc(['⟦U⟧a⟦COLOR:#112233⟧b⟦/U⟧c⟦/COLOR⟧'])
+    const rt2 = roundTrip(doc2)
+    expect(rt2.ok).toBe(false)
+    expect(rt2.warnings).toContain('sentinel:literal')
+  })
+
+  it('underlined bare URL round-trips (autolink + marker interplay)', () => {
+    expectIdentity(['see ⟦U⟧https://example.com/path⟦/U⟧ now'])
+  })
+
+  it('whitespace at underline edges is preserved (no flanking rules)', () => {
+    expectIdentity(['a⟦U⟧ padded ⟦/U⟧b'])
   })
 })
 

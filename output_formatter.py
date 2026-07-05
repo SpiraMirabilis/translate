@@ -40,11 +40,180 @@ _MD_BLOCK_CSS = '''
 '''
 
 
+# Inline formatting sentinels (underline / foreground color), mirroring
+# chapterMarkdown.js replaceInlineSentinels: ⟦U⟧…⟦/U⟧ and
+# ⟦COLOR:#rrggbb⟧…⟦/COLOR⟧ ride through markdown + bleach as plain text and
+# balanced pairs are swapped for real tags AFTER sanitization. Only validated
+# hex is interpolated. Markers inside <code>/<pre> stay literal; pairs
+# crossing a block boundary stay literal (mismatched tags would break XHTML).
+_INLINE_SENTINEL_RE = re.compile(r'⟦(/?)(U|COLOR)(?::(#[0-9a-f]{6}))?⟧')
+_BLOCK_TAG_RE = re.compile(
+    r'</?(?:p|li|ul|ol|blockquote|h[1-6]|t[dhr]|table|thead|tbody|pre|div)\b', re.I)
+_CODE_REGION_RE = re.compile(r'<pre\b.*?</pre>|<code\b.*?</code>', re.S)
+
+
+def _apply_inline_sentinels(html):
+    if not html or '⟦' not in html:
+        return html
+    code_regions = [(m.start(), m.end()) for m in _CODE_REGION_RE.finditer(html)]
+
+    def in_code(i):
+        return any(a <= i < b for a, b in code_regions)
+
+    matches = []
+    for m in _INLINE_SENTINEL_RE.finditer(html):
+        close = m.group(1) == '/'
+        hex_ = m.group(3)
+        valid = (not hex_ if close else (not hex_ if m.group(2) == 'U' else bool(hex_)))
+        matches.append({
+            'start': m.start(), 'end': m.end(), 'close': close,
+            'kind': m.group(2), 'hex': hex_,
+            'valid': valid and not in_code(m.start()), 'use': False,
+        })
+    stack = []
+    for t in matches:
+        if not t['valid']:
+            continue
+        if not t['close']:
+            stack.append(t)
+            continue
+        if stack and stack[-1]['kind'] == t['kind']:
+            top = stack.pop()
+            if _BLOCK_TAG_RE.search(html[top['end']:t['start']]):
+                continue
+            top['use'] = t['use'] = True
+        # close without matching open on top: stays literal
+    if not any(t['use'] for t in matches):
+        return html
+    out = []
+    last = 0
+    for t in matches:
+        if not t['use']:
+            continue
+        out.append(html[last:t['start']])
+        if t['close']:
+            out.append('</u>' if t['kind'] == 'U' else '</span>')
+        else:
+            out.append('<u>' if t['kind'] == 'U' else f'<span style="color:{t["hex"]}">')
+        last = t['end']
+    out.append(html[last:])
+    return ''.join(out)
+
+
+# Rich-table sentinel markers, mirroring chapterMarkdown.js (TABLE_MARKER_RE
+# etc.). Whole-line bbcode-style tags with explicit terminators so a cell can
+# hold multiple lines / lists / quotes, which pipe tables can't express.
+_TABLE_MARKER_RE = re.compile(r'^\s*⟦/?(TABLE|TR|TH|TD)(?::(left|center|right))?⟧\s*$')
+_TBL_OPEN_RE = re.compile(r'^\s*⟦TABLE⟧\s*$')
+_TR_OPEN_RE = re.compile(r'^\s*⟦TR⟧\s*$')
+_CELL_OPEN_RE = re.compile(r'^\s*⟦(TH|TD)(?::(left|center|right))?⟧\s*$')
+_CLOSE_RE = re.compile(r'^\s*⟦/(TABLE|TR|TH|TD)⟧\s*$')
+_IMG_LINE_RE = re.compile(r'^\s*⟦IMG:[0-9a-f]{4,}⟧\s*$')
+
+
+def _parse_table_run(lines, start):
+    """Parse a sentinel table starting at lines[start] (must be ⟦TABLE⟧).
+
+    Returns ({rows: [{cells: [{header, align, lines}]}]}, next_index) or None
+    when malformed — same grammar and failure modes as the JS parseTableRun.
+    """
+    if start >= len(lines) or not _TBL_OPEN_RE.match(lines[start] or ''):
+        return None
+    rows = []
+    row = None
+    cell = None
+    i = start + 1
+    while i < len(lines):
+        line = lines[i] if isinstance(lines[i], str) else None
+        if line is None:
+            return None
+        if cell is not None:
+            close = _CLOSE_RE.match(line)
+            if close and close.group(1) in ('TH', 'TD'):
+                if ('TH' if cell['header'] else 'TD') != close.group(1):
+                    return None
+                row.append(cell)
+                cell = None
+            elif _TABLE_MARKER_RE.match(line) or _IMG_LINE_RE.match(line):
+                return None
+            else:
+                cell['lines'].append(line)
+        elif row is not None:
+            open_m = _CELL_OPEN_RE.match(line)
+            close = _CLOSE_RE.match(line)
+            if open_m:
+                cell = {'header': open_m.group(1) == 'TH',
+                        'align': open_m.group(2), 'lines': []}
+            elif close and close.group(1) == 'TR':
+                if not row:
+                    return None
+                rows.append({'cells': row})
+                row = None
+            else:
+                return None
+        elif _TR_OPEN_RE.match(line):
+            row = []
+        elif _CLOSE_RE.match(line) and _CLOSE_RE.match(line).group(1) == 'TABLE':
+            if row is not None or not rows:
+                return None
+            return {'rows': rows}, i + 1
+        else:
+            return None
+        i += 1
+    return None  # EOF before ⟦/TABLE⟧
+
+
+def _render_prose_markdown(text, _markdown, _re):
+    """The pre-existing prose pipeline: python-markdown + pipe-table fixups."""
+    if not text.strip():
+        return ""
+    html = _markdown.markdown(text, extensions=['extra', 'sane_lists', 'nl2br'])
+    # python-markdown emits a spurious all-empty body row for header-only tables
+    # (e.g. a single 【…】 notification → `| X |` / `| --- |`). markdown-it (the
+    # Reader) omits it, so strip it here to keep EPUB/HTML in parity with the
+    # Reader — leaving just the header row.
+    html = _re.sub(r"<tr>\s*(?:<td[^>]*>\s*</td>\s*)+</tr>\s*", "", html)
+    html = _re.sub(r"<tbody>\s*</tbody>\s*", "", html)
+    return html
+
+
+def _render_table_html(rows, _markdown):
+    """Sentinel table → HTML, mirroring chapterMarkdown.js renderTable:
+    leading all-header rows in <thead>, <tbody> omitted when empty, align as
+    an attribute, cell interiors rendered as full block-level Markdown."""
+    def cell_html(cell):
+        tag = 'th' if cell['header'] else 'td'
+        align = f' align="{cell["align"]}"' if cell['align'] else ''
+        inner = _markdown.markdown('\n'.join(cell['lines']),
+                                   extensions=['extra', 'sane_lists', 'nl2br'])
+        return f'<{tag}{align}>{inner}</{tag}>'
+
+    def row_html(row):
+        return '<tr>' + ''.join(cell_html(c) for c in row['cells']) + '</tr>'
+
+    head, body = [], []
+    for row in rows:
+        if row['cells'] and all(c['header'] for c in row['cells']) and not body:
+            head.append(row)
+        else:
+            body.append(row)
+    html = '<table>'
+    if head:
+        html += '<thead>' + ''.join(row_html(r) for r in head) + '</thead>'
+    if body:
+        html += '<tbody>' + ''.join(row_html(r) for r in body) + '</tbody>'
+    return html + '</table>'
+
+
 def _render_markdown(text):
     """Render a Markdown document to sanitized HTML.
 
-    Lazily imports markdown + bleach so the module never breaks if they're
-    absent; falls back to escaped paragraphs in that case.
+    Handles sentinel ⟦TABLE⟧ runs (rich tables with block content in cells)
+    by rendering them structurally; everything else goes through the prose
+    pipeline. Malformed table runs fall through as prose (markers render
+    literally — parity with the frontend). Lazily imports markdown + bleach so
+    the module never breaks if they're absent; falls back to escaped
+    paragraphs in that case.
     """
     if not text or not text.strip():
         return ""
@@ -56,15 +225,63 @@ def _render_markdown(text):
         import html as _html
         blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
         return "".join(f"<p>{_html.escape(b)}</p>\n" for b in blocks)
-    html = _markdown.markdown(text, extensions=['extra', 'sane_lists', 'nl2br'])
-    # python-markdown emits a spurious all-empty body row for header-only tables
-    # (e.g. a single 【…】 notification → `| X |` / `| --- |`). markdown-it (the
-    # Reader) omits it, so strip it here to keep EPUB/HTML in parity with the
-    # Reader — leaving just the header row.
     import re as _re
-    html = _re.sub(r"<tr>\s*(?:<td[^>]*>\s*</td>\s*)+</tr>\s*", "", html)
-    html = _re.sub(r"<tbody>\s*</tbody>\s*", "", html)
-    return _bleach.clean(html, tags=_MD_ALLOWED_TAGS, attributes=_MD_ALLOWED_ATTRS, strip=True)
+    lines = text.split('\n')
+    parts = []
+    run = []
+
+    def flush():
+        if run:
+            parts.append(_render_prose_markdown('\n'.join(run), _markdown, _re))
+            run.clear()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _TBL_OPEN_RE.match(line):
+            parsed = _parse_table_run(lines, i)
+            if parsed:
+                table, nxt = parsed
+                flush()
+                parts.append(_render_table_html(table['rows'], _markdown))
+                i = nxt
+                continue
+        run.append(line)
+        i += 1
+    flush()
+    html = ''.join(parts)
+    html = _bleach.clean(html, tags=_MD_ALLOWED_TAGS, attributes=_MD_ALLOWED_ATTRS, strip=True)
+    return _apply_inline_sentinels(html)
+
+
+def render_lines_html(content_lines):
+    """Render a stored content line array to sanitized HTML.
+
+    Splits at ⟦IMG:id⟧ marker lines (each kept as a literal <p> placeholder —
+    callers with real image URLs handle those themselves) and renders each run
+    through _render_markdown, so pipe tables, sentinel ⟦TABLE⟧ tables, lists,
+    and inline markdown all come out as real HTML. Shared by WordPress
+    publishing and the book HTML export.
+    """
+    parts = []
+    run = []
+
+    def flush():
+        if run:
+            html = _render_markdown("\n".join(run))
+            if html:
+                parts.append(html)
+            run.clear()
+
+    for line in content_lines or []:
+        mid = parse_marker(line)
+        if mid:
+            flush()
+            parts.append(f"<p>⟦IMG:{mid}⟧</p>")
+        else:
+            run.append(line if isinstance(line, str) else "")
+    flush()
+    return "\n".join(parts)
 
 
 class OutputFormatter:
