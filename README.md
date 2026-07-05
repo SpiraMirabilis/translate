@@ -1,26 +1,71 @@
-# T9 — Web Novel Translator
+# T9 — Web Novel Translation & Publishing Platform
 
-T9 is an AI-powered tool for translating web novels into English. It supports Chinese, Japanese, and Korean source languages using large language models (OpenAI, Claude, Gemini, DeepSeek, OpenRouter) and maintains consistent terminology across an entire book through an entity management system that tracks character names, places, organizations, and other proper nouns.
+T9 started as an AI-powered tool for translating web novels into English and has grown into a full publishing platform. It has two halves that matter about equally:
 
-## Features
+- **A translation & writing studio** — multi-provider AI translation (OpenAI, Claude, Gemini, DeepSeek, OpenRouter, or your local Claude Code subscription) with an entity glossary that keeps terminology consistent across thousands of chapters, a split-pane proofreading editor, a WYSIWYG editor for original fiction, and batch queue processing.
+- **A public reader site** — a clean, login-free Library and Reader for your finished work, with chapter scheduling and drip releases, anonymous comments with moderation, RSS feeds, EPUB downloads, reader statistics, and CDN-backed covers and illustrations.
 
-- **Multi-provider AI translation** — OpenAI, Anthropic Claude, Google Gemini, DeepSeek, and OpenRouter, with easy extensibility for new providers
-- **Multi-language support** — Chinese, Japanese, and Korean with genre-specific prompt presets (xianxia, light novel, Korean web novel, etc.)
+Source languages include Chinese, Japanese, Korean, and Russian, with genre-specific prompt presets (xianxia, light novel, Korean web novel, and more).
+
+## Feature Highlights
+
+### Translation engine
+- **Multi-provider AI translation** — OpenAI, Anthropic Claude, Google Gemini, DeepSeek, OpenRouter, and a `claudecode` provider that drives the local Claude Code CLI (translate on your Claude subscription with no API key; the queue pauses and resumes automatically around session limits)
 - **Entity consistency** — automatically identifies proper nouns and maintains a per-book glossary so names, places, and terms stay consistent across hundreds of chapters
-- **Entity review** — after each chapter, review newly discovered entities, fix translations, and delete false positives before they propagate
-- **Retroactive entity review** — go back and review entities introduced in earlier chapters, with AI advice, dictionary lookup, and propagation options to update all affected chapters
-- **Entity cleaning** — optional second-pass with a lightweight model to filter out common words misidentified as entities
-- **Queue processing** — upload many chapters and translate them back-to-back with auto-processing
-- **Book management** — organize translations into books with per-book custom system prompts, entity categories, chapter tracking, cover images, and EPUB export
-- **Genre presets** — pre-built translation prompts optimized for specific genres (Chinese xianxia, Japanese light novel, Korean web novel), with custom categories and terminology guidance
-- **Chapter editor** — split-pane proofreading view with source on the left, editable English on the right, entity highlighting, dictionary lookup, and LLM retranslation with ruby text comparison
-- **Search & replace** — find text across a single chapter or an entire book, with regex support, cross-chapter navigation, and one-click undo for bulk replacements
-- **Unit conversion** — automatically converts Chinese/metric units in translated text, with configurable annotation or replacement modes
-- **Partial repair** — auto-retranslates lines that still contain untranslated source characters after the main translation pass
-- **WordPress publishing** — publish translated books directly to a WordPress site running the Fictioneer theme, with incremental updates
-- **Public library** — optional public-facing reader with chapter navigation, search, bookmarks, and theme support (light/sepia/dark) — no login required for readers
-- **Streaming output** — real-time translation progress with chunk-by-chunk status updates via WebSocket
-- **Two interfaces** — web GUI (recommended) and full-featured CLI
+- **Entity review** — after each chapter, review newly discovered entities, fix translations, and delete false positives before they propagate; retroactive review revisits earlier entities with AI advice, dictionary lookup, and propagation to affected chapters
+- **Queue processing** — upload EPUB, FB2, or text files and translate back-to-back with auto-processing; resilient to provider overload (529 responses trigger a patient retry loop instead of burning the retry budget)
+- **Streaming output** — real-time translation progress with chunk-by-chunk status over WebSocket
+- **Genre presets** — pre-built prompts per genre, copied per book at creation so you can customize each book's system prompt independently
+
+### Books, proofreading & rich content
+- **Chapter editor** — split-pane view with source on the left, editable English on the right, entity highlighting, CC-CEDICT dictionary lookup, and selection-based LLM retranslation with ruby-text comparison
+- **Search & replace** — chapter-level or book-wide, regex support, cross-chapter navigation, one-click undo for bulk replacements, and a global search modal on the Books page
+- **Markdown rich text** — chapters support block-level Markdown (headings, blockquotes, tables, and more) rendered identically in the Reader, EPUB, HTML export, and WordPress
+- **Illustrations** — in-chapter images via `⟦IMG:id⟧` markers that survive the translate → edit → export pipeline and render inline everywhere
+- **Footnotes** — persistent per-book footnotes (cultural notes, incantation glosses) that re-anchor automatically on every chapter save
+
+### Original works & the Write editor
+- **WYSIWYG Write editor** (TipTap) for fiction written directly in the browser — original books get it as their default editor, and translation books can use it too
+- **Round-trip safety** — content is stored as Markdown; every save is serialize → reparse → compare guarded, so the editor can never silently rewrite your text
+- **Autosave & revisions** — server autosave with optimistic locking (conflict banner instead of silent clobber), plus manual/auto revision snapshots with one-click restore
+- **Writing tools** — live word count, session counter, daily goal, focus/typewriter mode, Reader-parity preview
+- **Grammar & polish** — local LanguageTool integration plus an LLM polish pass, with your entity dictionary suppressing false positives on invented names
+- **Rich formatting** — XenForo-parity tables (multi-paragraph cells, lists in cells), underline and text color, with BBCode export for forum posting
+
+### Publishing
+- **Drafts & scheduling** — every chapter is draft, scheduled, or live (`published_at` timestamp); scheduled chapters go live automatically with no cron
+- **Drip releases** — batch-publish a run of chapters with a stagger interval (e.g. one chapter every 12 hours)
+- **EPUB export** — per-book EPUB generation with covers and illustrations; the public download is published-chapters-only and regenerates itself when a scheduled chapter crosses its publish time
+- **WordPress / Fictioneer** — publish books to a WordPress site running the Fictioneer theme, incrementally (unchanged chapters skipped)
+- **RSS** — a site-wide feed of recent chapters plus per-book feeds, with autodiscovery tags on reader pages
+
+### The public reader site
+- **Library** — public book listing with covers, tags, status, and view counts; no login required for readers
+- **Reader** — chapter navigation, table of contents, full-text search, keyboard and swipe navigation, translated/source/interleaved display modes, light/sepia/dark themes, adjustable font size
+- **Comments** — anonymous per-chapter comments protected by Cloudflare Turnstile, with optional email reply notifications (and one-click unsubscribe), an admin moderation queue, optional AI auto-moderation, and IP bans that push to the Cloudflare edge
+- **Recommendations** — a public "recommend me something" form (also Turnstile-protected) feeding an admin review page
+- **Reader statistics** — view counts and per-chapter reading stats in the admin UI
+
+### Per-book modules
+Composable text-transform modules, toggled per book (auto by source URL, or forced on/off), each with its own settings:
+
+| Module | What it does |
+|---|---|
+| Traditional → Simplified | OpenCC conversion at ingest so Taiwan-sourced raws match your entity glossary |
+| Chatgroup Transformer | Normalizes "group chat" novels — wraps 叮！/Ding notifications and username:message lines (entity-verified) into 【…】 blocks, on both source and translated text |
+| Markdown Notifications | Renders 【…】 system/notification blocks as boxed tables in the Reader |
+| Chapter Spacing | Normalizes paragraph spacing |
+| Unit Converter | Converts Chinese/metric units in translations, with annotate or replace modes and LLM false-positive filtering |
+| Partial Repair | Re-translates lines that still contain source-language characters after the main pass |
+| novel543 / twkan | Site-specific boilerplate strippers for scraped sources |
+
+Enabling, disabling, or reconfiguring a module backfills (or reverses) the transformation across the whole book — as a background task with progress in the UI and guardrails so conflicting operations can't run concurrently. Module activity is summarized to the activity log without per-chapter spam.
+
+### Infrastructure
+- **Dual database backend** — SQLite by default, MySQL (with connection pooling) via `DB_BACKEND=mysql`; schema migrations run automatically
+- **Object storage / CDN** — covers, illustrations, and EPUBs can be offloaded to S3-compatible storage (DigitalOcean Spaces) and served from CDN URLs
+- **Activity log & cost tracking** — persistent activity feed plus a per-call API log with token counts
+- **Operations** — systemd service, watchdog, health endpoint, reverse-proxy configs for Apache/Nginx, and a pytest suite covering the DB layer, HTTP API, and text pipelines
 
 ## Quick Start
 
@@ -28,7 +73,7 @@ T9 is an AI-powered tool for translating web novels into English. It supports Ch
 
 - Python 3.10+
 - Node.js 18+ and npm
-- At least one AI provider API key
+- At least one AI provider API key (or a Claude Code login for the `claudecode` provider)
 
 ### Installation
 
@@ -61,7 +106,7 @@ TRANSLATION_MODEL=claude:claude-sonnet-4-6
 ADVICE_MODEL=oai:gpt-5-mini
 ```
 
-API keys can also be set through the web GUI on the Settings page.
+API keys can also be set through the web GUI on the Settings page. Non-secret settings (models, site branding, feature toggles) live in `settings.json`, managed from the Settings page — `.env` is only for secrets and infrastructure.
 
 ### Launch
 
@@ -79,19 +124,19 @@ Once T9 is running, here's how to translate your first book.
 
 ### 1. Create a book
 
-Go to **Books** and click **New Book**. Enter a title and author, then pick a genre preset. The genre determines the source language and loads an optimized system prompt — for example, "Chinese Xianxia" includes instructions for cultivation terminology, while "Japanese Light Novel" handles honorifics and Japanese narrative conventions. You can also choose "Custom" and write your own prompt later.
+Go to **Books** and click **New Book**. Enter a title and author, then pick a genre preset. The genre determines the source language and loads an optimized system prompt — for example, "Chinese Xianxia" includes instructions for cultivation terminology, while "Japanese Light Novel" handles honorifics and Japanese narrative conventions. You can also choose "Custom" and write your own prompt, or check **Original work** to write fiction directly in the browser instead of translating.
 
 ### 2. Upload your chapters
 
 Go to **Queue** and upload your source material:
 
-- **EPUB** — click "Upload EPUB", select the file, and assign it to your book. T9 extracts each chapter automatically and adds them to the queue with sequential chapter numbers.
-- **Text files** — click "Upload File" to add individual `.txt` files. You can upload many at once. Set the book and starting chapter number. Chapter numbers are auto-detected from filenames when possible.
-- **Paste** — for a single chapter, you can also go to the **Translate** page, paste the source text directly, and translate it there.
+- **EPUB / FB2** — upload the file and assign it to your book. T9 extracts each chapter automatically and adds them to the queue with sequential chapter numbers (FB2/FB2.zip covers Russian sources).
+- **Text files** — upload individual `.txt` files, many at once. Chapter numbers are auto-detected from filenames when possible.
+- **Paste** — for a single chapter, go to the **Translate** page, paste the source text, and translate it there.
 
 ### 3. Start translating
 
-On the Queue page, select your translation model (and optionally an advice model for entity suggestions and a cleaning model for filtering false-positive entities). Click **Process Next** to translate one chapter, or enable **Auto-process** to translate them back-to-back.
+On the Queue page, select your translation model (and optionally an advice model for entity suggestions and a cleaning model for filtering false-positive entities). Click **Process Next** to translate one chapter, or enable **Auto-process** to translate them back-to-back. Check **Save as drafts** if you want to schedule the releases yourself instead of publishing immediately.
 
 ### 4. Review entities
 
@@ -101,9 +146,9 @@ When the translator finds new proper nouns — character names, places, organiza
 
 After a chapter finishes, go to **Books**, expand the book, and click **Edit** on the chapter. The split-pane editor shows the source text on the left and the editable English translation on the right. You can proofread and fix the translation while the next chapter processes in the background. Mark it proofread when you're satisfied.
 
-### 6. Export or publish
+### 6. Publish
 
-Once all chapters are translated and proofread, click **Export EPUB** on the Books page to generate an ebook. You can also publish directly to WordPress if you have the Fictioneer integration set up (see below), or share via the public library.
+Chapters from the translation pipeline go live immediately by default; original-work chapters are born as drafts. Use the publish chip in either editor (or the batch Publish action on Books) to publish now, schedule for later, or set up a drip release. Then share your public library URL, export an EPUB, or push to WordPress.
 
 ## Supported Providers
 
@@ -114,8 +159,11 @@ Once all chapters are translated and proofread, click **Export EPUB** on the Boo
 | Google Gemini | `gemini` | gemini-2.5-flash, gemini-2.5-pro | `GOOGLE_AI_KEY` |
 | DeepSeek | `ds` | deepseek-chat | `DEEPSEEK_KEY` |
 | OpenRouter | `or` | any model on OpenRouter | `OPENROUTER_KEY` |
+| Claude Code | `cc` | sonnet, opus | *(none — uses your local Claude Code login)* |
 
-Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `gemini:gemini-2.5-flash`)
+Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `cc:sonnet`)
+
+The `cc` provider shells out to the Claude Code CLI, so translation costs come out of a Claude subscription instead of API billing. When a session usage limit is hit mid-queue, T9 parks the job and resumes automatically when the limit resets.
 
 Providers can be configured and new models added by editing `providers/models.json`.
 
@@ -123,74 +171,60 @@ Providers can be configured and new models added by editing `providers/models.js
 
 ### Translate (Dashboard)
 
-The main workspace for single-chapter translation. Paste source text, select a book and chapter, choose your models, and hit Translate. The right panel streams the translation output in real time and shows a status log. Options include entity review, entity cleaning, partial repair, and unit conversion toggles.
+The main workspace for single-chapter translation. Paste source text, select a book and chapter, choose your models, and hit Translate. The right panel streams the translation output in real time and shows a status log. Options include entity review, entity cleaning, partial repair, unit conversion, and save-as-draft.
 
 ### Books
 
-Book and chapter management hub. Create books with genre presets, upload cover images, set custom system prompts, and manage entity categories. Chapters can be individually edited, marked as proofread, deleted, or requeued for retranslation. Batch operations let you select multiple chapters at once. Global cross-chapter search (`Ctrl+F`) finds text across all chapters and jumps directly into the editor. Export entire books as EPUB.
+Book and chapter management hub. Create books with genre presets, upload cover images, set custom system prompts, manage entity categories, and configure per-book modules. Chapters show draft/scheduled/published state and can be edited, marked proofread, deleted, requeued for retranslation, or batch-published with a drip schedule. Global cross-chapter search (`Ctrl+F`) jumps directly into the editor. Export EPUBs or publish to WordPress from here.
 
 ### Chapter Editor
 
-Split-pane proofreading view with source text on the left (read-only) and editable English translation on the right. Tools include:
+Split-pane proofreading view with source text on the left (read-only) and editable English translation on the right: entity highlighting with inline editing, CC-CEDICT dictionary lookup, selection-based LLM retranslation with ruby-text comparison, chapter- and book-wide search & replace with regex and undo, and the publish chip.
 
-- **Entity highlighting** — toggle to highlight known entities in both panels with category-specific colors. Click to edit inline.
-- **Dictionary lookup** — select text to look it up in CC-CEDICT (Chinese dictionary).
-- **LLM retranslation** — select a source passage and request an AI retranslation. The result appears as ruby text above the original for comparison.
-- **Search & replace** — chapter-level or book-wide, with regex support. Book-wide Replace All has a one-click undo.
+### Write Editor
+
+WYSIWYG editor for original fiction (and any translation chapter you open it on). Formatting toolbar and bubble menu, tables, underline/color, inline illustrations, footnotes, live word count and daily goal, focus/typewriter mode, grammar checking with LLM polish, revision history slide-over, and autosave with conflict protection. Storage stays Markdown under the hood, and a round-trip guard blocks any save the serializer can't reproduce exactly.
 
 ### Entities
 
-Browse, search, edit, and manage the entity glossary. Features include per-entity categories, gender tracking for characters, translation notes (included in AI prompts), AI advice from a secondary model, dictionary lookup, duplicate detection, and propagation — when you change an entity's translation, you can find-and-replace the old translation across all chapters or requeue affected chapters. Retroactive review lets you revisit entities from earlier chapters with full context.
+Browse, search, edit, and manage the entity glossary. Per-entity categories, gender tracking, translation notes (included in AI prompts), AI advice from a secondary model, dictionary lookup, duplicate detection, and propagation — change an entity's translation and find-and-replace it across all chapters or requeue affected chapters.
 
 ### Queue
 
-Batch processing for translating many chapters in sequence. Upload `.txt` files or EPUBs, assign them to books, and process them back-to-back. Auto-process mode translates continuously, pausing only for entity review. Supports all the same model and option controls as the Dashboard.
+Batch processing for translating many chapters in sequence. Upload `.txt`, EPUB, or FB2 files, assign them to books, and process back-to-back. Auto-process mode translates continuously, pausing only for entity review.
+
+### Comments
+
+Moderation queue for reader comments: approve, delete, reply as admin, ban IPs (optionally pushed to the Cloudflare edge), and review what the AI auto-moderator flagged.
+
+### Recommendations
+
+Reader-submitted recommendations from the public form, with admin review.
+
+### Stats & Logs
+
+Reader statistics (views per book/chapter), the API call log with per-call token counts and costs, and the persistent activity log.
 
 ### Settings
 
-Configure API provider keys (with test buttons to verify), set default translation and advice models, toggle debug mode, manage unit conversion rules (configurable JSON for which units to convert and whether to annotate or replace), enable the public library, export entity data as JSON, and configure WordPress/Fictioneer publishing credentials.
+Configure provider API keys (with test buttons), default models, site branding for the public reader, the public library toggle, unit conversion rules, traditional→simplified conversion, grammar checking, comment auto-moderation, and WordPress credentials. Non-secret values persist to `settings.json`; secrets go to `.env`.
 
-### Reader
+### Reader & Library
 
-A clean reading interface for translated books. Features chapter navigation, table of contents, full-text search (`Ctrl+F`), swipe gestures for mobile, keyboard navigation (arrow keys), and three display modes: translated text only, source text only, or both interleaved. New entities introduced in each chapter are shown as color-coded badges. Supports light, sepia, and dark themes with customizable font size.
+The same Reader and Library that the public sees, accessible from the admin UI. When the public library is enabled, unauthenticated visitors can browse published books, read published chapters, comment, subscribe to RSS, and download EPUBs — with drafts and scheduled chapters invisible until they go live.
 
-### Library
+## The Public Site
 
-Optional public-facing book listing. When enabled in Settings, unauthenticated visitors can browse your translated books, read chapters, and download EPUBs — without needing to log in or having access to the translation tools.
+Everything a reader touches is gated on publication state at query time:
 
-### Help
+- **Library** (`/library`) lists public books with published-chapter counts and last-release dates.
+- **Reader** serves only published chapters; scheduled chapters appear the moment their time arrives — no cron job, no restart.
+- **EPUB download** contains published chapters only and regenerates automatically when a scheduled chapter crosses its publish time.
+- **RSS** — `/api/public/feed.rss` (site-wide) and per-book feeds with autodiscovery `<link>` tags on reader pages.
+- **Comments** are anonymous with Turnstile verification; commenters can opt into email notifications for replies (sent via local Postfix, with unsubscribe links). Comments on unpublished chapters 404.
+- **Covers and illustrations** are served from CDN URLs when Spaces offload is enabled.
 
-Built-in guide covering the recommended workflow, feature reference for each page, and WordPress setup instructions.
-
-## Search & Replace
-
-T9 has built-in search and replace for proofreading and consistency fixes.
-
-### Chapter Editor search (`Ctrl+F` / `Ctrl+H`)
-
-- **Scope** — search Translated text, Source text, or Both
-- **Regex** — toggle the `.*` button for regular expression matching
-- **Book-wide** — click the book icon to search across all chapters. `Enter` and `Shift+Enter` navigate matches across chapter boundaries automatically
-- **Replace** — replace the current match or Replace All (translated text only — source is read-only). Book-wide Replace All modifies every chapter in one operation
-- **Undo** — after a book-wide Replace All, an undo toast appears for 15 seconds to revert all changes
-
-### Global search (Books page, `Ctrl+F`)
-
-Click the search icon on the Books page to open a modal that searches across all chapters of a book. Results are grouped by chapter with match counts. Clicking a result opens the Chapter Editor with the search pre-loaded and positioned on the first match.
-
-## Unit Conversion
-
-T9 can automatically convert Chinese units (li, jin, zhang, etc.) to metric equivalents in the translated text. This runs as a two-step post-processing pass after translation:
-
-1. **Regex matching** — a regular expression scans the translated text for unit patterns (e.g. "three hundred li", "fifty jin").
-2. **False-positive filtering** — all matches are sent to the cleaning model, which evaluates each one in context and removes false positives (e.g. idiomatic phrases that aren't actual measurements). If no cleaning model is set, this step is skipped and all regex matches are converted directly.
-
-Configuration is done on the Settings page via an editable JSON block. Each unit entry specifies the conversion factor and an action:
-
-- **annotate** — keeps the original text and adds a parenthetical, e.g. "thirty li (15 km)"
-- **replace** — substitutes the converted value directly, e.g. "15 kilometers"
-
-Unit conversion can be toggled on or off per translation from the Dashboard or Queue page.
+A standalone Apache config (`deploy/apache2-reader.conf`) exposes only the public surface if you want the admin UI reachable on a separate host or VPN.
 
 ## WordPress / Fictioneer Publishing
 
@@ -213,48 +247,36 @@ t9/
 ├── run_web.py             # Alternative launcher (Python, no Vite)
 ├── translator.py          # CLI entry point
 ├── translation_engine.py  # Core translation logic
-├── database.py            # SQLite database manager
-├── config.py              # Configuration
-├── cli.py                 # Command-line interface
-├── ui.py                  # Abstract UI base class
-├── unit_converter.py      # Post-translation unit conversion
-├── genres.json            # Genre preset definitions
-├── genres.py              # Genre loading utilities
+├── database.py            # Compatibility shim → db/ package
+├── db/                    # Database layer: repos (books, chapters, entities,
+│                          #   queue, footnotes, revisions, ...), migrations
+├── db_backend.py          # SQLite/MySQL backend abstraction
+├── modules/               # Per-book transform modules + background task runner
+├── providers/             # AI provider modules + models.json
 ├── prompts/               # System prompt templates per genre
-│   ├── chinese_xianxia.txt
-│   ├── japanese_light_novel.txt
-│   └── korean_web_novel.txt
-├── providers/             # AI provider modules
-│   ├── factory.py
-│   ├── models.json        # Provider and model configuration
-│   ├── openai_provider.py
-│   ├── claude_provider.py
-│   └── gemini_provider.py
-├── web/                   # Web GUI
+├── genres.json / genres.py
+├── epub_processor.py      # EPUB import
+├── fb2_processor.py       # FB2 (FictionBook) import
+├── output_formatter.py    # Text/HTML/Markdown/EPUB rendering
+├── illustrations.py       # ⟦IMG⟧ marker pipeline
+├── footnotes.py           # Footnote persistence & re-anchoring
+├── spaces.py              # S3/Spaces (CDN) offload
+├── settings_store.py      # settings.json (non-secret runtime settings)
+├── web/                   # Web GUI + public site
 │   ├── app.py             # FastAPI application
 │   ├── auth.py            # Session-based authentication
 │   ├── cedict.db          # CC-CEDICT Chinese dictionary
-│   ├── api/               # REST + WebSocket endpoints
-│   ├── services/          # Job manager, web interface
+│   ├── api/               # REST + WebSocket endpoints (admin + public)
+│   ├── services/          # Job manager, exporters, view logger, ...
 │   └── frontend/          # React + Vite + Tailwind CSS
-│       └── src/
-│           ├── pages/     # Dashboard, Books, ChapterEditor, Entities,
-│           │              # Queue, Settings, Help, Reader, Library,
-│           │              # BookDetail, Login
-│           ├── components/
-│           ├── hooks/
-│           ├── services/
-│           └── utils/
-├── deploy/                # Deployment configs
-│   ├── t9.service         # systemd --user service
-│   ├── t9-watchdog.service # Watchdog auto-restart service
-│   ├── t9_watchdog.py     # Watchdog monitor script
-│   ├── nginx-reverse-proxy.conf
-│   ├── apache2-reverse-proxy.conf
-│   ├── apache2-reader.conf # Standalone reader config
-│   ├── fictioneer-rest-meta.php  # WordPress plugin
-│   └── install-wp-plugin.sh
-├── requirements.txt       # Python dependencies (core + CLI)
+│       └── src/pages/     # Dashboard, Books, ChapterEditor, WriteEditor,
+│                          # Entities, Queue, CommentsAdmin, Recommendations,
+│                          # ReaderStats, ApiCalls, Settings, Help,
+│                          # Reader, Library, Login
+├── tests/                 # pytest suite (DB layer, HTTP API, text pipelines)
+├── deploy/                # systemd units, watchdog, reverse-proxy configs,
+│                          # WordPress plugin
+├── requirements.txt
 └── database.db            # SQLite database (created on first run)
 ```
 
@@ -272,7 +294,7 @@ To enable it, add `T9_PASSWORD` to your `.env`:
 T9_PASSWORD=your-secure-password-here
 ```
 
-When set, all API endpoints and WebSocket connections require a valid session. Users see a login page and must enter the password to access the app. Sessions last 30 days via a signed cookie, so you won't need to re-authenticate often.
+When set, all admin API endpoints and WebSocket connections require a valid session. The public reader endpoints are separate and intentionally unauthenticated — they only ever serve published content from public books, and only when the public library is enabled.
 
 When `T9_PASSWORD` is not set, authentication is disabled entirely — appropriate for local-only use on `127.0.0.1`.
 
@@ -300,13 +322,13 @@ cd web/frontend && npm run build && cd ../..
 mkdir -p ~/.config/systemd/user
 cp deploy/t9.service ~/.config/systemd/user/
 
-# Edit paths in the service file if your install location differs from ~/Documents/code/t9
+# Edit paths in the service file if your install location differs
 
 systemctl --user daemon-reload
 systemctl --user start t9
 systemctl --user status t9
 
-# Enable on boot (requires lingering so it runs without an active login session)
+# Enable on boot
 loginctl enable-linger $USER
 systemctl --user enable t9
 
@@ -314,9 +336,11 @@ systemctl --user enable t9
 journalctl --user -u t9 -f
 ```
 
+**Note on lingering:** `systemctl --user` services normally live and die with your login session — without lingering enabled, T9 will stop when you log out and won't start on boot. `loginctl enable-linger $USER` fixes that, but on many distros it requires root (or polkit authorization), so you may need `sudo loginctl enable-linger $USER`. Verify with `loginctl show-user $USER --property=Linger` — it should say `Linger=yes`.
+
 ### Watchdog service
 
-An optional watchdog (`deploy/t9-watchdog.service` + `deploy/t9_watchdog.py`) monitors the T9 process and automatically restarts it if it becomes unresponsive. Install it alongside the main service if you want self-healing on a production server.
+An optional watchdog (`deploy/t9-watchdog.service` + `deploy/t9_watchdog.py`) monitors the T9 health endpoint and recovers the service if it becomes unresponsive.
 
 ### Reverse proxy
 
@@ -328,21 +352,36 @@ Sample configurations for Apache2 and Nginx are in `deploy/`. Both include HTTPS
 
 Replace `t9.example.com` with your actual domain. Both examples assume Let's Encrypt certificates via certbot.
 
+### MySQL (optional)
+
+SQLite is the default and needs no setup. For a heavier deployment, set `DB_BACKEND=mysql` plus the `MYSQL_*` variables — the schema is created and migrated automatically, and the same code paths run against either backend.
+
 ## Environment Variables
 
-Set in `.env` or your shell environment:
+Secrets and infrastructure go in `.env`; most other settings are managed from the Settings page (persisted to `settings.json`).
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_KEY` | OpenAI API key |
-| `ANTHROPIC_KEY` | Anthropic Claude API key |
-| `GOOGLE_AI_KEY` | Google Gemini API key |
-| `DEEPSEEK_KEY` | DeepSeek API key |
-| `OPENROUTER_KEY` | OpenRouter API key |
+| `OPENAI_KEY` / `ANTHROPIC_KEY` / `GOOGLE_AI_KEY` / `DEEPSEEK_KEY` / `OPENROUTER_KEY` | Provider API keys |
 | `TRANSLATION_MODEL` | Default translation model (e.g. `claude:claude-sonnet-4-6`) |
 | `ADVICE_MODEL` | Default entity advice model |
 | `T9_PASSWORD` | Enable authentication (required if exposed to the internet) |
 | `T9_SECURE_COOKIE` | Set to `true` when serving over HTTPS |
+| `T9_PUBLIC_LIBRARY` | Enable the public library/reader |
+| `SITE_NAME` / `PUBLIC_SITE_NAME` | Branding for the admin UI / public site |
+| `SITE_BASE_URL` | Public base URL — used for RSS links and email links |
+| `DB_BACKEND` | `sqlite` (default) or `mysql` |
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASS` / `MYSQL_DB` / `MYSQL_POOL_SIZE` | MySQL connection settings |
+| `SPACES_ENABLED` / `SPACES_BUCKET` / `SPACES_REGION` / `SPACES_PREFIX` / `SPACES_CDN_BASE` | S3-compatible object storage (DigitalOcean Spaces) offload |
+| `BUCKET_ACCESS_ID` / `BUCKET_SECRET` / `BUCKET_ENDPOINT` | Object storage credentials |
+| `CF_TURNSTILE_SITE_KEY` / `CF_TURNSTILE_SECRET_KEY` | Cloudflare Turnstile for comments & recommendations |
+| `CF_API_EMAIL` / `CF_API_KEY` | Cloudflare credentials for pushing comment IP bans to the edge |
+| `COMMENT_AUTOMOD_ENABLED` / `COMMENT_AUTOMOD_MODEL` | AI auto-moderation of new comments |
+| `EMAIL_FROM` | Sender address for comment reply notifications (local Postfix) |
+| `TRAD_TO_SIMP` | Global default for traditional→simplified conversion at ingest |
+| `GRAMMAR_CHECK_ENABLED` / `LANGUAGETOOL_URL` / `GRAMMAR_LANGUAGE` / `POLISH_MODEL` | Write-editor grammar checking & LLM polish |
+| `WP_URL` / `WP_USERNAME` / `WP_APP_PASSWORD` | WordPress publishing credentials |
+| `OVERLOAD_RETRY_WAIT_SECONDS` | Wait between retries when a provider returns 529 Overloaded (default 300) |
 | `DEBUG` | Enable debug logging (`True`/`False`) |
 
 ## License
