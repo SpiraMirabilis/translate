@@ -12,6 +12,7 @@ enable/disable transitions call :func:`fire_book_module_events`.
 import json
 
 from .base import TranslationModule
+from .task_runner import ModuleTaskBusyError, module_task_runner
 from .trad_to_simp_module import TradToSimpModule
 from .chatgroup_transformer_module import ChatgroupTransformerModule
 from .novel543 import Novel543Module
@@ -174,13 +175,18 @@ def apply_module_settings_change(db, book, module_id, new_settings, config, logg
     For a module that declares ``rebuild_on_settings_change`` and is currently
     enabled for the book, a settings change is applied as a remove→persist→add
     cycle so a settings-dependent backfill (e.g. chatgroup's 【…】 wrapping) is
-    re-derived from the new settings. The reverse runs *before* the new settings
-    are written (so ``event_removed_from_book`` sees the old ones via ``ctx``);
-    the re-apply runs after they are persisted.
+    re-derived from the new settings. The settings are persisted synchronously
+    (so the caller can report failure); the remove→add cycle itself runs as a
+    background task on :data:`module_task_runner` — on a large book it rewrites
+    every chapter twice. ``event_removed_from_book`` still sees the OLD settings:
+    they are snapshotted before persisting and injected into its ctx.
 
     When no rebuild is warranted — module absent, currently disabled, no rebuild
     flag, or the resolved settings are unchanged — it just persists. Returns the
     persistence success bool.
+
+    Guardrail: raises :class:`ModuleTaskBusyError` when the book already has a
+    module task pending/running — settings must not change under a backfill.
     """
     mod = REGISTRY.get(module_id)
     if mod is None:
@@ -188,6 +194,10 @@ def apply_module_settings_change(db, book, module_id, new_settings, config, logg
     book_id = book.get("id") if hasattr(book, "get") else None
     if not book_id:
         return False
+
+    active = module_task_runner.active(book_id)
+    if active:
+        raise ModuleTaskBusyError(book_id, active)
 
     old_resolved = mod.resolve_settings(db.get_module_settings(book_id, module_id))
     new_resolved = mod.resolve_settings(new_settings)
@@ -199,23 +209,60 @@ def apply_module_settings_change(db, book, module_id, new_settings, config, logg
     if not rebuild:
         return db.set_module_settings(book_id, module_id, new_settings)
 
-    # Reverse the existing backfill while the OLD settings are still in the DB
-    # (ctx auto-loads them), then persist the new settings, then re-apply.
-    ctx_old = _ctx(book, config, logger, db=db)
+    # Snapshot ALL stored settings before persisting so the reverse pass sees
+    # the old values, then persist, then run remove→add in the background.
+    old_settings_map = db.get_module_settings(book_id)
+    module_task_runner.claim(book_id, f"rebuild {module_id} settings backfill")
     try:
-        mod.event_removed_from_book(ctx_old)
-    except Exception as e:  # noqa: BLE001 - never let a rebuild break the save
-        logger.error(f"Module {module_id}.event_removed_from_book (settings rebuild) failed: {e}")
+        ok = db.set_module_settings(book_id, module_id, new_settings)
+        if not ok:
+            module_task_runner.release(book_id)
+            return False
 
-    ok = db.set_module_settings(book_id, module_id, new_settings)
+        def run():
+            ctx_old = _ctx(book, config, logger, db=db,
+                           module_settings=old_settings_map)
+            try:
+                mod.event_removed_from_book(ctx_old)
+            except Exception as e:  # noqa: BLE001 - never let a rebuild break the save
+                logger.error(f"Module {module_id}.event_removed_from_book (settings rebuild) failed: {e}")
+            ctx_new = _ctx(book, config, logger, db=db)
+            try:
+                mod.event_add_to_book(ctx_new)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Module {module_id}.event_add_to_book (settings rebuild) failed: {e}")
 
-    ctx_new = _ctx(book, config, logger, db=db)
-    try:
-        mod.event_add_to_book(ctx_new)
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Module {module_id}.event_add_to_book (settings rebuild) failed: {e}")
-
+        module_task_runner.start(book_id, run, logger=logger)
+    except Exception:
+        module_task_runner.release(book_id)
+        raise
     return ok
+
+
+def start_book_module_events(db, book, before_ids, after_ids, config, logger):
+    """Run :func:`fire_book_module_events` as a background task for this book.
+
+    The book's runner slot must already be claimed (see
+    ``books_repo.update_book``) — this just labels it with the actual diff and
+    hands the event firing to the background thread. Module event backfills can
+    rewrite every chapter of a large book, which is far too slow to run inside
+    the HTTP request that toggled the module.
+    """
+    before_ids = set(before_ids or ())
+    after_ids = set(after_ids or ())
+    parts = []
+    added = sorted(after_ids - before_ids)
+    removed = sorted(before_ids - after_ids)
+    if added:
+        parts.append("enable " + ", ".join(added))
+    if removed:
+        parts.append("disable " + ", ".join(removed))
+    label = "; ".join(parts) or "module change"
+
+    def run():
+        fire_book_module_events(db, book, before_ids, after_ids, config, logger)
+
+    module_task_runner.start(book.get("id"), run, label=label, logger=logger)
 
 
 def fire_book_module_events(db, book, before_ids, after_ids, config, logger):

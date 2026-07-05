@@ -2,7 +2,8 @@ import json
 import os
 import datetime
 import traceback
-from modules import fire_book_module_events, resolve_module_ids
+from modules import (start_book_module_events, resolve_module_ids,
+                     module_task_runner)
 from db.core import normalize_categories, DEFAULT_CATEGORIES
 
 
@@ -306,11 +307,23 @@ class BooksRepo:
             
         Returns:
             bool: True if successful, False otherwise
+
+        Raises:
+            ModuleTaskBusyError: when the update could change which modules are
+            enabled (touches ``modules``/``source_url``) but a module backfill
+            task is already pending/running for this book. The claim is taken
+            BEFORE any write so the enabled set can never change under a
+            running backfill.
         """
+        # If this update can change which modules are enabled, reserve the
+        # book's module-task slot up front (raises ModuleTaskBusyError if
+        # taken) and snapshot the enabled set so we can fire add/remove events
+        # on the diff. The claim is released below unless a backfill starts.
+        module_trigger = ('modules' in kwargs) or ('source_url' in kwargs)
+        if module_trigger:
+            module_task_runner.claim(book_id, "module change")
+        events_started = False
         try:
-            # If this update can change which modules are enabled, snapshot the
-            # enabled set beforehand so we can fire add/remove events on the diff.
-            module_trigger = ('modules' in kwargs) or ('source_url' in kwargs)
             before_ids = resolve_module_ids(self.get_book(book_id=book_id)) if module_trigger else set()
             with self._conn() as conn:
                 cursor = conn.cursor()
@@ -368,13 +381,15 @@ class BooksRepo:
             if epub_fields & set(kwargs):
                 self.invalidate_epub_cache(book_id)
 
-            # Fire module add/remove lifecycle events if the enabled set changed.
+            # Start module add/remove lifecycle events (background task) if
+            # the enabled set changed — backfills can rewrite every chapter.
             if module_trigger:
                 book_after = self.get_book(book_id=book_id)
                 after_ids = resolve_module_ids(book_after)
                 if before_ids != after_ids:
-                    fire_book_module_events(self, book_after, before_ids, after_ids,
-                                            self.config, self.logger)
+                    start_book_module_events(self, book_after, before_ids, after_ids,
+                                             self.config, self.logger)
+                    events_started = True
 
             self.logger.info(f"Updated book with ID {book_id}")
             return True
@@ -384,6 +399,11 @@ class BooksRepo:
             if self.strict_writes:
                 raise
             return False
+        finally:
+            # Nothing was handed to the background thread — free the slot
+            # (no-op when a backfill did start; release() is pending-only).
+            if module_trigger and not events_started:
+                module_task_runner.release(book_id)
 
     def get_module_settings(self, book_id, module_id=None):
         """Return stored per-book module settings.

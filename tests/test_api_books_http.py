@@ -34,7 +34,9 @@ class TestBooksCrud:
             f"/api/books/{book_id}",
             json={"author": "Author B", "status": "completed"})
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"status": "ok"}
+        # module_task is the background backfill spawned when the update
+        # changes the enabled-module set — null for a plain metadata update.
+        assert resp.json() == {"status": "ok", "module_task": None}
 
         # Detail reflects the update
         resp = admin_client.get(f"/api/books/{book_id}")

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../../services/api'
-import { X, Check, Loader2, Settings } from 'lucide-react'
+import { X, Check, Loader2, Settings, RefreshCw, AlertTriangle } from 'lucide-react'
 
 export default function BookModulesModal({ book, onClose, onSaved }) {
   const [available, setAvailable] = useState([])
@@ -11,10 +11,17 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [settingsFor, setSettingsFor] = useState(null)  // module whose settings modal is open
+  // Background module-task state: {running, last} from the server. While
+  // `running` is set the switches/save are locked (the server 409s anyway).
+  const [task, setTask] = useState(null)
+  // Set after a save that spawned a backfill — when the task finishes we
+  // close the modal via onSaved() instead of just unlocking.
+  const closeWhenDone = useRef(false)
 
   const reloadModules = async () => {
     const d = await api.getModules(book.id)
     setAvailable(d.modules || [])
+    setTask(d.task || null)
   }
 
   useEffect(() => {
@@ -29,6 +36,28 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
     })()
   }, [])
 
+  // Poll the task endpoint while a backfill is running.
+  const running = task?.running || null
+  useEffect(() => {
+    if (!running) return
+    const id = setInterval(async () => {
+      try {
+        const t = await api.getModuleTask(book.id)
+        setTask(t)
+        if (!t.running) {
+          if (t.last?.error) {
+            setError(`Module task failed: ${t.last.error}`)
+            closeWhenDone.current = false
+            setSaving(false)
+          } else if (closeWhenDone.current) {
+            onSaved()
+          }
+        }
+      } catch { /* transient poll failure — keep polling */ }
+    }, 2000)
+    return () => clearInterval(id)
+  }, [running?.started_at, running?.label])
+
   const stateOf = (id) => overrides?.[id] === true ? 'on' : overrides?.[id] === false ? 'off' : 'auto'
   const setState = (id, state) => {
     setOverrides(o => {
@@ -42,8 +71,15 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
   const handleSave = async () => {
     setSaving(true); setError(null)
     try {
-      await api.updateBook(book.id, { modules: overrides })
-      onSaved()
+      const resp = await api.updateBook(book.id, { modules: overrides })
+      if (resp?.module_task) {
+        // Backfill spawned — keep the modal open showing progress; the poll
+        // effect closes it (via onSaved) when the task completes cleanly.
+        closeWhenDone.current = true
+        setTask({ running: resp.module_task, last: null })
+      } else {
+        onSaved()
+      }
     } catch (e) {
       setError(e.message)
       setSaving(false)
@@ -70,6 +106,21 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
           </div>
         ) : (
           <>
+            {running && (
+              <div className="mx-4 mt-3 flex items-center gap-2 rounded border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300 shrink-0">
+                <RefreshCw size={14} className="animate-spin shrink-0" />
+                <span>
+                  Applying module changes in the background ({running.label}).
+                  Module switches are locked until it finishes.
+                </span>
+              </div>
+            )}
+            {!running && task?.last?.error && (
+              <div className="mx-4 mt-3 flex items-center gap-2 rounded border border-rose-600/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300 shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span>Last module task ({task.last.label}) failed: {task.last.error}</span>
+              </div>
+            )}
             <div className="flex-1 overflow-auto p-4 space-y-3">
               {available.length === 0 && (
                 <p className="text-sm text-slate-500">No modules are registered.</p>
@@ -95,6 +146,7 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
                       className={`input w-24 shrink-0${showAutoState ? (autoResolved ? ' text-emerald-400' : ' text-slate-500') : ''}`}
                       value={value}
                       onChange={onChange}
+                      disabled={!!running}
                     >
                       {hasAuto && <option value="auto">Auto</option>}
                       <option value="on">On</option>
@@ -116,9 +168,10 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
                     </div>
                     {m.has_settings && (
                       <button
-                        className="btn-ghost p-1 shrink-0 self-center"
-                        title="Module settings"
+                        className="btn-ghost p-1 shrink-0 self-center disabled:opacity-40"
+                        title={running ? 'Locked while a module task is running' : 'Module settings'}
                         onClick={() => setSettingsFor(m)}
+                        disabled={!!running}
                       >
                         <Settings size={15} />
                       </button>
@@ -131,9 +184,11 @@ export default function BookModulesModal({ book, onClose, onSaved }) {
             {error && <div className="px-5 shrink-0"><p className="text-rose-400 text-sm">{error}</p></div>}
 
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-700 shrink-0">
-              <button className="btn-secondary" onClick={onClose}>Cancel</button>
-              <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving}>
-                {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+              <button className="btn-secondary" onClick={onClose}>
+                {running ? 'Close (task keeps running)' : 'Cancel'}
+              </button>
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSave} disabled={saving || !!running}>
+                {(saving || running) ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
                 Save
               </button>
             </div>

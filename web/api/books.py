@@ -264,7 +264,23 @@ def list_modules(book_id: Optional[int] = None):
             if m.has_settings:
                 item["settings"] = m.resolve_settings(stored_settings.get(m.id))
         out.append(item)
-    return {"modules": out}
+    resp = {"modules": out}
+    if book_id is not None:
+        from modules import module_task_runner
+        resp["task"] = module_task_runner.status(book_id)
+    return resp
+
+
+@router.get("/{book_id}/module-task")
+def get_module_task(book_id: int):
+    """Status of the book's background module backfill (polled by the UI).
+
+    Returns ``{"running": info|null, "last": info|null}`` — ``running`` is the
+    pending/in-flight task, ``last`` the most recent finished one (with its
+    ``error`` if it failed).
+    """
+    from modules import module_task_runner
+    return module_task_runner.status(book_id)
 
 
 @router.get("/default-prompt")
@@ -316,10 +332,16 @@ def update_book(book_id: int, req: BookUpdate):
         kwargs['tags'] = _normalize_tags(kwargs['tags'])
     if 'modules' in kwargs:
         kwargs['modules'] = _normalize_modules(kwargs['modules'])
-    success = _entity_manager.update_book(book_id, **kwargs)
+    from modules import ModuleTaskBusyError, module_task_runner
+    try:
+        success = _entity_manager.update_book(book_id, **kwargs)
+    except ModuleTaskBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update book.")
-    return {"status": "ok"}
+    # If the update changed the enabled-module set, the backfill now runs as a
+    # background task — hand its info to the caller so the UI can track it.
+    return {"status": "ok", "module_task": module_task_runner.active(book_id)}
 
 
 def _normalize_tags(tags):
@@ -377,21 +399,35 @@ def set_module_settings(book_id: int, module_id: str, req: ModuleSettingsUpdate)
     if not module.has_settings:
         raise HTTPException(status_code=400, detail="Module has no settings.")
     cleaned = _normalize_module_settings(module, req.settings)
-    from modules import apply_module_settings_change
+    from modules import (apply_module_settings_change, ModuleTaskBusyError,
+                         module_task_runner)
     # Persists the settings and, for modules that opt in, re-derives any
-    # settings-dependent backfill (remove→persist→add) when the module is
-    # enabled and the resolved settings actually changed.
-    success = apply_module_settings_change(
-        _entity_manager, book, module_id, cleaned,
-        _entity_manager.config, _logger)
+    # settings-dependent backfill (remove→persist→add, run as a background
+    # task) when the module is enabled and the resolved settings changed.
+    try:
+        success = apply_module_settings_change(
+            _entity_manager, book, module_id, cleaned,
+            _entity_manager.config, _logger)
+    except ModuleTaskBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not success:
         raise HTTPException(status_code=500, detail="Failed to save module settings.")
-    return {"status": "ok", "settings": module.resolve_settings(cleaned)}
+    return {"status": "ok", "settings": module.resolve_settings(cleaned),
+            "module_task": module_task_runner.active(book_id)}
 
 
 @router.delete("/{book_id}")
 def delete_book(book_id: int):
     book = get_book_or_404(book_id)
+    # Guardrail: a running module backfill is rewriting this book's chapters —
+    # deleting the book out from under it would race the background thread.
+    from modules import module_task_runner
+    active = module_task_runner.active(book_id)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A module task ({active.get('label')}) is running for this "
+                   "book. Wait for it to finish before deleting.")
     # Clean up cover + thumbnail files (local + Spaces)
     _remove_cover_files(book, book_id)
     # Best-effort purge of this book's illustration + EPUB objects from Spaces.

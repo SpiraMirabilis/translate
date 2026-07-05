@@ -105,6 +105,7 @@ export const api = {
   // Per-book modules
   getModules:    (bookId)       => get(`/api/books/modules${bookId != null ? `?book_id=${bookId}` : ''}`),
   setModuleSettings: (bookId, moduleId, settings) => put(`/api/books/${bookId}/modules/${moduleId}/settings`, { settings }),
+  getModuleTask: (bookId)       => get(`/api/books/${bookId}/module-task`),
 
   // Prompt templates
   getDefaultPrompt: ()           => get('/api/books/default-prompt'),
