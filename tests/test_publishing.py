@@ -197,6 +197,31 @@ class TestPublicSurfaces:
         assert "Chapter 1" in resp.text
         assert "Chapter 2" not in resp.text
 
+    def test_rss_feed_around_window(self, api_client, admin_client, db):
+        # ?around=N returns chapters N-50..N+100 rather than the most recent.
+        resp = admin_client.post("/api/books", json={"title": "Windowed Book"})
+        book_id = resp.json()["id"]
+        for n in (1, 5, 105, 106, 300):
+            _save(db, book_id, n, lines=[f"chapter {n} text"])
+        _save(db, book_id, 104, lines=["draft text"], publish=False)
+
+        resp = api_client.get(f"/api/public/books/{book_id}/feed.rss?around=5")
+        assert resp.status_code == 200
+        for present in ("Chapter 1<", "Chapter 5<", "Chapter 105<"):
+            assert present in resp.text
+        for absent in ("Chapter 104<", "Chapter 106<", "Chapter 300<"):
+            assert absent not in resp.text
+
+        # Window around a later chapter picks up the tail instead
+        resp = api_client.get(f"/api/public/books/{book_id}/feed.rss?around=300")
+        assert "Chapter 300<" in resp.text
+        assert "Chapter 5<" not in resp.text
+
+        # No ?around → unchanged recency behavior (all published fit here)
+        resp = api_client.get(f"/api/public/books/{book_id}/feed.rss")
+        assert "Chapter 300<" in resp.text
+        assert "Chapter 1<" in resp.text
+
     def test_comment_on_draft_rejected(self, api_client, mixed_book):
         body = {
             "book_id": mixed_book, "chapter_number": 2,

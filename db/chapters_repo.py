@@ -388,11 +388,13 @@ class ChaptersRepo:
             self.logger.error(f"Error listing chapters: {e}")
             return []
 
-    def list_recent_translated_chapters(self, limit=50, book_id=None):
+    def list_recent_translated_chapters(self, limit=50, book_id=None,
+                                        chapter_min=None, chapter_max=None):
         """Return recently translated chapters from public books, joined with book info.
 
         Ordered by translation_date DESC. If book_id is given, restricted to that book
-        (is_public gate still enforced). translation_date is ISO 8601, so lexicographic
+        (is_public gate still enforced). chapter_min/chapter_max bound chapter_number
+        (inclusive) for windowed feeds. translation_date is ISO 8601, so lexicographic
         DESC matches chronological DESC.
         """
         try:
@@ -412,6 +414,12 @@ class ChaptersRepo:
                 if book_id is not None:
                     sql += ' AND c.book_id = ?'
                     params.append(book_id)
+                if chapter_min is not None:
+                    sql += ' AND c.chapter_number >= ?'
+                    params.append(chapter_min)
+                if chapter_max is not None:
+                    sql += ' AND c.chapter_number <= ?'
+                    params.append(chapter_max)
                 sql += ' ORDER BY c.translation_date DESC LIMIT ?'
                 params.append(limit)
                 cursor.execute(sql, tuple(params))

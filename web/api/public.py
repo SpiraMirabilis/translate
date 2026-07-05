@@ -452,6 +452,12 @@ def search_book(book_id: int, req: PublicSearchRequest, request: Request):
 
 _FEED_DEFAULT_LIMIT = 100
 _FEED_MAX_LIMIT = 400
+# ?around=N window for the per-book feed: chapters N-50 .. N+100. Wide on
+# purpose — feed readers (e.g. Novel Updates) discover the feed from a
+# chapter URL, and a recency-only feed may already have scrolled past the
+# chapters the reader still needs to pick up.
+_FEED_AROUND_BEFORE = 50
+_FEED_AROUND_AFTER = 100
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 ET.register_namespace("atom", _ATOM_NS)
 
@@ -564,11 +570,21 @@ def global_feed(request: Request, limit: int = _FEED_DEFAULT_LIMIT):
 
 
 @router.get("/books/{book_id}/feed.rss")
-def book_feed(book_id: int, request: Request, limit: int = _FEED_DEFAULT_LIMIT):
+def book_feed(book_id: int, request: Request, limit: int = _FEED_DEFAULT_LIMIT,
+              around: Optional[int] = None):
     _guard(request)
     book = _get_public_book(book_id)
     limit = _clamp_limit(limit)
-    rows = _db.list_recent_translated_chapters(limit=limit, book_id=book_id)
+    chapter_min = chapter_max = None
+    if around is not None:
+        chapter_min = around - _FEED_AROUND_BEFORE
+        chapter_max = around + _FEED_AROUND_AFTER
+        # A recency limit would defeat the window: make sure the whole
+        # window fits (still capped by _FEED_MAX_LIMIT).
+        limit = _clamp_limit(max(limit, _FEED_AROUND_BEFORE + _FEED_AROUND_AFTER + 1))
+    rows = _db.list_recent_translated_chapters(limit=limit, book_id=book_id,
+                                               chapter_min=chapter_min,
+                                               chapter_max=chapter_max)
     base = _reader_base_url(request)
     for r in rows:
         r["link"] = _chapter_link(base, r["book_id"], r["chapter"])

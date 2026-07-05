@@ -161,20 +161,36 @@ def create_app(config=None, logger=None) -> FastAPI:
 
         # Per-book RSS autodiscovery: feed readers fetch the page URL server-side
         # and don't run JS, so the React-injected <link> is invisible to them.
-        # For the book-detail route we splice a per-book <link rel="alternate">
-        # into the served index.html so non-JS crawlers discover the book's feed.
-        _book_path_re = re.compile(r"^library/book/(\d+)/?$")
+        # For book-detail and chapter-reader routes we splice a per-book
+        # <link rel="alternate"> into the served index.html so non-JS crawlers
+        # discover the book's feed.
+        _book_path_re = re.compile(r"^(?:library/book|library/read|read)/(\d+)(?:/(\d+))?/?$")
+        # The global-feed autodiscovery tag baked into index.html. On book
+        # and chapter pages it is REPLACED by the book's own feed tag, so
+        # single-feed autodiscovery tools (e.g. Novel Updates) can't pick
+        # the site-wide feed by mistake.
+        _global_feed_re = re.compile(
+            r'<link rel="alternate" type="application/rss\+xml"[^>]*href="/api/public/feed\.rss"[^>]*>')
         with open(index_html, "r", encoding="utf-8") as fh:
             _index_html_text = fh.read()
 
-        def _index_with_book_feed(book_id: int):
+        def _index_with_book_feed(book_id: int, chapter: int | None):
             book = entity_manager.get_book(book_id=book_id)
             if not book or not book.get("is_public", True):
                 return None
             title = escape(f"{book.get('title', 'Book')} — New Chapters", quote=True)
+            # Chapter pages advertise a chapter-windowed feed (?around=N,
+            # chapters N-50..N+100) so a feed reader that discovers the feed
+            # from an older chapter URL still sees everything from there on.
+            href = f"/api/public/books/{book_id}/feed.rss"
+            if chapter is not None:
+                href += f"?around={chapter}"
             tag = (f'<link rel="alternate" type="application/rss+xml" '
-                   f'title="{title}" href="/api/public/books/{book_id}/feed.rss" />')
-            return _index_html_text.replace("</head>", tag + "</head>", 1)
+                   f'title="{title}" href="{href}" />')
+            html, n = _global_feed_re.subn(tag.replace("\\", "\\\\"), _index_html_text, count=1)
+            if n == 0:  # index.html lost its global tag — just add ours
+                html = _index_html_text.replace("</head>", tag + "</head>", 1)
+            return html
 
         # SPA catch-all: any non-API path serves index.html for client-side routing
         @app.get("/{full_path:path}")
@@ -185,7 +201,8 @@ def create_app(config=None, logger=None) -> FastAPI:
                 return FileResponse(file_path)
             m = _book_path_re.match(full_path)
             if m:
-                html = _index_with_book_feed(int(m.group(1)))
+                chapter = int(m.group(2)) if m.group(2) else None
+                html = _index_with_book_feed(int(m.group(1)), chapter)
                 if html is not None:
                     return HTMLResponse(html)
             return FileResponse(index_html)

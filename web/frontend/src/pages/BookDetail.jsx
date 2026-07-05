@@ -4,6 +4,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useBookFeedLink } from '../hooks/useBookFeedLink'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
 import { bustUrl } from '../services/cacheBust'
@@ -128,19 +129,8 @@ export default function BookDetail() {
     return () => { document.title = site_name }
   }, [book, public_site_name, site_name])
 
-  // Per-book RSS autodiscovery: inject an <link rel="alternate"> into the head
-  // so feed readers and browser extensions detect this book's feed. The SPA's
-  // static index.html only advertises the global feed.
-  useEffect(() => {
-    if (!bookId) return
-    const link = document.createElement('link')
-    link.rel = 'alternate'
-    link.type = 'application/rss+xml'
-    link.title = book ? `${book.title} — New Chapters` : 'New Chapters'
-    link.href = `/api/public/books/${bookId}/feed.rss`
-    document.head.appendChild(link)
-    return () => { document.head.removeChild(link) }
-  }, [bookId, book])
+  // Per-book RSS autodiscovery — no-op when the server already injected the tag
+  useBookFeedLink(bookId, book?.title)
 
   const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
 

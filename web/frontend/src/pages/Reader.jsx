@@ -4,6 +4,7 @@ import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { api, publicApi } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useBookFeedLink } from '../hooks/useBookFeedLink'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useUrlModal } from '../hooks/useUrlState'
 import ReaderTOC from '../components/ReaderTOC'
@@ -196,6 +197,9 @@ export default function Reader({ isPublic = false }) {
     document.title = parts.length > 0 ? parts.join(' — ') : 'Reader'
     return () => { document.title = isPublic ? public_site_name : site_name }
   }, [book, chapter, currentNum, isPublic, site_name, public_site_name])
+
+  // Per-book RSS autodiscovery — no-op when the server already injected the tag
+  useBookFeedLink(bookId, book?.title, currentNum)
 
   // Save progress + update URL. Preserve the query string so drawer modal
   // state (?modal=toc etc.) survives chapter-to-chapter navigation.
