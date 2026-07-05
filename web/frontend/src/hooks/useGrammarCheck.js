@@ -193,8 +193,14 @@ export function useGrammarCheck(editor, bookId, chapterNum, contentReady) {
     // Optimistic: drop every squiggle on this word now; a failed POST just
     // means it re-flags next session.
     editor?.commands.ignoreGrammarWord(word)
-    api.addDictionaryWord({ word, book_id: global ? null : parseInt(bookId) }).catch(() => {})
-  }, [editor, bookId])
+    api.addDictionaryWord({
+      word,
+      book_id: global ? null : parseInt(bookId),
+      // Record where the word was first added. Meaningless for a global add
+      // (no single book), so only send it for a book-scoped entry.
+      origin_chapter: global ? null : parseInt(chapterNum),
+    }).catch(() => {})
+  }, [editor, bookId, chapterNum])
 
   // Load a job's open suggestions into decorations, locating against the
   // CURRENT doc — the user may have kept writing (or edited elsewhere since;

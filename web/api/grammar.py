@@ -458,6 +458,7 @@ def dismiss_open(job_id: int):
 class DictionaryRequest(BaseModel):
     word: str
     book_id: Optional[int] = None  # null = global
+    origin_chapter: Optional[int] = None  # chapter the word was added from
 
 
 @router.post("/dictionary")
@@ -476,6 +477,8 @@ def add_dictionary_word(req: DictionaryRequest):
     ok = _entity_manager.add_entity(
         "dictionary", word, word,
         book_id=req.book_id,
+        # origin_chapter is per-book; ignore it for a global entry.
+        origin_chapter=req.origin_chapter if req.book_id is not None else None,
         note="Added from grammar checker",
     )
     if not ok:
