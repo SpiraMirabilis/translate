@@ -92,7 +92,8 @@ class QueueRepo:
                 return None
 
             # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
-            content = apply_source_ingest(book, content, self.config, self.logger, db=self)
+            content = apply_source_ingest(book, content, self.config, self.logger, db=self,
+                                          chapter_number=chapter_number)
             with self._conn() as conn:
                 cursor = conn.cursor()
 

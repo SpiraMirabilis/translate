@@ -104,6 +104,7 @@ class UserInterface(ABC):
                             book_for_modules, chapter_text,
                             self.translator.config, self.logger,
                             db=self.entity_manager,
+                            chapter_number=getattr(self, 'chapter_number', None),
                         )
 
                 # Pre-translation guard: if a chapter with this
@@ -265,7 +266,8 @@ class UserInterface(ABC):
                 end_object['content'] = apply_translated_ingest(
                     _book, end_object['content'], _config, self.logger,
                     cleaning_model=getattr(self, 'cleaning_model', None),
-                    model=_config.translation_model)
+                    model=_config.translation_model,
+                    chapter_number=getattr(self, 'chapter_number', None))
 
                 # Strip "Chapter N" prefix from translated titles (raw sources usually
                 # carry it through, but we store titles bare).

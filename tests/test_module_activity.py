@@ -66,6 +66,40 @@ def test_records_aggregate_into_one_summary_line():
     assert len(db.entries) == 3
 
 
+def test_summary_names_chapter_range_and_book():
+    agg = ModuleActivityAggregator(quiet_seconds=999, sweep_interval=999)
+    db = FakeDB()
+    # A drip of chapters with a gap → compressed ranges "2-4,6".
+    for ch in (2, 3, 4, 6):
+        agg.record(db, 7, "chatgroup_transformer", "translated",
+                   chapter=ch, book_title="Some Novel")
+    agg.flush(book_id=7)
+    assert len(db.entries) == 1
+    assert db.entries[0]["message"] == (
+        "Chatgroup Transformer transformed chapters 2-4,6 of "
+        "Some Novel (book 7) during translated ingest")
+
+
+def test_summary_single_chapter_is_singular():
+    agg = ModuleActivityAggregator(quiet_seconds=999, sweep_interval=999)
+    db = FakeDB()
+    agg.record(db, 7, "chatgroup_transformer", "translated",
+               chapter=34, book_title="Some Novel")
+    agg.flush(book_id=7)
+    assert db.entries[0]["message"] == (
+        "Chatgroup Transformer transformed chapter 34 of "
+        "Some Novel (book 7) during translated ingest")
+
+
+def test_summary_without_chapter_falls_back_to_count():
+    agg = ModuleActivityAggregator(quiet_seconds=999, sweep_interval=999)
+    db = FakeDB()
+    for _ in range(3):
+        agg.record(db, 7, "chatgroup_transformer", "source")
+    agg.flush(book_id=7)
+    assert "transformed 3 items during source ingest" in db.entries[0]["message"]
+
+
 def test_sweep_thread_flushes_after_quiet_period():
     agg = ModuleActivityAggregator(quiet_seconds=0.05, sweep_interval=0.02)
     db = FakeDB()

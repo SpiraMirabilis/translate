@@ -122,6 +122,7 @@ def _ctx(book, config, logger, db=None, **extra):
 def apply_source_ingest(book, content, config, logger, **extra):
     ctx = _ctx(book, config, logger, **extra)
     book_id = book.get("id") if (book and hasattr(book, "get")) else None
+    book_title = book.get("title") if (book and hasattr(book, "get")) else None
     for mod in resolve_modules_for_book(book, ctx):
         try:
             new = mod.transform_source_lines(content, ctx)
@@ -129,7 +130,9 @@ def apply_source_ingest(book, content, config, logger, **extra):
             # activity-log summary (transforms return the original object on
             # no-op, so this is usually a cheap identity comparison).
             if new != content:
-                module_activity.record(ctx.get("db"), book_id, mod.id, "source")
+                module_activity.record(ctx.get("db"), book_id, mod.id, "source",
+                                       chapter=ctx.get("chapter_number"),
+                                       book_title=book_title)
             content = new
         except Exception as e:  # noqa: BLE001 - never let a module break ingest
             logger.error(f"Module {mod.id}.transform_source_lines failed: {e}")
@@ -159,11 +162,14 @@ def apply_source_module(book, content, module_id, config, logger, **extra):
 def apply_translated_ingest(book, content, config, logger, **extra):
     ctx = _ctx(book, config, logger, **extra)
     book_id = book.get("id") if (book and hasattr(book, "get")) else None
+    book_title = book.get("title") if (book and hasattr(book, "get")) else None
     for mod in resolve_modules_for_book(book, ctx):
         try:
             new = mod.transform_translated_lines(content, ctx)
             if new != content:
-                module_activity.record(ctx.get("db"), book_id, mod.id, "translated")
+                module_activity.record(ctx.get("db"), book_id, mod.id, "translated",
+                                       chapter=ctx.get("chapter_number"),
+                                       book_title=book_title)
             content = new
         except Exception as e:  # noqa: BLE001
             logger.error(f"Module {mod.id}.transform_translated_lines failed: {e}")

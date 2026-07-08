@@ -47,7 +47,8 @@ class ChaptersRepo:
 
             # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
             untranslated_content = apply_source_ingest(book, untranslated_content,
-                                                       self.config, self.logger, db=self)
+                                                       self.config, self.logger, db=self,
+                                                       chapter_number=chapter_number)
 
             # Serialize content if it's a list
             if isinstance(untranslated_content, list):

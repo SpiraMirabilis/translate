@@ -5,7 +5,8 @@ When a module's ingest transform actually changes content, the dispatchers in
 ingest (EPUB import, batch upload, queue auto-process) would otherwise spam one
 activity-log line per chapter. Records accumulate in memory per
 ``(book_id, module_id, side)`` and are flushed as a single summary line
-("Chatgroup Transformer transformed 214 items during source ingest") when:
+naming the chapter range and book ("Chatgroup Transformer transformed
+chapters 2-31 of Some Novel (book 7) during source ingest") when:
 
   * a bulk call site that knows its batch ended calls :meth:`flush`
     (EPUB/batch upload endpoints, the translation worker's ``finally``), or
@@ -69,6 +70,35 @@ def log_module_activity(db, type, message, book_id=None):
         pass
 
 
+def _as_chapter_int(chapter):
+    """Coerce a chapter number to int, or None if it isn't one (so range
+    compression stays meaningful). Accepts ints and clean int-valued strings."""
+    try:
+        return int(chapter)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_ranges(nums):
+    """Compress a sorted list of ints into "2-31", "34", "34,36-40"."""
+    parts = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = n
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(parts)
+
+
+def _book_label(entry, book_id):
+    """"Title (book 12)" when the title is known, else "book 12"."""
+    title = entry.get("book_title")
+    return f"{title} (book {book_id})" if title else f"book {book_id}"
+
+
 class ModuleActivityAggregator:
     def __init__(self, quiet_seconds=QUIET_SECONDS, sweep_interval=SWEEP_INTERVAL):
         self.quiet_seconds = quiet_seconds
@@ -77,11 +107,14 @@ class ModuleActivityAggregator:
         self._pending = {}  # (book_id, module_id, side) -> {count, last, db}
         self._thread = None
 
-    def record(self, db, book_id, module_id, side):
+    def record(self, db, book_id, module_id, side, chapter=None, book_title=None):
         """Count one ingested item that ``module_id`` actually transformed.
 
-        ``side`` is ``"source"`` or ``"translated"``. ``db`` is retained so the
-        eventual flush can write the activity log (last recorder wins).
+        ``side`` is ``"source"`` or ``"translated"``. ``chapter`` (when known)
+        is remembered so the summary can name the chapter range instead of a
+        bare item count; ``book_title`` labels the book in the summary. ``db``
+        is retained so the eventual flush can write the activity log (last
+        recorder wins).
         """
         if not book_id:
             return
@@ -89,10 +122,15 @@ class ModuleActivityAggregator:
             key = (book_id, module_id, side)
             entry = self._pending.get(key)
             if entry is None:
-                entry = self._pending[key] = {"count": 0}
+                entry = self._pending[key] = {"count": 0, "chapters": set()}
             entry["count"] += 1
+            num = _as_chapter_int(chapter)
+            if num is not None:
+                entry["chapters"].add(num)
             entry["last"] = time.monotonic()
             entry["db"] = db
+            if book_title:
+                entry["book_title"] = book_title
             self._ensure_sweeper()
 
     def flush(self, book_id=None):
@@ -138,9 +176,19 @@ class ModuleActivityAggregator:
         from . import REGISTRY  # late import — this module is imported by __init__
         mod = REGISTRY.get(module_id)
         name = mod.name if mod else module_id
-        n = entry["count"]
-        message = (f"{name} transformed {n} item{'s' if n != 1 else ''} "
-                   f"during {side} ingest")
+        chapters = entry.get("chapters") or set()
+        if chapters:
+            nums = sorted(chapters)
+            noun = "chapter" if len(nums) == 1 else "chapters"
+            book_label = _book_label(entry, book_id)
+            message = (f"{name} transformed {noun} {_format_ranges(nums)} "
+                       f"of {book_label} during {side} ingest")
+        else:
+            # No per-chapter info reached us (direct call sites) — fall back to
+            # the bare item count.
+            n = entry["count"]
+            message = (f"{name} transformed {n} item{'s' if n != 1 else ''} "
+                       f"during {side} ingest")
         log_module_activity(entry.get("db"), "info", message, book_id)
 
 
