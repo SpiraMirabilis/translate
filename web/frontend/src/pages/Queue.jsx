@@ -439,7 +439,8 @@ function UploadModal({ books, onClose, onDone }) {
 
   const isEpub = files.length === 1 && files[0].name.toLowerCase().endsWith('.epub')
   const isFb2 = files.length === 1 && /\.fb2(\.zip)?$/.test(files[0].name.toLowerCase())
-  const isBook = isEpub || isFb2  // single-file book formats: create-book + cover support
+  const isJson = files.length === 1 && files[0].name.toLowerCase().endsWith('.json')
+  const isBook = isEpub || isFb2 || isJson  // single-file book formats: create-book support
   const isBatch = files.length > 1
 
   const handleFileChange = (e) => {
@@ -460,7 +461,7 @@ function UploadModal({ books, onClose, onDone }) {
         fd.append('file', files[0])
         if (bookId) fd.append('book_id', bookId)
         fd.append('create_book', createBook ? 'true' : 'false')
-        await (isFb2 ? api.uploadFb2(fd) : api.uploadEpub(fd))
+        await (isJson ? api.uploadJson(fd) : isFb2 ? api.uploadFb2(fd) : api.uploadEpub(fd))
       } else if (isBatch) {
         const fd = new FormData()
         for (const f of files) fd.append('files', f)
@@ -490,8 +491,8 @@ function UploadModal({ books, onClose, onDone }) {
 
         <div className="space-y-3">
           <div>
-            <label className="label">Files (.txt, .epub or .fb2)</label>
-            <input type="file" accept=".txt,.epub,.fb2,.zip" multiple className="input py-1 text-sm" onChange={handleFileChange} />
+            <label className="label">Files (.txt, .epub, .fb2 or .json)</label>
+            <input type="file" accept=".txt,.epub,.fb2,.zip,.json" multiple className="input py-1 text-sm" onChange={handleFileChange} />
             {isBatch && (
               <p className="text-xs text-slate-500 mt-1">
                 {files.length} text files selected — will be sorted by chapter number or filename
@@ -515,7 +516,7 @@ function UploadModal({ books, onClose, onDone }) {
               }}
             >
               <option value="">Select…</option>
-              {isBook && <option value="__create__">Create book from this {isFb2 ? 'FB2' : 'EPUB'}</option>}
+              {isBook && <option value="__create__">Create book from this {isJson ? 'JSON' : isFb2 ? 'FB2' : 'EPUB'}</option>}
               {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
             </select>
           </div>

@@ -156,6 +156,7 @@ export const api = {
   uploadBatch:      (formData)   => postForm('/api/queue/upload-batch', formData),
   uploadEpub:       (formData)   => postForm('/api/queue/upload-epub', formData),
   uploadFb2:        (formData)   => postForm('/api/queue/upload-fb2', formData),
+  uploadJson:       (formData)   => postForm('/api/queue/upload-json', formData),
   processNext:      (body = {})  => post('/api/queue/process-next', body),
   stopAutoProcess:  ()           => post('/api/queue/stop-auto', {}),
 

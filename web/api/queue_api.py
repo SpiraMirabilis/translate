@@ -389,6 +389,147 @@ async def upload_fb2(
 
 
 # ------------------------------------------------------------------
+# Upload structured JSON capture to queue
+#
+# Accepts a single JSON file produced by an external scraper, shaped like:
+#   {
+#     "book": "<foreign book id>",
+#     "source": "<foreign TOC/details URL>",
+#     "capturedAt": "...", "chapterCount": N, "pageCount": N,
+#     "chapters": [
+#       {"index": 0, "number": 1, "title": "...",
+#        "sourceUrls": [...],           # per-chapter pagination — ignored
+#        "text": "line1\n\nline2..."}   # \n-separated source text
+#     ]
+#   }
+# Each chapter is queued for translation like an EPUB/FB2 import.
+# ------------------------------------------------------------------
+
+@router.post("/upload-json")
+async def upload_json(
+    file: UploadFile = File(...),
+    book_id: Optional[int] = Form(None),
+    create_book: bool = Form(False),
+    genre: Optional[str] = Form(None),
+):
+    import json as _json
+
+    if not book_id and not create_book:
+        raise HTTPException(status_code=400, detail="Provide book_id or set create_book=true.")
+
+    content = await file.read()
+    try:
+        # utf-8-sig transparently strips a BOM if the scraper wrote one.
+        raw_text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raw_text = content.decode("utf-8", errors="replace")
+
+    try:
+        data = _json.loads(raw_text)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
+
+    if not isinstance(data, dict) or not isinstance(data.get("chapters"), list):
+        raise HTTPException(status_code=400, detail="JSON must be an object with a 'chapters' array.")
+
+    chapters = data["chapters"]
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No chapters found in JSON.")
+
+    foreign_source = str(data.get("source") or "").strip()
+
+    if create_book:
+        # No title/author metadata in the schema — seed a placeholder the user
+        # can rename later, using the foreign book id or the filename.
+        source_lang = "zh"
+        genre_obj = None
+        if genre and genre != "custom":
+            from genres import get_genre as _get_genre
+            genre_obj = _get_genre(_entity_manager.config.script_dir, genre)
+            if genre_obj and genre_obj.get("source_language"):
+                source_lang = genre_obj["source_language"]
+
+        foreign_book = str(data.get("book") or "").strip()
+        title = foreign_book or os.path.splitext(file.filename or "Imported book")[0]
+
+        book_id = _entity_manager.create_book(
+            title=title,
+            author="Unknown",
+            language="en",
+            source_language=source_lang,
+            description=f"Imported from {foreign_source or file.filename}",
+        )
+        if not book_id:
+            raise HTTPException(status_code=500, detail="Failed to create book from JSON.")
+
+        # Apply genre preset: prompt template and categories (derived from prompt)
+        if genre_obj:
+            from genres import read_genre_prompt as _read_prompt, extract_categories_meta_from_prompt as _extract_cats
+            prompt = _read_prompt(_entity_manager.config.script_dir, genre_obj)
+            if prompt:
+                _entity_manager.set_book_prompt_template(book_id, prompt)
+                cats = _extract_cats(prompt)
+                if cats:
+                    _entity_manager.set_book_categories(book_id, cats)
+
+        # Record the source URL so the per-book module system can key on it.
+        if foreign_source:
+            try:
+                _entity_manager.update_book(book_id, source_url=foreign_source)
+            except Exception:
+                pass  # Non-fatal
+    else:
+        book = _entity_manager.get_book(book_id=book_id)
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found.")
+
+    added = 0
+    skipped = 0
+    for i, ch in enumerate(chapters):
+        if not isinstance(ch, dict):
+            skipped += 1
+            continue
+
+        text = ch.get("text")
+        if not isinstance(text, str) or not text.strip():
+            skipped += 1
+            continue
+
+        # Prefer the 1-based chapter number; fall back to 0-based index+1.
+        number = ch.get("number")
+        if not isinstance(number, int):
+            idx = ch.get("index")
+            number = (idx + 1) if isinstance(idx, int) else (i + 1)
+
+        title = ch.get("title") or f"Chapter {number}"
+        lines = text.splitlines()
+
+        queue_id = _entity_manager.add_to_queue(
+            book_id=book_id,
+            content=lines,
+            title=title,
+            chapter_number=number,
+            source=f"upload:{file.filename}",
+        )
+        if queue_id:
+            added += 1
+        else:
+            skipped += 1
+
+    # Batch boundary: emit pending module-transform summaries as one line.
+    module_activity.flush(book_id)
+
+    return {
+        "status": "ok",
+        "book_id": book_id,
+        "chapters_added": added,
+        "skipped": skipped,
+        "total_chapters": len(chapters),
+        "count": _entity_manager.get_queue_count(),
+    }
+
+
+# ------------------------------------------------------------------
 # Process next queue item
 # ------------------------------------------------------------------
 
