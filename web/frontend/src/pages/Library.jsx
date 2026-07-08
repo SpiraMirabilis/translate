@@ -11,6 +11,8 @@ import { bustUrl } from '../services/cacheBust'
 import { publicApi } from '../services/api'
 import TagChips from '../components/TagChips'
 import ProtagonistBadge from '../components/ProtagonistBadge'
+import EditorsChoiceBadge from '../components/EditorsChoiceBadge'
+import { hasEditorsChoice } from '../utils/specialTags'
 
 const SORT_OPTIONS = [
   { id: 'popular',     label: 'Most Popular' },
@@ -227,11 +229,12 @@ export default function Library() {
               const isNew = isNewlyAdded(book.created_date)
               const isUpdated = hasRecentUpdate(book.last_chapter_date)
               const tags = tagsWithLanguage(book)
+              const editorsChoice = hasEditorsChoice(tags)
               return (
               <div key={book.id} className="group">
                 <Link to={`/library/book/${book.id}`} className="block">
                   {/* Cover */}
-                  <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative`}>
+                  <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative ${editorsChoice ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-transparent shadow-amber-500/30' : ''}`}>
                     {book.cover_image ? (
                       <img
                         src={bustUrl(book.cover_medium_url || `/api/public/books/${book.id}/cover/medium`)}
@@ -258,6 +261,12 @@ export default function Library() {
                     {tags.length > 0 && (
                       <div className="absolute top-1.5 right-1.5">
                         <ProtagonistBadge tags={tags} size="sm" showLabel={false} overlay />
+                      </div>
+                    )}
+                    {/* Editor's Choice badge — bottom-center overlay */}
+                    {editorsChoice && (
+                      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10">
+                        <EditorsChoiceBadge />
                       </div>
                     )}
                     {/* Hover overlay */}
