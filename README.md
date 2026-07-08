@@ -342,6 +342,10 @@ journalctl --user -u t9 -f
 
 An optional watchdog (`deploy/t9-watchdog.service` + `deploy/t9_watchdog.py`) monitors the T9 health endpoint and recovers the service if it becomes unresponsive.
 
+### LanguageTool grammar server (optional)
+
+The write editor's grammar check proxies to a local [LanguageTool](https://languagetool.org/) HTTP server. `bash deploy/setup-languagetool.sh` downloads the release, writes the server config, and installs it as a `systemctl --user` service on `127.0.0.1:8081`; add `--with-ngrams` to also fetch the ~8 GB English ngram data that powers confusion-pair rules (their/there, its/it's). The script is heavily commented for adapting to non-Debian or non-systemd systems. T9 runs fine without it — grammar checking just stays unavailable.
+
 ### Reverse proxy
 
 Sample configurations for Apache2 and Nginx are in `deploy/`. Both include HTTPS redirection, WebSocket proxying (important for real-time translation progress and entity review), and appropriate timeouts for long-running WebSocket connections.
