@@ -401,7 +401,7 @@ async def unsubscribe(token: str = ""):
         f"<title>Unsubscribed — {site_name}</title>"
         "<div style='font-family:system-ui,sans-serif;max-width:420px;margin:80px auto;text-align:center'>"
         "<h1 style='color:#16a34a'>You're unsubscribed</h1>"
-        "<p>You won't receive any more reply-notification emails from this site.</p>"
-        "<p style='color:#666;font-size:14px'>You can still post comments — just no email notifications.</p>"
+        "<p>You won't receive any further notification emails from this site.</p>"
+        "<p style='color:#666;font-size:14px'>You can still post comments and submit translation requests — you just won't get email notifications.</p>"
         "</div>"
     )
