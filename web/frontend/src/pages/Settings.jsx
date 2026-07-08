@@ -205,17 +205,29 @@ export default function Settings() {
           <h2 className="text-sm font-semibold text-slate-300 mb-3">Email Notifications</h2>
           <div className="card p-4 space-y-4">
             <p className="text-xs text-slate-500">
-              Used for reply-notification emails (sent via local Postfix). Leave blank to disable outgoing email.
+              Used for reply-notification emails. Leave the sender address blank to disable outgoing email.
             </p>
+            <div>
+              <label className="label">Delivery backend (EMAIL_BACKEND)</label>
+              <select
+                className="input text-sm"
+                value={settings.email_backend || 'ses'}
+                onChange={e => setSettings(s => ({ ...s, email_backend: e.target.value }))}
+              >
+                <option value="ses">Amazon SES</option>
+                <option value="postfix">Local Postfix</option>
+              </select>
+              <p className="text-xs text-slate-500 mt-1">SES credentials (SES_ACCESS_KEY_ID / SES_SECRET_ACCESS_KEY / SES_REGION) are configured in .env. SES falls back to Postfix automatically if unconfigured.</p>
+            </div>
             <div>
               <label className="label">Sender address (EMAIL_FROM)</label>
               <input
                 className="input text-sm"
                 value={settings.email_from || ''}
                 onChange={e => setSettings(s => ({ ...s, email_from: e.target.value }))}
-                placeholder="noreply@yourdomain.com"
+                placeholder="editor@yourdomain.com"
               />
-              <p className="text-xs text-slate-500 mt-1">Must be a domain Postfix is authorized to send from. Notifications won&apos;t deliver if this is unset.</p>
+              <p className="text-xs text-slate-500 mt-1">Must be a verified SES identity (or a domain Postfix is authorized to send from). Notifications won&apos;t deliver if this is unset.</p>
             </div>
             <div>
               <label className="label">Site base URL (SITE_BASE_URL)</label>

@@ -100,6 +100,7 @@ def get_settings():
         "comment_automod_model": getattr(_config, "comment_automod_model", "claude:claude-haiku-4-5"),
         "pronoun_repair_model": getattr(_config, "pronoun_repair_model", "claude:claude-haiku-4-5"),
         "email_from": getattr(_config, "email_from", ""),
+        "email_backend": getattr(_config, "email_backend", "ses"),
         "site_base_url": getattr(_config, "site_base_url", ""),
         "trad_to_simp": getattr(_config, "trad_to_simp", False),
         "disable_content_cache": getattr(_config, "disable_content_cache", False),
@@ -130,6 +131,7 @@ class SettingsUpdate(BaseModel):
     comment_automod_model: Optional[str] = None
     pronoun_repair_model: Optional[str] = None
     email_from: Optional[str] = None
+    email_backend: Optional[str] = None
     site_base_url: Optional[str] = None
     trad_to_simp: Optional[bool] = None
     disable_content_cache: Optional[bool] = None

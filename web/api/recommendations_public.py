@@ -4,11 +4,11 @@ Public endpoint for submitting novel translation recommendations.
 Protected by Cloudflare Turnstile and rate limiting.
 """
 import os
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
 
-from web.services import public_guard, turnstile
+from web.services import public_guard, turnstile, recommendation_emails
 from web.services.ip import client_ip
 
 router = APIRouter(prefix="/api/public")
@@ -43,7 +43,8 @@ class RecommendationRequest(BaseModel):
 
 
 @router.post("/recommendations")
-async def submit_recommendation(req: RecommendationRequest, request: Request):
+async def submit_recommendation(req: RecommendationRequest, request: Request,
+                                background_tasks: BackgroundTasks):
     ip = client_ip(request)
     _limiter.check(ip)
 
@@ -72,6 +73,10 @@ async def submit_recommendation(req: RecommendationRequest, request: Request):
         "requester_email": req.requester_email.strip(),
         "notes": (req.notes or "").strip() or None,
     })
+
+    # Fire-and-forget confirmation email (honours suppression; never blocks submit).
+    background_tasks.add_task(
+        recommendation_emails.send_submit_confirmation, _db, rec_id)
 
     return {"status": "ok", "id": rec_id}
 

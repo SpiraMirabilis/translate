@@ -7,6 +7,8 @@ can sign both without crossover. Tokens effectively never expire so
 unsubscribe links remain valid years after an email is sent.
 """
 
+import hashlib
+import hmac
 import os
 
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -38,3 +40,21 @@ def verify_unsubscribe_token(token: str):
         return _serializer().loads(token, max_age=_MAX_AGE)
     except (BadSignature, SignatureExpired):
         return None
+
+
+# --- Recommendation reply-correlation tags -------------------------------
+# Short HMAC signature embedded in the plus-addressed Reply-To
+# (editor+r<id>-<sig>@…). Hex-only so it's safe in an email local-part; the
+# recommendation id travels in the clear (it's not secret) and the signature
+# just prevents forged correlation.
+
+def sign_rec(rec_id: int) -> str:
+    digest = hmac.new(_secret().encode(), f"rec:{int(rec_id)}".encode(),
+                      hashlib.sha256).hexdigest()
+    return digest[:10]
+
+
+def verify_rec(rec_id: int, sig: str) -> bool:
+    if not sig:
+        return False
+    return hmac.compare_digest(sign_rec(rec_id), sig.strip().lower())

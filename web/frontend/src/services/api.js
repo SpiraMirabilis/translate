@@ -211,7 +211,12 @@ export const api = {
   listRecommendations: (status) => get(`/api/recommendations${status ? '?status=' + status : ''}`),
   countRecommendations: (status) => get(`/api/recommendations/count${status ? '?status=' + status : ''}`),
   updateRecommendation: (id, body) => put(`/api/recommendations/${id}`, body),
+  emailRecommendation: (id, message) => post(`/api/recommendations/${id}/email`, { message }),
   deleteRecommendation: (id) => del(`/api/recommendations/${id}`),
+  listReplies: (id) => get(`/api/recommendations/${id}/replies`),
+  markRepliesRead: (id) => post(`/api/recommendations/${id}/replies/read`, {}),
+  countUnreadReplies: () => get('/api/recommendations/replies/unread_count'),
+  listUnmatchedReplies: () => get('/api/recommendations/replies/unmatched'),
 
   // Comments (admin moderation)
   listComments:    (params = {}) => {

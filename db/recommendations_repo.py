@@ -28,16 +28,26 @@ class RecommendationsRepo:
             rec_id = cursor.lastrowid
         return rec_id
 
+    # Correlated subqueries add reply_count / unread_reply_count to each row so
+    # the admin UI can render per-request badges without a second round-trip.
+    _REC_REPLY_COUNTS = (
+        '(SELECT COUNT(*) FROM recommendation_replies rr '
+        'WHERE rr.recommendation_id = r.id) AS reply_count, '
+        '(SELECT COUNT(*) FROM recommendation_replies rr '
+        'WHERE rr.recommendation_id = r.id AND rr.is_read = 0) AS unread_reply_count'
+    )
+
     def list_recommendations(self, status: str = None) -> list:
         """List recommendations, optionally filtered by status."""
         with self._conn() as conn:
             cursor = conn.cursor()
+            select = f'SELECT r.*, {self._REC_REPLY_COUNTS} FROM recommendations r'
             if status:
                 cursor.execute(
-                    'SELECT * FROM recommendations WHERE status = ? ORDER BY created_at DESC', (status,)
+                    f'{select} WHERE r.status = ? ORDER BY r.created_at DESC', (status,)
                 )
             else:
-                cursor.execute('SELECT * FROM recommendations ORDER BY created_at DESC')
+                cursor.execute(f'{select} ORDER BY r.created_at DESC')
             cols = [d[0] for d in cursor.description]
             rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         return rows
@@ -46,7 +56,9 @@ class RecommendationsRepo:
         """Fetch a single recommendation by id."""
         with self._conn() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM recommendations WHERE id = ?', (rec_id,))
+            cursor.execute(
+                f'SELECT r.*, {self._REC_REPLY_COUNTS} FROM recommendations r WHERE r.id = ?',
+                (rec_id,))
             row = cursor.fetchone()
             if not row:
                 return None

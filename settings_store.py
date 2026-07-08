@@ -33,6 +33,7 @@ SCHEMA = {
     "public_site_name":        ("PUBLIC_SITE_NAME",        "Boonnovels",              str),
     "site_base_url":           ("SITE_BASE_URL",           "",                        str),
     "email_from":              ("EMAIL_FROM",              "",                        str),
+    "email_backend":           ("EMAIL_BACKEND",           "ses",                     str),
     "debug_mode":              ("DEBUG",                   False,                     bool),
     "public_library":          ("T9_PUBLIC_LIBRARY",       True,                      bool),
     "trad_to_simp":            ("TRAD_TO_SIMP",            False,                     bool),
@@ -52,6 +53,11 @@ SCHEMA = {
 # deliberately NOT in this SCHEMA: managed keys here get mirrored from
 # settings.json into os.environ on load, which would clobber the .env values.
 # config.py reads the SPACES_* vars directly via os.getenv with defaults.
+#
+# Amazon SES follows the same rule: the EMAIL_BACKEND toggle above is a
+# non-secret runtime setting, but the SES credentials and region
+# (SES_ACCESS_KEY_ID / SES_SECRET_ACCESS_KEY / SES_REGION) are secrets/infra
+# and live ONLY in .env — do NOT add them to SCHEMA.
 
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")

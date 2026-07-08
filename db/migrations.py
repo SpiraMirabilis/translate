@@ -310,6 +310,57 @@ def _m012_polish_jobs(conn, cursor, backend, logger):
             pass
 
 
+_RECOMMENDATION_REPLIES_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS recommendation_replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id INTEGER,
+            from_email TEXT,
+            from_name TEXT,
+            subject TEXT,
+            body TEXT NOT NULL,
+            message_id TEXT,
+            in_reply_to TEXT,
+            correlation TEXT NOT NULL DEFAULT 'unmatched',
+            received_at TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS recommendation_replies (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            recommendation_id INTEGER,
+            from_email VARCHAR(255),
+            from_name VARCHAR(255),
+            subject TEXT,
+            body LONGTEXT NOT NULL,
+            message_id VARCHAR(255),
+            in_reply_to VARCHAR(255),
+            correlation VARCHAR(20) NOT NULL DEFAULT 'unmatched',
+            received_at VARCHAR(50) NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            UNIQUE KEY uq_rec_replies_msgid (message_id),
+            KEY idx_rec_replies_rec (recommendation_id),
+            FOREIGN KEY(recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m013_recommendation_replies(conn, cursor, backend, logger):
+    """Ingested email replies from translation-request requesters (surfaced in
+    the Recommendations admin page by the mail-monitor daemon)."""
+    cursor.execute(_RECOMMENDATION_REPLIES_DDL[backend.name])
+    # SQLite needs its indexes created separately; MySQL declares them inline.
+    if backend.name == "sqlite":
+        for index_ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_rec_replies_rec ON recommendation_replies(recommendation_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_rec_replies_msgid ON recommendation_replies(message_id)",
+        ):
+            cursor.execute(index_ddl)
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -323,6 +374,7 @@ MIGRATIONS = [
     Migration(10, "original_works", _m010_original_works),
     Migration(11, "chapter_publishing", _m011_chapter_publishing),
     Migration(12, "polish_jobs", _m012_polish_jobs),
+    Migration(13, "recommendation_replies", _m013_recommendation_replies),
 ]
 
 

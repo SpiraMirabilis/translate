@@ -68,9 +68,14 @@ class TranslationConfig:
         # Traditional → Simplified Chinese preprocessing (global default; per-book overrides via books.trad_to_simp)
         self.trad_to_simp = os.getenv("TRAD_TO_SIMP", "0").lower() in ("1", "true", "yes")
 
-        # Reply-notification emails (sent via local Postfix)
-        self.email_from = os.getenv("EMAIL_FROM", "")        # e.g. noreply@boondollars.com
+        # Reply-notification emails. Backend is EMAIL_BACKEND ("ses" | "postfix",
+        # non-secret setting); SES credentials/region are secrets and live in .env.
+        self.email_from = os.getenv("EMAIL_FROM", "")        # e.g. editor@boondollars.com
         self.site_base_url = os.getenv("SITE_BASE_URL", "")  # e.g. https://reader.boondollars.com
+        self.email_backend = os.getenv("EMAIL_BACKEND", "ses")
+        self.ses_region = os.getenv("SES_REGION", "us-east-2")
+        self.ses_access_key = os.getenv("SES_ACCESS_KEY_ID", "")
+        self.ses_secret_key = os.getenv("SES_SECRET_ACCESS_KEY", "")
 
         # DigitalOcean Spaces (S3-compatible) CDN offload for covers/illustrations/EPUBs.
         # Secrets live in .env; the rest are non-secret settings (settings_store).

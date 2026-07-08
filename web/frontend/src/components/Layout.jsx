@@ -24,6 +24,7 @@ export default function Layout() {
   const { site_name } = useSite()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [newRecsCount, setNewRecsCount] = useState(0)
+  const [unreadRepliesCount, setUnreadRepliesCount] = useState(0)
   const [pendingCommentsCount, setPendingCommentsCount] = useState(0)
 
   useEffect(() => {
@@ -31,6 +32,9 @@ export default function Layout() {
       api.countRecommendations('new')
         .then(data => setNewRecsCount(data.count || 0))
         .catch(e => console.warn('Failed to load recommendations badge count:', e))
+      api.countUnreadReplies()
+        .then(data => setUnreadRepliesCount(data.count || 0))
+        .catch(e => console.warn('Failed to load reply badge count:', e))
       api.countCommentsAdmin('pending')
         .then(data => setPendingCommentsCount(data.count || 0))
         .catch(e => console.warn('Failed to load comments badge count:', e))
@@ -40,7 +44,8 @@ export default function Layout() {
     return () => clearInterval(interval)
   }, [])
 
-  const badges = { recs: newRecsCount, comments: pendingCommentsCount }
+  // New requests and unread email replies both surface on the Recommendations nav item.
+  const badges = { recs: newRecsCount + unreadRepliesCount, comments: pendingCommentsCount }
 
   return (
     <div className="flex h-screen overflow-hidden">

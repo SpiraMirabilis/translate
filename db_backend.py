@@ -523,6 +523,25 @@ _COMMON_DDL_SQLITE = [
     )''',
     'CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status)',
 
+    # recommendation_replies — email replies from requesters, ingested from the
+    # editor mbox by the mail-monitor daemon. recommendation_id NULL = unmatched.
+    '''CREATE TABLE IF NOT EXISTS recommendation_replies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recommendation_id INTEGER,
+        from_email TEXT,
+        from_name TEXT,
+        subject TEXT,
+        body TEXT NOT NULL,
+        message_id TEXT,
+        in_reply_to TEXT,
+        correlation TEXT NOT NULL DEFAULT 'unmatched',
+        received_at TEXT NOT NULL,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_rec_replies_rec ON recommendation_replies(recommendation_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_rec_replies_msgid ON recommendation_replies(message_id)',
+
     # comments — reader comment threads on chapters
     '''CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -871,6 +890,25 @@ _COMMON_DDL_MYSQL = [
         admin_notes TEXT
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_recommendations_status ON recommendations(status)',
+
+    # recommendation_replies — email replies from requesters, ingested from the
+    # editor mbox by the mail-monitor daemon. recommendation_id NULL = unmatched.
+    '''CREATE TABLE IF NOT EXISTS recommendation_replies (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        recommendation_id INTEGER,
+        from_email VARCHAR(255),
+        from_name VARCHAR(255),
+        subject TEXT,
+        body LONGTEXT NOT NULL,
+        message_id VARCHAR(255),
+        in_reply_to VARCHAR(255),
+        correlation VARCHAR(20) NOT NULL DEFAULT 'unmatched',
+        received_at VARCHAR(50) NOT NULL,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_rec_replies_msgid (message_id),
+        KEY idx_rec_replies_rec (recommendation_id),
+        FOREIGN KEY(recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
     # comments — reader comment threads on chapters
     '''CREATE TABLE IF NOT EXISTS comments (
