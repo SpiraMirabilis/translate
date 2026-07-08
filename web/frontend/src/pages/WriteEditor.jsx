@@ -563,7 +563,12 @@ export default function WriteEditor() {
 
   const editorSurface = (
     <IllustrationUrlContext.Provider value={illustrationCtx}>
-      <EditorContent editor={editor} />
+      {/* gram-pane-open strengthens the active-issue highlight: with the
+          pane docked the popover is suppressed, so the highlight is the
+          only in-editor anchor for the selected suggestion. */}
+      <div className={suggestionsOpen ? 'gram-pane-open' : undefined}>
+        <EditorContent editor={editor} />
+      </div>
       <SelectionBubbleMenu editor={editor} />
       {grammar.active && !suggestionsOpen && (
         <GrammarPopover
