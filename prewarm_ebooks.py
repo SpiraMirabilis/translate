@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """
-Prewarm public EPUB + AZW3 artifacts into Spaces/CDN.
+Prewarm public EPUB + AZW3 artifacts so downloads never wait on generation.
+
+Honors SPACES_ENABLED: with Spaces on, artifacts are prewarmed into the
+versioned CDN keys (the public endpoint then redirects to the CDN); with it
+off, they're prewarmed into the local epub_cache/ directory (the endpoint
+serves those files directly).
 
 Designed to run from cron every 5 minutes. On each tick it:
   1. Takes an exclusive lock so a still-running previous instance blocks this one
      (flock is released automatically if the previous process died).
   2. Bails out early when the machine is under load (translation jobs etc.) so it
      never competes with foreground work.
-  3. Walks every public book with published chapters. For each, it computes the
-     book's current content version (the same token the public download endpoint
-     uses) and:
-       - skips the book when both the EPUB and AZW3 for that version already exist
-         in Spaces (nothing to do);
+  3. Walks every public book with published chapters and, for each:
+       - skips the book when both the EPUB and AZW3 already exist — checked
+         against the versioned Spaces keys, or (Spaces off) against the files in
+         epub_cache/, which invalidate_epub_cache() clears on any content change;
        - skips books modified in the last 15 minutes (likely mid-translation/edit,
-         so the content version is still churning — don't waste a build);
-       - otherwise generates the published-only EPUB, converts it to AZW3, and
-         uploads both under their versioned Spaces keys (pruning stale versions).
+         so the content is still churning — don't waste a build);
+       - otherwise generates the published-only EPUB and converts it to AZW3,
+         uploading to Spaces (pruning stale versions) or leaving them on local disk.
 
-The artifacts and keys are byte-for-byte what web/api/public.py serves, so a
-prewarmed book makes the public /epub and /azw3 endpoints redirect straight to
-the CDN with no on-demand generation.
+The artifacts are byte-for-byte what web/api/public.py serves, so a prewarmed
+book makes the public /epub and /azw3 endpoints return immediately.
 
 Usage:
     python3 prewarm_ebooks.py [--dry-run] [--force] [--book-id N]
@@ -59,7 +62,7 @@ QUIET_MINUTES = 15
 # Soft wall-clock budget for one run. We stop cleanly before the next cron tick
 # so work stays incremental and load re-checks stay meaningful; the next tick
 # picks up where this one left off.
-MAX_RUN_MINUTES = 4.0
+MAX_RUN_MINUTES = 60.0
 
 
 def _log(msg):
@@ -137,25 +140,41 @@ def _build_published_epub(db, config, logger, book, epub_path):
     return True
 
 
-def _process_book(db, config, logger, book, args, azw3_ok):
-    """Prewarm one book. Returns a short status string for logging."""
+def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
+    """Prewarm one book. Returns a short status string for logging.
+
+    Existence is judged differently by deployment:
+      - Spaces on:  against the versioned CDN keys (exact per content version).
+      - Spaces off: against the local epub_cache/ files. invalidate_epub_cache()
+        deletes those on any content change, so their presence means they're
+        current; generated files just stay on disk with no upload.
+    """
     book_id = book["id"]
+    cache_dir = db._epub_cache_dir()
+    epub_path = os.path.join(cache_dir, f"{book_id}.epub")
+    azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
 
-    # Same content-version basis the public endpoint uses: modified_date OR the
-    # latest already-passed publish time (so a scheduled chapter going live bumps
-    # the version). Keys derived from this match the endpoint's byte-for-byte.
-    latest_published = db.latest_published_at(book_id)
-    version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
-                        default=None)
-    ver = spaces.epub_version(book_id, version_basis)
-    epub_key = spaces.epub_key(config, book_id, ver)
-    azw3_key = spaces.azw3_key(config, book_id, ver)
-
-    have_epub = spaces.exists(config, epub_key)
-    have_azw3 = spaces.exists(config, azw3_key) if azw3_ok else True  # can't/needn't build
+    if spaces_on:
+        # Same content-version basis the public endpoint uses: modified_date OR the
+        # latest already-passed publish time (so a scheduled chapter going live bumps
+        # the version). Keys derived from this match the endpoint's byte-for-byte.
+        latest_published = db.latest_published_at(book_id)
+        version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
+                            default=None)
+        ver = spaces.epub_version(book_id, version_basis)
+        epub_key = spaces.epub_key(config, book_id, ver)
+        azw3_key = spaces.azw3_key(config, book_id, ver)
+        have_epub = spaces.exists(config, epub_key)
+        have_azw3 = spaces.exists(config, azw3_key) if azw3_ok else True  # can't/needn't build
+        dest = f"ver {ver}"
+    else:
+        # Local-only: the on-disk cache is the whole story.
+        have_epub = os.path.exists(epub_path)
+        have_azw3 = os.path.exists(azw3_path) if azw3_ok else True  # can't/needn't build
+        dest = "local cache"
 
     need_epub = not have_epub
-    need_azw3 = azw3_ok and not spaces.exists(config, azw3_key)
+    need_azw3 = azw3_ok and not have_azw3
     if not need_epub and not need_azw3:
         return "skip: up-to-date"
 
@@ -170,10 +189,7 @@ def _process_book(db, config, logger, book, args, azw3_ok):
     if need_azw3:
         todo.append("azw3")
     if args.dry_run:
-        return f"DRY-RUN would build: {', '.join(todo)} (ver {ver})"
-
-    cache_dir = db._epub_cache_dir()
-    epub_path = os.path.join(cache_dir, f"{book_id}.epub")
+        return f"DRY-RUN would build: {', '.join(todo)} ({dest})"
 
     # Rebuild the EPUB fresh whenever we're doing any work — AZW3 needs a local
     # source EPUB, and a stale on-disk file might belong to an older version.
@@ -182,23 +198,23 @@ def _process_book(db, config, logger, book, args, azw3_ok):
 
     built = []
     if need_epub:
-        if spaces.upload(config, epub_path, epub_key, "application/epub+zip"):
+        # Local-only: the build above already wrote epub_path — nothing to upload.
+        if spaces_on:
+            if not spaces.upload(config, epub_path, epub_key, "application/epub+zip"):
+                return "error: EPUB upload failed"
             spaces.prune_epub_versions(config, book_id, keep_key=epub_key)
-            built.append("epub")
-        else:
-            return "error: EPUB upload failed"
+        built.append("epub")
 
     if need_azw3:
-        azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
         if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
             return f"partial: built {built or ['(none)']}, AZW3 conversion failed"
-        if spaces.upload(config, azw3_path, azw3_key, "application/x-mobi8-ebook"):
+        if spaces_on:
+            if not spaces.upload(config, azw3_path, azw3_key, "application/x-mobi8-ebook"):
+                return f"partial: built {built}, AZW3 upload failed"
             spaces.prune_azw3_versions(config, book_id, keep_key=azw3_key)
-            built.append("azw3")
-        else:
-            return f"partial: built {built}, AZW3 upload failed"
+        built.append("azw3")
 
-    return f"built: {', '.join(built)} (ver {ver})"
+    return f"built: {', '.join(built)} ({dest})"
 
 
 def main():
@@ -224,9 +240,12 @@ def main():
         config = TranslationConfig()
         logger = Logger(config)
 
-        if not spaces.is_enabled(config):
-            _log("Spaces is disabled/unconfigured — nothing to prewarm into blob storage. Exiting.")
-            return 0
+        # Honor SPACES_ENABLED: with Spaces on we prewarm the versioned CDN keys;
+        # with it off the public endpoint serves from the local epub_cache/, so we
+        # prewarm those files instead.
+        spaces_on = spaces.is_enabled(config)
+        _log("Spaces enabled — prewarming versioned CDN keys." if spaces_on
+             else "Spaces disabled — prewarming the local epub_cache/ only.")
 
         # 2) Load guard.
         ncpu = os.cpu_count() or 1
@@ -263,7 +282,7 @@ def main():
                 break
 
             try:
-                status = _process_book(db, config, logger, book, args, azw3_ok)
+                status = _process_book(db, config, logger, book, args, azw3_ok, spaces_on)
             except Exception as e:
                 status = f"error: {e}"
             label = f'#{book["id"]} "{book.get("title", "")[:48]}"'
