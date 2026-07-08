@@ -262,6 +262,8 @@ export const publicApi = {
   getChapter:       (bookId, num)  => get(`/api/public/books/${bookId}/chapters/${num}`),
   getChaptersBatch: (bookId, nums) => get(`/api/public/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
   searchBook:       (bookId, body) => post(`/api/public/books/${bookId}/search`, body),
+  // Is the current AZW3 already in the CDN (fast) or generated on demand (slow)?
+  getAzw3Status:    (bookId)       => get(`/api/public/books/${bookId}/azw3/status`),
 
   // Comment count for a chapter. The optional commenter UUID header lets the
   // API include the caller's own pending comments in the count.

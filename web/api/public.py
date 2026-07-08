@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
+import azw3
 from web.services import media_urls, public_guard
 from web.services.ip import client_ip
 
@@ -108,6 +109,7 @@ def site_info(response: Response):
     return {
         "site_name": _config.site_name if _config else "T9",
         "public_site_name": _config.public_site_name if _config else "Boonnovels",
+        "azw3_available": azw3.is_available(),
     }
 
 
@@ -325,36 +327,23 @@ def get_illustration(book_id: int, marker_id: str, request: Request):
     return _cdn_redirect_or_file(row["filename"], filepath, _media_cache_headers(_CACHE_STATIC))
 
 
-@router.get("/books/{book_id}/epub")
-def download_epub(book_id: int, request: Request):
-    """Download the cached EPUB for a public book, generating it if needed."""
-    _guard(request)
-    book = _get_public_book(book_id)
+def _epub_version_basis(book_id: int, book: dict):
+    """Version basis for cached artifacts: the book's modified_date (bumped by
+    every save and explicit publish/unpublish) OR the latest publish time that
+    has already passed — so a scheduled chapter crossing its publish time
+    changes the version and forces a regenerate, without any cron.
 
-    ip = client_ip(request)
-
-    # Version basis for cached artifacts: the book's modified_date (bumped by
-    # every save and explicit publish/unpublish) OR the latest publish time
-    # that has already passed — so a scheduled chapter crossing its publish
-    # time changes the version and forces a regenerate, without any cron.
+    Returns (version_basis, latest_published)."""
     latest_published = _db.latest_published_at(book_id)
     version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
                         default=None)
+    return version_basis, latest_published
 
-    # If Spaces holds the current content version, redirect to the immutable CDN
-    # URL — the VM serves no bytes.
-    try:
-        import spaces
-        from fastapi.responses import RedirectResponse
-        if spaces.is_enabled(_db.config):
-            ver = spaces.epub_version(book_id, version_basis)
-            key = spaces.epub_key(_db.config, book_id, ver)
-            if spaces.exists(_db.config, key):
-                _log_view(book_id, 0, ip)
-                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
-    except Exception:
-        pass
 
+def _ensure_cached_epub(book_id: int, book: dict, version_basis, latest_published) -> str:
+    """Ensure the book's EPUB exists on disk (generating on demand), mirror it to
+    Spaces/CDN, and return the local cached path. Shared by the EPUB and AZW3
+    endpoints. Raises HTTPException on generation failure / no chapters."""
     cache_dir = _db._epub_cache_dir()
     cached_path = os.path.join(cache_dir, f"{book_id}.epub")
 
@@ -406,8 +395,7 @@ def download_epub(book_id: int, request: Request):
         import shutil
         shutil.copy2(output_path, cached_path)
 
-    # Mirror the freshly-built EPUB to Spaces under its version key, prune stale
-    # versions, then serve the local bytes for this request (next one redirects).
+    # Mirror the EPUB to Spaces under its version key, prune stale versions.
     try:
         import spaces
         if spaces.is_enabled(_db.config):
@@ -417,6 +405,34 @@ def download_epub(book_id: int, request: Request):
                 spaces.prune_epub_versions(_db.config, book_id, keep_key=key)
     except Exception:
         pass
+
+    return cached_path
+
+
+@router.get("/books/{book_id}/epub")
+def download_epub(book_id: int, request: Request):
+    """Download the cached EPUB for a public book, generating it if needed."""
+    _guard(request)
+    book = _get_public_book(book_id)
+
+    ip = client_ip(request)
+    version_basis, latest_published = _epub_version_basis(book_id, book)
+
+    # If Spaces holds the current content version, redirect to the immutable CDN
+    # URL — the VM serves no bytes.
+    try:
+        import spaces
+        from fastapi.responses import RedirectResponse
+        if spaces.is_enabled(_db.config):
+            ver = spaces.epub_version(book_id, version_basis)
+            key = spaces.epub_key(_db.config, book_id, ver)
+            if spaces.exists(_db.config, key):
+                _log_view(book_id, 0, ip)
+                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
+    except Exception:
+        pass
+
+    cached_path = _ensure_cached_epub(book_id, book, version_basis, latest_published)
 
     # Log the EPUB download (chapter_number=0 signals an EPUB download)
     _log_view(book_id, 0, ip)
@@ -428,6 +444,93 @@ def download_epub(book_id: int, request: Request):
         filename=filename,
         headers=_media_cache_headers(_CACHE_SHORT),
     )
+
+
+@router.get("/books/{book_id}/azw3")
+def download_azw3(book_id: int, request: Request):
+    """Download the cached AZW3 (Kindle) file for a public book.
+
+    Derived from the book's EPUB via Calibre's ebook-convert; generated on
+    demand, cached to disk and mirrored to Spaces/CDN just like the EPUB."""
+    _guard(request)
+    book = _get_public_book(book_id)
+
+    if not azw3.is_available():
+        raise HTTPException(status_code=503, detail="AZW3 conversion not available")
+
+    ip = client_ip(request)
+    version_basis, latest_published = _epub_version_basis(book_id, book)
+
+    # Redirect to the immutable CDN copy if Spaces already holds this version.
+    try:
+        import spaces
+        from fastapi.responses import RedirectResponse
+        if spaces.is_enabled(_db.config):
+            ver = spaces.epub_version(book_id, version_basis)
+            key = spaces.azw3_key(_db.config, book_id, ver)
+            if spaces.exists(_db.config, key):
+                _log_view(book_id, 0, ip)
+                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
+    except Exception:
+        pass
+
+    # Ensure the source EPUB is present, then convert to AZW3. Rebuild the AZW3
+    # whenever it is missing or older than the EPUB it derives from.
+    epub_path = _ensure_cached_epub(book_id, book, version_basis, latest_published)
+    cache_dir = _db._epub_cache_dir()
+    azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
+
+    needs_build = (not os.path.exists(azw3_path)
+                   or os.path.getmtime(azw3_path) < os.path.getmtime(epub_path))
+    if needs_build:
+        if not azw3.convert_epub_to_azw3(epub_path, azw3_path, _db.logger):
+            raise HTTPException(status_code=500, detail="Failed to generate AZW3")
+
+    # Mirror the AZW3 to Spaces under its version key, prune stale versions.
+    try:
+        import spaces
+        if spaces.is_enabled(_db.config):
+            ver = spaces.epub_version(book_id, version_basis)
+            key = spaces.azw3_key(_db.config, book_id, ver)
+            if spaces.upload(_db.config, azw3_path, key, "application/x-mobi8-ebook"):
+                spaces.prune_azw3_versions(_db.config, book_id, keep_key=key)
+    except Exception:
+        pass
+
+    # Log the download (chapter_number=0 signals an ebook download)
+    _log_view(book_id, 0, ip)
+
+    filename = f"{book['title'].replace(' ', '_')}.azw3"
+    return FileResponse(
+        azw3_path,
+        media_type="application/x-mobi8-ebook",
+        filename=filename,
+        headers=_media_cache_headers(_CACHE_SHORT),
+    )
+
+
+@router.get("/books/{book_id}/azw3/status")
+def azw3_status(book_id: int, request: Request, response: Response):
+    """Whether the current AZW3 is already in Spaces/CDN (fast download) or would
+    be generated on demand (slow). Never triggers a build — lets the reader warn
+    the user before a multi-minute wait. `available` is False when conversion
+    isn't installed at all."""
+    _guard(request)
+    response.headers["Cache-Control"] = "no-store"  # must reflect live cache state
+    book = _get_public_book(book_id)
+    if not azw3.is_available():
+        return {"available": False, "cached": False}
+    version_basis, _ = _epub_version_basis(book_id, book)
+    cached = False
+    try:
+        import spaces
+        if spaces.is_enabled(_db.config):
+            ver = spaces.epub_version(book_id, version_basis)
+            key = spaces.azw3_key(_db.config, book_id, ver)
+            cached = spaces.exists(_db.config, key)
+    except Exception:
+        cached = False
+    return {"available": True, "cached": cached}
 
 
 class PublicSearchRequest(BaseModel):

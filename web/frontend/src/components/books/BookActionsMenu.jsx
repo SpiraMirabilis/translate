@@ -42,7 +42,7 @@ export default function BookActionsMenu({ book, exporting, onExport, onPublish, 
         <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] bg-slate-800 border border-slate-700 rounded shadow-xl flex flex-col py-1">
           {/* Export submenu */}
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Export</div>
-          {['text', 'markdown', 'html', 'epub'].map(fmt => (
+          {['text', 'markdown', 'html', 'epub', 'azw3'].map(fmt => (
             <button
               key={fmt}
               className="text-xs text-left px-3 py-1.5 hover:bg-slate-700 text-slate-300 flex items-center gap-2 disabled:opacity-50"

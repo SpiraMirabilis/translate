@@ -10,9 +10,49 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="alternate" type="application/rss+xml" title="Recently Translated Chapters" href="/api/public/feed.rss" />
+    <style>
+      /* Fallback shown only when the SPA fails to render (old / e-ink browsers
+         that run JS but can't handle a modern SPA). Self-contained colors so it
+         is legible even if the app's CSS bundle never loaded. */
+      #spa-fallback { display: none; background: #ffffff; color: #000000;
+        font-family: Georgia, "Times New Roman", serif; padding: 28px 16px;
+        text-align: center; font-size: 18px; line-height: 1.5;
+        border-bottom: 3px solid #000000; }
+      #spa-fallback p { margin: 0 0 14px; }
+      #spa-fallback a { color: #000000; font-weight: bold; font-size: 20px;
+        text-decoration: underline; }
+    </style>
   </head>
   <body class="bg-slate-900 text-slate-100 min-h-screen">
     <div id="root"></div>
+
+    <!-- Simple-mode fallback. Hidden by default; revealed by the watchdog below
+         (SPA failed to render) or by <noscript> (JS off entirely). -->
+    <div id="spa-fallback">
+      <p>This reader needs a modern browser to display fully.</p>
+      <p><a href="/simple">Open the simple book list &amp; downloads &raquo;</a></p>
+    </div>
+    <noscript><style>#spa-fallback { display: block !important; }</style></noscript>
+
+    <!-- ES5 ONLY — this must run on primitive e-ink browsers that ignore the
+         module bundle below. If, after a grace period, React has not populated
+         #root (and hasn't signalled a successful mount), show the fallback. -->
+    <script>
+      (function () {
+        function hasContent(el) {
+          if (!el) return false;
+          if (el.children && el.children.length > 0) return true;
+          return !!(el.hasChildNodes && el.hasChildNodes());
+        }
+        window.setTimeout(function () {
+          if (window.__APP_RENDERED === true) return;
+          if (hasContent(document.getElementById('root'))) return;
+          var fb = document.getElementById('spa-fallback');
+          if (fb) { fb.style.display = 'block'; }
+        }, 4000);
+      })();
+    </script>
+
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

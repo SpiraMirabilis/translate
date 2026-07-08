@@ -224,6 +224,30 @@ def prune_epub_versions(config, book_id, keep_key):
     return deleted
 
 
+def azw3_key(config, book_id, version):
+    """Full object key for a versioned AZW3 (Kindle) file."""
+    return key_for(config, f"azw3/{book_id}/{book_id}-{version}.azw3")
+
+
+def prune_azw3_versions(config, book_id, keep_key):
+    """Delete all AZW3 objects for a book except `keep_key` (best-effort)."""
+    client = _get_client(config)
+    if client is None:
+        return 0
+    key_prefix = key_for(config, f"azw3/{book_id}/")
+    deleted = 0
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=config.spaces_bucket, Prefix=key_prefix):
+            objs = [{"Key": o["Key"]} for o in page.get("Contents", []) if o["Key"] != keep_key]
+            if objs:
+                client.delete_objects(Bucket=config.spaces_bucket, Delete={"Objects": objs})
+                deleted += len(objs)
+    except Exception as e:
+        _logger.error(f"Spaces prune_azw3_versions failed ({key_prefix}): {e}")
+    return deleted
+
+
 def delete_prefix(config, rel_prefix):
     """Best-effort delete of all objects under a local relative prefix (e.g. 'illustrations/39')."""
     client = _get_client(config)

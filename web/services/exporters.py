@@ -63,9 +63,54 @@ def export_book(db, config, logger, book, format) -> ExportResult:
 
     if format == "epub":
         return _export_epub(db, config, logger, book, book_info)
+    if format == "azw3":
+        return _export_azw3(db, config, logger, book, book_info)
     if format == "html":
         return _export_html(db, book, book_info)
     return _export_text(db, book, format)
+
+
+def _export_azw3(db, config, logger, book, book_info) -> ExportResult:
+    """Generate (or reuse) the AZW3, converting from the cached EPUB via Calibre."""
+    import os
+    import azw3
+
+    if not azw3.is_available():
+        raise ExportError("AZW3 conversion is not available (ebook-convert not installed).",
+                          status_code=503)
+
+    book_id = book_info["id"]
+    # Reuse the EPUB export to build/cache the source EPUB (and mirror it to Spaces).
+    epub_result = _export_epub(db, config, logger, book, book_info)
+    epub_path = epub_result.path
+
+    cache_dir = db._epub_cache_dir()
+    azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
+
+    needs_build = (not os.path.exists(azw3_path)
+                   or os.path.getmtime(azw3_path) < os.path.getmtime(epub_path))
+    if needs_build:
+        if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
+            raise ExportError("Failed to generate AZW3.", status_code=500)
+
+    # Populate the CDN copy so the public download endpoint can redirect.
+    try:
+        import spaces
+        if spaces.is_enabled(config):
+            ver = spaces.epub_version(book_id, book.get("modified_date"))
+            key = spaces.azw3_key(config, book_id, ver)
+            if spaces.upload(config, azw3_path, key, "application/x-mobi8-ebook"):
+                spaces.prune_azw3_versions(config, book_id, keep_key=key)
+    except Exception:
+        pass
+
+    filename = f"{book['title'].replace(' ', '_')}.azw3"
+    return ExportResult(
+        filename=filename,
+        media_type="application/x-mobi8-ebook",
+        path=azw3_path,
+        is_path=True,
+    )
 
 
 def _export_epub(db, config, logger, book, book_info) -> ExportResult:

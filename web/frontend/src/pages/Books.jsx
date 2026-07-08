@@ -123,7 +123,7 @@ export default function Books() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      const extMap = { epub: 'epub', markdown: 'md', html: 'html', text: 'txt' }
+      const extMap = { epub: 'epub', azw3: 'azw3', markdown: 'md', html: 'html', text: 'txt' }
       a.download = `book_${bookId}.${extMap[format] || 'txt'}`
       a.click()
       URL.revokeObjectURL(url)

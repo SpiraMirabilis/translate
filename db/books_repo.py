@@ -619,26 +619,32 @@ class BooksRepo:
         return os.path.join(self.config.script_dir, "epub_cache")
 
     def invalidate_epub_cache(self, book_id):
-        """Invalidate a book's cached EPUB so it will be regenerated on next export.
+        """Invalidate a book's cached EPUB (and derived AZW3) so they regenerate.
 
-        Removes both the local on-disk cache file and, when Spaces/CDN is enabled,
-        every EPUB blob under the book's ``epub/{book_id}`` prefix in object storage.
+        Removes the local on-disk cache files and, when Spaces/CDN is enabled,
+        every EPUB/AZW3 blob under the book's ``epub/{book_id}`` and
+        ``azw3/{book_id}`` prefixes in object storage. The AZW3 is derived from
+        the EPUB, so it must be purged whenever the EPUB content changes.
         """
-        cache_path = os.path.join(self._epub_cache_dir(), f"{book_id}.epub")
-        if os.path.exists(cache_path):
-            try:
-                os.remove(cache_path)
-                self.logger.info(f"Invalidated EPUB cache for book {book_id}")
-            except OSError as e:
-                self.logger.warning(f"Failed to remove cached EPUB for book {book_id}: {e}")
+        cache_dir = self._epub_cache_dir()
+        # EPUB and its derived AZW3 share the cache dir, differing only by extension.
+        for ext in ("epub", "azw3"):
+            cache_path = os.path.join(cache_dir, f"{book_id}.{ext}")
+            if os.path.exists(cache_path):
+                try:
+                    os.remove(cache_path)
+                    self.logger.info(f"Invalidated {ext.upper()} cache for book {book_id}")
+                except OSError as e:
+                    self.logger.warning(f"Failed to remove cached {ext.upper()} for book {book_id}: {e}")
 
-        # Best-effort purge of this book's EPUB objects from Spaces/CDN.
+        # Best-effort purge of this book's EPUB/AZW3 objects from Spaces/CDN.
         try:
             import spaces
             if spaces.is_enabled(self.config):
                 spaces.delete_prefix(self.config, f"epub/{book_id}")
+                spaces.delete_prefix(self.config, f"azw3/{book_id}")
         except Exception as e:
-            self.logger.warning(f"Failed to purge Spaces EPUB objects for book {book_id}: {e}")
+            self.logger.warning(f"Failed to purge Spaces EPUB/AZW3 objects for book {book_id}: {e}")
 
     def get_book_comments_enabled(self, book_id: int) -> bool:
         with self._conn() as conn:

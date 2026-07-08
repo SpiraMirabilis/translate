@@ -1083,7 +1083,7 @@ def pronoun_repair_chapter(book_id: int, chapter_number: int, req: PronounRepair
 # ------------------------------------------------------------------
 
 @router.get("/{book_id}/export")
-def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", "markdown", "html"])):
+def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", "azw3", "markdown", "html"])):
     from web.services import exporters
 
     book = get_book_or_404(book_id)

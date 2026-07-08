@@ -153,6 +153,81 @@ def create_app(config=None, logger=None) -> FastAPI:
     app.include_router(comments_public.router)
     app.include_router(comments_admin.router)
 
+    # ------------------------------------------------------------------
+    # Plain-HTML book list for primitive / e-ink browsers.
+    #
+    # No SPA, no JS, minimal CSS — a bare <ul> of public books linking to
+    # the existing public EPUB endpoint. Registered here (before the SPA
+    # catch-all below) so /simple isn't swallowed by the index.html route.
+    # Lives outside /api so the auth middleware treats it as a public
+    # static route; the EPUB links carry a same-host Referer, which passes
+    # the public origin check.
+    # ------------------------------------------------------------------
+    @app.get("/simple", response_class=HTMLResponse)
+    async def simple_book_list():
+        import azw3
+        site = getattr(config, "public_site_name", None) or "Library"
+        azw3_on = azw3.is_available()  # only show the AZW3 column when we can build them
+
+        rows = []
+        for b in entity_manager.list_books(order_by="title"):
+            if not b.get("is_public", True):
+                continue
+            if not b.get("published_chapter_count", 0):
+                continue  # no published chapters -> ebook would 404
+            bid = b["id"]
+            title = escape(str(b.get("title") or "Untitled"))
+            author = escape(str(b.get("author") or ""))
+            count = b.get("published_chapter_count", 0)
+            meta_parts = []
+            if author:
+                meta_parts.append(f"by {author}")
+            meta_parts.append(f"{count} chapter{'s' if count != 1 else ''}")
+            meta = " &mdash; ".join(meta_parts)
+
+            cells = [
+                f'<td class="title">{title}<div class="meta">{meta}</div></td>',
+                f'<td class="dl"><a href="/api/public/books/{bid}/epub">EPUB</a></td>',
+            ]
+            if azw3_on:
+                cells.append(f'<td class="dl"><a href="/api/public/books/{bid}/azw3">AZW3</a></td>')
+            rows.append("<tr>" + "".join(cells) + "</tr>")
+
+        ncols = 3 if azw3_on else 2
+        if rows:
+            head_cells = "<th>Title</th><th>EPUB</th>" + ("<th>AZW3</th>" if azw3_on else "")
+            body = (f"<thead><tr>{head_cells}</tr></thead>\n<tbody>\n"
+                    + "\n".join(rows) + "\n</tbody>")
+        else:
+            body = f'<tbody><tr><td colspan="{ncols}">No books available.</td></tr></tbody>'
+        table = f'<table>\n{body}\n</table>'
+
+        kinds = "EPUB &amp; AZW3 (Kindle)" if azw3_on else "EPUB"
+        site_esc = escape(site)
+        html = (
+            "<!DOCTYPE html>\n"
+            '<html lang="en">\n<head>\n'
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{site_esc} &mdash; eBook Library</title>\n"
+            "<style>\n"
+            "body{font-family:Georgia,serif;margin:1em;max-width:44em;color:#000;background:#fff;}\n"
+            "h1{font-size:1.4em;border-bottom:2px solid #000;padding-bottom:.3em;}\n"
+            "table{width:100%;border-collapse:collapse;}\n"
+            "th,td{text-align:left;padding:.5em .4em;border-bottom:1px solid #999;vertical-align:top;}\n"
+            "th{border-bottom:2px solid #000;font-size:.9em;}\n"
+            "td.title{font-size:1.05em;}\n"
+            "td.dl{white-space:nowrap;}\n"
+            "a{text-decoration:underline;color:#000;}\n"
+            ".meta{font-size:.8em;color:#333;margin-top:.2em;}\n"
+            "</style>\n</head>\n<body>\n"
+            f"<h1>{site_esc} &mdash; Download eBooks</h1>\n"
+            f"<p>Download books as {kinds}.</p>\n"
+            f"{table}\n"
+            "</body>\n</html>\n"
+        )
+        return HTMLResponse(html)
+
     # Serve built frontend (production)
     static_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
     if os.path.isdir(static_dir):

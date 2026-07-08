@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle } from 'lucide-react'
+import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle, X } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useBookFeedLink } from '../hooks/useBookFeedLink'
@@ -94,7 +94,7 @@ export default function BookDetail() {
   const [showAll, setShowAll] = useState(false)
   const { prefs, setPrefs, theme } = useReaderPrefs()
   const [progress] = useLocalStorage('reader-progress', {})
-  const { site_name, public_site_name } = useSite()
+  const { site_name, public_site_name, azw3_available } = useSite()
   const t = T[prefs.theme] || T.light
 
   const commentsModal = useUrlModal('comments')
@@ -134,12 +134,33 @@ export default function BookDetail() {
 
   const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
 
-  const [epubLoading, setEpubLoading] = useState(false)
+  // Which ebook format is currently downloading ('epub' | 'azw3' | null).
+  // AZW3 can take a while to convert on the first hit, so the button shows a spinner.
+  const [downloading, setDownloading] = useState(null)
+  // Notice shown when a Kindle (AZW3) file must be generated on demand.
+  // { type: 'info' | 'error', msg } or null.
+  const [kindleToast, setKindleToast] = useState(null)
 
-  const handleEpubDownload = async () => {
-    setEpubLoading(true)
+  const handleEbookDownload = async (format) => {
+    setDownloading(format)
     try {
-      const res = await fetch(`/api/public/books/${bookId}/epub`, { credentials: 'same-origin' })
+      // For Kindle files, check first whether the artifact is already in the CDN.
+      // If not, it's built on demand (can take a few minutes) — warn the reader.
+      if (format === 'azw3') {
+        try {
+          const status = await publicApi.getAzw3Status(bookId)
+          if (status && status.cached === false) {
+            setKindleToast({
+              type: 'info',
+              msg: "Preparing your Kindle file — it's being generated on demand and can take a few minutes. "
+                 + "It'll download automatically when it's ready. If it doesn't, check back in a few minutes.",
+            })
+          }
+        } catch {
+          // Status check failed — proceed with the download anyway.
+        }
+      }
+      const res = await fetch(`/api/public/books/${bookId}/${format}`, { credentials: 'same-origin' })
       if (!res.ok) throw new Error('Download failed')
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
@@ -149,15 +170,23 @@ export default function BookDetail() {
       const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
       const asciiMatch = disposition.match(/filename="([^"]+)"/i)
       const parsedName = utf8Match ? decodeURIComponent(utf8Match[1]) : asciiMatch?.[1]
-      a.download = parsedName || `${book?.title || 'book'}.epub`
+      a.download = parsedName || `${book?.title || 'book'}.${format}`
       document.body.appendChild(a)
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
+      // The file is here — clear any "preparing" notice.
+      if (format === 'azw3') setKindleToast(null)
     } catch {
-      // silently fail — user can retry
+      // Surface Kindle failures (it may have been a long wait); EPUB stays silent.
+      if (format === 'azw3') {
+        setKindleToast({
+          type: 'error',
+          msg: 'Sorry — preparing the Kindle file didn\'t work. Please try again in a few minutes.',
+        })
+      }
     } finally {
-      setEpubLoading(false)
+      setDownloading(null)
     }
   }
 
@@ -294,13 +323,24 @@ export default function BookDetail() {
                 </span>
               )}
               <button
-                onClick={handleEpubDownload}
-                disabled={epubLoading}
-                className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2 ${epubLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                onClick={() => handleEbookDownload('epub')}
+                disabled={!!downloading}
+                className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2 ${downloading ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
-                {epubLoading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                {epubLoading ? 'Preparing...' : 'EPUB'}
+                {downloading === 'epub' ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                {downloading === 'epub' ? 'Preparing...' : 'EPUB'}
               </button>
+              {azw3_available && (
+                <button
+                  onClick={() => handleEbookDownload('azw3')}
+                  disabled={!!downloading}
+                  title="Kindle-compatible AZW3 file"
+                  className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2 ${downloading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {downloading === 'azw3' ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                  {downloading === 'azw3' ? 'Preparing...' : 'Kindle'}
+                </button>
+              )}
               <a
                 href={`/api/public/books/${bookId}/feed.rss`}
                 title="RSS feed of newly translated chapters for this book"
@@ -381,6 +421,27 @@ export default function BookDetail() {
         chapterNumber={BOOK_DISCUSSION_CH}
         themeMode={prefs.theme}
       />
+
+      {kindleToast && (
+        <div
+          role="status"
+          className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-md w-[calc(100%-2rem)]
+                      bg-slate-800 rounded-lg shadow-xl px-4 py-3 flex items-start gap-3 text-sm text-slate-100
+                      border ${kindleToast.type === 'error' ? 'border-red-700/60' : 'border-indigo-600/50'}`}
+        >
+          {kindleToast.type === 'error'
+            ? <X size={16} className="text-red-400 mt-0.5 shrink-0" />
+            : <Loader2 size={16} className="text-indigo-400 mt-0.5 shrink-0 animate-spin" />}
+          <span className="flex-1 leading-snug">{kindleToast.msg}</span>
+          <button
+            className="text-slate-500 hover:text-slate-300 transition-colors mt-0.5 shrink-0"
+            onClick={() => setKindleToast(null)}
+            aria-label="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
