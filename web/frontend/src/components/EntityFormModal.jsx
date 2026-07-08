@@ -259,6 +259,7 @@ export default function EntityFormModal({ entity, books = [], categories: parent
     const lines = [
       `Entity: ${form.untranslated} → ${form.translation}`,
       `Category: ${form.category}`,
+      ...(form.note ? [`Note: ${form.note}`] : []),
       '',
     ]
     // Append the pre-fetched context portion (everything after the header)

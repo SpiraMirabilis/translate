@@ -137,6 +137,7 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
     const lines = [
       `Entity: ${row.untranslated} → ${row.translation}`,
       `Category: ${row.category}`,
+      ...(row.note ? [`Note: ${row.note}`] : []),
       '',
       snippet ? `Context:\n${snippet}` : '(entity not found in chapter text)',
     ]
