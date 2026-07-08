@@ -1,0 +1,62 @@
+# T9 Mail Monitor — systemd SYSTEM service (runs as the `editor` user)
+#
+# Watches /var/mail/editor for replies to translation-request emails and pushes
+# each new reply into the app (POST /api/mail/ingest-reply). Runs as `editor`
+# because that user owns the 0600 mailbox; it needs no other privileges.
+#
+# Install (requires sudo — the one privileged step in this project):
+#   1. Put the shared secret + config in a root-only env file:
+#        sudo install -m 600 /dev/null /etc/t9-mail-monitor.env
+#        sudoedit /etc/t9-mail-monitor.env      # add the vars listed below
+#      Contents (must match the app's MAIL_INGEST_TOKEN in /home/mdm/t9/.env):
+#        MAIL_INGEST_TOKEN=<same-random-secret-as-app-.env>
+#        T9_API_URL=http://127.0.0.1:8000
+#        MBOX_PATH=/var/mail/editor
+#        MAILMON_POLL_INTERVAL=60
+#        MAILMON_STATE=/var/lib/t9-mail-monitor/state.json
+#        MAILMON_LOG=/var/lib/t9-mail-monitor/t9_mail_monitor.log
+#   2. State dir owned by editor:
+#        sudo install -d -o editor -g editor /var/lib/t9-mail-monitor
+#   3. If /home/mdm isn't traversable by `editor`, copy the script somewhere
+#      world-readable and point ExecStart at it (it's self-contained/stdlib):
+#        sudo install -D -m 755 /home/mdm/t9/deploy/t9_mail_monitor.py \
+#             /usr/local/lib/t9/t9_mail_monitor.py
+#      (and change ExecStart below to that path)
+#   4. Install + start:
+#        sudo cp deploy/t9-mail-monitor.service /etc/systemd/system/
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now t9-mail-monitor
+#
+# Logs:
+#   journalctl -u t9-mail-monitor -f
+#
+# Quick test without installing (single pass):
+#   sudo -u editor MAIL_INGEST_TOKEN=... python3 deploy/t9_mail_monitor.py --once
+
+[Unit]
+Description=T9 Mail Monitor (editor mbox -> app)
+After=network.target postfix.service
+
+[Service]
+Type=exec
+User=editor
+Group=editor
+ExecStart=/usr/bin/python3 /home/mdm/t9/deploy/t9_mail_monitor.py
+EnvironmentFile=/etc/t9-mail-monitor.env
+Restart=on-failure
+RestartSec=30
+
+# Hardening — least privilege. The service only needs to read /var/mail/editor
+# and write its own state dir + reach loopback.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/t9-mail-monitor
+# /var/mail/editor is read-only to us; do not grant write.
+ReadOnlyPaths=/var/mail
+
+[Install]
+WantedBy=multi-user.target
