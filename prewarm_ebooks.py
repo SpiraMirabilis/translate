@@ -24,8 +24,11 @@ Designed to run from cron every 5 minutes. On each tick it:
 The artifacts are byte-for-byte what web/api/public.py serves, so a prewarmed
 book makes the public /epub and /azw3 endpoints return immediately.
 
+A tick with nothing to prewarm prints nothing at all, so the cron log only ever
+shows real activity (builds, failures). Pass --verbose to log every tick.
+
 Usage:
-    python3 prewarm_ebooks.py [--dry-run] [--force] [--book-id N]
+    python3 prewarm_ebooks.py [--dry-run] [--force] [--book-id N] [--verbose]
                               [--max-load F] [--max-minutes M] [--quiet-minutes Q]
 
 Cron (every 5 min), logging to a file:
@@ -65,9 +68,40 @@ QUIET_MINUTES = 15
 MAX_RUN_MINUTES = 60.0
 
 
+# Logging. Cron fires every 5 minutes and most ticks have nothing to build, so a
+# quiet run must stay completely silent — the log file should only ever show real
+# activity. "Context" lines (mode banner, deferral notices, the closing summary)
+# are therefore held back, timestamped at the moment they occur, and printed only
+# once the run does actual work. Manual runs (--verbose / --dry-run / --book-id)
+# print everything immediately.
+_verbose = False
+_had_activity = False
+_deferred = []
+
+
+def _fmt(msg):
+    return f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+
+
 def _log(msg):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
+    print(_fmt(msg), flush=True)
+
+
+def _context(msg):
+    """A line worth printing only if this run turns out to have done something."""
+    if _verbose or _had_activity:
+        _log(msg)
+    else:
+        _deferred.append(_fmt(msg))  # keep the timestamp from when it happened
+
+
+def _activity(msg):
+    """Real work (a build, a failure): flush any held context, then log."""
+    global _had_activity
+    _had_activity = True
+    while _deferred:
+        print(_deferred.pop(0), flush=True)
+    _log(msg)
 
 
 def _acquire_lock():
@@ -228,12 +262,19 @@ def main():
                     help="Soft wall-clock budget for the run (default %.1f)." % MAX_RUN_MINUTES)
     ap.add_argument("--quiet-minutes", type=float, default=QUIET_MINUTES,
                     help="Skip books modified within this many minutes (default %d)." % QUIET_MINUTES)
+    ap.add_argument("--verbose", action="store_true",
+                    help="Log every tick, even when there is nothing to prewarm.")
     args = ap.parse_args()
+
+    # A cron tick with nothing to do prints nothing at all. Manual invocations
+    # are chatty so you can see what the run decided.
+    global _verbose
+    _verbose = args.verbose or args.dry_run or args.book_id is not None
 
     # 1) Single-instance guard.
     lock = _acquire_lock()
     if lock is None:
-        _log("Another instance is running — exiting.")
+        _context("Another instance is running — exiting.")
         return 0
 
     try:
@@ -244,21 +285,21 @@ def main():
         # with it off the public endpoint serves from the local epub_cache/, so we
         # prewarm those files instead.
         spaces_on = spaces.is_enabled(config)
-        _log("Spaces enabled — prewarming versioned CDN keys." if spaces_on
-             else "Spaces disabled — prewarming the local epub_cache/ only.")
+        _context("Spaces enabled — prewarming versioned CDN keys." if spaces_on
+                 else "Spaces disabled — prewarming the local epub_cache/ only.")
 
         # 2) Load guard.
         ncpu = os.cpu_count() or 1
         max_load = args.max_load if args.max_load is not None else ncpu * MAX_LOAD_PER_CPU
         ok, load1 = _load_ok(max_load)
         if not ok:
-            _log(f"Load average {load1:.2f} > {max_load:.2f} — deferring. Exiting.")
+            _context(f"Load average {load1:.2f} > {max_load:.2f} — deferring. Exiting.")
             return 0
 
         db = DatabaseManager(config, logger)
         azw3_ok = azw3.is_available()
         if not azw3_ok:
-            _log("ebook-convert not available — will prewarm EPUB only (no AZW3).")
+            _context("ebook-convert not available — will prewarm EPUB only (no AZW3).")
 
         books = db.list_books(order_by="title")
         if args.book_id is not None:
@@ -274,11 +315,11 @@ def main():
                 continue
 
             if time.monotonic() > deadline:
-                _log(f"Hit {args.max_minutes:.1f}m run budget — stopping; next tick resumes.")
+                _context(f"Hit {args.max_minutes:.1f}m run budget — stopping; next tick resumes.")
                 break
             ok, load1 = _load_ok(max_load)
             if not ok:
-                _log(f"Load rose to {load1:.2f} > {max_load:.2f} mid-run — stopping.")
+                _context(f"Load rose to {load1:.2f} > {max_load:.2f} mid-run — stopping.")
                 break
 
             try:
@@ -288,16 +329,17 @@ def main():
             label = f'#{book["id"]} "{book.get("title", "")[:48]}"'
             if status.startswith("built") or status.startswith("DRY-RUN") or status.startswith("partial"):
                 n_built += 1
-                _log(f"{label}: {status}")
+                _activity(f"{label}: {status}")
             elif status.startswith("error"):
                 n_err += 1
-                _log(f"{label}: {status}")
+                _activity(f"{label}: {status}")
             else:
-                n_skip += 1  # up-to-date / too-fresh: quiet unless you want the detail
-                if args.book_id is not None or args.dry_run:
+                n_skip += 1  # up-to-date / too-fresh: routine, never worth a log line
+                if _verbose:
                     _log(f"{label}: {status}")
 
-        _log(f"Done. built/attempted={n_built} skipped={n_skip} errors={n_err}")
+        # Only summarises a run that actually did something (or a manual run).
+        _context(f"Done. built/attempted={n_built} skipped={n_skip} errors={n_err}")
         return 0
     finally:
         lock.close()  # releases the flock
