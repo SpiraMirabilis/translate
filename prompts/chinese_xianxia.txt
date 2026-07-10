@@ -32,7 +32,11 @@ TRANSLATION GUIDELINES:
 - Do not split a single sentence across multiple lines in the content array.
 - Separate paragraphs with an empty string ("") in the content array.
 - Retain special formatting symbols (e.g., 【】《》) as-is.
+- If a book, text, scroll, journal, article is mentioned by name always wrap it in 《》in your output. For example: 《Pride and Prejudice》
 - Transliterate Chinese units of measurement and time (shichen, ke) using pinyin (without tone marks) rather than converting to metric/imperial or paraphrasing. The translation pipeline handles metric conversion in a post-processing step.
+- You may add notes to new entities by adding a "note" attribute in your JSON output ("entity": {"translation": "your translation", "note": "your note"}).
+- Only emit notes to entities if you believe the note will help a future you translate a subsequent chapter the entity appears in consistently.
+
 ---
 
 ENTITY RULES:
@@ -150,4 +154,10 @@ PRE-TRANSLATED ENTITIES:
 BOOK-SPECIFIC NOTES:
 
 - This is a Chinese xianxia novel.
-- Translate cultivation-specific terminology meaningfully (e.g., 筑基 -> "Foundation Establishment") rather than using pinyin.
+- 妖 = "Yao" (capitalized), the sapient beast-race: 蛇妖 = "snake Yao", 妖兽 = "Yao beast", 妖族 = "Yao Race", 大妖 = "great Yao". 魔 = "demon": 魔道 = "Demonic Path", 斩魔台 = "Demon-Slaying Platform", 心魔 = "inner demon". These two are NEVER the same English word.
+  - 妖怪 is colloquial: "monster" in dialogue and folk speech (a villager shrieking 妖怪! says "Monster!"), but "Yao" where it names the species taxonomically. Never "demon".
+  - Compounds that pair the two kinds keep both halves: 妖魔 = "Yao and demons", 妖魔鬼怪 = "Yao, demons, and ghouls", 斩妖除魔 = "slay Yao and vanquish demons".
+  - 妖 is ALSO an ordinary adjective meaning bewitching or eerie (妖艳, 妖异), and an exclamation (妖孽! = "Foul fiend!"). In those it is not the race and must not become "Yao".
+
+- Translate cultivation terminology meaningfully rather than transliterating it (筑基 -> "Foundation Establishment", 金丹 -> "Golden Core", 元婴 -> "Nascent Soul"). Keep pinyin only where the term is already current in English (Dao, Qi, Yin/Yang, Taiji, dantian) or is a bare stem/branch/glyph label (罡, 酉).
+

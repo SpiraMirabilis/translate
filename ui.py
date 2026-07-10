@@ -349,6 +349,10 @@ class UserInterface(ABC):
                 # pre-existing entities just get last_chapter bumped so we don't
                 # clobber edits made via the /entities page while translation was running.
                 new_or_edited_keys = set()  # (category, untranslated) tuples
+                # Entities a human touched during review. Only these may overwrite an
+                # existing note; a note the model volunteered must never clobber a
+                # curated one (the model re-emits already-known entities routinely).
+                human_edited_keys = set()
                 for cat, ents in totally_new_entities.items():
                     for key in ents:
                         new_or_edited_keys.add((cat, key))
@@ -357,6 +361,7 @@ class UserInterface(ABC):
                         for key, value in ents.items():
                             if isinstance(value, dict) and not value.get("deleted", False):
                                 new_or_edited_keys.add((cat, key))
+                                human_edited_keys.add((cat, key))
 
                 # Save entities directly to database to avoid duplication
                 self.logger.debug("--- Direct entity saving ---")
@@ -386,12 +391,19 @@ class UserInterface(ABC):
                             if existing:
                                 if is_new_or_edited:
                                     # New entity from LLM or edited during review — full update.
-                                    # note uses COALESCE so a re-translation that omits a note
-                                    # doesn't wipe an existing human-/model-set note.
-                                    cursor.execute('''
+                                    # Note handling:
+                                    #   human-edited -> COALESCE(?, note): the reviewer's note wins,
+                                    #                   and omitting one leaves the existing note alone.
+                                    #   model-emitted -> COALESCE(note, ?): an existing note ALWAYS wins.
+                                    # The model re-emits already-known entities routinely, so without
+                                    # this a volunteered note would silently clobber a curated one.
+                                    note_expr = ("COALESCE(?, note)"
+                                                 if (category, key) in human_edited_keys
+                                                 else "COALESCE(note, ?)")
+                                    cursor.execute(f'''
                                     UPDATE entities
                                     SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
-                                        origin_chapter = COALESCE(origin_chapter, ?), note = COALESCE(?, note)
+                                        origin_chapter = COALESCE(origin_chapter, ?), note = {note_expr}
                                     WHERE id = ?
                                     ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, note, existing[0]))
                                     self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
