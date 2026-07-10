@@ -232,6 +232,8 @@ class OpenAIProvider(ModelProvider):
         """Return provider name."""
         if self.base_url and "deepseek" in self.base_url.lower():
             return "DeepSeek (via OpenAI API)"
+        elif self.base_url and "x.ai" in self.base_url.lower():
+            return "xAI (via OpenAI API)"
         elif self.base_url:
             return f"OpenAI-Compatible ({self.base_url})"
         else:

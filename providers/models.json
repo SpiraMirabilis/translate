@@ -6,6 +6,9 @@
       "api_key_env": "OPENAI_KEY",
       "default_model": "gpt-5.4",
       "models": [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.4",
         "gpt-5.2",
         "gpt-5-mini",
@@ -31,6 +34,23 @@
       "models": ["deepseek-chat"],
       "max_chars": 3000,
       "max_output_tokens": 8192,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
+    },
+    "xai": {
+      "class": "OpenAIProvider",
+      "base_url": "https://api.x.ai/v1/",
+      "api_key_env": "XAI_KEY",
+      "default_model": "grok-4.5",
+      "models": [
+        "grok-4.5",
+        "grok-4.3",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning"
+      ],
+      "max_chars": 8000,
+      "max_output_tokens": 16384,
       "connect_timeout_seconds": 15,
       "request_timeout_seconds": 600,
       "max_retries": 2
@@ -99,6 +119,7 @@
     "oai": "openai",
     "ds": "deepseek",
     "claude": "anthropic",
+    "grok": "xai",
     "gemini": "google",
     "or": "openrouter",
     "cc": "claudecode"
