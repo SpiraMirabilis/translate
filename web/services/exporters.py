@@ -80,29 +80,23 @@ def _export_azw3(db, config, logger, book, book_info) -> ExportResult:
                           status_code=503)
 
     book_id = book_info["id"]
-    # Reuse the EPUB export to build/cache the source EPUB (and mirror it to Spaces).
+    # Reuse the EPUB export to build/cache the source EPUB.
     epub_result = _export_epub(db, config, logger, book, book_info)
     epub_path = epub_result.path
 
+    import ebook_build
     cache_dir = db._epub_cache_dir()
-    azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
+    # "-full" namespace: this artifact contains ALL chapters (drafts included)
+    # and must never share a path — or a CDN key — with the published-only
+    # files the public endpoints serve.
+    azw3_path = os.path.join(cache_dir, f"{book_id}-full.azw3")
 
-    needs_build = (not os.path.exists(azw3_path)
-                   or os.path.getmtime(azw3_path) < os.path.getmtime(epub_path))
-    if needs_build:
-        if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
-            raise ExportError("Failed to generate AZW3.", status_code=500)
-
-    # Populate the CDN copy so the public download endpoint can redirect.
-    try:
-        import spaces
-        if spaces.is_enabled(config):
-            ver = spaces.epub_version(book_id, book.get("modified_date"))
-            key = spaces.azw3_key(config, book_id, ver)
-            if spaces.upload(config, azw3_path, key, "application/x-mobi8-ebook"):
-                spaces.prune_azw3_versions(config, book_id, keep_key=key)
-    except Exception:
-        pass
+    with ebook_build.book_lock(cache_dir, f"{book_id}-full-azw3"):
+        needs_build = (not os.path.exists(azw3_path)
+                       or os.path.getmtime(azw3_path) < os.path.getmtime(epub_path))
+        if needs_build:
+            if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
+                raise ExportError("Failed to generate AZW3.", status_code=500)
 
     filename = f"{book['title'].replace(' ', '_')}.azw3"
     return ExportResult(
@@ -117,41 +111,36 @@ def _export_epub(db, config, logger, book, book_info) -> ExportResult:
     """Generate (or reuse) the cached EPUB, mirroring it to Spaces/CDN."""
     from output_formatter import OutputFormatter
 
+    import ebook_build
+
     book_id = book_info["id"]
     cache_dir = db._epub_cache_dir()
-    cached_path = os.path.join(cache_dir, f"{book_id}.epub")
+    # "-full" namespace: the admin export includes EVERY chapter, drafts and
+    # scheduled ones too. It previously shared epub_cache/{id}.epub with the
+    # published-only public endpoint (and even uploaded to the public CDN
+    # key), which leaked unpublished content to readers. Keep it local-only
+    # under its own name; prewarm owns populating the public CDN.
+    cached_path = os.path.join(cache_dir, f"{book_id}-full.epub")
     filename = f"{book['title'].replace(' ', '_')}.epub"
+    version_basis = book.get("modified_date")
 
-    if not os.path.exists(cached_path):
-        all_chapters = [
-            {
-                "chapter": ch["chapter"],
-                "title": ch.get("title") or f"Chapter {ch['chapter']}",
-                "content": ch.get("content", []),
-            }
-            for ch in db.get_chapters_bulk(book_id)
-        ]
+    with ebook_build.book_lock(cache_dir, f"{book_id}-full"):
+        if not ebook_build.is_current(cached_path, version_basis):
+            all_chapters = [
+                {
+                    "chapter": ch["chapter"],
+                    "title": ch.get("title") or f"Chapter {ch['chapter']}",
+                    "content": ch.get("content", []),
+                }
+                for ch in db.get_chapters_bulk(book_id)
+            ]
 
-        formatter = OutputFormatter(config, logger)
-        output_path = formatter.save_book_as_epub(all_chapters, book_info)
-        if not output_path or not os.path.exists(output_path):
-            raise ExportError("Failed to generate EPUB.", status_code=500)
-
-        # Cache the generated EPUB
-        os.makedirs(cache_dir, exist_ok=True)
-        import shutil
-        shutil.copy2(output_path, cached_path)
-
-        # Populate the CDN copy so the public download endpoint can redirect.
-        try:
-            import spaces
-            if spaces.is_enabled(config):
-                ver = spaces.epub_version(book_id, book.get("modified_date"))
-                key = spaces.epub_key(config, book_id, ver)
-                if spaces.upload(config, cached_path, key, "application/epub+zip"):
-                    spaces.prune_epub_versions(config, book_id, keep_key=key)
-        except Exception:
-            pass
+            formatter = OutputFormatter(config, logger)
+            output_path = formatter.save_book_as_epub(all_chapters, book_info,
+                                                      output_path=cached_path)
+            if not output_path or not os.path.exists(cached_path):
+                raise ExportError("Failed to generate EPUB.", status_code=500)
+            ebook_build.write_stamp(cached_path, version_basis)
 
     return ExportResult(
         filename=filename,

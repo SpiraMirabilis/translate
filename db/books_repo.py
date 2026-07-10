@@ -627,15 +627,22 @@ class BooksRepo:
         the EPUB, so it must be purged whenever the EPUB content changes.
         """
         cache_dir = self._epub_cache_dir()
-        # EPUB and its derived AZW3 share the cache dir, differing only by extension.
-        for ext in ("epub", "azw3"):
-            cache_path = os.path.join(cache_dir, f"{book_id}.{ext}")
-            if os.path.exists(cache_path):
-                try:
-                    os.remove(cache_path)
-                    self.logger.info(f"Invalidated {ext.upper()} cache for book {book_id}")
-                except OSError as e:
-                    self.logger.warning(f"Failed to remove cached {ext.upper()} for book {book_id}: {e}")
+        # Public (published-only) and admin ("-full", drafts included) artifacts
+        # share the cache dir; each carries a ".ver" version-stamp sidecar that
+        # must be removed with it.
+        for stem in (str(book_id), f"{book_id}-full"):
+            for ext in ("epub", "azw3"):
+                cache_path = os.path.join(cache_dir, f"{stem}.{ext}")
+                removed = False
+                for path in (cache_path, cache_path + ".ver"):
+                    if os.path.exists(path):
+                        try:
+                            os.remove(path)
+                            removed = removed or path == cache_path
+                        except OSError as e:
+                            self.logger.warning(f"Failed to remove cached {ext.upper()} for book {book_id}: {e}")
+                if removed:
+                    self.logger.info(f"Invalidated {ext.upper()} cache for book {book_id} ({stem})")
 
         # Best-effort purge of this book's EPUB/AZW3 objects from Spaces/CDN.
         try:

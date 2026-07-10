@@ -38,7 +38,6 @@ import argparse
 import datetime
 import fcntl
 import os
-import shutil
 import sys
 import time
 
@@ -49,6 +48,7 @@ from logger import Logger
 from database import DatabaseManager
 import spaces
 import azw3
+import ebook_build
 from output_formatter import OutputFormatter
 
 LOCK_PATH = "/tmp/t9_prewarm_ebooks.lock"
@@ -138,7 +138,7 @@ def _minutes_since(iso_str):
     return (datetime.datetime.now() - dt).total_seconds() / 60.0
 
 
-def _build_published_epub(db, config, logger, book, epub_path):
+def _build_published_epub(db, config, logger, book, epub_path, version_basis):
     """Generate the published-only EPUB for a book onto epub_path. Returns True on
     success. Mirrors web/api/public.py's generation exactly (content + book_info)."""
     book_id = book["id"]
@@ -165,12 +165,12 @@ def _build_published_epub(db, config, logger, book, epub_path):
         return False
 
     formatter = OutputFormatter(config, logger)
-    output_path = formatter.save_book_as_epub(all_chapters, book_info)
-    if not output_path or not os.path.exists(output_path):
+    # Build directly onto the cache path (atomic tmp+replace inside) and
+    # version-stamp it so the public endpoint agrees the file is current.
+    output_path = formatter.save_book_as_epub(all_chapters, book_info, output_path=epub_path)
+    if not output_path or not os.path.exists(epub_path):
         return False
-
-    os.makedirs(os.path.dirname(epub_path), exist_ok=True)
-    shutil.copy2(output_path, epub_path)
+    ebook_build.write_stamp(epub_path, version_basis)
     return True
 
 
@@ -188,13 +188,15 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
     epub_path = os.path.join(cache_dir, f"{book_id}.epub")
     azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
 
+    # Same content-version basis the public endpoint uses: modified_date OR the
+    # latest already-passed publish time (so a scheduled chapter going live bumps
+    # the version). Keys derived from this match the endpoint's byte-for-byte,
+    # and the local cache file is stamped with it in both modes.
+    latest_published = db.latest_published_at(book_id)
+    version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
+                        default=None)
+
     if spaces_on:
-        # Same content-version basis the public endpoint uses: modified_date OR the
-        # latest already-passed publish time (so a scheduled chapter going live bumps
-        # the version). Keys derived from this match the endpoint's byte-for-byte.
-        latest_published = db.latest_published_at(book_id)
-        version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
-                            default=None)
         ver = spaces.epub_version(book_id, version_basis)
         epub_key = spaces.epub_key(config, book_id, ver)
         azw3_key = spaces.azw3_key(config, book_id, ver)
@@ -202,8 +204,10 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
         have_azw3 = spaces.exists(config, azw3_key) if azw3_ok else True  # can't/needn't build
         dest = f"ver {ver}"
     else:
-        # Local-only: the on-disk cache is the whole story.
-        have_epub = os.path.exists(epub_path)
+        # Local-only: the on-disk cache is the whole story. The version stamp
+        # (not bare existence) decides currency; legacy unstamped files
+        # rebuild once and converge onto the stamped scheme.
+        have_epub = ebook_build.is_current(epub_path, version_basis)
         have_azw3 = os.path.exists(azw3_path) if azw3_ok else True  # can't/needn't build
         dest = "local cache"
 
@@ -227,25 +231,29 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
 
     # Rebuild the EPUB fresh whenever we're doing any work — AZW3 needs a local
     # source EPUB, and a stale on-disk file might belong to an older version.
-    if not _build_published_epub(db, config, logger, book, epub_path):
-        return "error: EPUB generation failed / no chapters"
+    # The per-book flock is shared with the public endpoints, so a reader
+    # request racing this cron tick waits and then reuses the fresh build.
+    with ebook_build.book_lock(cache_dir, book_id):
+        if not _build_published_epub(db, config, logger, book, epub_path, version_basis):
+            return "error: EPUB generation failed / no chapters"
 
-    built = []
-    if need_epub:
-        # Local-only: the build above already wrote epub_path — nothing to upload.
-        if spaces_on:
-            if not spaces.upload(config, epub_path, epub_key, "application/epub+zip"):
-                return "error: EPUB upload failed"
-            spaces.prune_epub_versions(config, book_id, keep_key=epub_key)
-        built.append("epub")
+        built = []
+        if need_epub:
+            # Local-only: the build above already wrote epub_path — nothing to upload.
+            if spaces_on:
+                if not spaces.upload(config, epub_path, epub_key, "application/epub+zip"):
+                    return "error: EPUB upload failed"
+                spaces.prune_epub_versions(config, book_id, keep_key=epub_key)
+            built.append("epub")
 
     if need_azw3:
-        if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
-            return f"partial: built {built or ['(none)']}, AZW3 conversion failed"
-        if spaces_on:
-            if not spaces.upload(config, azw3_path, azw3_key, "application/x-mobi8-ebook"):
-                return f"partial: built {built}, AZW3 upload failed"
-            spaces.prune_azw3_versions(config, book_id, keep_key=azw3_key)
+        with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
+            if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
+                return f"partial: built {built or ['(none)']}, AZW3 conversion failed"
+            if spaces_on:
+                if not spaces.upload(config, azw3_path, azw3_key, "application/x-mobi8-ebook"):
+                    return f"partial: built {built}, AZW3 upload failed"
+                spaces.prune_azw3_versions(config, book_id, keep_key=azw3_key)
         built.append("azw3")
 
     return f"built: {', '.join(built)} ({dest})"

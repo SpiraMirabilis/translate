@@ -396,64 +396,66 @@ def _ensure_cached_epub(book_id: int, book: dict, version_basis, latest_publishe
     cache_dir = _db._epub_cache_dir()
     cached_path = os.path.join(cache_dir, f"{book_id}.epub")
 
-    # Disk cache built before a scheduled chapter went live is stale — rebuild.
-    if os.path.exists(cached_path) and latest_published:
-        try:
-            import datetime as _dt
-            went_live = _dt.datetime.fromisoformat(latest_published).timestamp()
-            if os.path.getmtime(cached_path) < went_live:
-                os.remove(cached_path)
-        except (ValueError, OSError):
-            pass
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    import ebook_build
 
-    if not os.path.exists(cached_path):
-        # Generate the EPUB on demand
-        import sys
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        from output_formatter import OutputFormatter
+    # The per-book flock serializes concurrent builders (request threads,
+    # prewarm cron, a second process) — the loser of the race re-checks the
+    # stamp and serves the winner's fresh file instead of rebuilding.
+    with ebook_build.book_lock(cache_dir, book_id):
+        # Version-stamp check replaces the old mtime-vs-latest_published
+        # heuristic: version_basis already folds in modified_date AND the
+        # latest passed publish time, so any edit or a scheduled chapter
+        # going live changes the token. This also stops a stale file (built
+        # from pre-edit content) from being uploaded under the new version
+        # key. Legacy unstamped caches rebuild once.
+        if not ebook_build.is_current(cached_path, version_basis):
+            from output_formatter import OutputFormatter
 
-        # Need translator config for OutputFormatter — get it from the init-time db manager
-        formatter = OutputFormatter(_db.config, _db.logger)
-        book_info = {
-            "id": book_id,
-            "title": book.get("title", "Unknown"),
-            "author": book.get("author") or "Translator",
-            "language": book.get("language") or "en",
-        }
-        if book.get("cover_image"):
-            cover_full = os.path.join(_db.config.script_dir, book["cover_image"])
-            if os.path.exists(cover_full):
-                book_info["cover_image"] = cover_full
-
-        all_chapters = [
-            {
-                "chapter": ch["chapter"],
-                "title": ch.get("title") or f"Chapter {ch['chapter']}",
-                "content": ch.get("content", []),
+            # Need translator config for OutputFormatter — get it from the init-time db manager
+            formatter = OutputFormatter(_db.config, _db.logger)
+            book_info = {
+                "id": book_id,
+                "title": book.get("title", "Unknown"),
+                "author": book.get("author") or "Translator",
+                "language": book.get("language") or "en",
             }
-            for ch in _db.get_chapters_bulk(book_id, published_only=True)
-        ]
-        if not all_chapters:
-            raise HTTPException(status_code=404, detail="No chapters available")
+            if book.get("cover_image"):
+                cover_full = os.path.join(_db.config.script_dir, book["cover_image"])
+                if os.path.exists(cover_full):
+                    book_info["cover_image"] = cover_full
 
-        output_path = formatter.save_book_as_epub(all_chapters, book_info)
-        if not output_path or not os.path.exists(output_path):
-            raise HTTPException(status_code=500, detail="Failed to generate EPUB")
+            all_chapters = [
+                {
+                    "chapter": ch["chapter"],
+                    "title": ch.get("title") or f"Chapter {ch['chapter']}",
+                    "content": ch.get("content", []),
+                }
+                for ch in _db.get_chapters_bulk(book_id, published_only=True)
+            ]
+            if not all_chapters:
+                raise HTTPException(status_code=404, detail="No chapters available")
 
-        os.makedirs(cache_dir, exist_ok=True)
-        import shutil
-        shutil.copy2(output_path, cached_path)
+            # Build directly onto the cache path (atomic tmp+replace inside).
+            output_path = formatter.save_book_as_epub(all_chapters, book_info,
+                                                      output_path=cached_path)
+            if not output_path or not os.path.exists(cached_path):
+                raise HTTPException(status_code=500, detail="Failed to generate EPUB")
+            ebook_build.write_stamp(cached_path, version_basis)
 
-    # Mirror the EPUB to Spaces under its version key, prune stale versions.
-    try:
-        import spaces
-        if spaces.is_enabled(_db.config):
-            ver = spaces.epub_version(book_id, version_basis)
-            key = spaces.epub_key(_db.config, book_id, ver)
-            if spaces.upload(_db.config, cached_path, key, "application/epub+zip"):
-                spaces.prune_epub_versions(_db.config, book_id, keep_key=key)
-    except Exception:
-        pass
+        # Mirror the EPUB to Spaces under its version key, prune stale
+        # versions. Kept inside the lock so a concurrent rebuild can't swap
+        # the file mid-upload or prune the key another request just wrote.
+        try:
+            import spaces
+            if spaces.is_enabled(_db.config):
+                ver = spaces.epub_version(book_id, version_basis)
+                key = spaces.epub_key(_db.config, book_id, ver)
+                if spaces.upload(_db.config, cached_path, key, "application/epub+zip"):
+                    spaces.prune_epub_versions(_db.config, book_id, keep_key=key)
+        except Exception:
+            pass
 
     return cached_path
 
@@ -529,22 +531,27 @@ def download_azw3(book_id: int, request: Request):
     cache_dir = _db._epub_cache_dir()
     azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
 
-    needs_build = (not os.path.exists(azw3_path)
-                   or os.path.getmtime(azw3_path) < os.path.getmtime(epub_path))
-    if needs_build:
-        if not azw3.convert_epub_to_azw3(epub_path, azw3_path, _db.logger):
-            raise HTTPException(status_code=500, detail="Failed to generate AZW3")
+    import ebook_build
+    # Separate lock id from the EPUB build: an EPUB download shouldn't queue
+    # behind a long-running Calibre conversion. Serializing the conversion per
+    # book also caps the ebook-convert processes one hot book can spawn.
+    with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
+        needs_build = (not os.path.exists(azw3_path)
+                       or os.path.getmtime(azw3_path) < os.path.getmtime(epub_path))
+        if needs_build:
+            if not azw3.convert_epub_to_azw3(epub_path, azw3_path, _db.logger):
+                raise HTTPException(status_code=500, detail="Failed to generate AZW3")
 
-    # Mirror the AZW3 to Spaces under its version key, prune stale versions.
-    try:
-        import spaces
-        if spaces.is_enabled(_db.config):
-            ver = spaces.epub_version(book_id, version_basis)
-            key = spaces.azw3_key(_db.config, book_id, ver)
-            if spaces.upload(_db.config, azw3_path, key, "application/x-mobi8-ebook"):
-                spaces.prune_azw3_versions(_db.config, book_id, keep_key=key)
-    except Exception:
-        pass
+        # Mirror the AZW3 to Spaces under its version key, prune stale versions.
+        try:
+            import spaces
+            if spaces.is_enabled(_db.config):
+                ver = spaces.epub_version(book_id, version_basis)
+                key = spaces.azw3_key(_db.config, book_id, ver)
+                if spaces.upload(_db.config, azw3_path, key, "application/x-mobi8-ebook"):
+                    spaces.prune_azw3_versions(_db.config, book_id, keep_key=key)
+        except Exception:
+            pass
 
     # Log the download (chapter_number=0 signals an ebook download)
     _log_view(book_id, 0, ip)

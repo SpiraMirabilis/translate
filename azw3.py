@@ -56,29 +56,42 @@ def convert_epub_to_azw3(epub_path, out_path, logger=None):
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
+    # Convert into a temp file and os.replace() on success: ebook-convert
+    # writing straight to out_path leaves a PARTIAL file behind on timeout or
+    # failure, and callers' mtime/existence checks would then treat that
+    # corrupt artifact as valid forever. The temp name keeps the .azw3
+    # extension because ebook-convert infers the output format from it.
+    tmp_path = f"{out_path}.tmp-{os.getpid()}.azw3"
+
     # Bundled Qt needs a platform plugin; "offscreen" keeps it fully headless.
     env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
     try:
         proc = subprocess.run(
-            [binary, epub_path, out_path],
+            [binary, epub_path, tmp_path],
             env=env,
             capture_output=True,
             text=True,
             timeout=_CONVERT_TIMEOUT,
         )
+        if proc.returncode != 0 or not os.path.exists(tmp_path):
+            log.error(
+                "ebook-convert failed (rc=%s) for %s\nstderr: %s",
+                proc.returncode, epub_path, (proc.stderr or "")[-2000:],
+            )
+            return False
+        os.replace(tmp_path, out_path)
     except subprocess.TimeoutExpired:
         log.error("ebook-convert timed out after %ss converting %s", _CONVERT_TIMEOUT, epub_path)
         return False
     except OSError as e:
         log.error("Failed to launch ebook-convert (%s): %s", binary, e)
         return False
-
-    if proc.returncode != 0 or not os.path.exists(out_path):
-        log.error(
-            "ebook-convert failed (rc=%s) for %s\nstderr: %s",
-            proc.returncode, epub_path, (proc.stderr or "")[-2000:],
-        )
-        return False
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     log.info("Converted EPUB -> AZW3: %s", out_path)
     return True

@@ -391,14 +391,18 @@ class OutputFormatter:
         used_images[marker_id] = {'file_name': file_name, 'path': path, 'mime': mime}
         return file_name
 
-    def save_book_as_epub(self, all_chapters, book_info):
+    def save_book_as_epub(self, all_chapters, book_info, output_path=None):
         """
         Save multiple chapters as a single EPUB file.
-        
+
         Args:
             all_chapters: List of chapter data dictionaries
             book_info: Dictionary with book metadata
-            
+            output_path: Optional explicit target path. When omitted, the
+                book title decides the filename under output_dir — note two
+                books whose titles clean to the same string share that path,
+                so cache-building callers should pass their own target.
+
         Returns:
             str: Path to the saved EPUB file
         """
@@ -407,11 +411,11 @@ class OutputFormatter:
         book_author = book_info.get('author', 'Translator')
         book_language = book_info.get('language', 'en')
         book_description = book_info.get('description', '')
-        
-        # Create a clean filename for the book
-        book_filename = self._clean_filename(book_title)
-        output_path = os.path.join(self.output_dir, f"{book_filename}.epub")
-        
+
+        if output_path is None:
+            book_filename = self._clean_filename(book_title)
+            output_path = os.path.join(self.output_dir, f"{book_filename}.epub")
+
         try:
             # Create a new EPUB book
             book = epub.EpubBook()
@@ -559,9 +563,21 @@ class OutputFormatter:
             # Create output directory if it doesn't exist
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-            # Write the EPUB file
-            epub.write_epub(output_path, book, {})
-            
+            # Write the EPUB file atomically: a concurrent reader (or a build
+            # of another book whose title cleans to the same filename) must
+            # never see a half-written zip at the final path.
+            import threading
+            tmp_path = f"{output_path}.tmp-{os.getpid()}-{threading.get_ident()}"
+            try:
+                epub.write_epub(tmp_path, book, {})
+                os.replace(tmp_path, output_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+
             self.logger.info(f"Saved all chapters as EPUB to {output_path}")
             return output_path
         except Exception as e:
