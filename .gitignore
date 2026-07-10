@@ -180,3 +180,15 @@ illustrations/
 
 # Node
 node_modules/
+
+# CC-CEDICT dictionary (auto-downloaded from MDBG and built on first run)
+web/cedict.db
+web/cedict_ts.u8
+
+# Local SQLite databases, backups, and OS clutter
+database.db
+database.db.*
+ip_cache.db
+.env.bak*
+backups/
+.DS_Store
