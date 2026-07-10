@@ -1,6 +1,7 @@
 """trad_to_simp module — convert traditional Chinese source text to simplified.
 
-Wraps ``trad_simp.convert_text`` (OpenCC ``tw2sp``) as a source-text transform.
+Wraps ``trad_simp.convert_text`` (OpenCC ``t2s`` plus 乾/著 guardrails) as a
+source-text transform.
 This logic was formerly hard-coded into the ingest/translate pipeline
 (``database.py`` save_chapter + add_to_queue, ``translation_engine.py`` entity
 extraction + translation); it now lives here as a normal per-book module.
@@ -28,7 +29,7 @@ class TradToSimpModule(TranslationModule):
     id = "trad_to_simp"
     name = "Traditional → Simplified"
     description = ("Convert traditional Chinese source text to simplified (OpenCC "
-                   "tw2sp) before translation, so entity matching and prompts work "
+                   "t2s) before translation, so entity matching and prompts work "
                    "against mainland-standard text.")
     # Default off; opt-in per book (see auto_enabled / the Modules dialog).
     default_enabled = False
