@@ -73,3 +73,32 @@ def test_no_source_unit_survives_a_converted_range():
     for line in ("two or three shichen", "one or two shichen", "two to three ke"):
         assert "shichen" not in _one(f"It took {line}.")
         assert " ke" not in _one(f"It took {line}.")
+
+
+# ── ASCII-hyphen ranges (digits only) ────────────────────────────────
+
+
+@pytest.mark.parametrize("src,expected", [
+    # Both endpoints scale; before this the low end was orphaned ("3-ten hours").
+    ("It took 3-5 shichen to arrive.", "It took six-ten hours to arrive."),
+    ("It took 3 - 5 shichen.", "It took six-ten hours."),
+])
+def test_hyphen_digit_ranges_scale_both_ends(src, expected):
+    assert _one(src) == expected
+
+
+def test_hyphenated_compound_word_number_is_not_a_range():
+    """twenty-one is one quantity (21 ke ≈ 5h), never the range 20–1."""
+    assert _one("It took twenty-one ke to finish.") == \
+        "It took about five hours to finish."
+
+
+def test_adjacent_ones_words_rejected_not_summed():
+    """"two-three shichen" is a 2–3 range the pattern can't safely convert;
+    the old parser summed the words (2+3=5 → "ten hours"), silently
+    misstating the magnitude. It must now pass through unchanged."""
+    assert _one("It took two-three shichen.") == "It took two-three shichen."
+
+
+def test_half_compounds_still_parse():
+    assert _one("It took one and a half shichen.") == "It took three hours."

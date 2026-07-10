@@ -32,6 +32,15 @@ from db_backend import create_backend
 # must not be mistaken for a list — so only tables get special handling.
 _TABLE_RE = re.compile(r"^\s*\|.*\|\s*$")
 
+# Sentinel (rich) tables: a whole-line ⟦TABLE⟧ … ⟦/TABLE⟧ run (see
+# chapterMarkdown.js / output_formatter.py). The entire span is copied
+# VERBATIM — inserting blanks between marker lines makes _parse_table_run
+# fail (the table renders as literal ⟦TR⟧ text and the write editor opens
+# read-only), while blank lines INSIDE the run are meaningful (paragraph
+# separators within a cell) and must not be collapsed either.
+_SENT_OPEN_RE = re.compile(r"^\s*⟦TABLE⟧\s*$")
+_SENT_CLOSE_RE = re.compile(r"^\s*⟦/TABLE⟧\s*$")
+
 
 def _is_blank(ln):
     """A line counts as blank if it's empty or only whitespace.
@@ -54,24 +63,57 @@ def double_space(lines):
     collapsed to a single separator. A run of consecutive Markdown table rows is
     kept together as one block, and table rows separated only by blank lines are
     healed back into a contiguous table (a stray blank would break the render).
+    A sentinel ⟦TABLE⟧…⟦/TABLE⟧ run is one opaque unit copied verbatim,
+    interior blank lines included (they separate paragraphs inside cells).
     """
     if not isinstance(lines, list):
         return lines
-    # Non-blank lines, in order. Group consecutive table rows into one unit;
-    # every other line is its own unit (a paragraph).
-    toks = [ln for ln in lines if not _is_blank(ln)]
+
     units = []
-    k = 0
-    while k < len(toks):
-        if _is_table_row(toks[k]):
-            unit = []
-            while k < len(toks) and _is_table_row(toks[k]):
-                unit.append(toks[k])
-                k += 1
+    i = 0
+    n = len(lines)
+    while i < n:
+        ln = lines[i]
+        if _is_blank(ln):
+            i += 1
+            continue
+
+        if isinstance(ln, str) and _SENT_OPEN_RE.match(ln):
+            # Copy the whole terminated run verbatim. An unterminated open
+            # marker is malformed content (renders as literal text anyway);
+            # fall through and treat the line as an ordinary paragraph.
+            j = i + 1
+            while j < n and not (isinstance(lines[j], str) and _SENT_CLOSE_RE.match(lines[j])):
+                j += 1
+            if j < n:
+                units.append(list(lines[i:j + 1]))
+                i = j + 1
+                continue
+
+        if _is_table_row(ln):
+            # Consecutive pipe rows form one unit; rows separated only by
+            # blanks are healed back together (dropping the blanks).
+            unit = [ln]
+            i += 1
+            while i < n:
+                if _is_table_row(lines[i]):
+                    unit.append(lines[i])
+                    i += 1
+                    continue
+                if _is_blank(lines[i]):
+                    j = i
+                    while j < n and _is_blank(lines[j]):
+                        j += 1
+                    if j < n and _is_table_row(lines[j]):
+                        i = j
+                        continue
+                break
             units.append(unit)
-        else:
-            units.append([toks[k]])
-            k += 1
+            continue
+
+        units.append([ln])
+        i += 1
+
     out = []
     for u_i, unit in enumerate(units):
         out.extend(unit)

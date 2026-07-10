@@ -226,12 +226,24 @@ def _word_to_number(text: str) -> Optional[float]:
 
     current = 0
     result = 0
+    prev_kind = None  # 'ones' | 'tens' | 'mult'
 
     for word in words:
         if word in _ONES:
+            # Adjacent ones-words ("two three") are a range/enumeration, not a
+            # compound number — summing them silently misstates the magnitude
+            # ("two-three shichen" is 2–3, never 5). Sole exception: a trailing
+            # "half" ("one and a half" = 1.5; the "and" was filtered above).
+            if prev_kind == "ones" and word != "half":
+                return None
             current += _ONES[word]
+            prev_kind = "ones"
         elif word in _TENS:
+            # "five twenty" / "twenty thirty" are not compound numbers either.
+            if prev_kind in ("ones", "tens"):
+                return None
             current += _TENS[word]
+            prev_kind = "tens"
         elif word in _MULTIPLIERS:
             if current == 0:
                 current = 1
@@ -242,6 +254,7 @@ def _word_to_number(text: str) -> Optional[float]:
                 current = 0
             else:
                 current *= mult
+            prev_kind = "mult"
         else:
             return None  # Unknown word
 
@@ -324,8 +337,15 @@ _PATTERN = re.compile(
         r"(?P<vague>" + _vague_quantifier + r")[\s\-]+"               # branch 1
         r"|"
         r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"          # branch 2
-        r"(?:(?P<lo>" + _numeric + r"|" + _number_words + r")"
-            + _RANGE_SEP + r")?"                                     # optional range low bound
+        r"(?:"
+            r"(?:(?P<lo>" + _numeric + r"|" + _number_words + r")"
+                + _RANGE_SEP + r")"                                  # word/dash range low bound
+            r"|"
+            # ASCII-hyphen range, DIGITS ONLY on both sides ("3-5 shichen").
+            # Word-numbers are themselves hyphenated ("twenty-one"), so a bare
+            # hyphen is only a range separator between two plain numerals.
+            r"(?:(?P<lo_d>" + _numeric + r")\s*(?P<hyph>-)\s*(?=\d))"
+        r")?"                                                        # optional range low bound
         r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words + r"|a\s+full|an\s+full|full|a|an)[\s\-]+"
         r"|"
         r"(?P<fracunit>" + _fraction_phrase + r")[\s\-]+"            # branch 3
@@ -698,7 +718,7 @@ def _convert_match(match: re.Match) -> str:
     # ── Range path ("two or three shichen" -> "four or six hours") ──
     # Both endpoints must scale. Handled before the single-value path so the low
     # bound is never left in the source unit.
-    lo_str = gd.get("lo")
+    lo_str = gd.get("lo") or gd.get("lo_d")
     if lo_str and not fracunit_str and not fraction_str:
         lo_number = _word_to_number(lo_str)
         if lo_number is None:
@@ -720,7 +740,7 @@ def _convert_match(match: re.Match) -> str:
         else:
             lo_fmt, hi_fmt = _format_number(lo_scaled), _format_number(hi_scaled)
 
-        dash = gd.get("dash")
+        dash = gd.get("dash") or gd.get("hyph")
         span = (f"{lo_fmt}{dash}{hi_fmt}" if dash
                 else f"{lo_fmt} {(gd.get('sep') or 'or').lower()} {hi_fmt}")
         if action == "replace":
