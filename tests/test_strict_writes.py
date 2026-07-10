@@ -44,7 +44,8 @@ def test_default_write_failure_returns_falsy(db):
     assert db.add_to_queue(1, "content") is None
     assert db.remove_from_queue(1) is False
     result = db.replace_in_chapters(1, "a", "b")
-    assert result == {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
+    assert result == {'affected_chapters': 0, 'total_replacements': 0,
+                      'title_replacements': 0, 'can_undo': False}
 
 
 def test_default_flag_defaults_false(db):

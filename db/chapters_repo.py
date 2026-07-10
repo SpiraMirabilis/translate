@@ -571,22 +571,59 @@ class ChaptersRepo:
             self.logger.error(f"Error searching chapters: {e}")
             return []
 
-    # In-memory undo snapshot: { book_id: { 'snapshots': [(ch_id, old_content), ...], 'query': str, 'replacement': str } }
+    # In-memory undo snapshot:
+    # { book_id: { 'snapshots': [(ch_id, old_content, old_title), ...], 'query': str, 'replacement': str } }
     _replace_undo = {}
 
-    def replace_in_chapters(self, book_id, query, replacement, chapter_numbers=None, is_regex=False):
-        """Replace text in translated content of chapters.
+    @staticmethod
+    def _replace_once(text, query, replacement, pattern):
+        """Replace every occurrence in one string. Returns (new_text, count).
 
-        Saves a snapshot of affected chapters before modifying, enabling undo.
+        Plain (non-regex) matching is case-INSENSITIVE, matching the search
+        endpoint's behaviour. Callers that need case-sensitivity should pass a
+        regex, or do their own pass.
+        """
+        if not text:
+            return text, 0
+        if pattern is not None:
+            return pattern.subn(replacement, text)
+
+        count = 0
+        lower_text = text.lower()
+        query_lower = query.lower()
+        pos = 0
+        parts = []
+        while True:
+            idx = lower_text.find(query_lower, pos)
+            if idx == -1:
+                parts.append(text[pos:])
+                break
+            parts.append(text[pos:idx])
+            parts.append(replacement)
+            count += 1
+            pos = idx + len(query)
+        return (''.join(parts) if count else text), count
+
+    def replace_in_chapters(self, book_id, query, replacement, chapter_numbers=None,
+                            is_regex=False, include_titles=True):
+        """Replace text in the translated content of chapters, and in their titles.
+
+        Chapter titles live in their own column, so a replacement that skipped them
+        left conventions stale in the title while the prose was clean. `include_titles`
+        defaults to True; pass False to touch prose only.
+
+        Saves a snapshot of affected chapters (content AND title) before modifying,
+        enabling undo.
 
         Returns:
-            dict with affected_chapters, total_replacements, and can_undo flag
+            dict with affected_chapters, total_replacements, title_replacements,
+            and can_undo flag
         """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
 
-                sql = 'SELECT id, chapter_number, translated_content FROM chapters WHERE book_id = ?'
+                sql = 'SELECT id, chapter_number, translated_content, title FROM chapters WHERE book_id = ?'
                 params = [book_id]
                 if chapter_numbers:
                     placeholders = ','.join('?' * len(chapter_numbers))
@@ -597,17 +634,20 @@ class ChaptersRepo:
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
 
+                pattern = None
                 if is_regex:
                     try:
                         pattern = re.compile(query, re.IGNORECASE)
                     except re.error:
-                        return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
+                        return {'affected_chapters': 0, 'total_replacements': 0,
+                                'title_replacements': 0, 'can_undo': False}
 
                 affected = 0
                 total = 0
+                title_total = 0
                 snapshots = []
 
-                for ch_id, ch_num, raw_content in rows:
+                for ch_id, ch_num, raw_content, raw_title in rows:
                     try:
                         lines = json.loads(raw_content) if raw_content else []
                     except (json.JSONDecodeError, TypeError):
@@ -616,39 +656,25 @@ class ChaptersRepo:
                     ch_replacements = 0
                     new_lines = []
                     for line in lines:
-                        if is_regex:
-                            new_line, count = pattern.subn(replacement, line)
-                        else:
-                            count = 0
-                            new_line = line
-                            lower_line = new_line.lower()
-                            query_lower = query.lower()
-                            pos = 0
-                            result_parts = []
-                            while True:
-                                idx = lower_line.find(query_lower, pos)
-                                if idx == -1:
-                                    result_parts.append(new_line[pos:])
-                                    break
-                                result_parts.append(new_line[pos:idx])
-                                result_parts.append(replacement)
-                                count += 1
-                                pos = idx + len(query)
-                            if count > 0:
-                                new_line = ''.join(result_parts)
-
+                        new_line, count = self._replace_once(line, query, replacement, pattern)
                         new_lines.append(new_line)
                         ch_replacements += count
 
-                    if ch_replacements > 0:
-                        # Snapshot the original content before overwriting
-                        snapshots.append((ch_id, raw_content))
+                    new_title, title_count = (
+                        self._replace_once(raw_title, query, replacement, pattern)
+                        if include_titles else (raw_title, 0)
+                    )
+
+                    if ch_replacements > 0 or title_count > 0:
+                        # Snapshot content AND title before overwriting
+                        snapshots.append((ch_id, raw_content, raw_title))
                         cursor.execute(
-                            'UPDATE chapters SET translated_content = ? WHERE id = ?',
-                            (json.dumps(new_lines, ensure_ascii=False), ch_id)
+                            'UPDATE chapters SET translated_content = ?, title = ? WHERE id = ?',
+                            (json.dumps(new_lines, ensure_ascii=False), new_title, ch_id)
                         )
                         affected += 1
                         total += ch_replacements
+                        title_total += title_count
 
             if affected > 0:
                 self.invalidate_epub_cache(book_id)
@@ -661,15 +687,18 @@ class ChaptersRepo:
                     'replacement': replacement,
                     'affected_chapters': affected,
                     'total_replacements': total,
+                    'title_replacements': title_total,
                 }
 
-            return {'affected_chapters': affected, 'total_replacements': total, 'can_undo': len(snapshots) > 0}
+            return {'affected_chapters': affected, 'total_replacements': total,
+                    'title_replacements': title_total, 'can_undo': len(snapshots) > 0}
 
         except Exception as e:
             self.logger.error(f"Error replacing in chapters: {e}\n{traceback.format_exc()}")
             if self.strict_writes:
                 raise
-            return {'affected_chapters': 0, 'total_replacements': 0, 'can_undo': False}
+            return {'affected_chapters': 0, 'total_replacements': 0,
+                    'title_replacements': 0, 'can_undo': False}
 
     def undo_replace(self, book_id):
         """Undo the last replace_in_chapters operation for a book.
@@ -684,11 +713,21 @@ class ChaptersRepo:
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                for ch_id, old_content in undo['snapshots']:
-                    cursor.execute(
-                        'UPDATE chapters SET translated_content = ? WHERE id = ?',
-                        (old_content, ch_id)
-                    )
+                for snap in undo['snapshots']:
+                    # Snapshots are (ch_id, old_content, old_title); tolerate the
+                    # older 2-tuple shape in case one is still in memory.
+                    if len(snap) == 3:
+                        ch_id, old_content, old_title = snap
+                        cursor.execute(
+                            'UPDATE chapters SET translated_content = ?, title = ? WHERE id = ?',
+                            (old_content, old_title, ch_id)
+                        )
+                    else:
+                        ch_id, old_content = snap
+                        cursor.execute(
+                            'UPDATE chapters SET translated_content = ? WHERE id = ?',
+                            (old_content, ch_id)
+                        )
             self.invalidate_epub_cache(book_id)
             return {'restored_chapters': len(undo['snapshots'])}
         except Exception as e:

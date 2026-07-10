@@ -146,6 +146,7 @@ class BookReplaceRequest(BaseModel):
     replacement: str
     chapter_numbers: Optional[List[int]] = None
     is_regex: Optional[bool] = False
+    include_titles: Optional[bool] = True
 
 
 # ------------------------------------------------------------------
@@ -719,7 +720,8 @@ def replace_in_book(book_id: int, req: BookReplaceRequest):
         return {"status": "ok", "affected_chapters": 0, "total_replacements": 0}
     result = _entity_manager.replace_in_chapters(
         book_id, req.query, req.replacement,
-        chapter_numbers=req.chapter_numbers, is_regex=req.is_regex or False
+        chapter_numbers=req.chapter_numbers, is_regex=req.is_regex or False,
+        include_titles=True if req.include_titles is None else req.include_titles
     )
     return {"status": "ok", **result}
 
