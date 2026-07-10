@@ -304,9 +304,19 @@ _fraction_phrase = (
     r"|half)"
 )
 
+# Range prefix: the low bound of "two or three shichen" / "two to three ke".
+# Without this the pattern binds <num> to the numeral touching the unit and the
+# low bound is left unscaled ("two or three shichen" -> "two or six hours").
+#
+# Word separators ("or"/"to") require surrounding whitespace; dashes do not.
+# A bare hyphen is NOT a separator, because word-numbers are themselves
+# hyphenated ("twenty-one shichen" is one quantity, not a range).
+_RANGE_SEP = r"(?:\s+(?P<sep>or|to)\s+|\s*(?P<dash>[–—])\s*)"
+
 # Main pattern. The quantity prefix is one of three branches:
 #   1. a vague quantifier ("several", "a few")
-#   2. a number / word-number, optionally with a fractional prefix ("a quarter of a ke")
+#   2. a number / word-number, optionally with a range low bound and/or a
+#      fractional prefix ("two or three ke", "a quarter of a ke")
 #   3. a hyphenated/bare fraction directly on the unit ("a quarter-shichen")
 _PATTERN = re.compile(
     r"(?<!['\w])"                       # not preceded by word char or apostrophe
@@ -314,6 +324,8 @@ _PATTERN = re.compile(
         r"(?P<vague>" + _vague_quantifier + r")[\s\-]+"               # branch 1
         r"|"
         r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"          # branch 2
+        r"(?:(?P<lo>" + _numeric + r"|" + _number_words + r")"
+            + _RANGE_SEP + r")?"                                     # optional range low bound
         r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words + r"|a\s+full|an\s+full|full|a|an)[\s\-]+"
         r"|"
         r"(?P<fracunit>" + _fraction_phrase + r")[\s\-]+"            # branch 3
@@ -682,6 +694,44 @@ def _convert_match(match: re.Match) -> str:
             if frac_mult is None:
                 return full
             number *= frac_mult
+
+    # ── Range path ("two or three shichen" -> "four or six hours") ──
+    # Both endpoints must scale. Handled before the single-value path so the low
+    # bound is never left in the source unit.
+    lo_str = gd.get("lo")
+    if lo_str and not fracunit_str and not fraction_str:
+        lo_number = _word_to_number(lo_str)
+        if lo_number is None:
+            return full
+        is_word_form = not any(c.isdigit() for c in num_str) and not any(c.isdigit() for c in lo_str)
+        approximate = is_word_form and action == "replace"
+
+        lo_scaled, lo_unit, lo_rounded = _scale(lo_number * base_value, base_unit,
+                                                approximate=approximate)
+        hi_scaled, hi_unit, hi_rounded = _scale(number * base_value, base_unit,
+                                                approximate=approximate)
+        # If the two endpoints land in different units ("half an hour or two hours"),
+        # bail out rather than emit a nonsense range.
+        if lo_unit != hi_unit:
+            return full
+
+        if numeral == "english":
+            lo_fmt, hi_fmt = _number_to_words(lo_scaled), _number_to_words(hi_scaled)
+        else:
+            lo_fmt, hi_fmt = _format_number(lo_scaled), _format_number(hi_scaled)
+
+        dash = gd.get("dash")
+        span = (f"{lo_fmt}{dash}{hi_fmt}" if dash
+                else f"{lo_fmt} {(gd.get('sep') or 'or').lower()} {hi_fmt}")
+        if action == "replace":
+            unit_label = hi_unit
+            if hi_scaled != 1.0 and not unit_label.endswith("s"):
+                unit_label += "s"
+            filler = more_str.lower() if more_str else None
+            body = f"{span} {filler} {unit_label}" if filler else f"{span} {unit_label}"
+            output = f"about {body}" if (lo_rounded or hi_rounded) else body
+            return _match_case(full, output)
+        return f"{full} ({lo_fmt}–{hi_fmt} {hi_unit})"
 
     is_another = num_str.strip().lower() == "another"
     raw = number * base_value
