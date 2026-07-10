@@ -10,14 +10,20 @@ from openai import OpenAI
 from .base import ModelProvider, StreamingResponse
 
 
+# Models that rejected temperature/top_p or response_format at runtime.
+# Memoized per-process (keyed by model name) so later calls to the same model
+# skip the incompatible parameter and avoid a wasted round-trip.
+_MODELS_REJECTING_SAMPLING = set()
+_MODELS_REJECTING_JSON_MODE = set()
+
+
 class OpenAIProvider(ModelProvider):
     """
     Provider for OpenAI and OpenAI-compatible APIs.
-    
+
     Supports:
-    - OpenAI GPT models (gpt-4, gpt-3.5-turbo, etc.)
-    - DeepSeek models via OpenAI-compatible API
-    - Any other OpenAI-compatible API endpoint
+    - OpenAI GPT models (gpt-5.x, gpt-4.1, o-series)
+    - DeepSeek, xAI (Grok), Meta (Muse), and other OpenAI-compatible APIs
     """
     
     def __init__(self, api_key: str, base_url: Optional[str] = None, **kwargs):
@@ -58,59 +64,14 @@ class OpenAIProvider(ModelProvider):
 
         self.client = OpenAI(**client_kwargs)
 
-    def _uses_legacy_max_tokens(self, model: str) -> bool:
+    def _is_reasoning_model(self, model: str) -> bool:
         """
-        Check if the model uses the legacy max_tokens parameter.
-
-        Older models (gpt-3.5, gpt-4.x up to 4.4, gpt-4-turbo, gpt-4o) use max_tokens.
-        OpenAI-compatible providers (DeepSeek, etc.) also use max_tokens.
-        Newer models (o1, o3, gpt-4.5+, gpt-5+, etc.) use max_completion_tokens.
-
-        Args:
-            model: Model name to check
-
-        Returns:
-            True if model uses max_tokens (legacy), False if it uses max_completion_tokens (new)
+        OpenAI reasoning-tier models (o-series, gpt-5+) require
+        max_completion_tokens and reject temperature/top_p outright.
+        Everything else — including OpenAI-compatible providers like
+        DeepSeek/xAI/Meta — takes max_tokens plus sampling params.
         """
-        model_lower = model.lower()
-
-        # Check for newer models first (these use max_completion_tokens)
-        if model_lower.startswith('o1') or model_lower.startswith('o3'):
-            return False
-
-        if model_lower.startswith('gpt-5') or model_lower.startswith('gpt-6'):
-            return False
-
-        # Check for gpt-4.5 and higher (these are new models)
-        if model_lower.startswith('gpt-4.'):
-            try:
-                version_part = model_lower.replace('gpt-4.', '').split('-')[0].split()[0]
-                version = float(version_part)
-                if version >= 5:  # gpt-4.5 and above
-                    return False
-            except (ValueError, IndexError):
-                pass
-
-        # Legacy models that use max_tokens
-        legacy_patterns = [
-            'gpt-3.5',
-            'gpt-4',  # gpt-4, gpt-4.0 through gpt-4.4
-            'gpt-4-turbo',
-            'gpt-4o',
-            'deepseek',
-        ]
-
-        # Check if model matches any legacy pattern
-        for pattern in legacy_patterns:
-            if pattern == 'gpt-4':
-                # Match gpt-4 and gpt-4-* but already handled gpt-4.5+ above
-                if model_lower == 'gpt-4' or model_lower.startswith('gpt-4-') or model_lower.startswith('gpt-4.'):
-                    return True
-            elif pattern in model_lower:
-                return True
-
-        # Default: newer models use max_completion_tokens
-        return False
+        return model.lower().startswith(('o1', 'o3', 'o4', 'gpt-5', 'gpt-6'))
 
     def chat_completion(
         self,
@@ -128,8 +89,8 @@ class OpenAIProvider(ModelProvider):
         Perform OpenAI chat completion.
         """
         # Determine which token parameter to use based on model
-        uses_legacy = self._uses_legacy_max_tokens(model)
-        token_param_name = "max_tokens" if uses_legacy else "max_completion_tokens"
+        reasoning = self._is_reasoning_model(model)
+        token_param_name = "max_completion_tokens" if reasoning else "max_tokens"
 
         # Prepare request parameters
         request_params = {
@@ -140,15 +101,13 @@ class OpenAIProvider(ModelProvider):
             **kwargs  # Allow additional parameters
         }
 
-        # Legacy models support temperature and top_p parameters
-        # Newer models (o1, o3 series) don't support these parameters
-        if uses_legacy:
+        # Reasoning models (o-series, gpt-5+) reject sampling parameters;
+        # everything else gets them unless it complained on a previous call.
+        if not reasoning and model not in _MODELS_REJECTING_SAMPLING:
             request_params["temperature"] = temperature
             request_params["top_p"] = top_p
 
-        # Add response format if specified and supported
-        # Note: Newer reasoning models may have limited support for response_format
-        if response_format and uses_legacy:
+        if response_format and model not in _MODELS_REJECTING_JSON_MODE:
             # Strip non-OpenAI extension keys (e.g. "mode", used internally to
             # pick a schema variant for providers that support it) before
             # sending — OpenAI rejects unknown fields in response_format.
@@ -162,22 +121,34 @@ class OpenAIProvider(ModelProvider):
             if k not in ['frequency_penalty', 'presence_penalty'] or v != 0
         }
 
-        # Try to make the API call
-        try:
-            response = self.client.chat.completions.create(**openai_params)
-        except TypeError as e:
-            # If max_completion_tokens is not supported (older SDK), fall back to max_tokens
-            if 'max_completion_tokens' in str(e) and not uses_legacy:
-                openai_params['max_tokens'] = openai_params.pop('max_completion_tokens')
+        # Make the API call, dropping/renaming parameters an OpenAI-compatible
+        # backend rejects. Each fallback branch removes or renames a parameter
+        # and is guarded on its presence, so the loop always terminates.
+        while True:
+            try:
                 response = self.client.chat.completions.create(**openai_params)
-            else:
+                break
+            except TypeError as e:
+                # Older SDKs don't know max_completion_tokens
+                if 'max_completion_tokens' in str(e) and 'max_completion_tokens' in openai_params:
+                    openai_params['max_tokens'] = openai_params.pop('max_completion_tokens')
+                    continue
                 raise
-        except Exception as e:
-            # If the API rejects max_tokens for newer models, retry with max_completion_tokens
-            if 'max_tokens' in str(e) and 'max_completion_tokens' in str(e) and 'max_tokens' in openai_params:
-                openai_params['max_completion_tokens'] = openai_params.pop('max_tokens')
-                response = self.client.chat.completions.create(**openai_params)
-            else:
+            except Exception as e:
+                msg = str(e)
+                if 'max_tokens' in msg and 'max_completion_tokens' in msg and 'max_tokens' in openai_params:
+                    # Backend wants the newer parameter name
+                    openai_params['max_completion_tokens'] = openai_params.pop('max_tokens')
+                    continue
+                if 'response_format' in msg and 'response_format' in openai_params:
+                    _MODELS_REJECTING_JSON_MODE.add(model)
+                    del openai_params['response_format']
+                    continue
+                if ('temperature' in msg or 'top_p' in msg) and 'temperature' in openai_params:
+                    _MODELS_REJECTING_SAMPLING.add(model)
+                    openai_params.pop('temperature', None)
+                    openai_params.pop('top_p', None)
+                    continue
                 raise
         
         if stream:
@@ -186,9 +157,9 @@ class OpenAIProvider(ModelProvider):
             # Convert to dict format for consistency
             #print(f"API Finish reason: {response.choices[0].finish_reason}, Usage: {response.usage}")
             raw_content = response.choices[0].message.content
-            # Strip markdown fences from JSON responses — OpenRouter and
-            # non-legacy models may ignore response_format and wrap JSON
-            # in ```json ... ``` blocks.
+            # Strip markdown fences from JSON responses — some backends
+            # ignore response_format (or had it dropped above) and wrap
+            # JSON in ```json ... ``` blocks.
             if response_format and response_format.get("type") == "json_object" and raw_content:
                 raw_content = self._strip_markdown_fences(raw_content)
             return {
