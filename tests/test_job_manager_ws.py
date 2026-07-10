@@ -88,15 +88,47 @@ def test_activity_log_and_progress_not_replayed():
 
 
 def test_replay_buffer_bounded():
+    # json_fix_resolved neither collapses nor is dropped on resolve, so the
+    # deque maxlen is its only backstop.
     jm = JobManager()
     for i in range(150):
-        jm.send_message_sync({"type": "error", "i": i})
+        jm.send_message_sync({"type": "json_fix_resolved", "i": i})
     loop = asyncio.new_event_loop()
     try:
         backlog = jm.add_websocket(FakeWS(), loop)
         assert len(backlog) == 100
         assert backlog[-1]["i"] == 149  # newest kept
         # seq strictly increasing
+        seqs = [m["seq"] for m in backlog]
+        assert seqs == sorted(seqs)
+    finally:
+        loop.close()
+
+
+def test_replay_collapses_terminal_events():
+    """Only the newest terminal outcome of each type survives in the buffer.
+
+    Otherwise every completion since process start accumulates, and each fresh
+    tab replays the whole pile on connect.
+    """
+    jm = JobManager()
+    for i in range(150):
+        jm.send_message_sync({"type": "translation_complete", "chapter": i})
+        jm.send_message_sync({"type": "error", "i": i})
+    jm.send_message_sync({"type": "entity_review_needed", "payload": {}})
+    jm.send_message_sync({"type": "auto_process_done", "reason": "queue_empty"})
+
+    loop = asyncio.new_event_loop()
+    try:
+        backlog = jm.add_websocket(FakeWS(), loop)
+        assert [m["type"] for m in backlog] == [
+            "translation_complete",
+            "error",
+            "entity_review_needed",   # interactive prompts never collapse
+            "auto_process_done",
+        ]
+        assert backlog[0]["chapter"] == 149  # newest completion, not the first
+        assert backlog[1]["i"] == 149
         seqs = [m["seq"] for m in backlog]
         assert seqs == sorted(seqs)
     finally:

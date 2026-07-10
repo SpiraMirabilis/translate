@@ -24,6 +24,17 @@ class JobManager:
     # already restores — replaying stale ones would just flicker the UI.
     _NO_REPLAY_TYPES = {"activity_log", "progress"}
 
+    # Terminal job outcomes. Only the newest of each type stays in the replay
+    # buffer — an older completion carries no state a reconnecting client can
+    # still act on, and the buffer otherwise fills with a process-lifetime
+    # backlog of them.
+    _COLLAPSE_REPLAY_TYPES = {
+        "translation_complete",
+        "auto_process_done",
+        "translation_cancelled",
+        "error",
+    }
+
     def __init__(self):
         self.db_manager = None  # Set by app.py after DatabaseManager is created
 
@@ -123,10 +134,18 @@ class JobManager:
 
     def _buffer(self, message: dict):
         """Retain low-frequency events for replay to (re)connecting clients."""
-        if message.get("type") in self._NO_REPLAY_TYPES:
+        mtype = message.get("type")
+        if mtype in self._NO_REPLAY_TYPES:
             return
         with self._ws_lock:
             self._seq += 1
+            if mtype in self._COLLAPSE_REPLAY_TYPES:
+                # A reconnecting client needs the latest outcome, not every one
+                # since process start. Superseding keeps the buffer from filling
+                # with stale completions that each new tab must replay.
+                keep = [m for m in self._replay if m.get("type") != mtype]
+                self._replay.clear()
+                self._replay.extend(keep)
             self._replay.append({**message, "seq": self._seq})
 
     def _drop_replay(self, *types: str):

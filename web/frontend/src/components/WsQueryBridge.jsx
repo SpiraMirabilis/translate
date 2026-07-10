@@ -17,11 +17,19 @@ const LIST_CHANGING_EVENTS = new Set([
  * - translation lifecycle events → invalidate books/queue/job-status/chapters
  * - ws_reconnected → blanket invalidation (catch up on anything missed)
  * - progress / activity_log → no-op (too chatty; pages consume them directly)
+ *
+ * Replayed events (backlog the backend sends on every connect) are ignored:
+ * on a first connect every query is already fetching fresh on mount, and on a
+ * reconnect the ws_reconnected blanket invalidation covers the same ground.
+ * Invalidating per replayed event instead fired one refetch per buffered
+ * event — a fresh tab could burst dozens of /api/translate/status requests.
  */
 export default function WsQueryBridge() {
   const queryClient = useQueryClient()
 
   useWsEvent((msg) => {
+    if (msg.replayed) return
+
     if (LIST_CHANGING_EVENTS.has(msg.type)) {
       queryClient.invalidateQueries({ queryKey: ['books'] })
       queryClient.invalidateQueries({ queryKey: ['queue'] })
