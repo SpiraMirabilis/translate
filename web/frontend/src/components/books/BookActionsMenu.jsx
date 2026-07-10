@@ -26,6 +26,10 @@ export default function BookActionsMenu({ book, exporting, onExport, onPublish, 
   const isExporting = exporting && exporting.startsWith(`${book.id}-`)
   const exportFormat = isExporting ? exporting.split('-').pop().toUpperCase() : null
 
+  // Original works never run the translation pipeline, so everything it feeds
+  // (entities, per-book prompt, source modules, API call log) is empty for them.
+  const isTranslation = !book.is_original
+
   return (
     <div className="relative" ref={ref}>
       <button className="btn-ghost p-1.5 flex items-center gap-0.5 text-xs" onClick={() => setOpen(v => !v)}>
@@ -57,18 +61,22 @@ export default function BookActionsMenu({ book, exporting, onExport, onPublish, 
           <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Publish</div>
           {item(<Globe size={12} />, 'WordPress', onPublish)}
-          <div className="border-t border-slate-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Entities</div>
-          {item(<Tags size={12} />, 'Categories', onCategories)}
-          {item(<ListChecks size={12} />, 'Review Entities', onReview)}
-          <div className="border-t border-slate-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Chapters</div>
-          {item(<Sparkles size={12} />, 'Repair Chapter Pronouns', onPronounRepair)}
+          {isTranslation && (
+            <>
+              <div className="border-t border-slate-700 my-1" />
+              <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Entities</div>
+              {item(<Tags size={12} />, 'Categories', onCategories)}
+              {item(<ListChecks size={12} />, 'Review Entities', onReview)}
+              <div className="border-t border-slate-700 my-1" />
+              <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Chapters</div>
+              {item(<Sparkles size={12} />, 'Repair Chapter Pronouns', onPronounRepair)}
+            </>
+          )}
           <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
-          {item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
-          {item(<Boxes size={12} />, 'Modules', onModules)}
-          {item(<Code size={12} />, 'API Logs', onApiLogs)}
+          {isTranslation && item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
+          {isTranslation && item(<Boxes size={12} />, 'Modules', onModules)}
+          {isTranslation && item(<Code size={12} />, 'API Logs', onApiLogs)}
           {item(<Edit2 size={12} />, 'Edit Book', onEdit)}
           {item(<Trash2 size={12} />, 'Delete', onDelete, 'text-rose-400 hover:text-rose-300')}
         </div>
