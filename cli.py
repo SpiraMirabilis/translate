@@ -472,8 +472,9 @@ class CommandLineInterface(UserInterface):
             # Get book_id filter if provided
             filter_book_id = args.book_id if args.book_id else None
 
-            # Get next queue item from database
-            queue_item = self.entity_manager.get_next_queue_item(book_id=filter_book_id)
+            # Atomically claim so a concurrent web worker can't take the same row.
+            queue_item = self.entity_manager.claim_next_queue_item(
+                book_id=filter_book_id, worker_id="cli")
 
             if not queue_item:
                 if filter_book_id:

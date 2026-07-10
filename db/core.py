@@ -108,6 +108,12 @@ class DatabaseCore:
             os.makedirs(os.path.join(media_base, "covers"), exist_ok=True)
             os.makedirs(os.path.join(media_base, "illustrations"), exist_ok=True)
 
+            # Re-queue items left 'processing' by a crashed worker (web or CLI).
+            try:
+                self.release_stale_queue_claims()
+            except Exception as e:
+                self.logger.warning(f"Stale queue claim release skipped: {e}")
+
             self.logger.info("Database initialized successfully")
         except Exception as e:
             self.logger.error(f"Database initialization error: {e}")

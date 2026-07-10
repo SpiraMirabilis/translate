@@ -132,3 +132,19 @@ class TestChapterProofread:
         updated, now = db.set_chapters_proofread(book, [1], False)
         assert updated == 1
         assert now is None
+
+
+class TestQueueClaim:
+    def test_claim_is_exclusive_and_releasable(self, db, book):
+        db.add_to_queue(book, ["a"], title="1", chapter_number=1)
+        db.add_to_queue(book, ["b"], title="2", chapter_number=2)
+        first = db.claim_next_queue_item(worker_id="t1")
+        second = db.claim_next_queue_item(worker_id="t2")
+        assert first["chapter_number"] == 1
+        assert second["chapter_number"] == 2
+        assert db.claim_next_queue_item() is None
+        assert db.get_queue_count() == 0
+        assert db.release_queue_item(first["id"]) is True
+        assert db.get_queue_count() == 1
+        reclaimed = db.claim_next_queue_item(worker_id="t3")
+        assert reclaimed["id"] == first["id"]

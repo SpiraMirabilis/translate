@@ -605,11 +605,13 @@ def _translate_one(queue_item):
 def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     import threading
 
-    if _job_manager.is_running:
+    if not _job_manager.try_begin_job():
         raise HTTPException(status_code=409, detail="A translation is already running.")
 
-    queue_item = _entity_manager.get_next_queue_item(book_id=req.book_id)
+    # Atomic claim so CLI --resume / another worker cannot take the same row.
+    queue_item = _entity_manager.claim_next_queue_item(book_id=req.book_id)
     if not queue_item:
+        _job_manager.end_job()
         raise HTTPException(status_code=404, detail="No items in queue.")
 
     settings = {
@@ -625,7 +627,6 @@ def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     }
 
     _job_manager.clear_cancel()
-    _job_manager.is_running = True
 
     # _setup_job writes per-run model overrides into the shared translator
     # config; capture the configured values so they can be restored after the
@@ -658,24 +659,30 @@ def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     except BaseException:
         # Anything failing before the worker thread owns the flag would
         # otherwise leave is_running stuck True (every request 409s).
-        _job_manager.is_running = False
+        try:
+            _entity_manager.release_queue_item(queue_item["id"])
+        except Exception:
+            pass
+        _job_manager.end_job()
         _job_manager.auto_process = False
         cfg.translation_model, cfg.advice_model = orig_models
         raise
 
     def run():
+        current = queue_item
         try:
             # Translate the first item
             _web_interface.run_translation()
 
             # Auto-process loop: keep going while enabled and queue has items
             while _job_manager.should_continue_auto():
-                next_item = _entity_manager.get_next_queue_item(book_id=settings["book_id"])
+                next_item = _entity_manager.claim_next_queue_item(book_id=settings["book_id"])
                 if not next_item:
                     _job_manager.send_message_sync({"type": "auto_process_done", "reason": "queue_empty"})
                     _job_manager.log_activity(type='info', message='Auto-process complete — queue is empty.')
                     break
 
+                current = next_item
                 _setup_job(next_item, settings)
                 _translate_one(next_item)
             else:
@@ -685,16 +692,27 @@ def process_next(req: ProcessNextRequest = ProcessNextRequest()):
                     _job_manager.send_message_sync({"type": "auto_process_done", "reason": "limit_reached", "chapters_done": done})
                     _job_manager.log_activity(type='info', message=f'Auto-process complete — {done} chapter limit reached.')
         except TranslationCancelled:
+            # Release the in-flight claim so the chapter stays on the queue.
+            try:
+                if current and current.get("id"):
+                    _entity_manager.release_queue_item(current["id"])
+            except Exception:
+                pass
             _job_manager.status = "idle"
             _job_manager.send_message_sync({"type": "translation_cancelled"})
         except Exception as e:
+            try:
+                if current and current.get("id"):
+                    _entity_manager.release_queue_item(current["id"])
+            except Exception:
+                pass
             _job_manager.status = "error"
             _job_manager.error = str(e)
             _job_manager.log_activity(type='error', message=f'Error: {e}')
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             cfg.translation_model, cfg.advice_model = orig_models
-            _job_manager.is_running = False
+            _job_manager.end_job()
             _job_manager.auto_process = False
             if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
@@ -706,7 +724,11 @@ def process_next(req: ProcessNextRequest = ProcessNextRequest()):
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
     except BaseException:
-        _job_manager.is_running = False
+        try:
+            _entity_manager.release_queue_item(queue_item["id"])
+        except Exception:
+            pass
+        _job_manager.end_job()
         _job_manager.auto_process = False
         raise
 

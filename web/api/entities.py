@@ -512,11 +512,15 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
     chapters belonging to the same book.
 
     action="substitute": find-and-replace old_translation with new_translation
-                         in every chapter's translated content.
+                         in every chapter's translated content (and titles).
     action="requeue":    find chapters whose *untranslated* content contains the
                          entity's Chinese text, and add them back to the queue.
     """
+    import datetime
     import json
+
+    if req.action not in ("substitute", "requeue", "pronoun_repair"):
+        raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
     with _entity_manager._conn(dict_rows=True) as conn:
         cursor = conn.cursor()
@@ -548,7 +552,7 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
 
         if req.action == "substitute":
             if not req.old_translation or req.old_translation == req.new_translation:
-                return {"status": "ok", "affected": 0}
+                return {"status": "ok", "affected": 0, "title_affected": 0}
 
             # Safer mode: restrict to chapters whose source (untranslated) text
             # contains the entity's Chinese — the same subset
@@ -564,6 +568,7 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
                 candidates = len(chapters)
 
             affected = 0
+            title_affected = 0
             for ch in chapters:
                 try:
                     content = json.loads(ch["translated_content"])
@@ -575,18 +580,41 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
                     content, req.old_translation, req.new_translation
                 )
 
-                if n_changed:
-                    cursor.execute(
-                        "UPDATE chapters SET translated_content = ? WHERE id = ?",
-                        (json.dumps(new_content, ensure_ascii=False), ch["id"]),
-                    )
-                    affected += 1
+                # Titles are a separate column — terminology renames used to
+                # leave them stale while the prose was cleaned (see
+                # replace_in_chapters include_titles).
+                raw_title = ch["title"] or ""
+                new_title_lines, title_changed = substitute_in_lines(
+                    [raw_title], req.old_translation, req.new_translation
+                )
+                new_title = new_title_lines[0] if new_title_lines else raw_title
 
-            result = {"status": "ok", "affected": affected}
+                if n_changed or title_changed:
+                    cursor.execute(
+                        "UPDATE chapters SET translated_content = ?, title = ? WHERE id = ?",
+                        (json.dumps(new_content, ensure_ascii=False), new_title, ch["id"]),
+                    )
+                    if n_changed:
+                        affected += 1
+                    if title_changed:
+                        title_affected += 1
+
+            if affected or title_affected:
+                # Bump modified_date so cached EPUB/AZW3 (version stamp) and
+                # CDN objects regenerate; same side effect as save_chapter.
+                cursor.execute(
+                    "UPDATE books SET modified_date = ? WHERE id = ?",
+                    (datetime.datetime.now().isoformat(), book_id),
+                )
+
+            result = {
+                "status": "ok",
+                "affected": affected,
+                "title_affected": title_affected,
+            }
             if candidates is not None:
                 result["candidates"] = candidates
-            return result
-
+            needs_invalidate = bool(affected or title_affected)
         elif req.action == "requeue":
             # Build an auto-generated retranslation reason from whatever actually
             # changed on the entity (translation and/or gender), so the model knows
@@ -654,11 +682,9 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
 
             return {"status": "ok", "affected": affected}
 
-        elif req.action == "pronoun_repair":
-            # Surgical pronoun fix: scan chapters mentioning the entity, send each
-            # paragraph context window to a small classifier model, splice corrections
-            # back into translated_content. Runs as a background task so the POST
-            # returns immediately; results are written to the activity log.
+        else:
+            # pronoun_repair: surgical pronoun fix. Runs as a background task
+            # so the POST returns immediately; results go to the activity log.
             new_g = (req.new_gender or "").strip().lower()
             if new_g not in ("male", "female", "neutral"):
                 raise HTTPException(
@@ -666,10 +692,9 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
                     detail=f"pronoun_repair requires new_gender to be male/female/neutral; got {req.new_gender!r}",
                 )
             translation = (req.new_translation or req.old_translation or "").strip()
-            # Quick chapter count for the response
-            candidates = _entity_manager.find_chapters_using_entity(untranslated, book_id=book_id)
-            n_candidates = len(candidates)
-
+            n_candidates = len(
+                _entity_manager.find_chapters_using_entity(untranslated, book_id=book_id)
+            )
             background_tasks.add_task(
                 _run_pronoun_repair,
                 req.entity_id,
@@ -679,8 +704,14 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
             )
             return {"status": "started", "affected": n_candidates}
 
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
+    # substitute path: with-block committed above; invalidate cache outside it
+    # so invalidate_epub_cache can open its own connection.
+    if needs_invalidate:
+        try:
+            _entity_manager.invalidate_epub_cache(book_id)
+        except Exception:
+            pass
+    return result
 
 
 def _run_pronoun_repair(entity_id: int, target_gender: str, translation: str, book_id: int) -> None:

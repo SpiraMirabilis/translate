@@ -140,81 +140,188 @@ class QueueRepo:
                 raise
             return None
 
+    # Only "queued" rows are available for claim/list/count. "processing"
+    # means another worker has claimed the row until it finishes or releases.
+    _QUEUED_STATUS = "(q.status IS NULL OR q.status = 'queued')"
+
+    @staticmethod
+    def _row_to_queue_item(row):
+        content_json = row[5]
+        try:
+            content = json.loads(content_json)
+        except (json.JSONDecodeError, TypeError):
+            content = content_json
+
+        metadata_json = row[6]
+        metadata = None
+        if metadata_json:
+            try:
+                metadata = json.loads(metadata_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return {
+            'id': row[0],
+            'book_id': row[1],
+            'chapter_number': row[2],
+            'title': row[3],
+            'source': row[4],
+            'content': content,
+            'metadata': metadata,
+            'position': row[7],
+            'created_date': row[8],
+            'book_title': row[9],
+            'retranslation_reason': row[10],
+        }
+
     def get_next_queue_item(self, book_id=None):
         """
-        Get the next item from the queue (lowest position).
+        Peek at the next queued item (lowest position) without claiming it.
 
-        Args:
-            book_id: Optional book ID to filter by specific book
-
-        Returns:
-            dict: Queue item data or None if queue empty
+        Prefer claim_next_queue_item() before starting work so concurrent
+        consumers cannot take the same row.
         """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-
-                # Build query with optional book_id filter
                 if book_id:
-                    cursor.execute('''
+                    cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
-                WHERE q.book_id = ?
+                WHERE q.book_id = ? AND {self._QUEUED_STATUS}
                 ORDER BY q.position ASC
                 LIMIT 1
                 ''', (book_id,))
                 else:
-                    cursor.execute('''
+                    cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
                        q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
+                WHERE {self._QUEUED_STATUS}
                 ORDER BY q.position ASC
                 LIMIT 1
                 ''')
-
                 row = cursor.fetchone()
-
             if not row:
                 return None
-
-            # Deserialize content (like get_chapter)
-            content_json = row[5]
-            try:
-                content = json.loads(content_json)
-            except (json.JSONDecodeError, TypeError):
-                content = content_json  # Fallback to string if not valid JSON
-
-            # Deserialize metadata if present
-            metadata_json = row[6]
-            metadata = None
-            if metadata_json:
-                try:
-                    metadata = json.loads(metadata_json)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            return {
-                'id': row[0],
-                'book_id': row[1],
-                'chapter_number': row[2],
-                'title': row[3],
-                'source': row[4],
-                'content': content,
-                'metadata': metadata,
-                'position': row[7],
-                'created_date': row[8],
-                'book_title': row[9],
-                'retranslation_reason': row[10],
-            }
-
+            return self._row_to_queue_item(row)
         except Exception as e:
             self.logger.error(f"Error getting next queue item: {e}")
             return None
+
+    def claim_next_queue_item(self, book_id=None, worker_id=None):
+        """
+        Atomically claim the next queued item for processing.
+
+        Sets status='processing' in the same transaction as the SELECT so two
+        workers (web + CLI, or two processes) cannot both take the same row.
+        On success the caller must either remove_from_queue (done) or
+        release_queue_item (failure/cancel). Returns None if empty.
+        """
+        now = datetime.datetime.now().isoformat()
+        worker = (worker_id or "worker")[:64]
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                # Immediate lock for SQLite writers; MySQL relies on
+                # InnoDB row locks from the UPDATE … WHERE status.
+                if getattr(self.backend, "name", None) == "sqlite":
+                    try:
+                        cursor.execute("BEGIN IMMEDIATE")
+                    except Exception:
+                        pass
+
+                if book_id:
+                    cursor.execute(f'''
+                SELECT q.id FROM queue q
+                WHERE q.book_id = ? AND {self._QUEUED_STATUS}
+                ORDER BY q.position ASC
+                LIMIT 1
+                ''', (book_id,))
+                else:
+                    cursor.execute(f'''
+                SELECT q.id FROM queue q
+                WHERE {self._QUEUED_STATUS}
+                ORDER BY q.position ASC
+                LIMIT 1
+                ''')
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                qid = row[0]
+
+                cursor.execute(
+                    "UPDATE queue SET status = 'processing', claimed_at = ?, claimed_by = ? "
+                    "WHERE id = ? AND (status IS NULL OR status = 'queued')",
+                    (now, worker, qid),
+                )
+                if cursor.rowcount != 1:
+                    # Lost the race to another claimer.
+                    return None
+
+                cursor.execute('''
+                SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
+                       q.metadata, q.position, q.created_date, b.title as book_title,
+                       q.retranslation_reason
+                FROM queue q
+                JOIN books b ON q.book_id = b.id
+                WHERE q.id = ?
+                ''', (qid,))
+                full = cursor.fetchone()
+            if not full:
+                return None
+            return self._row_to_queue_item(full)
+        except Exception as e:
+            self.logger.error(f"Error claiming next queue item: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
+            return None
+
+    def release_queue_item(self, queue_id):
+        """Return a claimed item to the queue (status=queued) after cancel/error."""
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE queue SET status = 'queued', claimed_at = NULL, claimed_by = NULL "
+                    "WHERE id = ? AND status = 'processing'",
+                    (queue_id,),
+                )
+                return cursor.rowcount > 0
+        except Exception as e:
+            self.logger.error(f"Error releasing queue item {queue_id}: {e}")
+            if self.strict_writes:
+                raise
+            return False
+
+    def release_stale_queue_claims(self, max_age_hours=6):
+        """Re-queue items stuck in 'processing' longer than max_age_hours.
+
+        Called on app start so a crashed worker doesn't leave chapters stranded.
+        """
+        try:
+            cutoff = (
+                datetime.datetime.now() - datetime.timedelta(hours=max_age_hours)
+            ).isoformat()
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE queue SET status = 'queued', claimed_at = NULL, claimed_by = NULL "
+                    "WHERE status = 'processing' AND (claimed_at IS NULL OR claimed_at < ?)",
+                    (cutoff,),
+                )
+                n = cursor.rowcount
+            if n:
+                self.logger.info(f"Released {n} stale queue claim(s)")
+            return n
+        except Exception as e:
+            self.logger.error(f"Error releasing stale queue claims: {e}")
+            return 0
 
     def remove_from_queue(self, queue_id):
         """
@@ -273,7 +380,8 @@ class QueueRepo:
 
                 content_cols = "q.content, q.metadata," if include_content else ""
 
-                # Build query with optional book_id filter
+                # Only list claimable rows — in-flight claims stay hidden so
+                # the admin UI doesn't offer cancel on something mid-translate.
                 if book_id:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
@@ -281,7 +389,7 @@ class QueueRepo:
                        q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
-                WHERE q.book_id = ?
+                WHERE q.book_id = ? AND {self._QUEUED_STATUS}
                 ORDER BY q.position ASC
                 ''', (book_id,))
                 else:
@@ -291,6 +399,7 @@ class QueueRepo:
                        q.retranslation_reason
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
+                WHERE {self._QUEUED_STATUS}
                 ORDER BY q.position ASC
                 ''')
 
@@ -353,7 +462,9 @@ class QueueRepo:
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT DISTINCT book_id FROM queue')
+                cursor.execute(
+                    "SELECT DISTINCT book_id FROM queue "
+                    "WHERE status IS NULL OR status = 'queued'")
                 rows = cursor.fetchall()
             return [row[0] for row in rows]
         except Exception as e:
@@ -413,9 +524,14 @@ class QueueRepo:
                 cursor = conn.cursor()
 
                 if book_id:
-                    cursor.execute('SELECT COUNT(*) FROM queue WHERE book_id = ?', (book_id,))
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM queue WHERE book_id = ? "
+                        "AND (status IS NULL OR status = 'queued')",
+                        (book_id,))
                 else:
-                    cursor.execute('SELECT COUNT(*) FROM queue')
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM queue "
+                        "WHERE status IS NULL OR status = 'queued'")
 
                 count = cursor.fetchone()[0]
 

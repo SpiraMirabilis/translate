@@ -436,12 +436,16 @@ _COMMON_DDL_SQLITE = [
         position INTEGER NOT NULL,
         created_date TEXT NOT NULL,
         retranslation_reason TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        claimed_at TEXT,
+        claimed_by TEXT,
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     )''',
     'CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)',
     'CREATE INDEX IF NOT EXISTS idx_queue_position ON queue(position)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_position_unique ON queue(position)',
     'CREATE INDEX IF NOT EXISTS idx_queue_book_id_position ON queue(book_id, position)',
+    'CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status)',
 
     # token_ratios
     '''CREATE TABLE IF NOT EXISTS token_ratios (
@@ -804,12 +808,16 @@ _COMMON_DDL_MYSQL = [
         position INTEGER NOT NULL,
         created_date VARCHAR(50) NOT NULL,
         retranslation_reason TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'queued',
+        claimed_at VARCHAR(50),
+        claimed_by VARCHAR(64),
         UNIQUE KEY uq_queue_position (position),
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_queue_book_id ON queue(book_id)',
     'CREATE INDEX idx_queue_position ON queue(position)',
     'CREATE INDEX idx_queue_book_id_position ON queue(book_id, position)',
+    'CREATE INDEX idx_queue_status ON queue(status)',
 
     # token_ratios
     '''CREATE TABLE IF NOT EXISTS token_ratios (

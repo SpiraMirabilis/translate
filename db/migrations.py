@@ -387,6 +387,48 @@ def _m014_chapters_translation_date_index(conn, cursor, backend, logger):
             "ON chapters(translation_date)")
 
 
+def _m015_queue_claim_status(conn, cursor, backend, logger):
+    """Claim/lease columns so concurrent workers can't process the same row.
+
+    status: 'queued' (available) | 'processing' (claimed). claimed_at /
+    claimed_by identify the worker; stale processing rows are re-queued on
+    app start via release_stale_queue_claims.
+    """
+    if backend.name == "mysql":
+        add_column_if_missing(
+            conn, cursor, backend, "queue", "status",
+            "ALTER TABLE queue ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'",
+            "ALTER TABLE queue ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'queued'")
+        add_column_if_missing(
+            conn, cursor, backend, "queue", "claimed_at",
+            "ALTER TABLE queue ADD COLUMN claimed_at TEXT",
+            "ALTER TABLE queue ADD COLUMN claimed_at VARCHAR(50)")
+        add_column_if_missing(
+            conn, cursor, backend, "queue", "claimed_by",
+            "ALTER TABLE queue ADD COLUMN claimed_by TEXT",
+            "ALTER TABLE queue ADD COLUMN claimed_by VARCHAR(64)")
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'queue' "
+            "AND INDEX_NAME = 'idx_queue_status'")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("CREATE INDEX idx_queue_status ON queue(status)")
+    else:
+        add_column_if_missing(
+            conn, cursor, backend, "queue", "status",
+            "ALTER TABLE queue ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+        add_column_if_missing(
+            conn, cursor, backend, "queue", "claimed_at",
+            "ALTER TABLE queue ADD COLUMN claimed_at TEXT")
+        add_column_if_missing(
+            conn, cursor, backend, "queue", "claimed_by",
+            "ALTER TABLE queue ADD COLUMN claimed_by TEXT")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status)")
+    # Normalize any NULL status from partial upgrades.
+    cursor.execute("UPDATE queue SET status = 'queued' WHERE status IS NULL OR status = ''")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -402,6 +444,7 @@ MIGRATIONS = [
     Migration(12, "polish_jobs", _m012_polish_jobs),
     Migration(13, "recommendation_replies", _m013_recommendation_replies),
     Migration(14, "chapters_translation_date_index", _m014_chapters_translation_date_index),
+    Migration(15, "queue_claim_status", _m015_queue_claim_status),
 ]
 
 

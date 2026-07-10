@@ -102,15 +102,14 @@ class ChapterConflictRequest(BaseModel):
 def start_translation(req: TranslateRequest):
     # Sync handler on purpose: runs in FastAPI's threadpool so the DB lookups
     # here can't stall the event loop (see the async-starvation punchlist item).
-    if _job_manager.is_running:
-        raise HTTPException(status_code=409, detail="A translation is already running.")
-
     lines = req.text.splitlines()
     if not lines:
         raise HTTPException(status_code=400, detail="No text provided.")
 
+    if not _job_manager.try_begin_job():
+        raise HTTPException(status_code=409, detail="A translation is already running.")
+
     _job_manager.clear_cancel()
-    _job_manager.is_running = True
 
     # Per-request model overrides land in the shared translator config; capture
     # the configured values so the worker thread can restore them afterwards
@@ -157,7 +156,7 @@ def start_translation(req: TranslateRequest):
     except BaseException:
         # A failure before the worker thread owns the flag would leave
         # is_running stuck True (every later request 409s until restart).
-        _job_manager.is_running = False
+        _job_manager.end_job()
         cfg.translation_model, cfg.advice_model = orig_models
         raise
 
@@ -175,7 +174,7 @@ def start_translation(req: TranslateRequest):
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
             cfg.translation_model, cfg.advice_model = orig_models
-            _job_manager.is_running = False
+            _job_manager.end_job()
             if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
             # Run boundary: summarize any module transforms from this run.
@@ -186,7 +185,7 @@ def start_translation(req: TranslateRequest):
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
     except BaseException:
-        _job_manager.is_running = False
+        _job_manager.end_job()
         cfg.translation_model, cfg.advice_model = orig_models
         raise
 

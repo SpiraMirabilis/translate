@@ -44,6 +44,9 @@ class JobManager:
         self.websockets: set = set()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_lock = threading.Lock()
+        # Serializes check-then-set of is_running so two concurrent
+        # /api/translate or /api/queue/process-next calls cannot both start.
+        self._job_start_lock = threading.Lock()
         # Recent low-frequency events (completion, errors, review prompts),
         # replayed to reconnecting clients so e.g. a translation_complete
         # fired with no tab open isn't lost.
@@ -51,6 +54,23 @@ class JobManager:
         self._seq = 0
 
         self.reset()
+
+    def try_begin_job(self) -> bool:
+        """Atomically claim the single job slot. Returns False if already running.
+
+        Callers that get True own is_running until they set it False (or call
+        end_job). Pair with clear_cancel() before launching the worker thread.
+        """
+        with self._job_start_lock:
+            if self.is_running:
+                return False
+            self.is_running = True
+            return True
+
+    def end_job(self):
+        """Release the job slot (idempotent)."""
+        with self._job_start_lock:
+            self.is_running = False
 
     def reset(self):
         self.is_running = False
