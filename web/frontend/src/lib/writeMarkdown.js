@@ -830,7 +830,13 @@ function serializeList(items, start, warnings) {
   const lines = []
   items.forEach((item, idx) => {
     const marker = start != null ? `${start + idx}. ` : '- '
-    const indent = ' '.repeat(marker.length)
+    // Child indent: CommonMark only needs the marker width (2 for "- "), but
+    // python-markdown (EPUB/WordPress parity) requires 4 spaces to nest —
+    // marker-width indents flatten nested lists there. 4 parses identically
+    // in markdown-it (still below the content-column+4 code threshold), so
+    // serialize the python-compatible form. Wide markers ("10. ") keep
+    // their full content column.
+    const indent = ' '.repeat(Math.max(4, marker.length))
     const itemLines = []
     for (const child of item.content) {
       const childLines = serializeBlock(child, warnings)

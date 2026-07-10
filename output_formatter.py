@@ -163,11 +163,35 @@ def _parse_table_run(lines, start):
     return None  # EOF before ⟦/TABLE⟧
 
 
+_STRIKE_EXT = None
+
+
+def _md_extensions(_markdown):
+    """Extension list shared by every python-markdown call in this module.
+
+    Includes a strikethrough inline processor (~~text~~ → <s>) because
+    markdown-it (the Reader) enables strikethrough by default and the write
+    editor actively emits it — without this, EPUB/WordPress/HTML export show
+    literal tildes where the Reader shows struck text."""
+    global _STRIKE_EXT
+    if _STRIKE_EXT is None:
+        from markdown.extensions import Extension
+        from markdown.inlinepatterns import SimpleTagInlineProcessor
+
+        class _StrikeExtension(Extension):
+            def extendMarkdown(self, md):
+                md.inlinePatterns.register(
+                    SimpleTagInlineProcessor(r'()~~(.+?)~~', 's'), 'strikethrough', 175)
+
+        _STRIKE_EXT = _StrikeExtension()
+    return ['extra', 'sane_lists', 'nl2br', _STRIKE_EXT]
+
+
 def _render_prose_markdown(text, _markdown, _re):
     """The pre-existing prose pipeline: python-markdown + pipe-table fixups."""
     if not text.strip():
         return ""
-    html = _markdown.markdown(text, extensions=['extra', 'sane_lists', 'nl2br'])
+    html = _markdown.markdown(text, extensions=_md_extensions(_markdown))
     # python-markdown emits a spurious all-empty body row for header-only tables
     # (e.g. a single 【…】 notification → `| X |` / `| --- |`). markdown-it (the
     # Reader) omits it, so strip it here to keep EPUB/HTML in parity with the
@@ -185,7 +209,7 @@ def _render_table_html(rows, _markdown):
         tag = 'th' if cell['header'] else 'td'
         align = f' align="{cell["align"]}"' if cell['align'] else ''
         inner = _markdown.markdown('\n'.join(cell['lines']),
-                                   extensions=['extra', 'sane_lists', 'nl2br'])
+                                   extensions=_md_extensions(_markdown))
         return f'<{tag}{align}>{inner}</{tag}>'
 
     def row_html(row):

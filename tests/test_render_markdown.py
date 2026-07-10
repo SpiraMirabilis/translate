@@ -153,3 +153,35 @@ class TestRenderLinesHtml:
         html = content_to_html(lines)
         assert '<table>' in html                     # was literal pipes before
         assert content_to_html(TABLE_LINES).count('<td') == 2
+
+
+class TestReaderParityRegressions:
+    """Constructs the write editor emits that must render the same in the
+    Python pipeline (EPUB/WordPress/HTML export) as in the Reader
+    (markdown-it): strikethrough and 4-space nested lists."""
+
+    def test_strikethrough_renders_as_s_tag(self):
+        html = _render_markdown('before ~~gone~~ after')
+        assert '<s>gone</s>' in html
+        assert '~~' not in html
+
+    def test_strikethrough_stays_literal_in_code_spans(self):
+        html = _render_markdown('`~~kept~~` and ~~struck~~')
+        assert '~~kept~~' in html
+        assert '<s>struck</s>' in html
+
+    def test_strikethrough_inside_sentinel_table_cells(self):
+        html = render_lines_html([
+            '⟦TABLE⟧', '⟦TR⟧', '⟦TD⟧', 'cell ~~x~~', '⟦/TD⟧', '⟦/TR⟧', '⟦/TABLE⟧',
+        ])
+        assert '<s>x</s>' in html
+
+    def test_four_space_nested_lists_nest(self):
+        # The write editor serializes nested lists with 4-space child indents
+        # (writeMarkdown.js serializeList) precisely so this nests here.
+        html = _render_markdown('- outer\n    - inner one\n    - inner two\n- outer two')
+        assert html.count('<ul>') == 2
+
+    def test_nested_list_under_ordered_item(self):
+        html = _render_markdown('1. first\n    - sub\n2. second')
+        assert '<ol>' in html and '<ul>' in html

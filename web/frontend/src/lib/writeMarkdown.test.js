@@ -108,12 +108,27 @@ describe('identity round-trips (stored → doc → stored)', () => {
       '3. starts at three',
       '4. four',
     ])
+    // Canonical nested form: 4-space child indent (python-markdown needs ≥4
+    // to nest; marker-width indents flatten lists in EPUB/WordPress).
     expectIdentity([
       '- outer',
-      '  - inner one',
-      '  - inner two',
+      '    - inner one',
+      '    - inner two',
       '- outer two',
     ])
+    // Legacy marker-width indents (2 spaces) still parse to the same doc and
+    // re-serialize to the canonical 4-space form.
+    const legacy = ['- outer', '  - inner one', '  - inner two', '- outer two']
+    const { doc, unsupported } = linesToDoc(legacy)
+    expect(unsupported).toEqual([])
+    const warnings = []
+    expect(docToLines(doc, warnings)).toEqual([
+      '- outer',
+      '    - inner one',
+      '    - inner two',
+      '- outer two',
+    ])
+    expect(warnings).toEqual([])
   })
 
   it('fenced code blocks', () => {
