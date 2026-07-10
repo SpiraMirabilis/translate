@@ -115,3 +115,60 @@ class TestRateLimit:
         resp = public_client.get("/api/public/books/999999")
         assert resp.status_code == 429
         assert resp.json()["detail"] == "Too many requests"
+
+
+class TestChapterViewBeacon:
+    """Views are recorded by an explicit beacon, never by fetching content.
+
+    The reader prefetches the next two chapters and serves cache hits without
+    touching the origin, so fetch-time counting was wrong in both directions.
+    """
+
+    @staticmethod
+    def _views(db, book_id):
+        from web.api import public as public_api
+        public_api._view_logger.flush()   # start() is a no-op under test
+        conn = db.backend.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM reader_log WHERE book_id = ?", (book_id,))
+        n = cur.fetchone()[0]
+        conn.close()
+        return n
+
+    def test_chapter_get_does_not_log_a_view(self, public_client, public_book, db):
+        resp = public_client.get(f"/api/public/books/{public_book}/chapters/1")
+        assert resp.status_code == 200, resp.text
+        assert self._views(db, public_book) == 0
+
+    def test_batch_prefetch_does_not_log_views(self, public_client, public_book, db):
+        resp = public_client.get(
+            f"/api/public/books/{public_book}/chapters/batch?nums=2,3")
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()["chapters"]) == 2
+        assert self._views(db, public_book) == 0
+
+    def test_beacon_logs_a_view(self, public_client, public_book, db):
+        resp = public_client.post(f"/api/public/books/{public_book}/chapters/1/view")
+        assert resp.status_code == 204, resp.text
+        assert self._views(db, public_book) == 1
+
+    def test_beacon_is_deduped_per_chapter(self, public_client, public_book, db):
+        for _ in range(3):
+            public_client.post(f"/api/public/books/{public_book}/chapters/1/view")
+        public_client.post(f"/api/public/books/{public_book}/chapters/2/view")
+        assert self._views(db, public_book) == 2
+
+    def test_beacon_bumps_book_view_count(self, public_client, public_book, db):
+        public_client.post(f"/api/public/books/{public_book}/chapters/1/view")
+        self._views(db, public_book)   # force flush
+        conn = db.backend.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT view_count FROM books WHERE id = ?", (public_book,))
+        assert cur.fetchone()[0] == 1
+        conn.close()
+
+    def test_beacon_on_private_book_404s_and_logs_nothing(self, public_client, public_book, db):
+        db.update_book(public_book, is_public=False)
+        resp = public_client.post(f"/api/public/books/{public_book}/chapters/1/view")
+        assert resp.status_code == 404
+        assert self._views(db, public_book) == 0

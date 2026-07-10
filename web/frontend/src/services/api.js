@@ -267,6 +267,9 @@ export const publicApi = {
   listChapters:     (bookId)       => get(`/api/public/books/${bookId}/chapters`),
   getChapter:       (bookId, num)  => get(`/api/public/books/${bookId}/chapters/${num}`),
   getChaptersBatch: (bookId, nums) => get(`/api/public/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
+  // Fired by the Reader after a dwell, NOT on fetch — prefetched chapters and
+  // cache hits must not count as views. See record_chapter_view in public.py.
+  recordChapterView: (bookId, num) => post(`/api/public/books/${bookId}/chapters/${num}/view`),
   searchBook:       (bookId, body) => post(`/api/public/books/${bookId}/search`, body),
   // Is the current AZW3 already in the CDN (fast) or generated on demand (slow)?
   getAzw3Status:    (bookId)       => get(`/api/public/books/${bookId}/azw3/status`),

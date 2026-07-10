@@ -22,6 +22,11 @@ import {
   ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle
 } from 'lucide-react'
 
+// How long a chapter must stay open (and visible) before it counts as read.
+// Short enough that skimming counts; long enough that tapping through to a
+// later chapter does not.
+const VIEW_DWELL_MS = 3000
+
 // In-chapter illustrations are stored in content as a line ⟦IMG:<id>⟧.
 const IMG_MARKER_RE = /^\s*⟦IMG:([0-9a-f]{4,})⟧\s*$/
 const illustrationId = (line) => {
@@ -187,6 +192,27 @@ export default function Reader({ isPublic = false }) {
       })
       .catch(() => { /* ignore — prefetch is best-effort */ })
   }, [bookId, currentNum, chapterQuery.data, chapters, readerApi, queryClient, scope])
+
+  // Count a view once the reader has actually settled on a visible chapter.
+  // Deliberately decoupled from fetching: the prefetch above pulls chapters
+  // that may never be read, and a cached chapter is read without any fetch at
+  // all. Tapping through faster than the dwell never counts (the cleanup
+  // cancels the timer). Admin-side reading is not public reader traffic, so
+  // only the public reader beacons.
+  const beaconedRef = useRef(new Set())
+  useEffect(() => {
+    if (!isPublic || currentNum == null || !chapterQuery.data) return
+    const key = `${bookId}:${currentNum}`
+    if (beaconedRef.current.has(key)) return
+    const timer = setTimeout(() => {
+      if (document.visibilityState !== 'visible') return  // background tab
+      beaconedRef.current.add(key)
+      // Best-effort: a dropped view (429 from the public rate limiter, offline,
+      // navigation mid-flight) is not worth surfacing to the reader.
+      publicApi.recordChapterView(bookId, currentNum).catch(() => {})
+    }, VIEW_DWELL_MS)
+    return () => clearTimeout(timer)
+  }, [isPublic, bookId, currentNum, chapterQuery.data])
 
   // Page title
   useEffect(() => {

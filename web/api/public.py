@@ -7,6 +7,8 @@ Protected by:
 """
 import os
 import re
+import json
+import hashlib
 import logging
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -28,7 +30,7 @@ _log = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 
 _CACHE_SHORT   = 5 * 60       # 5 min  — book list, chapter list, book metadata
-_CACHE_LONG    = 60 * 60 * 24     # 1 day — individual chapter content
+_CACHE_CONTENT = 60           # 1 min  — chapter content (revalidated, see _chapter_cache)
 _CACHE_STATIC  = 24 * 60 * 60 * 30  # 30 day  — cover images
 
 
@@ -41,6 +43,39 @@ def _cache(response: Response, max_age: int):
         response.headers["Cache-Control"] = "no-store, max-age=0"
     else:
         response.headers["Cache-Control"] = f"public, max-age={max_age}"
+
+
+def _chapter_cache(request: Request, response: Response, payload: dict,
+                   max_age: int = _CACHE_CONTENT):
+    """Cache chapter content with revalidation instead of purge-on-save.
+
+    Chapter URLs cannot be invalidated by URL when a chapter is edited: the
+    reader prefetches through /chapters/batch?nums=..., whose query string is
+    an unbounded set of cache keys (?nums=302 and ?nums=302,303 are distinct
+    entries). No purge list can enumerate them. So content goes stale quickly
+    and carries an ETag: shared caches revalidate and pick up an edited
+    chapter within max_age, and unchanged chapters cost a 304 rather than a
+    re-transfer. Apache absorbs the reader fan-out, so the short TTL costs the
+    origin roughly one request per chapter per minute.
+    """
+    import settings_store
+    if settings_store.get("disable_content_cache", False):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return payload
+
+    body = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    etag = '"%s"' % hashlib.md5(body.encode("utf-8")).hexdigest()
+    cc = f"public, max-age={max_age}, must-revalidate"
+
+    inm = request.headers.get("if-none-match", "")
+    seen = {t.strip()[2:] if t.strip().startswith("W/") else t.strip()
+            for t in inm.split(",") if t.strip()}
+    if etag in seen:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": cc})
+
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = cc
+    return payload
 
 
 def _media_cache_headers(max_age: int) -> dict:
@@ -242,7 +277,6 @@ _BATCH_MAX = 10
 @router.get("/books/{book_id}/chapters/batch")
 def get_chapters_batch(book_id: int, nums: str, request: Request, response: Response):
     _guard(request)
-    _cache(response, _CACHE_LONG)
     _get_public_book(book_id)
     try:
         wanted = [int(n) for n in nums.split(",") if n.strip()]
@@ -253,26 +287,41 @@ def get_chapters_batch(book_id: int, nums: str, request: Request, response: Resp
     if len(wanted) > _BATCH_MAX:
         raise HTTPException(status_code=400, detail=f"At most {_BATCH_MAX} chapters per batch")
     out = []
-    ip = client_ip(request)
     for ch in _db.get_chapters_bulk(book_id, wanted, include_untranslated=True,
                                     published_only=True):
-        _log_view(book_id, ch["chapter"], ip)
         out.append(_shape_public_chapter(ch, book_id))
-    return {"chapters": out}
+    return _chapter_cache(request, response, {"chapters": out})
 
 
 @router.get("/books/{book_id}/chapters/{chapter_number}")
 def get_chapter(book_id: int, chapter_number: int, request: Request, response: Response):
     _guard(request)
-    _cache(response, _CACHE_LONG)
     _get_public_book(book_id)
     ch = _db.get_chapter(book_id=book_id, chapter_number=chapter_number,
                          published_only=True)
     if not ch:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-    ip = client_ip(request)
-    _log_view(book_id, chapter_number, ip)
-    return _shape_public_chapter(ch, book_id)
+        # Without an explicit header, Apache's CacheDefaultExpire would cache
+        # this 404 — so a chapter would stay "missing" after it goes live.
+        raise HTTPException(status_code=404, detail="Chapter not found",
+                            headers={"Cache-Control": "no-store"})
+    return _chapter_cache(request, response, _shape_public_chapter(ch, book_id))
+
+
+@router.post("/books/{book_id}/chapters/{chapter_number}/view", status_code=204)
+def record_chapter_view(book_id: int, chapter_number: int, request: Request):
+    """Record that a reader actually read this chapter.
+
+    Views are NOT logged when chapter content is fetched: the reader prefetches
+    the next two chapters (Reader.jsx), so a fetch means "might be read soon",
+    and chapter GETs are cacheable, so a cache hit means a real
+    read never reaches us at all. The reader beacons this endpoint instead,
+    after a dwell on a visible chapter. Uncacheable by virtue of being a POST.
+
+    Repeat views are collapsed by ViewLogger's dedupe window, not here.
+    """
+    _guard(request)
+    _get_public_book(book_id)   # 404s unless the book is publicly visible
+    _log_view(book_id, chapter_number, client_ip(request))
 
 
 @router.get("/books/{book_id}/cover")

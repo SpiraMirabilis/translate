@@ -110,6 +110,52 @@ class TestViewLogger:
         assert cur.fetchone()[0] == 2
         conn.close()
 
+    def test_repeat_view_within_window_is_deduped(self, db, book_with_chapters):
+        """Same (book, chapter, ip) twice → one row, one view_count bump."""
+        from web.services.view_logger import ViewLogger
+        vl = ViewLogger(db, flush_interval=999, dedupe_window=1800)
+        vl.log_view(book_with_chapters, 1, "7.7.7.7")
+        vl.log_view(book_with_chapters, 1, "7.7.7.7")   # reload / second tab
+        vl.log_view(book_with_chapters, 2, "7.7.7.7")   # different chapter
+        vl.log_view(book_with_chapters, 1, "6.6.6.6")   # different reader
+        vl.flush()
+
+        conn = db.backend.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM reader_log WHERE ip IN ('7.7.7.7', '6.6.6.6')")
+        assert cur.fetchone()[0] == 3
+        cur.execute("SELECT view_count FROM books WHERE id = ?", (book_with_chapters,))
+        assert cur.fetchone()[0] == 3
+        conn.close()
+
+    def test_repeat_view_after_window_counts_again(self, db, book_with_chapters):
+        from web.services.view_logger import ViewLogger
+        vl = ViewLogger(db, flush_interval=999, dedupe_window=0)  # window elapsed
+        vl.log_view(book_with_chapters, 1, "5.5.5.5")
+        vl.log_view(book_with_chapters, 1, "5.5.5.5")
+        vl.flush()
+
+        conn = db.backend.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM reader_log WHERE ip = '5.5.5.5'")
+        assert cur.fetchone()[0] == 2
+        conn.close()
+
+    def test_dedupe_survives_flush(self, db, book_with_chapters):
+        """Flushing drains the buffer but must not forget what was seen."""
+        from web.services.view_logger import ViewLogger
+        vl = ViewLogger(db, flush_interval=999, dedupe_window=1800)
+        vl.log_view(book_with_chapters, 1, "4.4.4.4")
+        vl.flush()
+        vl.log_view(book_with_chapters, 1, "4.4.4.4")
+        vl.flush()
+
+        conn = db.backend.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM reader_log WHERE ip = '4.4.4.4'")
+        assert cur.fetchone()[0] == 1
+        conn.close()
+
     def test_flush_failure_drops_views_without_raising(self, db):
         from web.services.view_logger import ViewLogger
         vl = ViewLogger(db, flush_interval=999)
