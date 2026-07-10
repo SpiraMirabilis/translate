@@ -39,7 +39,15 @@ function countWords(editor) {
   return m ? m.length : 0
 }
 
-const todayKey = () => new Date().toISOString().slice(0, 10)
+// Local calendar day (not UTC) so evening writing isn't attributed to tomorrow
+// for non-UTC authors — matches localIso() elsewhere in the UI.
+const todayKey = () => {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 /**
  * WYSIWYG writing editor for original works (books.is_original). Content is
@@ -339,13 +347,18 @@ export default function WriteEditor() {
         clearAutosaveTimers()
       } else {
         setSaveError(e.message)
+        // Non-409 failures leave dirty true; re-arm autosave so a transient
+        // network blip still gets another try without requiring a keystroke.
+        if (autosave && dirtyRef.current) {
+          scheduleAutosave()
+        }
       }
       return false
     } finally {
       savingRef.current = false
       setSaving(false)
     }
-  }, [bookId, chapterNum, draftKey, addDailyWords, markDirty, clearAutosaveTimers, flashSaved, flashAutosaved])
+  }, [bookId, chapterNum, draftKey, addDailyWords, markDirty, clearAutosaveTimers, scheduleAutosave, flashSaved, flashAutosaved])
   useEffect(() => { doSaveRef.current = doSave }, [doSave])
 
   const handleManualSave = useCallback(() => doSave({ snapshot: true }), [doSave])
@@ -449,12 +462,22 @@ export default function WriteEditor() {
     const ed = editorRef.current
     if (!ed) return
     const { doc, unsupported: unsup } = linesToDoc(trimEmptyLines(revision.content || []))
-    if (!unsup.length) {
-      ed.commands.setContent(doc, { emitUpdate: false })
-      setWords(countWords(ed))
-      setTick((t) => t + 1) // emitUpdate:false skips onUpdate — refresh preview/toolbar
-      grammar.clearAll()
+    if (unsup.length) {
+      // Server already restored the revision. Don't mark clean or advance the
+      // optimistic lock while the editor still shows pre-restore content —
+      // the next save would overwrite the restore with the stale buffer.
+      setSaveError(
+        `Revision restored on the server, but this editor can't load it: `
+        + `unsupported constructs (${[...new Set(unsup)].slice(0, 4).join(', ')}). `
+        + `Reload the page or open the chapter in the translation editor to see the restored text.`
+      )
+      // Keep dirty so the unsaved-guard warns; do not clear draft/lock.
+      return
     }
+    ed.commands.setContent(doc, { emitUpdate: false })
+    setWords(countWords(ed))
+    setTick((t) => t + 1) // emitUpdate:false skips onUpdate — refresh preview/toolbar
+    grammar.clearAll()
     if (revision.title) setTitle(revision.title)
     lockRef.current = translationDate || lockRef.current
     setConflict(null)

@@ -24,6 +24,14 @@ export default function SearchBar({
   }
 
   const canReplace = search.scope !== 'untranslated'
+  // Replace only when the active match is in translated text (and, for
+  // book-wide, when the caller has confirmed it's the current chapter).
+  const activeIsReplaceable = !!(
+    search.activeMatch
+    && search.activeMatch.field === 'translated'
+    && (search.canReplaceActive !== false)
+  )
+  const replaceAllEnabled = (search.replaceableBookCount ?? 0) > 0
 
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border-b border-slate-800 text-xs flex-shrink-0">
@@ -143,8 +151,10 @@ export default function SearchBar({
             className="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200
                        hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             onClick={onReplace}
-            disabled={search.totalMatches === 0}
-            title="Replace current match"
+            disabled={!activeIsReplaceable}
+            title={activeIsReplaceable
+              ? 'Replace current match'
+              : 'Navigate to a translated match in this chapter first'}
           >
             Replace
           </button>
@@ -152,8 +162,8 @@ export default function SearchBar({
             className="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200
                        hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             onClick={onReplaceAll}
-            disabled={search.totalMatches === 0}
-            title="Replace all matches"
+            disabled={!replaceAllEnabled}
+            title="Replace all translated matches"
           >
             All
           </button>

@@ -86,6 +86,7 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
     }
   }, [currentIdx])
 
+  const searchSeqRef = useRef(0)
   const doSearch = useCallback(async (q) => {
     if (!q.trim()) {
       setResults([])
@@ -95,21 +96,26 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
       setCurrentIdx(-1)
       return
     }
+    const seq = ++searchSeqRef.current
     setSearching(true)
     setSearchError('')
     try {
       const data = await api.searchBook(bookId, { query: q, scope: 'translated' })
+      if (seq !== searchSeqRef.current) return
       setResults(data.results || [])
       setTotalMatches(data.total_matches || 0)
       setCurrentIdx(data.results?.length > 0 ? 0 : -1)
     } catch (e) {
+      if (seq !== searchSeqRef.current) return
       setResults([])
       setTotalMatches(0)
       setCurrentIdx(-1)
       setSearchError(e.message || 'Search failed. Try again.')
     } finally {
-      setSearched(true)
-      setSearching(false)
+      if (seq === searchSeqRef.current) {
+        setSearched(true)
+        setSearching(false)
+      }
     }
   }, [bookId, api])
 

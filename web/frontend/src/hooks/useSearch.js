@@ -98,6 +98,14 @@ export function useSearch() {
   const bookCurrentIndexRef = useRef(0)
   bookCurrentIndexRef.current = bookCurrentIndex
 
+  // Replaceable counts exclude source-only hits (replace never touches source).
+  const replaceableBookCount = useMemo(() => {
+    if (!isBookWide || bookMatchOrder.length === 0) {
+      return chapterMatches.filter((m) => m.field === 'translated').length
+    }
+    return bookMatchOrder.filter((m) => m.field === 'translated').length
+  }, [isBookWide, bookMatchOrder, chapterMatches])
+
   const totalMatches = isBookWide
     ? (bookMatchOrder.length > 0 ? bookMatchOrder.length : chapterMatches.length)
     : chapterMatches.length
@@ -126,18 +134,25 @@ export function useSearch() {
     })
   }, [])
 
+  const searchSeqRef = useRef(0)
+
   const searchBook = useCallback(async function doSearch(bookId, q, sc, re) {
     if (!q) {
       setBookResults(null)
       setBookMatchOrder([])
+      bookMatchOrderRef.current = []
       setBookCurrentIndex(0)
+      bookCurrentIndexRef.current = 0
       return
     }
+    const seq = ++searchSeqRef.current
     setBookSearchLoading(true)
     try {
       const res = await api.searchBook(parseInt(bookId), {
         query: q, scope: sc, is_regex: re
       })
+      // Ignore stale responses from an earlier query.
+      if (seq !== searchSeqRef.current) return
       setBookResults(res)
       const flat = []
       for (const ch of (res.results || [])) {
@@ -150,12 +165,13 @@ export function useSearch() {
       setBookCurrentIndex(0)
       bookCurrentIndexRef.current = 0
     } catch (err) {
+      if (seq !== searchSeqRef.current) return
       console.error('Book search error:', err)
       setBookResults(null)
       setBookMatchOrder([])
       bookMatchOrderRef.current = []
     } finally {
-      setBookSearchLoading(false)
+      if (seq === searchSeqRef.current) setBookSearchLoading(false)
     }
   }, [])
 
@@ -206,8 +222,14 @@ export function useSearch() {
     return null
   }, [isBookWide, chapterMatches])
 
-  const replaceCurrentMatch = useCallback(function doReplace(txt, matchObj) {
+  const replaceCurrentMatch = useCallback(function doReplace(txt, matchObj, currentChapterNum) {
     if (!matchObj || matchObj.field !== 'translated') return txt
+    // Book-wide active match may point at another chapter — refuse to edit
+    // the current buffer with foreign offsets.
+    if (matchObj.chapterNum != null && currentChapterNum != null
+        && matchObj.chapterNum !== currentChapterNum) {
+      return txt
+    }
     var splitLines = txt.split('\n')
     if (matchObj.line >= splitLines.length) return txt
     var ln = splitLines[matchObj.line]
@@ -245,6 +267,27 @@ export function useSearch() {
     return newLines.join('\n')
   }, [query, replaceText, isRegex])
 
+  /** Apply the same replace rules to a single title string (book-wide All). */
+  const replaceInTitle = useCallback(function doTitle(title) {
+    if (!query || title == null) return title
+    if (isRegex) {
+      try { return String(title).replace(new RegExp(query, 'gi'), replaceText) }
+      catch { return title }
+    }
+    var ln = String(title)
+    var lnLower = ln.toLowerCase()
+    var qLower = query.toLowerCase()
+    var out = ''
+    var pos = 0
+    while (true) {
+      var idx = lnLower.indexOf(qLower, pos)
+      if (idx === -1) { out += ln.substring(pos); break }
+      out += ln.substring(pos, idx) + replaceText
+      pos = idx + query.length
+    }
+    return out
+  }, [query, replaceText, isRegex])
+
   const open = useCallback(function doOpen(opts) {
     var focusReplace = opts && opts.focusReplace
     setIsOpen(true)
@@ -271,8 +314,14 @@ export function useSearch() {
     bookCurrentIndexRef.current = 0
   }, [])
 
+  // Only re-pin the book index when navigation landed us on a chapter that
+  // the current index is *not* already pointing at. Otherwise Prev to the
+  // last match of ch N gets clobbered back to the first match of ch N.
   const syncBookIndexToChapter = useCallback(function doSync(chapterNum) {
     var list = bookMatchOrderRef.current
+    if (!list.length) return
+    var cur = bookCurrentIndexRef.current
+    if (list[cur] && list[cur].chapterNum === chapterNum) return
     var idx = list.findIndex(function findCh(m) { return m.chapterNum === chapterNum })
     if (idx >= 0) {
       setBookCurrentIndex(idx)
@@ -287,10 +336,10 @@ export function useSearch() {
     chapterMatches, currentMatchIndex, setCurrentMatchIndex,
     bookResults, bookMatchOrder, bookCurrentIndex, setBookCurrentIndex,
     bookSearchLoading,
-    totalMatches, currentIndex, activeMatch,
+    totalMatches, currentIndex, activeMatch, replaceableBookCount,
     updateChapterMatches, searchBook,
     nextMatch, prevMatch,
-    replaceCurrentMatch, replaceAllInChapter,
+    replaceCurrentMatch, replaceAllInChapter, replaceInTitle,
     open, close,
     searchInputRef, replaceInputRef,
     syncBookIndexToChapter,

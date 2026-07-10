@@ -38,7 +38,9 @@ const HR = '---'
 /** Convert a stored content line array to a BBCode string. */
 export function linesToBBCode(lines, { illustrationUrls = {}, title = null } = {}) {
   const blocks = []
-  if (title) blocks.push(`[B][SIZE=6]${title}[/SIZE][/B]`)
+  // Titles go through escapeText so [URL]/[SPOILER]/etc. in a title
+  // can't inject XenForo markup on forum paste (body text already does).
+  if (title) blocks.push(`[B][SIZE=6]${escapeText(String(title))}[/SIZE][/B]`)
   for (const seg of splitSegments(lines || [])) {
     if (seg.type === 'img') {
       const url = illustrationUrls[seg.id]

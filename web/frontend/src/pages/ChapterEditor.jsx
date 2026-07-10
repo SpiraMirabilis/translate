@@ -46,6 +46,8 @@ export default function ChapterEditor() {
   const [saved, flashSaved, clearSaved] = useTransientFlag(3000)
   const [error, setError] = useState(null)
   const [dirty, setDirty] = useState(false)
+  // Optimistic lock for concurrent saves (mirrors WriteEditor).
+  const [translationDate, setTranslationDate] = useState(null)
   // Local draft recovery — while dirty, the edited text+title is autosaved to
   // localStorage (debounced); on mount a newer-than-saved draft is offered
   // back via a restore banner. Survives session expiry, crashes, and
@@ -92,15 +94,28 @@ export default function ChapterEditor() {
   const handlePronounRepairResult = useCallback((res) => {
     setPronounRepairOpen(false)
     flashPronounToast(res)
-    // If the chapter content changed, reload to show the fix
+    // If the chapter content changed, reload to show the fix — but never
+    // clobber unsaved local edits without confirmation.
     if (res?.paragraphs_changed > 0) {
+      if (dirty) {
+        const ok = window.confirm(
+          'Pronoun repair updated this chapter on the server, but you have unsaved edits. '
+          + 'Reload the repaired text and discard your local edits?'
+        )
+        if (!ok) return
+      }
       api.getChapter(parseInt(bookId), parseInt(chapterNum))
         .then(ch => {
-          if (Array.isArray(ch.content)) setText(ch.content.join('\n'))
+          if (Array.isArray(ch.content)) {
+            setText(ch.content.join('\n'))
+            setDirty(false)
+            setChapter(ch)
+            if (ch.translation_date) setTranslationDate(ch.translation_date)
+          }
         })
         .catch(() => {})
     }
-  }, [bookId, chapterNum, flashPronounToast])
+  }, [bookId, chapterNum, flashPronounToast, dirty])
 
   // Retranslation state — URL flag + local payload (text+lineIndex can't live
   // in the URL because partial selections aren't reconstructable from indices)
@@ -178,12 +193,14 @@ export default function ChapterEditor() {
     // the new chapter's lines, and (worst) the draft-autosave timer can
     // persist the OLD chapter's text under the NEW chapter's draft key —
     // whose "restore" would corrupt the new chapter.
+    let cancelled = false
     setDraftOffer(null)
     setLoading(true)
     setError(null)
     setDirty(false)
     setAnnotations({})
     setWpStatus(null)
+    setTranslationDate(null)
     clearUndoInfo()
     Promise.all([
       api.getChapter(parseInt(bookId), parseInt(chapterNum)),
@@ -193,6 +210,7 @@ export default function ChapterEditor() {
       api.listChapters(parseInt(bookId)),
     ])
       .then(([ch, bk, prov, ents, chaps]) => {
+        if (cancelled) return
         setChapter(ch)
         setBook(bk)
         setProviders(prov.providers || [])
@@ -200,6 +218,7 @@ export default function ChapterEditor() {
         setChapterList((chaps.chapters || []).map(c => c.chapter).sort((a, b) => a - b))
         setProofreadAt(ch.is_proofread || null)
         setPublishedAt(ch.published_at || null)
+        setTranslationDate(ch.translation_date || null)
         const content = Array.isArray(ch.content) ? ch.content : []
         const loadedText = trimEmptyLines(content).join('\n')
         setText(loadedText)
@@ -226,8 +245,9 @@ export default function ChapterEditor() {
           }
         } catch { /* corrupt draft — ignore */ }
       })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .catch(e => { if (!cancelled) setError(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [bookId, chapterNum])
 
   // Fetch WP publish status for this chapter
@@ -444,34 +464,55 @@ export default function ChapterEditor() {
   const handleSearchReplace = useCallback(() => {
     const match = search.activeMatch
     if (!match || match.field !== 'translated') return
-    const newText = search.replaceCurrentMatch(text, match)
+    // Refuse to apply another chapter's offsets to this buffer.
+    if (match.chapterNum != null && match.chapterNum !== parseInt(chapterNum)) return
+    const newText = search.replaceCurrentMatch(text, match, parseInt(chapterNum))
+    if (newText === text) return
     setText(newText)
     setDirty(true)
     clearSaved()
     // Advance to next match
     setTimeout(() => handleSearchNext(), 10)
-  }, [search, text, handleSearchNext, clearSaved])
+  }, [search, text, handleSearchNext, clearSaved, chapterNum])
 
   // Returns true on success, false on failure (mirrors WriteEditor's doSave)
   // so callers like publish flows can abort instead of proceeding with stale
   // content. `overrideLines` lets callers save content that isn't in state
   // yet (e.g. Replace All applies the replacement and saves in one step).
-  const handleSave = async (overrideLines = null) => {
+  // `overrideTitle` lets Replace All also rewrite the current chapter title
+  // (server-side replace already does titles for other chapters).
+  const handleSave = async (overrideLines = null, overrideTitle = null) => {
     setSaving(true)
     setError(null)
     try {
       const payload = { content: Array.isArray(overrideLines) ? overrideLines : textLines }
-      if (chapter && chapter.title !== undefined) {
+      if (overrideTitle != null) {
+        payload.title = overrideTitle
+      } else if (chapter && chapter.title !== undefined) {
         payload.title = chapter.title
       }
-      await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
+      if (translationDate) {
+        payload.expected_translation_date = translationDate
+      }
+      const res = await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
+      if (res?.translation_date) setTranslationDate(res.translation_date)
+      if (overrideTitle != null && chapter) {
+        setChapter({ ...chapter, title: overrideTitle })
+      }
       flashSaved()
       setDirty(false)
       localStorage.removeItem(draftKey)  // saved — draft no longer needed
       setDraftOffer(null)
       return true
     } catch (e) {
-      setError(e.message)
+      if (e.status === 409) {
+        setError(
+          'Chapter changed on the server (another tab or replace). '
+          + 'Reload the page to pick up the latest text before saving again.'
+        )
+      } else {
+        setError(e.message)
+      }
       return false
     } finally {
       setSaving(false)
@@ -508,11 +549,16 @@ export default function ChapterEditor() {
   const handleSearchReplaceAll = useCallback(async function doReplaceAll() {
     if (!search.query) return
     var prevText = text
+    var replaceable = search.replaceableBookCount || 0
     if (search.isBookWide) {
-      var totalBookMatches = search.bookMatchOrder.length
-      if (!confirm('Replace all ' + totalBookMatches + ' matches across the entire book?')) return
-      // Replace in current chapter locally
+      if (replaceable === 0) return
+      if (!confirm('Replace all ' + replaceable + ' translated match'
+        + (replaceable === 1 ? '' : 'es') + ' across the entire book?')) return
+      // Replace in current chapter body + title locally (titles are a separate
+      // column — the API path rewrites them for other chapters).
       var newText = search.replaceAllInChapter(text)
+      var curTitle = chapter?.title || ''
+      var newTitle = search.replaceInTitle(curTitle)
       if (newText !== text) {
         setText(newText)
         setDirty(true)
@@ -523,11 +569,14 @@ export default function ChapterEditor() {
       // current chapter's replacements stayed only in local state a later
       // discard would leave the book half-swept. Abort on save failure
       // (handleSave surfaces the error toast).
-      if (newText !== text || dirty) {
-        var savedOk = await handleSave(newText.split('\n'))
+      if (newText !== text || newTitle !== curTitle || dirty) {
+        var savedOk = await handleSave(
+          newText.split('\n'),
+          newTitle !== curTitle ? newTitle : null,
+        )
         if (!savedOk) return
       }
-      // Replace in other chapters via API
+      // Replace in other chapters via API (include_titles defaults true)
       var otherChapters = (search.bookResults?.results || [])
         .map(function getNum(r) { return r.chapter_number })
         .filter(function notCurrent(n) { return n !== parseInt(chapterNum) })
@@ -545,7 +594,7 @@ export default function ChapterEditor() {
         }
       }
       search.searchBook(bookId, search.query, search.scope, search.isRegex)
-      flashUndoInfo({ type: 'book', prevText: prevText, count: totalBookMatches })
+      flashUndoInfo({ type: 'book', prevText: prevText, count: replaceable })
     } else {
       var replaced = search.replaceAllInChapter(text)
       if (replaced !== text) {
@@ -556,7 +605,7 @@ export default function ChapterEditor() {
         flashUndoInfo({ type: 'local', prevText: prevText, count: chCount })
       }
     }
-  }, [search, text, dirty, bookId, chapterNum, flashUndoInfo, clearSaved, handleSave])
+  }, [search, text, dirty, bookId, chapterNum, chapter, flashUndoInfo, clearSaved, handleSave])
 
   const handleSearchClose = useCallback(() => {
     search.close()
@@ -570,6 +619,12 @@ export default function ChapterEditor() {
     if (match.chapterNum != null && match.chapterNum !== parseInt(chapterNum)) return null
     return match
   }, [search.activeMatch, chapterNum])
+
+  // Expose to SearchBar so Replace is disabled when the active match is
+  // in another chapter or in source text.
+  search.canReplaceActive = !!(
+    currentChapterActiveMatch && currentChapterActiveMatch.field === 'translated'
+  )
 
   // Scroll to active search match (only if it's in the current chapter)
   useEffect(() => {

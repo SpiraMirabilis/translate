@@ -30,6 +30,7 @@ export default function GlobalSearchModal({ books, onClose }) {
     return function cleanup() { window.removeEventListener('keydown', onKey) }
   }, [onClose])
 
+  var searchSeqRef = useRef(0)
   var doSearch = useCallback(function performSearch(q, bookId, sc, regex) {
     if (!q || !bookId) {
       setResults(null)
@@ -37,20 +38,25 @@ export default function GlobalSearchModal({ books, onClose }) {
       setSearchError(null)
       return
     }
+    var seq = ++searchSeqRef.current
     setLoading(true)
     setSearchError(null)
     api.searchBook(bookId, { query: q, scope: sc, is_regex: regex })
       .then(function onResult(res) {
+        if (seq !== searchSeqRef.current) return
         setResults(res.results || [])
         setTotalMatches(res.total_matches || 0)
       })
       .catch(function onErr(err) {
+        if (seq !== searchSeqRef.current) return
         // Keep results null so the failure isn't rendered as "No matches"
         setResults(null)
         setTotalMatches(0)
         setSearchError((err && err.message) || 'Search failed')
       })
-      .finally(function done() { setLoading(false) })
+      .finally(function done() {
+        if (seq === searchSeqRef.current) setLoading(false)
+      })
   }, [])
 
   // Debounced search on query/book/scope/regex change
