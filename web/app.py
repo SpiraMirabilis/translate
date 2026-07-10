@@ -92,12 +92,19 @@ def create_app(config=None, logger=None) -> FastAPI:
         async def dispatch(self, request: Request, call_next):
             response = await call_next(request)
             path = request.url.path
-            if path.startswith("/assets/"):
+            ok = response.status_code == 200
+            if path.startswith("/assets/") and ok:
                 # Vite-built assets have content hashes — cache for 1 year
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif path.startswith("/assets/"):
+                # Never let a failed asset fetch inherit the immutable header.
+                # A deploy that serves index.html before its hashed chunks land
+                # would otherwise pin the 404 in Cloudflare and mod_cache_disk
+                # for a year, and no purge of either could be trusted to stick.
+                response.headers["Cache-Control"] = "no-store"
             elif path.endswith((".ico", ".png", ".jpg", ".svg", ".webp", ".woff2", ".woff")):
                 # Other static files — cache for 1 day
-                response.headers["Cache-Control"] = "public, max-age=86400"
+                response.headers["Cache-Control"] = "public, max-age=86400" if ok else "no-store"
             elif path == "/" or (not path.startswith("/api/") and not path.startswith("/ws") and "." not in path.split("/")[-1]):
                 # SPA HTML pages — always revalidate
                 response.headers["Cache-Control"] = "no-cache"
