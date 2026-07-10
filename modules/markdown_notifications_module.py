@@ -60,7 +60,12 @@ def _notif(line):
     if not m:
         return None
     # Exactly one of the two alternation groups matched.
-    return m.group(1) if m.group(1) is not None else m.group(2)
+    inner = m.group(1) if m.group(1) is not None else m.group(2)
+    # A purely numeric [n] is a footnote marker / danmaku count, not a
+    # notification — swallowing it into a table breaks the footnote system.
+    if m.group(2) is not None and inner.strip().isdigit():
+        return None
+    return inner
 
 
 def _esc_cell(text):
@@ -140,8 +145,11 @@ def _cell_text(inner):
 def _from_tables(lines):
     """Reverse :func:`_to_tables`: single-column tables → double-spaced 【…】.
 
-    Only single-column tables with a separator second row (i.e. the shape this
-    module emits) are reverted; genuine multi-column tables are left untouched.
+    Only tables carrying this module's exact fingerprint are reverted: every
+    row in the `| cell |` spacing _make_table emits, and the separator row
+    exactly `| --- |`. A hand-authored or chatgroup-style single-column table
+    (compact `|:---|`, unpadded pipes) is left untouched — previously ANY
+    single-column pipe table was reversed on disable.
     Idempotent: reverted blocks no longer match a table run.
     """
     if not isinstance(lines, list):
@@ -162,10 +170,14 @@ def _from_tables(lines):
             run.append(lines[j])
             j += 1
         inners = [_ROW_RE.match(r).group(1) for r in run]
-        sep_ok = len(run) >= 2 and bool(_SEP_RE.match(inners[1].strip()))
+        sep_ok = len(run) >= 2 and run[1].strip() == "| --- |"
+        # Fingerprint: _make_table always writes "| cell |" with the padding
+        # spaces; anything else was not produced by this module.
+        ours = all(r.strip().startswith("| ") and r.strip().endswith(" |")
+                   for idx, r in enumerate(run) if idx != 1)
         # Reconstruct cells from every row except the separator (index 1).
         cells = [_cell_text(s) for idx, s in enumerate(inners) if idx != 1]
-        if sep_ok and all(c is not None for c in cells):
+        if sep_ok and ours and all(c is not None for c in cells):
             for idx, c in enumerate(cells):
                 out.append("【" + c + "】")
                 if idx != len(cells) - 1:

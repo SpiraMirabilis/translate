@@ -24,25 +24,34 @@ class Logger:
         """Set up and return a configured logger"""
         import logging
         logger = logging.getLogger("translate_logger")
-        logger.setLevel(logging.DEBUG if self.config.debug_mode else logging.ERROR)
-        
+        # WARNING (not ERROR) so warnings can reach the file handler below.
+        logger.setLevel(logging.DEBUG if self.config.debug_mode else logging.WARNING)
+
+        # logging.getLogger returns the same singleton for every Logger()
+        # instantiation — re-adding handlers double-logged every line and the
+        # mode="w" file handler re-truncated the log mid-run. Configure once.
+        if logger.handlers:
+            return logger
+
         # Formatter for log messages
         formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        
-        # File handler
+
+        # File handler. WARNING floor (not ERROR) so operationally relevant
+        # warnings — 529 overload waits, failed sends, skipped steps — persist
+        # without needing DEBUG mode.
         file_handler = logging.FileHandler("translate.log", mode="w")  # Overwrites the file
-        file_handler.setLevel(logging.DEBUG if self.config.debug_mode else logging.ERROR)
+        file_handler.setLevel(logging.DEBUG if self.config.debug_mode else logging.WARNING)
         file_handler.setFormatter(formatter)
-        
+
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.DEBUG if self.config.debug_mode else logging.ERROR)
         console_handler.setFormatter(formatter)
-        
+
         # Add handlers to the logger
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
-        
+
         return logger
     
     def debug(self, message, *args, **kwargs):

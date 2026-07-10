@@ -671,7 +671,9 @@ class BooksRepo:
         """Return the average output-tokens-per-input-char ratio for progress estimation.
 
         Prefers book-specific data when book_id is provided; falls back to the
-        global aggregate (book_id=0).  Returns 1.0 when no data is available.
+        global aggregate (book_id=0).  Returns 1.2 when no data is available
+        (deliberately conservative so first-run progress estimates overshoot
+        rather than stall).
         """
         try:
             with self._conn() as conn:

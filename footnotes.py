@@ -44,11 +44,47 @@ def content_to_list(raw):
 def prose_end_index(lines):
     """Index where the trailing definition block begins (blank + '[n] body' lines
     only). Searching for a term above this point keeps markers out of any existing
-    footnote body."""
+    footnote body.
+
+    A rendered definition block is always numbered 1..N ascending, so the block
+    is only recognised when, reading bottom-up, the numbers count down N..1 and
+    reach exactly 1. A lone prose line like "[3] lol" (danmaku, citation) at the
+    end of a chapter therefore stays prose instead of being eaten as a
+    definition; a real block below it is still detected."""
     i = len(lines) - 1
-    while i >= 0 and (lines[i].strip() == "" or DEF_RE.match(lines[i])):
+    # Skip trailing blank lines.
+    while i >= 0 and lines[i].strip() == "":
         i -= 1
-    return i + 1
+    after_prose = i + 1  # fallback: no block, trim just the blanks
+
+    expect = None
+    j = i
+    block_start = None
+    while j >= 0:
+        s = lines[j]
+        if s.strip() == "":
+            j -= 1
+            continue
+        m = DEF_RE.match(s)
+        if not m:
+            break
+        n = int(m.group(1))
+        if expect is not None and n != expect:
+            break
+        if expect is None:
+            expect = n
+        if n == 1:
+            block_start = j
+            break
+        expect = n - 1
+        j -= 1
+
+    if block_start is None:
+        return after_prose
+    # Swallow blank lines directly above the block (they separate it from prose).
+    while block_start > 0 and lines[block_start - 1].strip() == "":
+        block_start -= 1
+    return block_start
 
 
 def split_prose_and_defs(lines):
@@ -63,10 +99,20 @@ def split_prose_and_defs(lines):
 
 
 def strip_footnotes(lines):
-    """Return clean prose: the trailing definition block removed AND every inline
-    "[n]" marker stripped from the remaining prose lines."""
-    prose = lines[:prose_end_index(lines)]
-    return [MARKER_RE.sub("", line) for line in prose]
+    """Return clean prose: the trailing definition block removed AND the inline
+    "[n]" markers stripped from the remaining prose lines.
+
+    Only markers whose number has a definition in the trailing block are
+    stripped — a bracketed numeric with no matching definition (danmaku counts
+    like "[666]", citations) is prose and survives."""
+    prose, defs = split_prose_and_defs(lines)
+    if not defs:
+        return list(prose)
+    nums = set(defs)
+    return [
+        MARKER_RE.sub(lambda m: "" if int(m.group(1)) in nums else m.group(0), line)
+        for line in prose
+    ]
 
 
 def find_occurrence(prose_lines, anchor, occurrence):

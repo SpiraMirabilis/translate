@@ -25,6 +25,12 @@ def init(entity_manager, job_manager, web_interface):
     _web_interface = web_interface
 
 
+def _ensure_project_root_on_path():
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
 # ------------------------------------------------------------------
 # Queue listing / management
 # ------------------------------------------------------------------
@@ -95,16 +101,18 @@ def add_to_queue(req: QueueAddRequest):
 # ------------------------------------------------------------------
 
 @router.post("/upload")
-async def upload_file_to_queue(
+def upload_file_to_queue(
     file: UploadFile = File(...),
     book_id: int = Form(...),
     chapter_number: Optional[int] = Form(None),
 ):
+    # Sync handler on purpose: FastAPI runs it in a threadpool, so parsing and
+    # DB work can't starve the event loop (and the /api/health watchdog).
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
 
-    content = await file.read()
+    content = file.file.read()
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -130,7 +138,7 @@ async def upload_file_to_queue(
 # ------------------------------------------------------------------
 
 @router.post("/upload-batch")
-async def upload_batch_to_queue(
+def upload_batch_to_queue(
     files: list[UploadFile] = File(...),
     book_id: int = Form(...),
     start_chapter: Optional[int] = Form(None),
@@ -149,7 +157,7 @@ async def upload_batch_to_queue(
     # Read all files and extract metadata
     file_entries = []
     for f in files:
-        raw = await f.read()
+        raw = f.file.read()
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -213,20 +221,20 @@ async def upload_batch_to_queue(
 # ------------------------------------------------------------------
 
 @router.post("/upload-epub")
-async def upload_epub(
+def upload_epub(
     file: UploadFile = File(...),
     book_id: Optional[int] = Form(None),
     create_book: bool = Form(False),
     genre: Optional[str] = Form(None),
 ):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    _ensure_project_root_on_path()
     from epub_processor import EPUBProcessor
     from config import TranslationConfig
 
     if not book_id and not create_book:
         raise HTTPException(status_code=400, detail="Provide book_id or set create_book=true.")
 
-    content = await file.read()
+    content = file.file.read()
     with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
@@ -302,19 +310,19 @@ async def upload_epub(
 # ------------------------------------------------------------------
 
 @router.post("/upload-fb2")
-async def upload_fb2(
+def upload_fb2(
     file: UploadFile = File(...),
     book_id: Optional[int] = Form(None),
     create_book: bool = Form(False),
     genre: Optional[str] = Form(None),
 ):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    _ensure_project_root_on_path()
     from fb2_processor import FB2Processor
 
     if not book_id and not create_book:
         raise HTTPException(status_code=400, detail="Provide book_id or set create_book=true.")
 
-    content = await file.read()
+    content = file.file.read()
     # Preserve the .zip suffix so the processor unzips .fb2.zip archives.
     suffix = ".fb2.zip" if file.filename and file.filename.lower().endswith(".zip") else ".fb2"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -406,7 +414,7 @@ async def upload_fb2(
 # ------------------------------------------------------------------
 
 @router.post("/upload-json")
-async def upload_json(
+def upload_json(
     file: UploadFile = File(...),
     book_id: Optional[int] = Form(None),
     create_book: bool = Form(False),
@@ -417,7 +425,7 @@ async def upload_json(
     if not book_id and not create_book:
         raise HTTPException(status_code=400, detail="Provide book_id or set create_book=true.")
 
-    content = await file.read()
+    content = file.file.read()
     try:
         # utf-8-sig transparently strips a BOM if the scraper wrote one.
         raw_text = content.decode("utf-8-sig")
@@ -594,7 +602,7 @@ def _translate_one(queue_item):
 
 
 @router.post("/process-next")
-async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
+def process_next(req: ProcessNextRequest = ProcessNextRequest()):
     import threading
 
     if _job_manager.is_running:
@@ -618,27 +626,42 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
 
     _job_manager.clear_cancel()
     _job_manager.is_running = True
-    _setup_job(queue_item, settings)
 
-    if req.auto_process:
-        _job_manager.start_auto_process(max_chapters=req.max_chapters)
+    # _setup_job writes per-run model overrides into the shared translator
+    # config; capture the configured values so they can be restored after the
+    # run instead of silently becoming the new defaults.
+    cfg = _web_interface.translator.config
+    orig_models = (cfg.translation_model, cfg.advice_model)
 
-    # Log the first item from the async context (thread not started yet)
-    book_name = None
-    if queue_item.get("book_id"):
-        book = _entity_manager.get_book(queue_item["book_id"])
-        if book:
-            book_name = book.get("title")
-    ch = queue_item.get("chapter_number")
-    remaining = ""
-    if _job_manager._auto_max:
-        left = _job_manager._auto_max - _job_manager._auto_done
-        remaining = f" ({left} to go)" if left > 0 else " (last)"
-    await _job_manager.log_activity_async(
-        type='start',
-        message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…{remaining}',
-        book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,
-    )
+    try:
+        _setup_job(queue_item, settings)
+
+        if req.auto_process:
+            _job_manager.start_auto_process(max_chapters=req.max_chapters)
+
+        # Log the first item before the worker thread starts
+        book_name = None
+        if queue_item.get("book_id"):
+            book = _entity_manager.get_book(queue_item["book_id"])
+            if book:
+                book_name = book.get("title")
+        ch = queue_item.get("chapter_number")
+        remaining = ""
+        if _job_manager._auto_max:
+            left = _job_manager._auto_max - _job_manager._auto_done
+            remaining = f" ({left} to go)" if left > 0 else " (last)"
+        _job_manager.log_activity(
+            type='start',
+            message=f'Translation started: {book_name or "No book"} — Chapter {ch or "auto"}…{remaining}',
+            book_id=queue_item.get("book_id"), chapter=ch, book_name=book_name,
+        )
+    except BaseException:
+        # Anything failing before the worker thread owns the flag would
+        # otherwise leave is_running stuck True (every request 409s).
+        _job_manager.is_running = False
+        _job_manager.auto_process = False
+        cfg.translation_model, cfg.advice_model = orig_models
+        raise
 
     def run():
         try:
@@ -670,6 +693,7 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
             _job_manager.log_activity(type='error', message=f'Error: {e}')
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
+            cfg.translation_model, cfg.advice_model = orig_models
             _job_manager.is_running = False
             _job_manager.auto_process = False
             if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
@@ -678,8 +702,13 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
             # (translated-side ingests, plus any source re-ingests at save).
             module_activity.flush()
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+    except BaseException:
+        _job_manager.is_running = False
+        _job_manager.auto_process = False
+        raise
 
     return {
         "status": "started",
@@ -689,10 +718,10 @@ async def process_next(req: ProcessNextRequest = ProcessNextRequest()):
 
 
 @router.post("/stop-auto")
-async def stop_auto_process():
+def stop_auto_process():
     if not _job_manager.auto_process:
         return {"status": "not_running"}
     _job_manager.stop_auto_process()
-    await _job_manager.log_activity_async(type='info', message='Auto-process will stop after current chapter.')
-    await _job_manager.send_message_async({"type": "auto_process_stopping"})
+    _job_manager.log_activity(type='info', message='Auto-process will stop after current chapter.')
+    _job_manager.send_message_sync({"type": "auto_process_stopping"})
     return {"status": "stopping"}

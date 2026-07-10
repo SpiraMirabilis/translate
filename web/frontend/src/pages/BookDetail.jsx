@@ -190,7 +190,10 @@ export default function BookDetail() {
     }
   }
 
-  const currentChapter = progress?.[bookId]
+  // A 'reader-progress' entry is either a bare chapter number (legacy) or
+  // { chapter, scrollRatio } — handle both shapes.
+  const storedProgress = progress?.[bookId]
+  const currentChapter = typeof storedProgress === 'number' ? storedProgress : storedProgress?.chapter
   const hasProgress = currentChapter && currentChapter > 1
   // First real chapter to open when there's no saved progress. Skips the
   // book-discussion sentinel and doesn't assume chapters start at 1.

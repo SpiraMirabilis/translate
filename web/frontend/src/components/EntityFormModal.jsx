@@ -248,10 +248,21 @@ export default function EntityFormModal({ entity, books = [], categories: parent
   }, [entity])
 
   useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    const handler = (e) => {
+      if (e.key !== 'Escape') return
+      if (propagate) {
+        // Escape = "don't propagate". The entity itself was already saved
+        // before the propagate modal opened, so still complete the save
+        // flow (onSaved refreshes the entity list) instead of skipping it.
+        setPropagate(null)
+        onSaved()
+      } else {
+        onClose()
+      }
+    }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
+  }, [onClose, onSaved, propagate])
 
   const handleCopyContext = () => {
     if (!contextText) return

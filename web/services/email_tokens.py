@@ -22,7 +22,17 @@ def _secret() -> str:
     # dev fallback. If the admin password rotates, outstanding unsubscribe
     # tokens become invalid; that's an acceptable cost of not introducing a
     # second long-lived secret.
-    return os.getenv("SECRET_KEY") or os.getenv("T9_PASSWORD") or "dev-secret"
+    secret = os.getenv("SECRET_KEY") or os.getenv("T9_PASSWORD")
+    if secret:
+        return secret
+    # EMAIL_FROM configured means these tokens go to real recipients — a
+    # well-known signing key would make unsubscribe/reply-correlation tokens
+    # forgeable. Refuse rather than sign with the dev fallback.
+    if os.getenv("EMAIL_FROM"):
+        raise RuntimeError(
+            "Refusing to sign email tokens with the dev fallback secret; "
+            "set SECRET_KEY (or T9_PASSWORD) in .env")
+    return "dev-secret"
 
 
 def _serializer() -> URLSafeTimedSerializer:

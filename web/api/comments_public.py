@@ -375,25 +375,54 @@ async def delete_comment(
     return {"status": "ok"}
 
 
-@router.get("/unsubscribe", include_in_schema=False)
-async def unsubscribe(token: str = ""):
-    """One-click unsubscribe from reply notifications.
+_INVALID_UNSUB_PAGE = (
+    "<!doctype html><meta charset=utf-8>"
+    "<title>Invalid link</title>"
+    "<div style='font-family:system-ui,sans-serif;max-width:420px;margin:80px auto;text-align:center'>"
+    "<h1 style='color:#d4183d'>Invalid or expired link</h1>"
+    "<p>This unsubscribe link could not be verified. Please use the link from a recent notification email.</p>"
+    "</div>"
+)
 
-    Idempotent: clicking the link multiple times has no extra effect.
-    Anyone holding the signed token (intended recipient) can unsubscribe;
-    no auth needed because the token IS the auth.
+
+@router.get("/unsubscribe", include_in_schema=False)
+async def unsubscribe_confirm(token: str = ""):
+    """Unsubscribe confirmation page.
+
+    Deliberately does NOT unsubscribe on GET: corporate mail scanners
+    (SafeLinks-style gateways) prefetch every link in an email, which used to
+    silently suppress all mail for the address. The button below POSTs, which
+    scanners don't do. Anyone holding the signed token (intended recipient)
+    can confirm; no auth needed because the token IS the auth.
     """
     email = verify_unsubscribe_token(token)
     if not email:
-        return HTMLResponse(
-            "<!doctype html><meta charset=utf-8>"
-            "<title>Invalid link</title>"
-            "<div style='font-family:system-ui,sans-serif;max-width:420px;margin:80px auto;text-align:center'>"
-            "<h1 style='color:#d4183d'>Invalid or expired link</h1>"
-            "<p>This unsubscribe link could not be verified. Please use the link from a recent notification email.</p>"
-            "</div>",
-            status_code=400,
-        )
+        return HTMLResponse(_INVALID_UNSUB_PAGE, status_code=400)
+    site_name = os.getenv("PUBLIC_SITE_NAME") or os.getenv("SITE_NAME") or "Reader"
+    return HTMLResponse(
+        "<!doctype html><meta charset=utf-8>"
+        f"<title>Unsubscribe — {site_name}</title>"
+        "<div style='font-family:system-ui,sans-serif;max-width:420px;margin:80px auto;text-align:center'>"
+        "<h1>Unsubscribe from emails?</h1>"
+        "<p style='color:#666'>You'll stop receiving all notification emails from this site at this address.</p>"
+        "<form method='post'>"
+        "<button type='submit' style='background:#d4183d;color:#fff;border:none;border-radius:6px;"
+        "padding:10px 24px;font-size:15px;cursor:pointer'>Unsubscribe</button>"
+        "</form>"
+        "</div>"
+    )
+
+
+@router.post("/unsubscribe", include_in_schema=False)
+async def unsubscribe(token: str = ""):
+    """Perform the unsubscribe (form POST from the confirm page above).
+
+    Idempotent: submitting multiple times has no extra effect. The token
+    rides in the query string, which the confirm form preserves.
+    """
+    email = verify_unsubscribe_token(token)
+    if not email:
+        return HTMLResponse(_INVALID_UNSUB_PAGE, status_code=400)
     _db.add_email_suppression(email, reason="unsubscribe")
     site_name = os.getenv("PUBLIC_SITE_NAME") or os.getenv("SITE_NAME") or "Reader"
     return HTMLResponse(

@@ -7,7 +7,7 @@ this router covers listing, fetching, and restoring them.
 """
 from fastapi import APIRouter, HTTPException
 
-from web.api.deps import get_book_or_404
+from web.api.deps import get_book_or_404, chapter_save_lock
 
 router = APIRouter(prefix="/api/books")
 
@@ -40,25 +40,29 @@ def get_revision(book_id: int, chapter_number: int, revision_id: int):
 @router.post("/{book_id}/chapters/{chapter_number}/revisions/{revision_id}/restore")
 def restore_revision(book_id: int, chapter_number: int, revision_id: int):
     revision = _get_revision_or_404(book_id, chapter_number, revision_id)
-    chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
-    if not chapter:
-        raise HTTPException(status_code=404, detail="Chapter not found.")
+    # Same per-chapter mutex as the save endpoint: a restore racing an
+    # editor save could otherwise interleave its snapshot-then-write with
+    # the save's compare-then-write.
+    with chapter_save_lock(book_id, chapter_number):
+        chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found.")
 
-    # Safety net: snapshot the current content before overwriting it.
-    _entity_manager.add_chapter_revision(
-        book_id, chapter_number, chapter.get("title"), chapter.get("content", []), kind='auto')
+        # Safety net: snapshot the current content before overwriting it.
+        _entity_manager.add_chapter_revision(
+            book_id, chapter_number, chapter.get("title"), chapter.get("content", []), kind='auto')
 
-    chapter_id = _entity_manager.save_chapter(
-        book_id=book_id,
-        chapter_number=chapter_number,
-        title=revision.get("title") or chapter.get("title", f"Chapter {chapter_number}"),
-        untranslated_content=chapter.get("untranslated", []),
-        translated_content=revision["content"],
-        summary=chapter.get("summary"),
-        translation_model=chapter.get("model"),
-    )
-    if not chapter_id:
-        raise HTTPException(status_code=500, detail="Failed to restore revision.")
+        chapter_id = _entity_manager.save_chapter(
+            book_id=book_id,
+            chapter_number=chapter_number,
+            title=revision.get("title") or chapter.get("title", f"Chapter {chapter_number}"),
+            untranslated_content=chapter.get("untranslated", []),
+            translated_content=revision["content"],
+            summary=chapter.get("summary"),
+            translation_model=chapter.get("model"),
+        )
+        if not chapter_id:
+            raise HTTPException(status_code=500, detail="Failed to restore revision.")
 
-    saved = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
-    return {"status": "ok", "translation_date": saved.get("translation_date") if saved else None}
+        saved = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        return {"status": "ok", "translation_date": saved.get("translation_date") if saved else None}

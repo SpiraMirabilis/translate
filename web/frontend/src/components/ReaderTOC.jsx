@@ -17,6 +17,9 @@ export default function ReaderTOC({ open, onClose, book, chapters, currentChapte
   const panelBg = isDark ? 'bg-slate-800' : 'bg-white'
   const borderColor = isDark ? 'border-slate-700' : 'border-stone-200'
   const textPrimary = isDark ? 'text-slate-100' : 'text-gray-900'
+  // Full literal class (not `hover:${textPrimary}`) so the Tailwind scanner
+  // actually generates the hover rule.
+  const hoverTextPrimary = isDark ? 'hover:text-slate-100' : 'hover:text-gray-900'
   const textSecondary = isDark ? 'text-slate-400' : 'text-gray-500'
   const hoverBg = isDark ? 'hover:bg-slate-700' : 'hover:bg-stone-100'
   const activeBg = isDark ? 'bg-indigo-600/20 text-indigo-300' : 'bg-indigo-50 text-indigo-700'
@@ -27,7 +30,12 @@ export default function ReaderTOC({ open, onClose, book, chapters, currentChapte
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
 
       {/* Panel */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] ${panelBg} border-r ${borderColor} flex flex-col shadow-2xl`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Table of contents"
+        className={`fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] ${panelBg} border-r ${borderColor} flex flex-col shadow-2xl`}
+      >
         {/* Header */}
         <div className={`p-4 border-b ${borderColor} flex items-start gap-3`}>
           {book?.cover_image && (
@@ -42,7 +50,7 @@ export default function ReaderTOC({ open, onClose, book, chapters, currentChapte
             {book?.author && <p className={`text-xs ${textSecondary} mt-0.5`}>{book.author}</p>}
             <p className={`text-xs ${textSecondary} mt-0.5`}>{chapters.length} chapters</p>
           </div>
-          <button onClick={onClose} className={`${textSecondary} hover:${textPrimary} p-1`}>
+          <button onClick={onClose} className={`${textSecondary} ${hoverTextPrimary} p-1`}>
             <X size={18} />
           </button>
         </div>
@@ -56,7 +64,7 @@ export default function ReaderTOC({ open, onClose, book, chapters, currentChapte
                 key={ch.chapter}
                 ref={isActive ? activeRef : null}
                 onClick={() => { onSelect(ch.chapter); onClose() }}
-                className={`w-full text-left px-4 py-2.5 flex items-center gap-2 transition-colors text-sm
+                className={`cv-auto w-full text-left px-4 py-2.5 flex items-center gap-2 transition-colors text-sm
                   ${isActive ? activeBg : `${textPrimary} ${hoverBg}`}`}
               >
                 <span className={`w-8 text-right shrink-0 text-xs ${isActive ? '' : textSecondary}`}>

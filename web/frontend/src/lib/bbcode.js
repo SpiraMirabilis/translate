@@ -21,7 +21,10 @@ const BBCODE_SENTINEL_TAGS = {
 const BBCODE_SENTINEL_GUARDS = {
   // Markers inside [ICODE]/[CODE] stay literal, matching the Reader.
   code: /\[ICODE\][\s\S]*?\[\/ICODE\]|\[CODE(?:=[^\]]*)?\][\s\S]*?\[\/CODE\]/g,
-  block: null,
+  // Pairs never span block boundaries (Reader rule): a blank line between
+  // blocks or any block-level BBCode tag in the between-span keeps both
+  // markers literal. (Non-global on purpose — .test on /g/ is stateful.)
+  block: /\n\n|\[\/?(?:QUOTE|LIST|TABLE|TR|TH|TD|CODE)(?:=[^\]]*)?\]/,
 }
 const bbSentinels = (s) => replaceInlineSentinels(s, BBCODE_SENTINEL_TAGS, BBCODE_SENTINEL_GUARDS)
 
@@ -208,6 +211,17 @@ function isAutoLink(href, text) {
     href === `https://${text}` || href === `mailto:${text}`
 }
 
+// Prose containing a literal BBCode tag XenForo would act on ([b], [quote=…],
+// [url]…) gets wrapped in [PLAIN] so it renders as text. Restricted to tags
+// XenForo actually parses — bracketed prose like "[1]" footnote markers,
+// "[666]" danmaku counts, or "[Chapter cleared]" must pass through untouched.
+const XF_TAG_RE = /\[\/?(?:B|I|U|S|URL|IMG|QUOTE|CODE|ICODE|LIST|TABLE|TR|TD|TH|COLOR|SIZE|FONT|SPOILER|ISPOILER|CENTER|LEFT|RIGHT|INDENT|HEADING|MEDIA|ATTACH|USER|EMAIL|PLAIN|\*)(?:=[^\]]*)?\]/i
+
+function escapeText(text) {
+  if (!XF_TAG_RE.test(text)) return text
+  return `[PLAIN]${text}[/PLAIN]`
+}
+
 function renderInline(children) {
   let out = ''
   for (let k = 0; k < children.length; k += 1) {
@@ -215,7 +229,7 @@ function renderInline(children) {
     switch (tok.type) {
       case 'text':
       case 'text_special':
-        out += tok.content
+        out += escapeText(tok.content)
         break
       case 'softbreak':
       case 'hardbreak':

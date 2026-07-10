@@ -51,7 +51,11 @@ import azw3
 import ebook_build
 from output_formatter import OutputFormatter
 
-LOCK_PATH = "/tmp/t9_prewarm_ebooks.lock"
+# Lock lives under the project dir, not /tmp — a world-writable predictable
+# path lets any local user grab the flock (silently disabling prewarm) or
+# plant a symlink.
+LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         ".prewarm_ebooks.lock")
 
 # Load ceiling: skip the run when the 1-minute load average exceeds
 # cpu_count * MAX_LOAD_PER_CPU. Re-checked before each book so a mid-run spike
@@ -200,8 +204,13 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
         ver = spaces.epub_version(book_id, version_basis)
         epub_key = spaces.epub_key(config, book_id, ver)
         azw3_key = spaces.azw3_key(config, book_id, ver)
-        have_epub = spaces.exists(config, epub_key)
-        have_azw3 = spaces.exists(config, azw3_key) if azw3_ok else True  # can't/needn't build
+        try:
+            have_epub = spaces.exists(config, epub_key)
+            have_azw3 = spaces.exists(config, azw3_key) if azw3_ok else True  # can't/needn't build
+        except spaces.SpacesUnavailable as e:
+            # Transient outage — DON'T treat as missing, or a network blip
+            # would trigger a full rebuild + re-upload of every book.
+            return f"skip: Spaces unavailable ({e})"
         dest = f"ver {ver}"
     else:
         # Local-only: the on-disk cache is the whole story. The version stamp

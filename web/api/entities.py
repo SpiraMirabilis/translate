@@ -126,8 +126,12 @@ def list_entities(
             where += " AND category = ?"
             params.append(category)
         if search:
-            where += " AND (untranslated LIKE ? OR translation LIKE ?)"
-            params.extend([f"%{search}%", f"%{search}%"])
+            # Escape LIKE wildcards so a literal % / _ in the search term
+            # doesn't act as a pattern. '!' as the escape char parses the same
+            # on SQLite and MySQL (backslash literals don't).
+            esc = search.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            where += " AND (untranslated LIKE ? ESCAPE '!' OR translation LIKE ? ESCAPE '!')"
+            params.extend([f"%{esc}%", f"%{esc}%"])
         if origin_chapter is not None:
             where += " AND origin_chapter = ?"
             params.append(origin_chapter)

@@ -16,7 +16,10 @@ export default function RetranslateModal({ chineseText, lineIndex, allLines, boo
   const modelOptions = []
   if (providers) {
     for (const p of providers) {
-      if (!p.has_key) continue
+      // CLI-auth providers (e.g. claudecode) have no API key env var at all —
+      // show them regardless of has_key (mirrors Settings' cliAuth logic).
+      const cliAuth = !p.api_key_env
+      if (!cliAuth && !p.has_key) continue
       for (const m of (p.models || [])) {
         modelOptions.push(`${p.name}:${m}`)
       }

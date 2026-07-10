@@ -9,8 +9,16 @@ Usage:
     python3 sync_databases.py --dry-run        # Show counts, don't write
 
 Reads connection details from .env (same vars the app uses).
-Transfers all tables in foreign-key-safe order, preserving IDs.
-The destination tables are truncated before insert (full mirror).
+
+The table and column lists are INTROSPECTED from the two databases at run
+time — nothing is hardcoded, so new migrations are picked up automatically.
+If the two schemas disagree (a table or column exists on one side only),
+the script hard-fails before writing anything: run the app once on the
+destination so its migrations catch up, then re-run the sync. The
+destination tables are truncated before insert (full mirror, IDs preserved).
+
+`schema_migrations` is excluded — each side's migration bookkeeping is its
+own business.
 """
 
 import argparse
@@ -21,64 +29,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Table definitions — ordered so parents come before children (FK safety)
-# ---------------------------------------------------------------------------
+# Migration bookkeeping — never mirrored.
+EXCLUDED_TABLES = {"schema_migrations"}
 
-TABLES = [
-    {
-        "name": "books",
-        "columns": [
-            "id", "title", "author", "language", "description",
-            "created_date", "modified_date", "prompt_template",
-            "source_language", "target_language", "cover_image", "categories",
-        ],
-    },
-    {
-        "name": "chapters",
-        "columns": [
-            "id", "book_id", "chapter_number", "title",
-            "untranslated_content", "translated_content", "summary",
-            "translation_date", "translation_model", "is_proofread",
-        ],
-    },
-    {
-        "name": "entities",
-        "columns": [
-            "id", "category", "untranslated", "translation",
-            "last_chapter", "incorrect_translation", "gender",
-            "book_id", "origin_chapter", "note",
-        ],
-    },
-    {
-        "name": "queue",
-        "columns": [
-            "id", "book_id", "chapter_number", "title", "source",
-            "content", "metadata", "position", "created_date",
-        ],
-    },
-    {
-        "name": "token_ratios",
-        "columns": [
-            "book_id", "total_input_chars", "total_output_tokens",
-            "sample_count",
-        ],
-    },
-    {
-        "name": "activity_log",
-        "columns": [
-            "id", "type", "message", "book_id", "chapter",
-            "book_name", "entities_json", "created_at",
-        ],
-    },
-    {
-        "name": "wp_publish_state",
-        "columns": [
-            "id", "book_id", "chapter_number", "wp_post_id",
-            "wp_post_type", "last_published", "content_hash",
-        ],
-    },
-]
+# Tables whose rows can individually be huge (LONGTEXT chapter bodies);
+# inserted one-by-one so a batch never exceeds max_allowed_packet.
+LARGE_TABLES = {"chapters", "queue", "chapter_revisions"}
+
+# Parents before children, so a partially-completed run (crash mid-way)
+# fails FK-forward rather than leaving child rows pointing at nothing.
+# Tables not listed here sort after these, alphabetically.
+PREFERRED_ORDER = ["books", "chapters", "entities", "queue"]
 
 
 # ---------------------------------------------------------------------------
@@ -119,18 +80,90 @@ def get_mysql_conn():
 
 
 # ---------------------------------------------------------------------------
+# Schema introspection
+# ---------------------------------------------------------------------------
+
+def list_tables(conn, is_mysql):
+    cursor = conn.cursor()
+    if is_mysql:
+        cursor.execute("SHOW TABLES")
+        tables = [row[0] for row in cursor.fetchall()]
+    else:
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'")
+        tables = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    return sorted(t for t in tables if t not in EXCLUDED_TABLES)
+
+
+def list_columns(conn, table, is_mysql):
+    cursor = conn.cursor()
+    if is_mysql:
+        cursor.execute(f"SHOW COLUMNS FROM `{table}`")
+        cols = [row[0] for row in cursor.fetchall()]
+    else:
+        cursor.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cursor.fetchall()]
+    cursor.close()
+    return cols
+
+
+def build_schema(src_conn, src_is_mysql, dst_conn, dst_is_mysql):
+    """Introspect both sides; return ordered [(table, columns)] or die on
+    any table/column mismatch."""
+    src_tables = list_tables(src_conn, src_is_mysql)
+    dst_tables = list_tables(dst_conn, dst_is_mysql) if dst_conn else None
+
+    errors = []
+    if dst_tables is not None:
+        for t in src_tables:
+            if t not in dst_tables:
+                errors.append(f"table '{t}' exists in source but not destination")
+        for t in dst_tables:
+            if t not in src_tables:
+                errors.append(f"table '{t}' exists in destination but not source")
+
+    schema = []
+    for t in src_tables:
+        src_cols = list_columns(src_conn, t, src_is_mysql)
+        if dst_conn is not None and t in (dst_tables or []):
+            dst_cols = list_columns(dst_conn, t, dst_is_mysql)
+            missing = [c for c in src_cols if c not in dst_cols]
+            extra = [c for c in dst_cols if c not in src_cols]
+            if missing:
+                errors.append(f"table '{t}': destination missing column(s) {missing}")
+            if extra:
+                errors.append(f"table '{t}': destination has extra column(s) {extra}")
+        schema.append((t, src_cols))
+
+    if errors:
+        print("ERROR: schema mismatch between source and destination — refusing to sync.")
+        for e in errors:
+            print(f"  - {e}")
+        print("\nRun the app once against the out-of-date side so its migrations "
+              "apply, then re-run this sync.")
+        sys.exit(1)
+
+    def sort_key(item):
+        name = item[0]
+        try:
+            return (0, PREFERRED_ORDER.index(name))
+        except ValueError:
+            return (1, name)
+    schema.sort(key=sort_key)
+    return schema
+
+
+# ---------------------------------------------------------------------------
 # Read / write helpers
 # ---------------------------------------------------------------------------
 
 def read_table(conn, table, columns, is_mysql=False):
     """Read all rows from a table.  Returns list of tuples."""
     col_list = ", ".join(columns)
-    sql = f"SELECT {col_list} FROM {table}"
-    if is_mysql:
-        cursor = conn.cursor()
-    else:
-        cursor = conn.cursor()
-    cursor.execute(sql)
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT {col_list} FROM {table}")
     rows = cursor.fetchall()
     cursor.close()
     return rows
@@ -182,12 +215,7 @@ def write_table(conn, table, columns, rows, is_mysql=False):
     col_list = ", ".join(columns)
     insert_sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
 
-    # Tables with LONGTEXT columns (chapters, queue) can have rows that
-    # exceed max_allowed_packet when batched.  Insert those one-by-one.
-    # For everything else, batch for performance.
-    large_tables = {"chapters", "queue"}
-
-    if table in large_tables:
+    if table in LARGE_TABLES:
         for row in rows:
             cursor.execute(insert_sql, row)
     else:
@@ -234,40 +262,38 @@ def main():
 
     if args.direction == "s2m":
         src_label, dst_label = "SQLite", "MySQL"
-        src_conn = get_sqlite_conn()
-        src_is_mysql = False
-        if not args.dry_run:
-            dst_conn = get_mysql_conn()
-            dst_is_mysql = True
+        src_conn, src_is_mysql = get_sqlite_conn(), False
+        dst_conn, dst_is_mysql = get_mysql_conn(), True
     else:
         src_label, dst_label = "MySQL", "SQLite"
-        src_conn = get_mysql_conn()
-        src_is_mysql = True
-        if not args.dry_run:
-            dst_conn = get_sqlite_conn()
-            dst_is_mysql = False
+        src_conn, src_is_mysql = get_mysql_conn(), True
+        dst_conn, dst_is_mysql = get_sqlite_conn(), False
 
     print(f"Direction: {src_label} → {dst_label}")
     if args.dry_run:
         print("(dry run — no data will be written)\n")
 
-    print(f"{'Table':<20} {'Rows':>8}")
-    print("-" * 30)
+    # Schema check runs even on dry runs — that's half the point of one.
+    schema = build_schema(src_conn, src_is_mysql, dst_conn, dst_is_mysql)
+
+    print(f"{'Table':<24} {'Rows':>8}")
+    print("-" * 34)
 
     table_data = {}
     total_rows = 0
-    for tbl in TABLES:
-        rows = read_table(src_conn, tbl["name"], tbl["columns"], is_mysql=src_is_mysql)
-        table_data[tbl["name"]] = rows
+    for table, columns in schema:
+        rows = read_table(src_conn, table, columns, is_mysql=src_is_mysql)
+        table_data[table] = rows
         total_rows += len(rows)
-        print(f"{tbl['name']:<20} {len(rows):>8}")
+        print(f"{table:<24} {len(rows):>8}")
 
-    print("-" * 30)
-    print(f"{'TOTAL':<20} {total_rows:>8}")
+    print("-" * 34)
+    print(f"{'TOTAL':<24} {total_rows:>8}")
 
     if args.dry_run:
         src_conn.close()
-        print("\nDry run complete. No data written.")
+        dst_conn.close()
+        print("\nDry run complete. Schemas match; no data written.")
         return
 
     # Confirm before writing
@@ -281,11 +307,11 @@ def main():
 
     print()
     start = time.time()
-    for tbl in TABLES:
-        rows = table_data[tbl["name"]]
-        status = f"  {tbl['name']:<20} {len(rows):>6} rows ... "
+    for table, columns in schema:
+        rows = table_data[table]
+        status = f"  {table:<24} {len(rows):>6} rows ... "
         print(status, end="", flush=True)
-        write_table(dst_conn, tbl["name"], tbl["columns"], rows, is_mysql=dst_is_mysql)
+        write_table(dst_conn, table, columns, rows, is_mysql=dst_is_mysql)
         print("done")
 
     elapsed = time.time() - start

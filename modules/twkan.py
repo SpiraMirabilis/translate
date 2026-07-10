@@ -72,7 +72,18 @@ _substr_regex_cache = {}   # pattern -> compiled regex over the skeleton (or Non
 def _get_skeleton():
     global _skeleton
     if _skeleton is None:
-        _skeleton = make_skeletonizer(load_confusables())
+        try:
+            _skeleton = make_skeletonizer(load_confusables())
+        except Exception as e:
+            # No bundled confusables_skeleton.json AND the unicode.org fetch
+            # failed. This module is default-on and runs inside chapter/queue
+            # ingest — degrade to a no-op skeleton (patterns still match
+            # literally, just not confusable-aware) instead of failing the
+            # whole ingest. Ship confusables_skeleton.json with the deploy to
+            # avoid the fetch entirely.
+            print(f"[twkan] confusables table unavailable ({e}); "
+                  f"matching without confusable folding")
+            _skeleton = lambda s: s
     return _skeleton
 
 

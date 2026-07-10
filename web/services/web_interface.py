@@ -308,6 +308,46 @@ class WebInterface(UserInterface):
                 # time (see ui.py). Stash the already-translated existing chapter as a
                 # prefix and feed the translate thread just the new source — avoids
                 # re-translating (and re-billing) text that's already done.
+                #
+                # Find the append boundary: every non-empty line of the existing
+                # source must appear, in order, as a prefix of the incoming text.
+                existing_norm = _normalise(existing_untranslated)
+                remainder = None
+                matched = 0
+                for i, line in enumerate(new_untranslated):
+                    s = str(line).strip()
+                    if not s:
+                        continue
+                    if matched < len(existing_norm) and s == existing_norm[matched]:
+                        matched += 1
+                        if matched == len(existing_norm):
+                            remainder = list(new_untranslated[i + 1:])
+                            break
+                    else:
+                        break  # diverged — not a clean append
+
+                if remainder is None:
+                    # The incoming text doesn't start with the existing source, so
+                    # there is no appended segment to isolate. Translate the full
+                    # incoming text WITHOUT stashing a prefix — stitching the old
+                    # translation onto a full retranslation would duplicate it.
+                    self.logger.warning(
+                        f"Merge chapter {chapter_number}: incoming text is not an append "
+                        f"of the existing source; translating the full incoming text instead.")
+                    if isinstance(chapter_text, list):
+                        chapter_text[:] = list(new_untranslated)
+                    return True
+
+                if not any(str(l).strip() for l in remainder):
+                    # Nothing genuinely new beyond the existing source — skip.
+                    self.job_manager.log_activity(
+                        type='info',
+                        message=(f'Chapter {chapter_number}: appended segment is empty — '
+                                 f'keeping the existing chapter unchanged.'),
+                        book_id=book_id, chapter=chapter_number, book_name=book_title,
+                    )
+                    return False
+
                 self._merge_prefix = {
                     "untranslated": list(existing_untranslated),
                     "translated": list(existing.get('content') or []),
@@ -315,7 +355,7 @@ class WebInterface(UserInterface):
                     "summary": existing.get('summary') or '',
                 }
                 if isinstance(chapter_text, list):
-                    chapter_text[:] = list(new_untranslated)
+                    chapter_text[:] = remainder
                 return True
 
             if decision == "renumber_new":

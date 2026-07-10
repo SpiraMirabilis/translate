@@ -169,9 +169,12 @@ class TranslationConfig:
             Maximum characters per chunk for the provider
         """
         try:
-            provider = self.get_provider(model_spec)
-            return provider.max_chars
+            provider_name, _ = self.parse_model_spec(model_spec or self.translation_model)
+            max_chars = get_factory().get_max_chars(provider_name)
+            if max_chars:
+                return max_chars
         except (ValueError, RuntimeError):
-            # Fallback to legacy MAX_CHARS environment variable
-            return self._fallback_max_chars
+            pass
+        # Fallback to legacy MAX_CHARS environment variable
+        return self._fallback_max_chars
 

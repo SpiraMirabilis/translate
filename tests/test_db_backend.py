@@ -60,14 +60,14 @@ def test_cursor_wrapper_no_placeholders_untouched():
     assert stub.calls == [("execute", "SELECT 1", None)]
 
 
-def test_cursor_wrapper_replaces_literal_question_marks_too():
-    # NOTE: documents current behavior; see improvement plan. The translation
-    # is a blind str.replace, so a literal '?' inside SQL text is also
-    # rewritten. Safe in practice because parameterised SQL never embeds
-    # literal '?' values, per the module comment.
+def test_cursor_wrapper_preserves_literal_question_marks():
+    # The translation skips quoted regions, so a literal '?' inside a string
+    # constant survives while real placeholders outside quotes are rewritten.
     stub = StubCursor()
-    _MySQLCursorWrapper(stub).execute("SELECT 'what?'")
-    assert stub.calls == [("execute", "SELECT 'what%s'", None)]
+    _MySQLCursorWrapper(stub).execute("SELECT 'what?' WHERE a = ? AND b = 'x''?' AND c = ?")
+    assert stub.calls == [
+        ("execute", "SELECT 'what?' WHERE a = %s AND b = 'x''?' AND c = %s", None)
+    ]
 
 
 def test_dict_cursor_wrapper_returns_dict_rows():
@@ -128,14 +128,10 @@ def _mysql_backend_no_connect():
     return MySQLBackend.__new__(MySQLBackend)
 
 
-def test_upsert_entity_sql_dialects():
-    lite = SQLiteBackend("ignored.db").upsert_entity_sql()
-    my = _mysql_backend_no_connect().upsert_entity_sql()
-    assert "INSERT INTO entities" in lite
-    assert "ON CONFLICT(book_id, untranslated) DO UPDATE SET" in lite
-    assert "INSERT INTO entities" in my
-    assert "ON DUPLICATE KEY UPDATE" in my
-    assert "VALUES(category)" in my
+# upsert_entity_sql was removed: its ON CONFLICT(book_id, untranslated) clause
+# never fired for NULL book_id (NULL never conflicts on either backend), so the
+# lone caller (import_from_json) duplicated the global entity set on every
+# re-import. That caller now does an explicit update-else-insert.
 
 
 def test_upsert_token_ratio_sql_dialects():

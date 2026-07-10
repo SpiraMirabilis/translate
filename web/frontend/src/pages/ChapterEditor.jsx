@@ -66,7 +66,7 @@ export default function ChapterEditor() {
   const [showEntities, setShowEntities] = useLocalStorage('editor.showEntities', true)
   const [showSource, setShowSource] = useLocalStorage('editor.showSource', true)
   const [showPreview, setShowPreview] = useLocalStorage('editor.showPreview', false)
-  const [isProofread, setIsProofread] = useState(false)
+  const [proofreadAt, setProofreadAt] = useState(null) // raw timestamp (or null) — tooltip needs the real date
   const [chapterList, setChapterList] = useState([])
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
@@ -129,8 +129,22 @@ export default function ChapterEditor() {
   // Replace-all undo state
   const [undoInfo, flashUndoInfo, clearUndoInfo] = useTransientFlag(15000) // { type: 'local'|'book', prevText?, count }
 
-  // Overlay scroll sync
-  const [overlayScrollTop, setOverlayScrollTop] = useState(0)
+  // Overlay scroll sync — kept in a ref with direct DOM writes (gutter
+  // transform + backdrop scrollTop) so scroll events don't re-render the
+  // whole editor.
+  const overlayScrollRef = useRef(0)
+  const gutterInnerRef = useRef(null)
+  const backdropWrapRef = useRef(null)
+  const applyOverlayScroll = useCallback((top) => {
+    overlayScrollRef.current = top
+    if (gutterInnerRef.current) {
+      gutterInnerRef.current.style.transform = `translateY(-${top}px)`
+    }
+    // EnglishBackdrop's root div is the wrapper's only child — scroll it
+    // directly instead of re-rendering it with a new scrollTop prop.
+    const backdropEl = backdropWrapRef.current?.firstElementChild
+    if (backdropEl) backdropEl.scrollTop = top
+  }, [])
 
   const textareaRef = useRef(null)
   const chineseRef = useRef(null)
@@ -184,7 +198,7 @@ export default function ChapterEditor() {
         setProviders(prov.providers || [])
         setEntities(ents.entities || [])
         setChapterList((chaps.chapters || []).map(c => c.chapter).sort((a, b) => a - b))
-        setIsProofread(!!ch.is_proofread)
+        setProofreadAt(ch.is_proofread || null)
         setPublishedAt(ch.published_at || null)
         const content = Array.isArray(ch.content) ? ch.content : []
         const loadedText = trimEmptyLines(content).join('\n')
@@ -336,15 +350,20 @@ export default function ChapterEditor() {
     mirror.style.overflowWrap = cs.overflowWrap
     mirror.style.wordBreak = cs.wordBreak
     const lines = textLinesRef.current
-    const heights = []
+    // Batch DOM writes then reads: append every line's node first, measure
+    // them all, then clear \u2014 one reflow total instead of one per line.
     mirror.textContent = ''
+    const nodes = []
+    const frag = document.createDocumentFragment()
     for (const line of lines) {
-      const span = document.createElement('div')
-      span.textContent = line || '\u00A0'
-      mirror.appendChild(span)
-      heights.push(span.offsetHeight)
-      mirror.removeChild(span)
+      const node = document.createElement('div')
+      node.textContent = line || '\u00A0'
+      frag.appendChild(node)
+      nodes.push(node)
     }
+    mirror.appendChild(frag)
+    const heights = nodes.map(node => node.offsetHeight)
+    mirror.textContent = ''
     setLineHeights(heights)
   }, []) // stable — reads textLines from ref
 
@@ -433,6 +452,32 @@ export default function ChapterEditor() {
     setTimeout(() => handleSearchNext(), 10)
   }, [search, text, handleSearchNext, clearSaved])
 
+  // Returns true on success, false on failure (mirrors WriteEditor's doSave)
+  // so callers like publish flows can abort instead of proceeding with stale
+  // content. `overrideLines` lets callers save content that isn't in state
+  // yet (e.g. Replace All applies the replacement and saves in one step).
+  const handleSave = async (overrideLines = null) => {
+    setSaving(true)
+    setError(null)
+    try {
+      const payload = { content: Array.isArray(overrideLines) ? overrideLines : textLines }
+      if (chapter && chapter.title !== undefined) {
+        payload.title = chapter.title
+      }
+      await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
+      flashSaved()
+      setDirty(false)
+      localStorage.removeItem(draftKey)  // saved — draft no longer needed
+      setDraftOffer(null)
+      return true
+    } catch (e) {
+      setError(e.message)
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const handleUndo = useCallback(async function doUndo() {
     if (!undoInfo) return
     if (undoInfo.type === 'local') {
@@ -473,6 +518,15 @@ export default function ChapterEditor() {
         setDirty(true)
         clearSaved()
       }
+      // Persist the current chapter before sweeping the rest of the book —
+      // the API call below rewrites every other chapter instantly, so if the
+      // current chapter's replacements stayed only in local state a later
+      // discard would leave the book half-swept. Abort on save failure
+      // (handleSave surfaces the error toast).
+      if (newText !== text || dirty) {
+        var savedOk = await handleSave(newText.split('\n'))
+        if (!savedOk) return
+      }
       // Replace in other chapters via API
       var otherChapters = (search.bookResults?.results || [])
         .map(function getNum(r) { return r.chapter_number })
@@ -502,7 +556,7 @@ export default function ChapterEditor() {
         flashUndoInfo({ type: 'local', prevText: prevText, count: chCount })
       }
     }
-  }, [search, text, bookId, chapterNum, flashUndoInfo, clearSaved])
+  }, [search, text, dirty, bookId, chapterNum, flashUndoInfo, clearSaved, handleSave])
 
   const handleSearchClose = useCallback(() => {
     search.close()
@@ -531,9 +585,9 @@ export default function ChapterEditor() {
       const lineHeight = ta.scrollHeight / Math.max(textLines.length, 1)
       const targetScroll = match.line * lineHeight - ta.clientHeight / 2
       ta.scrollTop = Math.max(0, targetScroll)
-      setOverlayScrollTop(ta.scrollTop)
+      applyOverlayScroll(ta.scrollTop)
     }
-  }, [currentChapterActiveMatch, search.isOpen])
+  }, [currentChapterActiveMatch, search.isOpen, applyOverlayScroll])
 
   // Compute search matches for highlighting in the current chapter view
   const chineseSearchMatches = useMemo(() => {
@@ -626,30 +680,10 @@ export default function ChapterEditor() {
   const previewIllustrationSrc = (id) =>
     bustUrl(chapter?.illustrations?.[id] || `/api/books/${bookId}/illustration/${id}`)
 
-  const handleSave = async () => {
-    setSaving(true)
-    setError(null)
-    try {
-      const payload = { content: textLines }
-      if (chapter && chapter.title !== undefined) {
-        payload.title = chapter.title
-      }
-      await api.updateChapter(parseInt(bookId), parseInt(chapterNum), payload)
-      flashSaved()
-      setDirty(false)
-      localStorage.removeItem(draftKey)  // saved — draft no longer needed
-      setDraftOffer(null)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const toggleProofread = async () => {
     try {
-      const res = await api.setProofread(parseInt(bookId), parseInt(chapterNum), !isProofread)
-      setIsProofread(res.is_proofread)
+      const res = await api.setProofread(parseInt(bookId), parseInt(chapterNum), !proofreadAt)
+      setProofreadAt(res.is_proofread || null)
     } catch (e) {
       setError(e.message)
     }
@@ -658,7 +692,7 @@ export default function ChapterEditor() {
   const handleWpPublish = async () => {
     if (dirty) {
       if (!confirm('You have unsaved changes. Save and publish?')) return
-      await handleSave()
+      if (!(await handleSave())) return  // save failed — don't push stale content
     }
     setWpPublishing(true)
     clearWpMessage()
@@ -717,7 +751,7 @@ export default function ChapterEditor() {
 
   const handleTextareaScroll = useCallback(() => {
     const ta = textareaRef.current
-    if (ta) setOverlayScrollTop(ta.scrollTop)
+    if (ta) applyOverlayScroll(ta.scrollTop)
 
     if (scrollSyncSource.current === 'chinese') return
     scrollSyncSource.current = 'english'
@@ -726,7 +760,7 @@ export default function ChapterEditor() {
     const scrollRatio = ta.scrollTop / (ta.scrollHeight - ta.clientHeight || 1)
     ch.scrollTop = scrollRatio * (ch.scrollHeight - ch.clientHeight || 1)
     requestAnimationFrame(() => { scrollSyncSource.current = null })
-  }, [])
+  }, [applyOverlayScroll])
 
   const handleChineseScroll = useCallback(() => {
     if (scrollSyncSource.current === 'english') return
@@ -736,9 +770,9 @@ export default function ChapterEditor() {
     if (!ta || !ch) return
     const scrollRatio = ch.scrollTop / (ch.scrollHeight - ch.clientHeight || 1)
     ta.scrollTop = scrollRatio * (ta.scrollHeight - ta.clientHeight || 1)
-    if (ta) setOverlayScrollTop(ta.scrollTop)
+    applyOverlayScroll(ta.scrollTop)
     requestAnimationFrame(() => { scrollSyncSource.current = null })
-  }, [])
+  }, [applyOverlayScroll])
 
   // ── Dictionary lookup ────────────────────────────────────────────
   const doLookup = useCallback(async (queryText, pos) => {
@@ -1108,15 +1142,15 @@ export default function ChapterEditor() {
 
         <button
           className={`text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1 ${
-            isProofread
+            proofreadAt
               ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
               : 'border-slate-700 text-slate-500 hover:text-slate-400'
           }`}
           onClick={toggleProofread}
-          title={isProofread ? `Proofread ${new Date(isProofread).toLocaleDateString()}` : 'Mark as proofread'}
+          title={proofreadAt ? `Proofread ${new Date(proofreadAt).toLocaleDateString()}` : 'Mark as proofread'}
         >
           <CheckCircle2 size={12} />
-          {isProofread ? 'Proofread' : 'Not proofread'}
+          {proofreadAt ? 'Proofread' : 'Not proofread'}
         </button>
 
         <button
@@ -1146,7 +1180,7 @@ export default function ChapterEditor() {
           chapterNum={parseInt(chapterNum)}
           publishedAt={publishedAt}
           onChanged={setPublishedAt}
-          beforePublish={async () => { if (dirty) await handleSave(); return true }}
+          beforePublish={async () => (dirty ? await handleSave() : true)}
         />
 
         {wpConfigured && (
@@ -1353,7 +1387,7 @@ export default function ChapterEditor() {
                 paddingRight: '0.5rem',
               }}
             >
-              <div style={{ transform: `translateY(-${overlayScrollTop}px)` }}>
+              <div ref={gutterInnerRef} style={{ transform: `translateY(-${overlayScrollRef.current}px)` }}>
                 {lineHeights.map((h, i) => (
                   <div
                     key={i}
@@ -1369,15 +1403,17 @@ export default function ChapterEditor() {
             <div className="flex-1 relative overflow-hidden">
               {/* Backdrop: renders entity highlights behind the textarea */}
               {((showEntities && englishMatcher.list.length > 0) || Object.keys(translatedSearchMatches).length > 0) && (
-                <EnglishBackdrop
-                  text={debouncedText}
-                  textLines={debouncedTextLines}
-                  matcher={showEntities ? englishMatcher : emptyMatcher}
-                  scrollTop={overlayScrollTop}
-                  paddingClass={hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}
-                  searchMatches={translatedSearchMatches}
-                  activeMatch={currentChapterActiveMatch?.field === 'translated' ? currentChapterActiveMatch : null}
-                />
+                <div ref={backdropWrapRef} className="absolute inset-0 pointer-events-none">
+                  <EnglishBackdrop
+                    text={debouncedText}
+                    textLines={debouncedTextLines}
+                    matcher={showEntities ? englishMatcher : emptyMatcher}
+                    scrollTop={overlayScrollRef.current}
+                    paddingClass={hasSource && showSource ? 'pr-4 pt-3 pb-4' : 'pr-5 pt-5 pb-5'}
+                    searchMatches={translatedSearchMatches}
+                    activeMatch={currentChapterActiveMatch?.field === 'translated' ? currentChapterActiveMatch : null}
+                  />
+                </div>
               )}
               <textarea
                 ref={textareaRef}

@@ -60,17 +60,17 @@ class TestHtmlExport:
 
         # TOC anchors link to per-chapter headings
         assert '<li><a href="#chapter-1">The Beginning</a></li>' in html
-        assert '<li><a href="#chapter-2">Fangs & Claws</a></li>' in html
+        assert '<li><a href="#chapter-2">Fangs &amp; Claws</a></li>' in html
         assert '<h2 id="chapter-1">The Beginning</h2>' in html
-        assert '<h2 id="chapter-2">Fangs & Claws</h2>' in html
+        assert '<h2 id="chapter-2">Fangs &amp; Claws</h2>' in html
 
         # Body renders through the shared markdown pipeline: adjacent lines
         # group into one <p> with <br> (nl2br), & is escaped, and raw
-        # HTML-ish tags like <hello> are stripped by bleach (parity with the
-        # EPUB path, which has always rendered this way).
+        # HTML-ish tags like <hello> render as literal text (parity with the
+        # Reader, whose markdown-it runs with html:false).
         assert "First line.<br" in html
         assert "Second line.</p>" in html
-        assert "He said  &amp; waved." in html
+        assert "He said &lt;hello&gt; &amp; waved." in html
         assert "<p></p>" not in html
 
         # Chapter order: ch1 heading precedes ch2 heading

@@ -130,6 +130,7 @@ export default function Entities() {
   }, [addModal.isOpen, addModal.params])
 
   const [duplicates, setDuplicates] = useState(null)
+  const [dupLoading, setDupLoading] = useState(false)
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(new Set())
   // Local payload for the delete modal (list of entities can't live in URL)
@@ -286,14 +287,35 @@ export default function Entities() {
     URL.revokeObjectURL(url)
   }
 
-  const handleCheckDuplicates = async () => {
+  const fetchDuplicates = useCallback(async () => {
     const params = {}
     if (filterBook === 'global') params.scope = 'global'
     else if (filterBook) params.book_id = filterBook
-    const d = await api.getDuplicates(Object.keys(params).length ? params : undefined)
-    setDuplicates(d)
-    duplicatesModal.open()
+    setDupLoading(true)
+    setError(null)
+    try {
+      const d = await api.getDuplicates(Object.keys(params).length ? params : undefined)
+      setDuplicates(d)
+      return true
+    } catch (e) {
+      setError(`Duplicates check failed: ${e.message}`)
+      return false
+    } finally {
+      setDupLoading(false)
+    }
+  }, [filterBook])
+
+  const handleCheckDuplicates = async () => {
+    if (await fetchDuplicates()) duplicatesModal.open()
   }
+
+  // The duplicates modal is URL-driven (?modal=duplicates) but its data is
+  // local state — on a refresh/deep-link the URL says "open" with nothing
+  // fetched. Re-run the check so the view doesn't silently desync.
+  useEffect(() => {
+    if (duplicatesModal.isOpen && duplicates === null && !dupLoading) fetchDuplicates()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duplicatesModal.isOpen])
 
   // Group entities by category for display (known categories first, then extras)
   const grouped = useMemo(() => {
@@ -328,8 +350,13 @@ export default function Entities() {
           >
             <Download size={13} /> Export JSON
           </button>
-          <button className="btn-secondary flex items-center gap-1.5 text-xs" onClick={handleCheckDuplicates}>
-            <AlertTriangle size={13} /> Check Duplicates
+          <button
+            className="btn-secondary flex items-center gap-1.5 text-xs disabled:opacity-50"
+            onClick={handleCheckDuplicates}
+            disabled={dupLoading}
+          >
+            {dupLoading ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />}
+            {dupLoading ? 'Checking…' : 'Check Duplicates'}
           </button>
           <button className="btn-primary flex items-center gap-1.5" onClick={() => addModal.open()}>
             <Plus size={14} /> Add Entity

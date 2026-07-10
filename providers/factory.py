@@ -128,6 +128,14 @@ class ProviderFactory:
             return self.config['providers'][resolved_name].get('default_model')
         return None
     
+    def get_max_chars(self, provider_name: str) -> Optional[int]:
+        """Per-provider chunk size straight from the config — no provider
+        instantiation (which would build a full HTTP client just to read it)."""
+        resolved_name = self._resolve_provider_name(provider_name)
+        if resolved_name in self.config['providers']:
+            return self.config['providers'][resolved_name].get('max_chars')
+        return None
+
     def get_supported_models(self, provider_name: str) -> Optional[list]:
         """Get the list of supported models for a provider."""
         resolved_name = self._resolve_provider_name(provider_name)

@@ -51,6 +51,8 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
   const [results, setResults] = useState([])
   const [totalMatches, setTotalMatches] = useState(0)
   const [searching, setSearching] = useState(false)
+  const [searched, setSearched] = useState(false)  // a search has completed for the current input
+  const [searchError, setSearchError] = useState('')
   const [currentIdx, setCurrentIdx] = useState(-1)
   const inputRef = useRef(null)
   const resultRefs = useRef({})
@@ -71,6 +73,8 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
       setQuery('')
       setResults([])
       setTotalMatches(0)
+      setSearched(false)
+      setSearchError('')
       setCurrentIdx(-1)
     }
   }, [open])
@@ -86,19 +90,25 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
     if (!q.trim()) {
       setResults([])
       setTotalMatches(0)
+      setSearched(false)
+      setSearchError('')
       setCurrentIdx(-1)
       return
     }
     setSearching(true)
+    setSearchError('')
     try {
       const data = await api.searchBook(bookId, { query: q, scope: 'translated' })
       setResults(data.results || [])
       setTotalMatches(data.total_matches || 0)
       setCurrentIdx(data.results?.length > 0 ? 0 : -1)
-    } catch {
+    } catch (e) {
       setResults([])
       setTotalMatches(0)
+      setCurrentIdx(-1)
+      setSearchError(e.message || 'Search failed. Try again.')
     } finally {
+      setSearched(true)
       setSearching(false)
     }
   }, [bookId, api])
@@ -139,7 +149,12 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
-      <div className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 w-[520px] max-w-[92vw] ${panelBg} border ${borderColor} rounded-xl shadow-2xl flex flex-col max-h-[70vh]`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search book"
+        className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 w-[520px] max-w-[92vw] ${panelBg} border ${borderColor} rounded-xl shadow-2xl flex flex-col max-h-[70vh]`}
+      >
         {/* Search input */}
         <form onSubmit={handleSubmit} className={`p-3 border-b ${borderColor} flex items-center gap-2`}>
           <Search size={16} className={textSecondary} />
@@ -208,10 +223,20 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
           </div>
         )}
 
-        {/* No results */}
-        {!searching && query && results.length === 0 && totalMatches === 0 && (
+        {/* Empty-panel states: error, genuinely empty result, or not searched yet */}
+        {!searching && searchError && (
+          <div className="p-6 text-center text-sm text-rose-500">
+            {searchError}
+          </div>
+        )}
+        {!searching && !searchError && searched && results.length === 0 && (
           <div className={`p-6 text-center text-sm ${textSecondary}`}>
             No matches found
+          </div>
+        )}
+        {!searching && !searchError && !searched && (
+          <div className={`p-6 text-center text-sm ${textSecondary}`}>
+            Type a phrase and press Enter to search this book
           </div>
         )}
       </div>

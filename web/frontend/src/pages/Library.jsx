@@ -5,6 +5,7 @@ import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import RecommendModal from '../components/RecommendModal'
+import ErrorState from '../components/ErrorState'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
 import { bustUrl } from '../services/cacheBust'
@@ -120,7 +121,7 @@ export default function Library() {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTag = searchParams.get('tag')?.toLowerCase() || ''
 
-  const { data, isPending: loading } = useQuery({
+  const { data, isPending: loading, error, refetch } = useQuery({
     queryKey: ['public', 'books', sort],
     queryFn: () => publicApi.listBooks(sort),
   })
@@ -216,6 +217,19 @@ export default function Library() {
           <div className="flex justify-center py-32">
             <Loader2 size={32} className="animate-spin text-indigo-400" />
           </div>
+        ) : error ? (
+          <ErrorState
+            size="page"
+            className={t.title}
+            message="Couldn't load the library"
+            detail={error.message || 'The connection may have dropped. Try again.'}
+            onRetry={refetch}
+            buttonClassName={
+              prefs.theme === 'dark' ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700'
+                : prefs.theme === 'sepia' ? 'bg-amber-100 text-amber-900 hover:bg-amber-200 border-amber-200'
+                : 'bg-stone-100 text-gray-700 hover:bg-stone-200 border-stone-200'
+            }
+          />
         ) : filteredBooks.length === 0 ? (
           <div className="text-center py-32">
             <BookText size={48} className="mx-auto mb-4 opacity-30" />

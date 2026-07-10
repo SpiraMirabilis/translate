@@ -19,6 +19,7 @@ export default function ApiLogPage() {
   const [editingCall, setEditingCall] = useState(null)
   const [editedText, setEditedText] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState(null)
   const [saved, flashSaved, clearSaved] = useTransientFlag(800)
 
   const callsKey = ['api-calls', 'all', bookFilter || null]
@@ -62,11 +63,13 @@ export default function ApiLogPage() {
   const startEdit = (call) => {
     setEditingCall(call.id)
     setEditedText(call.response_text || '')
+    setSaveError(null)
     clearSaved()
   }
 
   const saveEdit = async () => {
     setSaving(true)
+    setSaveError(null)
     try {
       await api.updateApiCall(editingCall, { response_text: editedText })
       flashSaved()
@@ -81,6 +84,7 @@ export default function ApiLogPage() {
       setTimeout(() => setEditingCall(null), 800)
     } catch (e) {
       console.error('Failed to save:', e)
+      setSaveError(e.message || 'Save failed.')
     }
     setSaving(false)
   }
@@ -88,6 +92,7 @@ export default function ApiLogPage() {
   const cancelEdit = () => {
     setEditingCall(null)
     setEditedText('')
+    setSaveError(null)
     clearSaved()
   }
 
@@ -292,15 +297,20 @@ export default function ApiLogPage() {
                             )}
                           </div>
                           {editingCall === call.id ? (
-                            <div className="rounded-lg overflow-hidden border border-slate-700">
-                              <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor...</div>}>
-                                <JsonCodeMirror
-                                  value={editedText}
-                                  onChange={(val) => setEditedText(val)}
-                                  minHeight="200px"
-                                  maxHeight="500px"
-                                />
-                              </Suspense>
+                            <div>
+                              <div className="rounded-lg overflow-hidden border border-slate-700">
+                                <Suspense fallback={<div className="p-4 text-slate-400 text-sm">Loading editor...</div>}>
+                                  <JsonCodeMirror
+                                    value={editedText}
+                                    onChange={(val) => setEditedText(val)}
+                                    minHeight="200px"
+                                    maxHeight="500px"
+                                  />
+                                </Suspense>
+                              </div>
+                              {saveError && (
+                                <p className="text-rose-400 text-xs mt-1.5">Save failed: {saveError}</p>
+                              )}
                             </div>
                           ) : (
                             <pre className="p-3 rounded bg-slate-950 border border-slate-800 text-xs text-slate-300 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words">

@@ -30,6 +30,7 @@ export default function Recommendations() {
   const [editingNotes, setEditingNotes] = useState({})
   const [emailDraft, setEmailDraft] = useState({})   // id -> message text
   const [emailState, setEmailState] = useState({})   // id -> { sending, result }
+  const [actionError, setActionError] = useState(null)
 
   const isUnmatched = filter === 'unmatched'
 
@@ -56,20 +57,35 @@ export default function Recommendations() {
   }, [site_name])
 
   const handleStatusChange = async (id, newStatus) => {
-    await api.updateRecommendation(id, { status: newStatus })
-    invalidate()
+    setActionError(null)
+    try {
+      await api.updateRecommendation(id, { status: newStatus })
+      invalidate()
+    } catch (e) {
+      setActionError(`Failed to update status: ${e.message}`)
+    }
   }
 
   const handleSaveNotes = async (id) => {
     const notes = editingNotes[id] ?? ''
-    await api.updateRecommendation(id, { admin_notes: notes })
-    invalidate()
+    setActionError(null)
+    try {
+      await api.updateRecommendation(id, { admin_notes: notes })
+      invalidate()
+    } catch (e) {
+      setActionError(`Failed to save notes: ${e.message}`)
+    }
   }
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this recommendation?')) return
-    await api.deleteRecommendation(id)
-    invalidate()
+    setActionError(null)
+    try {
+      await api.deleteRecommendation(id)
+      invalidate()
+    } catch (e) {
+      setActionError(`Failed to delete: ${e.message}`)
+    }
   }
 
   const handleSendEmail = async (id) => {
@@ -126,6 +142,13 @@ export default function Recommendations() {
           </button>
         ))}
       </div>
+
+      {actionError && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-700/50 text-sm text-rose-300 flex items-center justify-between gap-3">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-rose-400 hover:text-rose-300 text-xs shrink-0">Dismiss</button>
+        </div>
+      )}
 
       {/* List */}
       {loading ? (

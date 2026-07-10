@@ -194,6 +194,7 @@ class ClaudeCodeProvider(ModelProvider):
 
         self._sweep_orphan_session_files()
 
+        handed_off = False  # sys_path ownership passed to the stream iterator
         try:
             if stream:
                 cmd += [
@@ -223,6 +224,7 @@ class ClaudeCodeProvider(ModelProvider):
                     self._unlink(sys_path)
                     raise RuntimeError(f"claude CLI stdin closed unexpectedly: {e}")
                 # Ownership of sys_path passes to the iterator's finally block.
+                handed_off = True
                 return StreamingResponse(self._stream_iter(proc, sys_path, stderr_buf))
 
             try:
@@ -269,8 +271,10 @@ class ClaudeCodeProvider(ModelProvider):
             self._schedule_orphan_cleanup()
             return self._wrap_response(content, model)
         except Exception:
-            # If anything blew up before we handed sys_path to the iterator, clean up.
-            if not stream:
+            # If anything blew up before we handed sys_path to the iterator,
+            # clean up — including a Popen that failed to start in stream mode
+            # (which previously leaked the system-prompt tmpfile).
+            if not handed_off:
                 self._unlink(sys_path)
             raise
 

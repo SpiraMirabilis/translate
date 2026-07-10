@@ -157,16 +157,32 @@ def upload_bytes(config, data, key, content_type="application/octet-stream"):
         return False
 
 
+class SpacesUnavailable(Exception):
+    """Raised by exists() when the answer is unknown (transport/auth failure),
+    as opposed to a definitive 404. Callers that would do expensive work on
+    'missing' (prewarm rebuild + re-upload of every book) must not treat an
+    outage as absence."""
+
+
 def exists(config, key):
-    """True if an object exists at `key`."""
+    """True if an object exists at `key`, False if it definitively doesn't
+    (404). Raises SpacesUnavailable when the check itself failed."""
     client = _get_client(config)
     if client is None:
         return False
     try:
         client.head_object(Bucket=config.spaces_bucket, Key=key)
         return True
-    except Exception:
-        return False
+    except Exception as e:
+        code = None
+        resp = getattr(e, "response", None)
+        if isinstance(resp, dict):
+            code = str(resp.get("ResponseMetadata", {}).get("HTTPStatusCode", "")) \
+                or str(resp.get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        _logger.error(f"Spaces exists({key}) check failed (treating as unavailable): {e}")
+        raise SpacesUnavailable(str(e)) from e
 
 
 def delete(config, key):

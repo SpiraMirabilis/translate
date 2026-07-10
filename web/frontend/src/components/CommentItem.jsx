@@ -25,6 +25,7 @@ export default function CommentItem({
   const [editing, setEditing] = useState(false)
   const [editBody, setEditBody] = useState(comment.body || '')
   const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
 
   const isOwn = !!comment.is_own || (ownUuid && comment.commenter_uuid === ownUuid)
   const isDeleted = comment.status === 'deleted'
@@ -32,9 +33,12 @@ export default function CommentItem({
   const handleEditSave = async () => {
     if (!editBody.trim()) return
     setBusy(true)
+    setActionError('')
     try {
       await onEdit(comment.id, editBody.trim())
       setEditing(false)
+    } catch (e) {
+      setActionError(e.message || 'Failed to save changes.')
     } finally {
       setBusy(false)
     }
@@ -43,12 +47,22 @@ export default function CommentItem({
   const handleDelete = async () => {
     if (!confirm('Delete this comment?')) return
     setBusy(true)
-    try { await onDelete(comment.id) } finally { setBusy(false) }
+    setActionError('')
+    try {
+      await onDelete(comment.id)
+    } catch (e) {
+      setActionError(e.message || 'Failed to delete comment.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const cardBg = theme.cardBg || 'bg-white'
   const cardBorder = theme.cardBorder || 'border-stone-200'
   const nameCls = theme.nameText || 'text-gray-900'
+  // Full literal hover class from the theme bundle — `hover:${nameCls}` is
+  // invisible to the Tailwind scanner, so that CSS was never generated.
+  const hoverNameCls = theme.hoverNameText || 'hover:text-gray-900'
   const timeCls = theme.subtleText || 'text-gray-500'
   const bodyCls = theme.bodyText || 'text-gray-800'
 
@@ -81,8 +95,8 @@ export default function CommentItem({
             />
             <div className="flex gap-1.5 justify-end">
               <button
-                onClick={() => { setEditing(false); setEditBody(comment.body || '') }}
-                className={`px-2 py-1 rounded text-xs ${timeCls} hover:${nameCls}`}
+                onClick={() => { setEditing(false); setEditBody(comment.body || ''); setActionError('') }}
+                className={`px-2 py-1 rounded text-xs ${timeCls} ${hoverNameCls}`}
                 disabled={busy}
               >
                 <X size={12} className="inline -mt-0.5" /> Cancel
@@ -107,13 +121,13 @@ export default function CommentItem({
       {!isDeleted && !editing && (
         <div className="mt-2 flex gap-3 text-xs items-center">
           {onReply && comment.depth < 5 && (
-            <button onClick={() => onReply(comment)} className={`${timeCls} hover:${nameCls} inline-flex items-center gap-1`}>
+            <button onClick={() => onReply(comment)} className={`${timeCls} ${hoverNameCls} inline-flex items-center gap-1`}>
               <CornerDownRight size={12} /> Reply
             </button>
           )}
           {isOwn && (
             <>
-              <button onClick={() => setEditing(true)} className={`${timeCls} hover:${nameCls} inline-flex items-center gap-1`}>
+              <button onClick={() => setEditing(true)} className={`${timeCls} ${hoverNameCls} inline-flex items-center gap-1`}>
                 <Edit2 size={12} /> Edit
               </button>
               <button onClick={handleDelete} disabled={busy} className={`${timeCls} hover:text-rose-500 inline-flex items-center gap-1 disabled:opacity-50`}>
@@ -122,6 +136,10 @@ export default function CommentItem({
             </>
           )}
         </div>
+      )}
+
+      {actionError && (
+        <p className="mt-1.5 text-xs text-rose-500">{actionError}</p>
       )}
     </div>
   )

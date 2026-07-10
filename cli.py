@@ -425,6 +425,10 @@ class CommandLineInterface(UserInterface):
         if args.advice_model:
             self.translator.config.advice_model = args.advice_model
 
+        # Store the format in a class variable BEFORE the retranslate dispatch
+        # so --retranslate honours --format too.
+        self.output_format = args.format
+
         # Handle retranslation (after model/key overrides so --model applies)
         if args.retranslate:
             if not args.book_id or not args.chapter_number:
@@ -436,19 +440,18 @@ class CommandLineInterface(UserInterface):
         # Directory processing, EPUB info editing, and queue listing/clearing
         self._dispatch_commands(args, _POST_MODEL_COMMANDS)
 
-        # Store the format in a class variable
-        self.output_format = args.format
-
         # Create book_info if EPUB format is selected
         if self.output_format == "epub":
             self.book_info = self._get_book_info()
-            
-            # Override with command line arguments if provided
+
+            # Override with command line arguments if provided (guards and
+            # values were crossed here: --book-author used to null the author
+            # while --epub-author/--epub-language were silently ignored)
             if args.epub_title:
                 self.book_info["title"] = args.epub_title
-            if args.book_author:
+            if args.epub_author:
                 self.book_info["author"] = args.epub_author
-            if args.book_language:
+            if args.epub_language:
                 self.book_info["language"] = args.epub_language
         else:
             self.book_info = None
@@ -545,11 +548,14 @@ class CommandLineInterface(UserInterface):
                 exit(1)
 
             # Verify book exists (book_id is already set in self.book_id from earlier validation)
-            # Add to queue using database
+            # Add to queue using database. queue.title is the CHAPTER title —
+            # on --resume it's injected as {{CHAPTER_TITLE}} — and CLI input has
+            # none, so leave it empty (the model derives one). Passing the book
+            # title here used to give every queued chapter the book's name.
             queue_item_id = self.entity_manager.add_to_queue(
                 book_id=self.book_id,
                 content=pretext,
-                title=self.book_title,
+                title=None,
                 chapter_number=self.chapter_number,
                 source="CLI input"
             )
@@ -1441,22 +1447,27 @@ class CommandLineInterface(UserInterface):
         else:
             content_text = str(translated_content)
 
-        # Add header with instructions
+        # Add header with instructions. The marker is deliberately NOT a bare
+        # '#' — chapter content is Markdown, and filtering on '# ' used to
+        # delete legitimate headings from the saved translation.
+        instr = "#:t9:#"
         content_with_instructions = (
-            f"# Editing translation for: {book['title']} - Chapter {chapter_number}: {chapter['title']}\n"
-            f"# Save and exit when done\n"
-            f"# Lines starting with '#' will be removed automatically\n\n"
+            f"{instr} Editing translation for: {book['title']} - Chapter {chapter_number}: {chapter['title']}\n"
+            f"{instr} Save and exit when done\n"
+            f"{instr} Lines starting with '{instr}' will be removed automatically\n\n"
             + content_text
         )
 
         # Open editor
         edited_content = self.edit_text_with_system_editor(content_with_instructions)
 
-        # Remove instruction comments
+        # Remove instruction comments (and the blank separator we injected)
         edited_lines = [
             line for line in edited_content.split("\n")
-            if not line.strip().startswith("# ")
+            if not line.strip().startswith(instr)
         ]
+        while edited_lines and not edited_lines[0].strip():
+            edited_lines.pop(0)
 
         # Save the edited translation back to the database
         result = self.entity_manager.save_chapter(
@@ -1947,8 +1958,10 @@ class CommandLineInterface(UserInterface):
                 print(f"Item '{selected_item_key}' deleted.")
                 edited_data[selected_category][selected_item_key] = {"deleted": True}
                 
-                # Also delete from SQLite database
-                self.entity_manager.delete_entity(selected_category, selected_item_key)
+                # Also delete from SQLite database (scoped to this book's /
+                # the global row — never other books sharing the term)
+                self.entity_manager.delete_entity(selected_category, selected_item_key,
+                                                  book_id=getattr(self, 'book_id', None))
                 continue
             
             if action == "Change category":
@@ -1977,8 +1990,10 @@ class CommandLineInterface(UserInterface):
                 edited_data.setdefault(new_category, {})
                 edited_data[new_category][selected_item_key] = selected_item
                 
-                # Update category in SQLite database
-                self.entity_manager.change_entity_category(selected_category, selected_item_key, new_category)
+                # Update category in SQLite database (book-scoped)
+                self.entity_manager.change_entity_category(
+                    selected_category, selected_item_key, new_category,
+                    book_id=getattr(self, 'book_id', None))
                 
                 print(f"Moved '{selected_item_key}' from '{selected_category}' to '{new_category}'.")
                 continue
@@ -2022,7 +2037,7 @@ class CommandLineInterface(UserInterface):
                             ).ask()
                             if custom_val:
                                 # Check if this translation already exists
-                                existing = self.entity_manager.get_entity_by_translation(custom_val)
+                                existing = self.entity_manager.get_entity_by_translation(custom_val, book_id=getattr(self, 'book_id', None))
                                 if existing and existing[1] != selected_item_key:
                                     # Show a warning
                                     existing_category, existing_key, _ = existing
@@ -2039,7 +2054,7 @@ class CommandLineInterface(UserInterface):
                                 was_item_edited = True
                         else:
                             # Check if this translation already exists
-                            existing = self.entity_manager.get_entity_by_translation(chosen_translation)
+                            existing = self.entity_manager.get_entity_by_translation(chosen_translation, book_id=getattr(self, 'book_id', None))
                             if existing and existing[1] != selected_item_key:
                                 # Show a warning
                                 existing_category, existing_key, _ = existing
@@ -2064,7 +2079,7 @@ class CommandLineInterface(UserInterface):
                         ).ask()
                         if new_val:
                             # Check if this translation already exists
-                            existing = self.entity_manager.get_entity_by_translation(new_val)
+                            existing = self.entity_manager.get_entity_by_translation(new_val, book_id=getattr(self, 'book_id', None))
                             if existing and existing[1] != selected_item_key:
                                 # Show a warning
                                 existing_category, existing_key, _ = existing
@@ -2445,7 +2460,8 @@ class CommandLineInterface(UserInterface):
                 ).ask()
 
                 if confirm:
-                    self.entity_manager.delete_entity(category, untranslated)
+                    self.entity_manager.delete_entity(category, untranslated,
+                                                      book_id=entity_data.get("book_id"))
                     # Remove from in-memory dict
                     if untranslated in all_entities[category]:
                         del all_entities[category][untranslated]
@@ -2462,8 +2478,10 @@ class CommandLineInterface(UserInterface):
                 ).ask()
 
                 if new_category != "Cancel":
-                    # Update in database
-                    self.entity_manager.change_entity_category(category, untranslated, new_category)
+                    # Update in database (scoped to this entity's book / global row)
+                    self.entity_manager.change_entity_category(
+                        category, untranslated, new_category,
+                        book_id=entity_data.get("book_id"))
 
                     # Update in-memory dict
                     if untranslated in all_entities[category]:
@@ -2657,7 +2675,7 @@ class CommandLineInterface(UserInterface):
         translation = translation.strip()
 
         # Check if this translation is already used
-        existing = self.entity_manager.get_entity_by_translation(translation)
+        existing = self.entity_manager.get_entity_by_translation(translation, book_id=book_id)
         if existing and existing[1] != untranslated:
             existing_category, existing_key, _ = existing
             print(f"Warning: This translation is already used for '{existing_key}' in '{existing_category}'")
@@ -3150,8 +3168,10 @@ class CommandLineInterface(UserInterface):
                 print(f"Decision: Keeping '{untranslated}' in '{existing_category}'")
             
             elif action == "Move to new category (replace existing)":
-                # Move the entity to the new category
-                result = self.entity_manager.change_entity_category(existing_category, untranslated, new_category)
+                # Move the entity to the new category (book-scoped)
+                result = self.entity_manager.change_entity_category(
+                    existing_category, untranslated, new_category,
+                    book_id=getattr(self, 'book_id', None))
                 
                 if result:
                     duplicate['decision'] = 'move_to_new'

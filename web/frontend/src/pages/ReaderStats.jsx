@@ -251,6 +251,11 @@ function IpView({ entries, expanded, toggle, ipInfo }) {
                         <Download size={10} /> EPUB &times;{book.epub_downloads}
                       </span>
                     )}
+                    {book.azw3_downloads > 0 && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 flex items-center gap-1">
+                        <Download size={10} /> AZW3 &times;{book.azw3_downloads}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -289,6 +294,11 @@ function BookView({ entries, expanded, toggle, ipInfo }) {
                   {entry.epub_downloads > 0 && (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 flex items-center gap-1">
                       <Download size={10} /> EPUB &times;{entry.epub_downloads}
+                    </span>
+                  )}
+                  {entry.azw3_downloads > 0 && (
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 flex items-center gap-1">
+                      <Download size={10} /> AZW3 &times;{entry.azw3_downloads}
                     </span>
                   )}
                   <span className="ml-auto flex items-center gap-2">

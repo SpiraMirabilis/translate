@@ -4,6 +4,10 @@ import unicodedata
 from itertools import zip_longest
 from db.core import DEFAULT_CATEGORIES, INCLUDE_SIMILAR_PREFIX
 
+# Sentinel: distinguishes "book_id not passed" (legacy all-books behavior)
+# from an explicit book_id=None (global entities only).
+_UNSCOPED = object()
+
 
 class EntitiesRepo:
     """Entity dictionary: cache loading, CRUD, text matching, and import/export."""
@@ -104,8 +108,15 @@ class EntitiesRepo:
             with self._conn() as conn:
                 cursor = conn.cursor()
 
-                # Track which entities we've already saved to avoid duplicates
+                # One upfront query maps (untranslated, book_id) -> id; the old
+                # per-entity SELECT-then-write was 2×N round-trips across every
+                # book's entities on each save.
+                cursor.execute("SELECT id, untranslated, book_id FROM entities")
+                id_by_key = {(row[1], row[2]): row[0] for row in cursor.fetchall()}
+
                 processed_entities = set()
+                updates = []
+                inserts = []
 
                 # For each category and entity in memory cache
                 for category, entities in snapshot.items():
@@ -116,46 +127,33 @@ class EntitiesRepo:
                         gender = entity_data.get('gender', None)
                         book_id = entity_data.get('book_id', None)  # Include book_id
                         note = entity_data.get('note', None)
-                        
-                        # Create a unique key to track this entity
-                        entity_key = (untranslated, book_id)
 
-                        # Skip if we've already processed this entity
+                        # Skip duplicates within the snapshot
+                        entity_key = (untranslated, book_id)
                         if entity_key in processed_entities:
                             continue
-
-                        # Add to processed set
                         processed_entities.add(entity_key)
 
-                        # Look for existing entity to determine whether to insert or update
-                        if book_id is not None:
-                            cursor.execute('''
-                        SELECT id FROM entities
-                        WHERE untranslated = ? AND book_id = ?
-                        ''', (untranslated, book_id))
+                        entity_id = id_by_key.get(entity_key)
+                        if entity_id is not None:
+                            updates.append((category, translation, last_chapter,
+                                            incorrect_translation, gender, note, entity_id))
                         else:
-                            cursor.execute('''
-                        SELECT id FROM entities
-                        WHERE untranslated = ? AND book_id IS NULL
-                        ''', (untranslated,))
-                        
-                        existing = cursor.fetchone()
-                        
-                        if existing:
-                            # Update existing entity
-                            entity_id = existing[0]
-                            cursor.execute('''
+                            inserts.append((category, untranslated, translation, last_chapter,
+                                            incorrect_translation, gender, book_id, note))
+
+                if updates:
+                    cursor.executemany('''
                         UPDATE entities
                         SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, note = ?
                         WHERE id = ?
-                        ''', (category, translation, last_chapter, incorrect_translation, gender, note, entity_id))
-                        else:
-                            # Insert new entity
-                            cursor.execute('''
+                        ''', updates)
+                if inserts:
+                    cursor.executemany('''
                         INSERT INTO entities
                         (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note))
+                        ''', inserts)
             self.logger.info("Entities saved to database successfully")
         except Exception as e:
             self.logger.error(f"Error saving entities to database: {e}\n{traceback.format_exc()}")
@@ -224,7 +222,10 @@ class EntitiesRepo:
                     }
                     if value.get("note"):
                         exact[key]["note"] = value["note"]
-                all_entities[key]["last_chapter"] = current_chapter
+                if do_count:
+                    # do_count=False = prompt regeneration; advancing
+                    # last_chapter there double-counted the chapter.
+                    all_entities[key]["last_chapter"] = current_chapter
 
         # Build anchor sets from exact: each exact entity already gives the model
         # a translation reference for its leading and trailing bigrams. Piling on
@@ -586,20 +587,40 @@ class EntitiesRepo:
                 raise
             return 'error'
 
-    def delete_entity(self, category, untranslated):
+    def delete_entity(self, category, untranslated, book_id=_UNSCOPED):
         """
         Delete an entity from the database.
+
+        book_id scoping (default is the legacy unscoped behavior, which hits
+        EVERY book sharing the source term — avoid it from book contexts):
+          - omitted: delete across all books (legacy)
+          - None: delete the global (book_id IS NULL) row only
+          - int: delete that book's row; if the book has none, fall back to
+            the global row (the row that book's translations actually see)
         Returns True if the entity was deleted, False if it wasn't found.
         """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
-                cursor.execute('''
-            DELETE FROM entities 
+
+                if book_id is _UNSCOPED:
+                    cursor.execute('''
+            DELETE FROM entities
             WHERE category = ? AND untranslated = ?
             ''', (category, untranslated))
-                
+                elif book_id is None:
+                    cursor.execute(
+                        "DELETE FROM entities WHERE category = ? AND untranslated = ? AND book_id IS NULL",
+                        (category, untranslated))
+                else:
+                    cursor.execute(
+                        "DELETE FROM entities WHERE category = ? AND untranslated = ? AND book_id = ?",
+                        (category, untranslated, book_id))
+                    if cursor.rowcount == 0:
+                        cursor.execute(
+                            "DELETE FROM entities WHERE category = ? AND untranslated = ? AND book_id IS NULL",
+                            (category, untranslated))
+
                 if cursor.rowcount == 0:
                     self.logger.warning(f"Entity '{untranslated}' in category '{category}' not found for deletion")
                     return False
@@ -617,43 +638,52 @@ class EntitiesRepo:
                 raise
             return False
 
-    def change_entity_category(self, old_category, untranslated, new_category):
+    def change_entity_category(self, old_category, untranslated, new_category,
+                               book_id=_UNSCOPED):
         """
         Move an entity from one category to another.
+
+        book_id scoping matches delete_entity: omitted = all books (legacy),
+        None = global row only, int = that book's row with global fallback.
         Returns True if the entity was moved, False otherwise.
         """
+        # (scope_sql, scope_params) suffix applied to every query below.
+        if book_id is _UNSCOPED:
+            scopes = [("", ())]
+        elif book_id is None:
+            scopes = [(" AND book_id IS NULL", ())]
+        else:
+            scopes = [(" AND book_id = ?", (book_id,)), (" AND book_id IS NULL", ())]
+
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
-                # Check if entity exists in the source category
-                cursor.execute('''
-            SELECT translation, last_chapter, incorrect_translation, gender 
-            FROM entities 
-            WHERE category = ? AND untranslated = ?
-            ''', (old_category, untranslated))
-                
-                entity_data = cursor.fetchone()
-                if not entity_data:
+
+                for scope_sql, scope_params in scopes:
+                    # Check if entity exists in the source category
+                    cursor.execute(
+                        "SELECT translation, last_chapter, incorrect_translation, gender "
+                        "FROM entities WHERE category = ? AND untranslated = ?" + scope_sql,
+                        (old_category, untranslated) + scope_params)
+                    entity_data = cursor.fetchone()
+                    if entity_data:
+                        break
+                else:
                     self.logger.warning(f"Entity '{untranslated}' not found in category '{old_category}'")
                     return False
-                
+
                 # Check if entity already exists in the target category
-                cursor.execute('''
-            SELECT id FROM entities 
-            WHERE category = ? AND untranslated = ?
-            ''', (new_category, untranslated))
-                
+                cursor.execute(
+                    "SELECT id FROM entities WHERE category = ? AND untranslated = ?" + scope_sql,
+                    (new_category, untranslated) + scope_params)
                 if cursor.fetchone():
                     self.logger.warning(f"Entity '{untranslated}' already exists in target category '{new_category}'")
                     return False
-                
+
                 # Update the category
-                cursor.execute('''
-            UPDATE entities 
-            SET category = ?
-            WHERE category = ? AND untranslated = ?
-            ''', (new_category, old_category, untranslated))
+                cursor.execute(
+                    "UPDATE entities SET category = ? WHERE category = ? AND untranslated = ?" + scope_sql,
+                    (new_category, old_category, untranslated) + scope_params)
             
             # Update the in-memory cache
             with self._entities_lock:
@@ -672,23 +702,38 @@ class EntitiesRepo:
                 raise
             return False
 
-    def get_entity_by_translation(self, translation):
+    def get_entity_by_translation(self, translation, book_id=_UNSCOPED):
         """
         Find an entity by its translation.
         Returns a tuple (category, untranslated, entity_data) if found, None otherwise.
-        
+
         This is useful for finding duplicates by translation rather than by untranslated text.
+        Pass book_id (int) to only consider that book's entities plus globals —
+        an unscoped lookup reports "duplicates" from unrelated books.
         """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
-                cursor.execute('''
-            SELECT category, untranslated, last_chapter, incorrect_translation, gender 
-            FROM entities 
+
+                if book_id is _UNSCOPED:
+                    cursor.execute('''
+            SELECT category, untranslated, last_chapter, incorrect_translation, gender
+            FROM entities
             WHERE translation = ?
             ''', (translation,))
-                
+                elif book_id is None:
+                    cursor.execute(
+                        "SELECT category, untranslated, last_chapter, incorrect_translation, gender "
+                        "FROM entities WHERE translation = ? AND book_id IS NULL",
+                        (translation,))
+                else:
+                    # Book rows first so a book-scoped entity shadows a global one.
+                    cursor.execute(
+                        "SELECT category, untranslated, last_chapter, incorrect_translation, gender "
+                        "FROM entities WHERE translation = ? AND (book_id = ? OR book_id IS NULL) "
+                        "ORDER BY book_id IS NULL",
+                        (translation, book_id))
+
                 rows = cursor.fetchall()
             
             if not rows:
@@ -739,7 +784,11 @@ class EntitiesRepo:
                 if clear_first:
                     cursor.execute('DELETE FROM entities')
                 
-                # Import each entity
+                # Import each entity. These legacy JSON imports are global
+                # (book_id NULL) entities; NULL never hits a UNIQUE conflict on
+                # either backend, so an INSERT … ON CONFLICT upsert silently
+                # duplicated the whole set on every re-import. Explicit
+                # update-else-insert instead.
                 count = 0
                 for category, entities in json_data.items():
                     for untranslated, entity_data in entities.items():
@@ -747,9 +796,20 @@ class EntitiesRepo:
                         last_chapter = entity_data.get('last_chapter', '')
                         incorrect_translation = entity_data.get('incorrect_translation', None)
                         gender = entity_data.get('gender', None)
-                        
-                        cursor.execute(self.backend.upsert_entity_sql(),
-                            (category, untranslated, translation, last_chapter, incorrect_translation, gender))
+
+                        cursor.execute(
+                            "UPDATE entities SET category = ?, translation = ?, "
+                            "last_chapter = ?, incorrect_translation = ?, gender = ? "
+                            "WHERE book_id IS NULL AND untranslated = ?",
+                            (category, translation, last_chapter,
+                             incorrect_translation, gender, untranslated))
+                        if cursor.rowcount == 0:
+                            cursor.execute(
+                                "INSERT INTO entities (category, untranslated, translation, "
+                                "last_chapter, incorrect_translation, gender) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                (category, untranslated, translation, last_chapter,
+                                 incorrect_translation, gender))
                         count += 1
             self.logger.info(f"Imported {count} entities from JSON file '{filepath}'")
             

@@ -166,11 +166,36 @@
 .chapter-markdown th,
 .chapter-markdown td { border-color: rgba(127, 127, 127, 0.4); }
 
+/* Rendered Markdown for user-submitted comments (components/MarkdownView.jsx).
+   Text color inherits from the comment body; links reuse the .chapter-markdown
+   indigo accent, which stays readable on the light/sepia/dark reader themes. */
+.markdown-view p { margin: 0.5em 0; }
+.markdown-view > :first-child { margin-top: 0; }
+.markdown-view > :last-child { margin-bottom: 0; }
+.markdown-view a { color: #6366f1; text-decoration: underline; }
+.markdown-view a:hover { color: #818cf8; }
+.markdown-view code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+  background: rgba(127, 127, 127, 0.18);
+}
+
 /* Long-list rendering: skip layout/paint for offscreen rows and reader
    lines. contain-intrinsic-size keeps scrollbar geometry stable. */
 .cv-auto {
   content-visibility: auto;
   contain-intrinsic-size: auto 4rem;
+}
+
+/* Respect reduced-motion: drop the decorative slide/scale movement (reader
+   top-bar hide/show, drawer transitions, hover zooms, conflict arrows). */
+@media (prefers-reduced-motion: reduce) {
+  .conflict-arrow-left,
+  .conflict-arrow-right { animation: none; }
+  .transition-transform,
+  .transition-all { transition-duration: 0.01ms !important; }
 }
 
 /* Write editor (TipTap/ProseMirror surface). The content area reuses the

@@ -20,6 +20,8 @@ _job_manager = None
 # In-progress publish state
 _publish_thread: Optional[threading.Thread] = None
 _publish_cancel = threading.Event()
+_publish_book_id: Optional[int] = None   # book the running publish belongs to
+_publish_lock = threading.Lock()         # guards the check-then-start above
 
 
 def init(config, entity_manager, job_manager):
@@ -84,8 +86,8 @@ def update_wp_settings(req: WpSettingsUpdate):
 @router.post("/test")
 def test_wp_connection():
     try:
-        client = _get_client()
-        info = client.test_connection()
+        with _get_client() as client:
+            info = client.test_connection()
         return {"status": "ok", "site_name": info["name"], "site_url": info["url"]}
     except HTTPException:
         raise
@@ -245,29 +247,39 @@ class PublishRequest(BaseModel):
 
 @router.post("/books/{book_id}/publish")
 def publish_book(book_id: int, req: PublishRequest):
-    global _publish_thread
-
-    if _publish_thread is not None and _publish_thread.is_alive():
-        raise HTTPException(status_code=409, detail="A publish operation is already in progress.")
+    global _publish_thread, _publish_book_id
 
     book = _db.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
 
-    _publish_cancel.clear()
+    # Lock closes the check-then-start race: two concurrent publish requests
+    # could both see no live thread and both start a worker.
+    with _publish_lock:
+        if _publish_thread is not None and _publish_thread.is_alive():
+            raise HTTPException(status_code=409, detail="A publish operation is already in progress.")
 
-    _publish_thread = threading.Thread(
-        target=_publish_worker,
-        args=(book_id, book, req.story_status, req.story_rating, req.chapter_group),
-        daemon=True,
-    )
-    _publish_thread.start()
+        _publish_cancel.clear()
+        _publish_book_id = book_id
+        _publish_thread = threading.Thread(
+            target=_publish_worker,
+            args=(book_id, book, req.story_status, req.story_rating, req.chapter_group),
+            daemon=True,
+        )
+        _publish_thread.start()
     return {"status": "started"}
 
 
 @router.post("/books/{book_id}/cancel")
 def cancel_publish(book_id: int):
-    _publish_cancel.set()
+    with _publish_lock:
+        if _publish_thread is None or not _publish_thread.is_alive():
+            return {"status": "not_running"}
+        if _publish_book_id != book_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"The running publish is for book {_publish_book_id}, not {book_id}.")
+        _publish_cancel.set()
     return {"status": "cancelled"}
 
 
@@ -281,6 +293,7 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
     updated = 0
     skipped = 0
     errors = 0
+    client = None
 
     def send(msg: dict):
         _job_manager.send_message_sync(msg)
@@ -431,6 +444,8 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
         traceback.print_exc()
         send({"type": "wp_publish", "step": "error", "error": str(e)})
     finally:
+        if client is not None:
+            client.close()
         send({
             "type": "wp_publish", "step": "done",
             "created": created, "updated": updated,

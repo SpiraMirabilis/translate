@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
+import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { api, publicApi } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -27,6 +27,17 @@ import {
 // later chapter does not.
 const VIEW_DWELL_MS = 3000
 
+// A 'reader-progress' localStorage entry is either a bare chapter number
+// (legacy shape) or { chapter, scrollRatio }. Read both shapes forever —
+// existing readers have the old shape saved.
+const progressChapter = (entry) =>
+  typeof entry === 'number' ? entry : (entry?.chapter ?? null)
+const progressScrollRatio = (entry) =>
+  (entry && typeof entry === 'object' && entry.scrollRatio > 0) ? entry.scrollRatio : 0
+
+// How often (at most) the in-chapter scroll position is persisted.
+const SCROLL_SAVE_MS = 1000
+
 // In-chapter illustrations are stored in content as a line ⟦IMG:<id>⟧.
 const IMG_MARKER_RE = /^\s*⟦IMG:([0-9a-f]{4,})⟧\s*$/
 const illustrationId = (line) => {
@@ -39,6 +50,7 @@ export default function Reader({ isPublic = false }) {
   const { bookId, chapterNum: chapterNumParam } = useParams()
   const [searchParams] = useSearchParams()
   const location = useLocation()
+  const navigate = useNavigate()
   const { prefs, setPrefs, theme, contentStyle, marginClass } = useReaderPrefs()
   const [progress, setProgress] = useLocalStorage('reader-progress', {})
   const { site_name, public_site_name } = useSite()
@@ -98,13 +110,22 @@ export default function Reader({ isPublic = false }) {
   // Determine the initial chapter once per book, after the chapter list loads.
   // Guarded by ref so background refetches of the list never reset position.
   const initializedBookRef = useRef(null)
+  // Saved in-chapter position to restore once the target chapter renders.
+  const pendingScrollRef = useRef(null)
   useEffect(() => {
     if (chaptersQuery.data == null || initializedBookRef.current === bookId) return
     initializedBookRef.current = bookId
     const fromRoute = chapterNumParam ? +chapterNumParam : null
     const fromQuery = searchParams.get('chapter') ? +searchParams.get('chapter') : null
-    const fromStorage = progress[bookId]
-    setCurrentNum(fromRoute || fromQuery || fromStorage || chapters[0]?.chapter || 1)
+    const stored = progress[bookId]
+    const fromStorage = progressChapter(stored)
+    const initial = fromRoute || fromQuery || fromStorage || chapters[0]?.chapter || 1
+    setCurrentNum(initial)
+    // Restore the reading position only when landing back on the saved chapter.
+    const ratio = progressScrollRatio(stored)
+    if (ratio > 0 && initial === fromStorage) {
+      pendingScrollRef.current = { chapter: initial, ratio }
+    }
   }, [bookId, chaptersQuery.data, chapters]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check if user can edit entities (authenticated or auth disabled)
@@ -204,14 +225,30 @@ export default function Reader({ isPublic = false }) {
     if (!isPublic || currentNum == null || !chapterQuery.data) return
     const key = `${bookId}:${currentNum}`
     if (beaconedRef.current.has(key)) return
-    const timer = setTimeout(() => {
-      if (document.visibilityState !== 'visible') return  // background tab
-      beaconedRef.current.add(key)
-      // Best-effort: a dropped view (429 from the public rate limiter, offline,
-      // navigation mid-flight) is not worth surfacing to the reader.
-      publicApi.recordChapterView(bookId, currentNum).catch(() => {})
-    }, VIEW_DWELL_MS)
-    return () => clearTimeout(timer)
+    // The dwell timer only counts while the tab is visible; a chapter opened
+    // (or left) in a background tab re-arms on visibilitychange rather than
+    // being dropped forever.
+    let timer = null
+    const arm = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (document.visibilityState !== 'visible') return  // re-armed by onVis
+        beaconedRef.current.add(key)
+        // Best-effort: a dropped view (429 from the public rate limiter, offline,
+        // navigation mid-flight) is not worth surfacing to the reader.
+        publicApi.recordChapterView(bookId, currentNum).catch(() => {})
+        document.removeEventListener('visibilitychange', onVis)
+      }, VIEW_DWELL_MS)
+    }
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && !beaconedRef.current.has(key)) arm()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    if (document.visibilityState === 'visible') arm()
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [isPublic, bookId, currentNum, chapterQuery.data])
 
   // Page title
@@ -229,18 +266,60 @@ export default function Reader({ isPublic = false }) {
 
   // Save progress + update URL. Preserve the query string so drawer modal
   // state (?modal=toc etc.) survives chapter-to-chapter navigation.
+  // Goes through the router (not raw replaceState) so react-router's location
+  // stays in sync — a raw replaceState left its pathname stale, and the next
+  // drawer open/close (which navigates) snapped the URL back to the
+  // mount-time chapter.
   useEffect(() => {
     if (currentNum != null) {
-      setProgress(prev => ({ ...prev, [bookId]: currentNum }))
+      setProgress(prev => {
+        const old = prev[bookId]
+        // Same chapter (e.g. initial mount): keep the saved scroll position;
+        // a new chapter starts back at the top.
+        const scrollRatio = progressChapter(old) === currentNum ? progressScrollRatio(old) : 0
+        return { ...prev, [bookId]: { chapter: currentNum, scrollRatio } }
+      })
       const base = libraryPrefix ? `/library/read/${bookId}` : `/read/${bookId}`
-      window.history.replaceState(null, '', `${base}/${currentNum}${window.location.search}${window.location.hash}`)
+      const path = `${base}/${currentNum}${window.location.search}${window.location.hash}`
+      if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== path) {
+        navigate(path, { replace: true })
+      }
     }
-  }, [currentNum, bookId, setProgress, libraryPrefix])
+  }, [currentNum, bookId, setProgress, libraryPrefix, navigate])
+
+  // External URL changes (back/forward through a search deep link, a Link to
+  // another chapter of the same book) flow route-param → state. Internal navs
+  // set state first and the effect above writes the same param back, so this
+  // no-ops for them.
+  useEffect(() => {
+    if (initializedBookRef.current !== bookId) return // initial pick owns the first set
+    const fromRoute = chapterNumParam ? +chapterNumParam : null
+    if (fromRoute != null && !Number.isNaN(fromRoute)) {
+      setCurrentNum(prev => (prev === fromRoute ? prev : fromRoute))
+    }
+  }, [chapterNumParam, bookId])
 
   // Scroll to top on chapter change
   useEffect(() => {
     contentRef.current?.scrollTo(0, 0)
   }, [currentNum])
+
+  // Restore the saved in-chapter scroll position (once), after the target
+  // chapter's content has actually rendered. Declared after the scroll-to-top
+  // effect so the restore wins on the initial load; navigating to a different
+  // chapter first discards the pending restore.
+  useEffect(() => {
+    const pending = pendingScrollRef.current
+    if (!pending || !chapter) return
+    pendingScrollRef.current = null
+    if (chapter.chapter !== pending.chapter) return
+    const el = contentRef.current
+    if (!el) return
+    // rAF: let layout settle before measuring scrollHeight.
+    requestAnimationFrame(() => {
+      el.scrollTop = pending.ratio * (el.scrollHeight - el.clientHeight)
+    })
+  }, [chapter])
 
   // Fullscreen
   const toggleFullscreen = useCallback(() => {
@@ -265,11 +344,15 @@ export default function Reader({ isPublic = false }) {
         searchModal.open()
         return
       }
-      if (e.key === 'Escape' && searchOpen) {
-        searchModal.close()
+      if (e.key === 'Escape') {
+        if (searchOpen) searchModal.close()
+        else if (commentsOpen) commentsModal.close()
+        else if (settingsOpen) settingsModal.close()
+        else if (tocOpen) tocModal.close()
+        else if (entityModal.isOpen) entityModal.close()
         return
       }
-      if (tocOpen || settingsOpen || searchOpen || commentsOpen) return
+      if (tocOpen || settingsOpen || searchOpen || commentsOpen || entityModal.isOpen) return
       if (e.key === 'ArrowLeft') goChapter(-1)
       if (e.key === 'ArrowRight') goChapter(1)
     }
@@ -280,6 +363,12 @@ export default function Reader({ isPublic = false }) {
   // Auto-hide top bar on scroll — requires meaningful upward scroll to reappear
   const lastScroll = useRef(0)
   const maxScroll = useRef(0)
+  // Refs for the throttled scroll-position save: the trailing timeout must see
+  // the chapter at fire time, not the one captured when scrolling started.
+  const currentNumRef = useRef(currentNum)
+  currentNumRef.current = currentNum
+  const scrollSaveTimer = useRef(null)
+  useEffect(() => () => clearTimeout(scrollSaveTimer.current), [])
   const handleScroll = useCallback(() => {
     const el = contentRef.current
     if (!el) return
@@ -294,7 +383,21 @@ export default function Reader({ isPublic = false }) {
       maxScroll.current = 0
     }
     lastScroll.current = y
-  }, [])
+
+    // Persist the in-chapter position (throttled) so reopening the book
+    // restores the reading position, not just the chapter.
+    if (scrollSaveTimer.current == null) {
+      scrollSaveTimer.current = setTimeout(() => {
+        scrollSaveTimer.current = null
+        const c = contentRef.current
+        const num = currentNumRef.current
+        if (!c || num == null) return
+        const max = c.scrollHeight - c.clientHeight
+        const ratio = max > 0 ? Math.min(1, Math.max(0, c.scrollTop / max)) : 0
+        setProgress(prev => ({ ...prev, [bookId]: { chapter: num, scrollRatio: ratio } }))
+      }, SCROLL_SAVE_MS)
+    }
+  }, [bookId, setProgress])
 
   const currentIdx = chapters.findIndex(c => c.chapter === currentNum)
   const prevChapter = currentIdx > 0 ? chapters[currentIdx - 1] : null
@@ -340,6 +443,9 @@ export default function Reader({ isPublic = false }) {
   const barBg = isDark ? 'bg-slate-900/95 border-slate-700' : prefs.theme === 'sepia' ? 'bg-amber-100/95 border-amber-200' : 'bg-white/95 border-stone-200'
   const barText = isDark ? 'text-slate-300' : 'text-gray-600'
   const barTextStrong = isDark ? 'text-slate-100' : 'text-gray-900'
+  // Full literal class (not `${barHover}`) so the Tailwind scanner
+  // actually generates the hover rule.
+  const barHover = isDark ? 'hover:text-slate-100' : 'hover:text-gray-900'
   const navBtnClass = isDark
     ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700'
     : prefs.theme === 'sepia'
@@ -362,6 +468,76 @@ export default function Reader({ isPublic = false }) {
     if (!footnotes[n]) return
     setActiveFootnote({ n, text: footnotes[n], rect: ref.getBoundingClientRect() })
   }, [footnotes])
+
+  const contentMode = prefs.contentMode || 'translated'
+  const hasSource = !!(chapter?.untranslated?.length)
+
+  // Illustration URL: prefer the CDN URL baked into the payload, else fall back
+  // to the API route (which itself redirects to CDN or serves local).
+  const illustrationSrc = useCallback((imgId) =>
+    bustUrl(
+      chapter?.illustrations?.[imgId] ||
+      `${isPublic ? '/api/public' : '/api'}/books/${bookId}/illustration/${imgId}`
+    ), [chapter, isPublic, bookId])
+
+  // Memoized: the markdown parse + DOMPurify pass over the whole chapter is
+  // expensive, and the top bar hiding/showing on scroll re-renders this
+  // component constantly. Only re-render the text when its inputs change.
+  const chapterBody = useMemo(() => {
+    if (!chapter) return null
+    const translatedLines = chapter.content || []
+    const sourceLines = chapter.untranslated || []
+    return contentMode === 'both' && hasSource ? (
+      // Interleaved: source line then translated line. Aligned 1:1, so
+      // only inline Markdown (bold/italic/code/links) is rendered here —
+      // block grouping would break the per-line pairing.
+      translatedLines.map((line, i) => {
+        // Key illustrations off the translated line only (reconciliation
+        // guarantees every marker survives there); source/translated
+        // marker indices may differ, so using both would double-render.
+        const imgId = illustrationId(line)
+        if (imgId) {
+          return (
+            <img key={i} src={illustrationSrc(imgId)}
+              alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
+          )
+        }
+        let src = sourceLines[i]
+        if (illustrationId(src)) src = ''  // hide raw source marker token
+        // Rich-table sentinel markers (⟦TABLE⟧/⟦TR⟧/…) are structural — in
+        // Both mode the table can't render as a table, so at least hide the
+        // marker lines instead of showing them literally. Cell text still
+        // shows as ordinary paired lines.
+        const TBL = /^\s*⟦\/?(?:TABLE|TR|TH|TD)(?::(?:left|center|right))?⟧\s*$/
+        if (typeof line === 'string' && TBL.test(line)) line = ''
+        if (typeof src === 'string' && TBL.test(src)) src = ''
+        const isEmpty = (!line || !line.trim()) && (!src || !src.trim())
+        if (isEmpty) return <div key={i} className="h-4" />
+        return (
+          <div key={i} className="cv-auto mb-4">
+            {src && src.trim() && (
+              <p className={`mb-1 text-[0.85em] ${isDark ? 'text-slate-500' : prefs.theme === 'sepia' ? 'text-amber-800/50' : 'text-gray-400'}`}>
+                {src}
+              </p>
+            )}
+            {line && line.trim() && (
+              <p className="chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderInline(markFootnoteLine(line, fnIds))) }} />
+            )}
+          </div>
+        )
+      })
+    ) : (
+      // Single mode (source or translated): full block-level Markdown,
+      // split into segments around illustration markers.
+      splitSegments(markFootnoteRefs(fnLines, fnIds))
+        .map((seg, i) => seg.type === 'img' ? (
+          <img key={i} src={illustrationSrc(seg.id)}
+            alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
+        ) : (
+          <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderSegment(seg)) }} />
+        ))
+    )
+  }, [chapter, contentMode, hasSource, fnLines, fnIds, illustrationSrc, isDark, prefs.theme])
 
   if (loading) {
     return (
@@ -400,19 +576,8 @@ export default function Reader({ isPublic = false }) {
     )
   }
 
-  const contentMode = prefs.contentMode || 'translated'
-  const hasSource = !!(chapter?.untranslated?.length)
-  const translatedLines = chapter?.content || []
-  const sourceLines = chapter?.untranslated || []
-  // fnLines/footnotes/fnIds are computed via hooks above the early returns.
-
-  // Illustration URL: prefer the CDN URL baked into the payload, else fall back
-  // to the API route (which itself redirects to CDN or serves local).
-  const illustrationSrc = (imgId) =>
-    bustUrl(
-      chapter?.illustrations?.[imgId] ||
-      `${isPublic ? '/api/public' : '/api'}/books/${bookId}/illustration/${imgId}`
-    )
+  // contentMode/hasSource/illustrationSrc/chapterBody computed via hooks above
+  // the early returns.
 
   return (
     <div className={`min-h-screen ${theme.bg} ${theme.text} transition-colors duration-300`}>
@@ -420,7 +585,7 @@ export default function Reader({ isPublic = false }) {
       <div className={`fixed top-0 left-0 right-0 z-30 border-b backdrop-blur-sm transition-transform duration-300
         ${barBg} ${barVisible ? 'translate-y-0' : '-translate-y-full'}`}>
         <div className="max-w-4xl mx-auto px-4 h-12 flex items-center gap-3">
-          <Link to={backPath} className={`${barText} hover:${barTextStrong} p-1`} title={isPublic ? 'Back to Library' : 'Back to Books'}>
+          <Link to={backPath} className={`${barText} ${barHover} p-1`} title={isPublic ? 'Back to Library' : 'Back to Books'}>
             <ArrowLeft size={20} />
           </Link>
           <div className="flex-1 min-w-0 text-center">
@@ -433,11 +598,11 @@ export default function Reader({ isPublic = false }) {
               </span>
             )}
           </div>
-          <button onClick={() => tocModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Table of Contents">
+          <button onClick={() => tocModal.open()} className={`${barText} ${barHover} p-1.5`} title="Table of Contents">
             <List size={20} />
           </button>
           {commentsEnabled && (
-            <button onClick={() => commentsModal.open()} className={`${barText} hover:${barTextStrong} p-1.5 relative`} title="Comments">
+            <button onClick={() => commentsModal.open()} className={`${barText} ${barHover} p-1.5 relative`} title="Comments">
               <MessageCircle size={20} />
               {commentCount > 0 && (
                 <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-indigo-600 text-white text-[10px] font-medium flex items-center justify-center">
@@ -446,13 +611,13 @@ export default function Reader({ isPublic = false }) {
               )}
             </button>
           )}
-          <button onClick={() => searchModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Search (Ctrl+F)">
+          <button onClick={() => searchModal.open()} className={`${barText} ${barHover} p-1.5`} title="Search (Ctrl+F)">
             <Search size={20} />
           </button>
-          <button onClick={toggleFullscreen} className={`${barText} hover:${barTextStrong} p-1.5`} title={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}>
+          <button onClick={toggleFullscreen} className={`${barText} ${barHover} p-1.5`} title={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}>
             {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
           </button>
-          <button onClick={() => settingsModal.open()} className={`${barText} hover:${barTextStrong} p-1.5`} title="Settings">
+          <button onClick={() => settingsModal.open()} className={`${barText} ${barHover} p-1.5`} title="Settings">
             <Settings2 size={20} />
           </button>
         </div>
@@ -461,12 +626,19 @@ export default function Reader({ isPublic = false }) {
       {/* Content area */}
       <div
         ref={contentRef}
-        className="h-screen overflow-y-auto pt-14 pb-8"
+        className="h-dvh overflow-y-auto pt-14 pb-8"
         onScroll={handleScroll}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
       >
-        {chapterLoading ? (
+        {chapters.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-32 gap-2">
+            <p className="text-lg">No chapters yet</p>
+            <p className={`text-sm ${isDark ? 'text-slate-500' : 'text-gray-400'}`}>
+              This book doesn't have any published chapters.
+            </p>
+          </div>
+        ) : chapterLoading ? (
           <div className="flex justify-center py-32">
             <Loader2 size={28} className="animate-spin text-indigo-400" />
           </div>
@@ -526,51 +698,9 @@ export default function Reader({ isPublic = false }) {
               </details>
             )}
 
-            {/* Chapter text */}
+            {/* Chapter text (memoized — see chapterBody above) */}
             <div style={contentStyle} onClick={onFootnoteClick} onKeyDown={onFootnoteClick}>
-              {contentMode === 'both' && hasSource ? (
-                // Interleaved: source line then translated line. Aligned 1:1, so
-                // only inline Markdown (bold/italic/code/links) is rendered here —
-                // block grouping would break the per-line pairing.
-                translatedLines.map((line, i) => {
-                  // Key illustrations off the translated line only (reconciliation
-                  // guarantees every marker survives there); source/translated
-                  // marker indices may differ, so using both would double-render.
-                  const imgId = illustrationId(line)
-                  if (imgId) {
-                    return (
-                      <img key={i} src={illustrationSrc(imgId)}
-                        alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
-                    )
-                  }
-                  let src = sourceLines[i]
-                  if (illustrationId(src)) src = ''  // hide raw source marker token
-                  const isEmpty = (!line || !line.trim()) && (!src || !src.trim())
-                  if (isEmpty) return <div key={i} className="h-4" />
-                  return (
-                    <div key={i} className="cv-auto mb-4">
-                      {src && src.trim() && (
-                        <p className={`mb-1 text-[0.85em] ${isDark ? 'text-slate-500' : prefs.theme === 'sepia' ? 'text-amber-800/50' : 'text-gray-400'}`}>
-                          {src}
-                        </p>
-                      )}
-                      {line && line.trim() && (
-                        <p className="chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderInline(markFootnoteLine(line, fnIds))) }} />
-                      )}
-                    </div>
-                  )
-                })
-              ) : (
-                // Single mode (source or translated): full block-level Markdown,
-                // split into segments around illustration markers.
-                splitSegments(markFootnoteRefs(fnLines, fnIds))
-                  .map((seg, i) => seg.type === 'img' ? (
-                    <img key={i} src={illustrationSrc(seg.id)}
-                      alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
-                  ) : (
-                    <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderSegment(seg)) }} />
-                  ))
-              )}
+              {chapterBody}
             </div>
 
             {/* Bottom navigation */}

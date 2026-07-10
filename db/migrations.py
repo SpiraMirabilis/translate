@@ -67,10 +67,15 @@ def _m001_baseline(conn, cursor, backend, logger):
     for ddl in backend.create_tables_ddl():
         try:
             cursor.execute(ddl)
-        except Exception:
-            # Index may already exist (MySQL raises on IF NOT EXISTS for some
-            # index forms)
-            pass
+        except Exception as e:
+            # MySQL raises on CREATE INDEX for an index that already exists
+            # (no IF NOT EXISTS form pre-8.0.29) — tolerate exactly that;
+            # any other DDL failure is real and must surface.
+            msg = str(e).lower()
+            if "duplicate key name" in msg or "already exists" in msg:
+                continue
+            logger.error(f"Baseline DDL failed: {e}\nStatement: {ddl.strip()[:200]}")
+            raise
 
 
 def _m002_entities_origin_chapter(conn, cursor, backend, logger):
@@ -85,9 +90,12 @@ def _m002_entities_origin_chapter(conn, cursor, backend, logger):
             "WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL "
             "AND last_chapter REGEXP '^[0-9]+$'")
     else:
+        # Same numeric guard as MySQL — SQLite happily stores text in an
+        # INTEGER column, so an unguarded copy propagated junk values.
         cursor.execute(
-            "UPDATE entities SET origin_chapter = last_chapter "
-            "WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL")
+            "UPDATE entities SET origin_chapter = CAST(last_chapter AS INTEGER) "
+            "WHERE origin_chapter IS NULL AND last_chapter IS NOT NULL "
+            "AND last_chapter GLOB '[0-9]*' AND NOT last_chapter GLOB '*[^0-9]*'")
     if cursor.rowcount > 0:
         logger.info(f"Backfilled origin_chapter for {cursor.rowcount} entities")
 
@@ -361,6 +369,24 @@ def _m013_recommendation_replies(conn, cursor, backend, logger):
             cursor.execute(index_ddl)
 
 
+def _m014_chapters_translation_date_index(conn, cursor, backend, logger):
+    """Index for the RSS/recent-chapters query, which orders by
+    translation_date and previously full-scanned the chapters table."""
+    if backend.name == "mysql":
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chapters' "
+            "AND INDEX_NAME = 'idx_chapters_translation_date'")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "CREATE INDEX idx_chapters_translation_date "
+                "ON chapters(translation_date)")
+    else:
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chapters_translation_date "
+            "ON chapters(translation_date)")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -375,6 +401,7 @@ MIGRATIONS = [
     Migration(11, "chapter_publishing", _m011_chapter_publishing),
     Migration(12, "polish_jobs", _m012_polish_jobs),
     Migration(13, "recommendation_replies", _m013_recommendation_replies),
+    Migration(14, "chapters_translation_date_index", _m014_chapters_translation_date_index),
 ]
 
 

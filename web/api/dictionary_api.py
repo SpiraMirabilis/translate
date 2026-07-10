@@ -5,6 +5,7 @@ import sqlite3
 import re
 import os
 import json
+import threading
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
@@ -22,12 +23,18 @@ def init(entity_manager, translator=None):
     _db_path = entity_manager.db_path
     _entity_manager = entity_manager
     _translator = translator
-    # Store dictionary in its own small DB alongside the main one
+    # Store dictionary in its own small DB alongside the main one.
+    # Deliberately NOT loaded here: bootstrapping may download CC-CEDICT from
+    # the network, and doing that synchronously at init could hang startup
+    # (the /api/health watchdog reboots the VM). Loaded lazily on first lookup.
     _dict_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cedict.db')
-    _ensure_dict_loaded()
 
 
 CEDICT_URL = "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz"
+DOWNLOAD_TIMEOUT = 30  # seconds
+
+_dict_load_lock = threading.Lock()
+_dict_load_attempted = False
 
 
 def _download_cedict(cedict_path):
@@ -38,7 +45,9 @@ def _download_cedict(cedict_path):
     gz_path = cedict_path + ".gz"
     print(f"[dict] Downloading CC-CEDICT from {CEDICT_URL}...")
     try:
-        urllib.request.urlretrieve(CEDICT_URL, gz_path)
+        with urllib.request.urlopen(CEDICT_URL, timeout=DOWNLOAD_TIMEOUT) as resp, \
+                open(gz_path, 'wb') as gz_out:
+            gz_out.write(resp.read())
         with gzip.open(gz_path, 'rb') as gz_in:
             with open(cedict_path, 'wb') as out:
                 out.write(gz_in.read())
@@ -106,6 +115,11 @@ def _ensure_dict_loaded():
     print(f"[dict] Loaded {len(entries)} CC-CEDICT entries into {_dict_db_path}")
 
 
+def _like_escape(s: str) -> str:
+    """Escape LIKE wildcards in user input (paired with ESCAPE '\\\\')."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.get("/lookup")
 def lookup(q: str = Query(..., min_length=1, max_length=50)):
     """
@@ -114,85 +128,97 @@ def lookup(q: str = Query(..., min_length=1, max_length=50)):
     - For single characters: also returns compound words containing that character
     - Character decomposition info for single chars
     """
+    # Lazy bootstrap (may download CC-CEDICT once) — runs here in the
+    # threadpool rather than at app init, with a lock so concurrent first
+    # lookups don't double-load.
+    global _dict_load_attempted
+    if not _dict_load_attempted:
+        with _dict_load_lock:
+            if not _dict_load_attempted:
+                _dict_load_attempted = True
+                _ensure_dict_loaded()
     if not _dict_db_path or not os.path.exists(_dict_db_path):
         raise HTTPException(status_code=503, detail="Dictionary not loaded.")
 
     conn = sqlite3.connect(_dict_db_path)
-    conn.row_factory = sqlite3.Row
+    try:
+        conn.row_factory = sqlite3.Row
 
-    results = {
-        "query": q,
-        "exact": [],
-        "compounds": [],
-        "characters": [],
-    }
-
-    # Exact matches
-    rows = conn.execute(
-        "SELECT traditional, simplified, pinyin, definitions FROM cedict "
-        "WHERE simplified = ? OR traditional = ? ORDER BY length(simplified)",
-        (q, q),
-    ).fetchall()
-    results["exact"] = [
-        {
-            "traditional": r["traditional"],
-            "simplified": r["simplified"],
-            "pinyin": r["pinyin"],
-            "definitions": r["definitions"].split("/"),
+        results = {
+            "query": q,
+            "exact": [],
+            "compounds": [],
+            "characters": [],
         }
-        for r in rows
-    ]
 
-    # For single characters, find compound words
-    if len(q) == 1:
-        compounds = conn.execute(
+        # Exact matches
+        rows = conn.execute(
             "SELECT traditional, simplified, pinyin, definitions FROM cedict "
-            "WHERE (simplified LIKE ? OR traditional LIKE ?) "
-            "AND simplified != ? AND traditional != ? "
-            "ORDER BY length(simplified) LIMIT 30",
-            (f"%{q}%", f"%{q}%", q, q),
+            "WHERE simplified = ? OR traditional = ? ORDER BY length(simplified)",
+            (q, q),
         ).fetchall()
-        results["compounds"] = [
+        results["exact"] = [
             {
                 "traditional": r["traditional"],
                 "simplified": r["simplified"],
                 "pinyin": r["pinyin"],
                 "definitions": r["definitions"].split("/"),
             }
-            for r in compounds
+            for r in rows
         ]
 
-        # Character info: Unicode code point, stroke-related info
-        cp = ord(q)
-        results["characters"] = [{
-            "char": q,
-            "unicode": f"U+{cp:04X}",
-            "codepoint": cp,
-        }]
+        # For single characters, find compound words
+        if len(q) == 1:
+            like = f"%{_like_escape(q)}%"
+            compounds = conn.execute(
+                "SELECT traditional, simplified, pinyin, definitions FROM cedict "
+                "WHERE (simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\') "
+                "AND simplified != ? AND traditional != ? "
+                "ORDER BY length(simplified) LIMIT 30",
+                (like, like, q, q),
+            ).fetchall()
+            results["compounds"] = [
+                {
+                    "traditional": r["traditional"],
+                    "simplified": r["simplified"],
+                    "pinyin": r["pinyin"],
+                    "definitions": r["definitions"].split("/"),
+                }
+                for r in compounds
+            ]
 
-    # For multi-char queries, also look up substrings (individual chars and bigrams)
-    elif len(q) <= 6:
-        # Look up each individual character
-        chars = list(set(q))
-        placeholders = ",".join("?" * len(chars))
-        char_rows = conn.execute(
-            f"SELECT traditional, simplified, pinyin, definitions FROM cedict "
-            f"WHERE simplified IN ({placeholders}) OR traditional IN ({placeholders}) "
-            f"ORDER BY simplified",
-            chars + chars,
-        ).fetchall()
-        results["characters"] = [
-            {
-                "traditional": r["traditional"],
-                "simplified": r["simplified"],
-                "pinyin": r["pinyin"],
-                "definitions": r["definitions"].split("/"),
-            }
-            for r in char_rows
-        ]
+            # Character info: Unicode code point, stroke-related info
+            cp = ord(q)
+            results["characters"] = [{
+                "char": q,
+                "unicode": f"U+{cp:04X}",
+                "codepoint": cp,
+            }]
 
-    conn.close()
-    return results
+        # For multi-char queries, also look up substrings (individual chars and bigrams)
+        elif len(q) <= 6:
+            # Look up each individual character
+            chars = list(set(q))
+            placeholders = ",".join("?" * len(chars))
+            char_rows = conn.execute(
+                f"SELECT traditional, simplified, pinyin, definitions FROM cedict "
+                f"WHERE simplified IN ({placeholders}) OR traditional IN ({placeholders}) "
+                f"ORDER BY simplified",
+                chars + chars,
+            ).fetchall()
+            results["characters"] = [
+                {
+                    "traditional": r["traditional"],
+                    "simplified": r["simplified"],
+                    "pinyin": r["pinyin"],
+                    "definitions": r["definitions"].split("/"),
+                }
+                for r in char_rows
+            ]
+
+        return results
+    finally:
+        conn.close()
 
 
 # ------------------------------------------------------------------

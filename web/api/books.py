@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from PIL import Image
 from database import DEFAULT_CATEGORIES
+from web.api import deps
 from web.api.deps import get_book_or_404
 from web.services import media_urls
 
@@ -518,15 +519,28 @@ def _remove_cover_files(book, book_id):
 
 
 @router.post("/{book_id}/cover")
-async def upload_cover(book_id: int, file: UploadFile = File(...)):
+def upload_cover(book_id: int, file: UploadFile = File(...)):
+    # Sync handler on purpose: PIL decode + Spaces upload run in FastAPI's
+    # threadpool instead of blocking the event loop.
     book = get_book_or_404(book_id)
 
     ct = file.content_type or ""
     if not ct.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image.")
 
-    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
-    ext = ext_map.get(ct, ".jpg")
+    data = file.file.read()
+
+    # Verify the bytes actually decode as an image; derive the extension from
+    # the real format rather than the client-supplied Content-Type.
+    fmt_ext = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            ext = fmt_ext.get(im.format)
+    except Exception:
+        ext = None
+    if not ext:
+        raise HTTPException(status_code=400,
+                            detail="File must be a JPEG, PNG, WebP, or GIF image.")
 
     # Remove old cover + thumbnail if exists
     _remove_cover_files(book, book_id)
@@ -536,7 +550,6 @@ async def upload_cover(book_id: int, file: UploadFile = File(...)):
     filename = f"{book_id}{ext}"
     filepath = os.path.join(covers, filename)
 
-    data = await file.read()
     with open(filepath, "wb") as f:
         f.write(data)
 
@@ -809,45 +822,49 @@ def create_chapter(book_id: int, req: ChapterCreate):
 
 @router.put("/{book_id}/chapters/{chapter_number}")
 def update_chapter_translation(book_id: int, chapter_number: int, req: ChapterContentUpdate):
-    chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
-    if not chapter:
-        raise HTTPException(status_code=404, detail="Chapter not found.")
+    # Serialized per chapter: the optimistic-lock check below is
+    # read-compare-write, so without the mutex two concurrent saves could
+    # both pass the compare and the loser would silently clobber the winner.
+    with deps.chapter_save_lock(book_id, chapter_number):
+        chapter = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found.")
 
-    # Optimistic lock (write editor): reject if the chapter changed on the
-    # server since the client loaded it, so a stale autosave can't clobber
-    # e.g. a revision restore done in another tab.
-    if req.expected_translation_date is not None and \
-            req.expected_translation_date != chapter.get("translation_date"):
-        raise HTTPException(status_code=409, detail={
-            "message": "Chapter changed on server",
-            "translation_date": chapter.get("translation_date"),
-        })
+        # Optimistic lock (write editor): reject if the chapter changed on the
+        # server since the client loaded it, so a stale autosave can't clobber
+        # e.g. a revision restore done in another tab.
+        if req.expected_translation_date is not None and \
+                req.expected_translation_date != chapter.get("translation_date"):
+            raise HTTPException(status_code=409, detail={
+                "message": "Chapter changed on server",
+                "translation_date": chapter.get("translation_date"),
+            })
 
-    title = req.title if req.title is not None else chapter.get("title", f"Chapter {chapter_number}")
-    chapter_id = _entity_manager.save_chapter(
-        book_id=book_id,
-        chapter_number=chapter_number,
-        title=title,
-        untranslated_content=chapter.get("untranslated", []),
-        translated_content=req.content,
-        summary=chapter.get("summary"),
-        translation_model=chapter.get("model"),
-    )
-    if not chapter_id:
-        raise HTTPException(status_code=500, detail="Failed to update chapter.")
+        title = req.title if req.title is not None else chapter.get("title", f"Chapter {chapter_number}")
+        chapter_id = _entity_manager.save_chapter(
+            book_id=book_id,
+            chapter_number=chapter_number,
+            title=title,
+            untranslated_content=chapter.get("untranslated", []),
+            translated_content=req.content,
+            summary=chapter.get("summary"),
+            translation_model=chapter.get("model"),
+        )
+        if not chapter_id:
+            raise HTTPException(status_code=500, detail="Failed to update chapter.")
 
-    # Revision snapshots (write editor): explicit saves always record one;
-    # autosaves leave a coalesced breadcrumb trail (at most one per 10 min).
-    if req.snapshot:
-        _entity_manager.add_chapter_revision(book_id, chapter_number, title, req.content, kind='manual')
-    elif req.autosave:
-        last = _entity_manager.latest_revision_time(book_id, chapter_number)
-        cutoff = (datetime.datetime.now() - datetime.timedelta(minutes=10)).isoformat()
-        if not last or last < cutoff:
-            _entity_manager.add_chapter_revision(book_id, chapter_number, title, req.content, kind='auto')
+        # Revision snapshots (write editor): explicit saves always record one;
+        # autosaves leave a coalesced breadcrumb trail (at most one per 10 min).
+        if req.snapshot:
+            _entity_manager.add_chapter_revision(book_id, chapter_number, title, req.content, kind='manual')
+        elif req.autosave:
+            last = _entity_manager.latest_revision_time(book_id, chapter_number)
+            cutoff = (datetime.datetime.now() - datetime.timedelta(minutes=10)).isoformat()
+            if not last or last < cutoff:
+                _entity_manager.add_chapter_revision(book_id, chapter_number, title, req.content, kind='auto')
 
-    saved = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
-    return {"status": "ok", "translation_date": saved.get("translation_date") if saved else None}
+        saved = _entity_manager.get_chapter(book_id=book_id, chapter_number=chapter_number)
+        return {"status": "ok", "translation_date": saved.get("translation_date") if saved else None}
 
 
 def _normalize_publish_time(value: Optional[str]) -> Optional[str]:

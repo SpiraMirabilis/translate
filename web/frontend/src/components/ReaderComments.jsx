@@ -66,6 +66,8 @@ export default function ReaderComments({ open, onClose, bookId, chapterNumber, t
 
   const captchaRequired = viewer.captcha_required && !postedThisSession
 
+  // Edit/delete rethrow on failure so CommentItem can show inline feedback;
+  // the reload in `finally` rolls the optimistic update back either way.
   const handleEdit = useCallback(async (id, body) => {
     // Optimistic update so the edit reflects immediately; load() confirms.
     const editedAt = new Date().toISOString()
@@ -97,6 +99,9 @@ export default function ReaderComments({ open, onClose, bookId, chapterNumber, t
   const panelBg = isDark ? 'bg-slate-800' : isSepia ? 'bg-amber-50' : 'bg-white'
   const borderColor = isDark ? 'border-slate-700' : isSepia ? 'border-amber-200' : 'border-stone-200'
   const textPrimary = isDark ? 'text-slate-100' : 'text-gray-900'
+  // Full literal class (not `hover:${textPrimary}`) so the Tailwind scanner
+  // actually generates the hover rule.
+  const hoverTextPrimary = isDark ? 'hover:text-slate-100' : 'hover:text-gray-900'
   const textSecondary = isDark ? 'text-slate-400' : 'text-gray-500'
 
   // Theme bundle for child components
@@ -104,6 +109,7 @@ export default function ReaderComments({ open, onClose, bookId, chapterNumber, t
     cardBg: isDark ? 'bg-slate-900/40' : isSepia ? 'bg-amber-100/40' : 'bg-stone-50',
     cardBorder: borderColor,
     nameText: textPrimary,
+    hoverNameText: hoverTextPrimary,
     subtleText: textSecondary,
     bodyText: isDark ? 'text-slate-200' : 'text-gray-800',
     inputBg: isDark ? 'bg-slate-900' : isSepia ? 'bg-amber-50' : 'bg-white',
@@ -118,7 +124,12 @@ export default function ReaderComments({ open, onClose, bookId, chapterNumber, t
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
-      <div className={`fixed inset-x-0 bottom-0 z-50 ${panelBg} border-t ${borderColor} shadow-2xl rounded-t-xl flex flex-col h-[75vh] max-h-[85vh]`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Comments"
+        className={`fixed inset-x-0 bottom-0 z-50 ${panelBg} border-t ${borderColor} shadow-2xl rounded-t-xl flex flex-col h-[75vh] max-h-[85vh]`}
+      >
         {/* Header */}
         <div className={`px-4 py-3 border-b ${borderColor} flex items-center justify-between shrink-0`}>
           <div className="flex items-center gap-2">
@@ -127,7 +138,7 @@ export default function ReaderComments({ open, onClose, bookId, chapterNumber, t
               Comments {comments.length > 0 && <span className={`text-xs font-normal ${textSecondary}`}>({comments.filter(c => c.status !== 'deleted').length})</span>}
             </h2>
           </div>
-          <button onClick={onClose} className={`${textSecondary} hover:${textPrimary} p-1`}>
+          <button onClick={onClose} className={`${textSecondary} ${hoverTextPrimary} p-1`}>
             <X size={18} />
           </button>
         </div>

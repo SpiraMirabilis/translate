@@ -20,22 +20,53 @@ import time
 # Placeholder-translating cursor wrapper (MySQL)
 # ---------------------------------------------------------------------------
 
+def _translate_placeholders(sql):
+    """Translate '?' placeholders to MySQL's '%s', skipping quoted regions.
+
+    A naive str.replace also rewrote a literal '?' inside a string constant
+    (e.g. "WHERE title = 'why?'" or a GLOB/LIKE pattern), producing broken
+    SQL on MySQL only. Values should always ride in the params tuple, but a
+    literal in SQL must not corrupt the statement.
+    """
+    if '?' not in sql:
+        return sql
+    out = []
+    quote = None  # current quote char (' or " or `), or None
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                # Doubled quote = escaped quote inside the literal.
+                if i + 1 < n and sql[i + 1] == quote:
+                    out.append(sql[i + 1])
+                    i += 1
+                else:
+                    quote = None
+        elif ch in ("'", '"', '`'):
+            quote = ch
+            out.append(ch)
+        elif ch == '?':
+            out.append('%s')
+        else:
+            out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 class _MySQLCursorWrapper:
     """Wraps a mysql.connector cursor so callers can use '?' placeholders."""
 
     def __init__(self, real_cursor):
         self._cursor = real_cursor
 
-    # Translate ? → %s in the SQL string.  This is safe because
-    # properly parameterised SQL never contains literal '?' — values
-    # are always passed via the params tuple.
     def execute(self, sql, params=None):
-        sql = sql.replace('?', '%s')
-        return self._cursor.execute(sql, params)
+        return self._cursor.execute(_translate_placeholders(sql), params)
 
     def executemany(self, sql, seq_of_params):
-        sql = sql.replace('?', '%s')
-        return self._cursor.executemany(sql, seq_of_params)
+        return self._cursor.executemany(_translate_placeholders(sql), seq_of_params)
 
     def fetchone(self):
         return self._cursor.fetchone()
@@ -183,16 +214,6 @@ class SQLiteBackend:
     def enable_foreign_keys(self, conn):
         conn.execute("PRAGMA foreign_keys = ON")
 
-    def upsert_entity_sql(self):
-        return (
-            "INSERT INTO entities (category, untranslated, translation, last_chapter, incorrect_translation, gender) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(book_id, untranslated) DO UPDATE SET "
-            "category = excluded.category, translation = excluded.translation, "
-            "last_chapter = excluded.last_chapter, incorrect_translation = excluded.incorrect_translation, "
-            "gender = excluded.gender"
-        )
-
     def upsert_token_ratio_sql(self):
         return (
             "INSERT INTO token_ratios (book_id, total_input_chars, total_output_tokens, sample_count) "
@@ -309,16 +330,6 @@ class MySQLBackend:
     def enable_foreign_keys(self, conn):
         # InnoDB has foreign keys on by default — nothing to do
         pass
-
-    def upsert_entity_sql(self):
-        return (
-            "INSERT INTO entities (category, untranslated, translation, last_chapter, incorrect_translation, gender) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON DUPLICATE KEY UPDATE "
-            "category = VALUES(category), translation = VALUES(translation), "
-            "last_chapter = VALUES(last_chapter), incorrect_translation = VALUES(incorrect_translation), "
-            "gender = VALUES(gender)"
-        )
 
     def upsert_token_ratio_sql(self):
         return (

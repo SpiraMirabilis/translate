@@ -40,19 +40,27 @@ def _from_address() -> str:
     return os.getenv("EMAIL_FROM", "noreply@localhost")
 
 
+def _header_safe(value) -> str:
+    """Strip CR/LF/NUL from a header-bound value. EmailMessage raises
+    ValueError on newlines in headers, which turned a user-supplied name or
+    title containing one into silently-dying background sends (and a
+    permanently 500ing admin 'email requester' action)."""
+    return "".join(ch for ch in str(value or "") if ch not in "\r\n\x00")
+
+
 def _build_message(to_addr: str, subject: str, text_body: str,
                    html_body: Optional[str] = None,
                    extra_headers: Optional[dict] = None) -> EmailMessage:
     msg = EmailMessage()
-    msg["From"] = _from_address()
-    msg["To"] = to_addr
-    msg["Subject"] = subject
+    msg["From"] = _header_safe(_from_address())
+    msg["To"] = _header_safe(to_addr)
+    msg["Subject"] = _header_safe(subject)
     msg.set_content(text_body)
     if html_body:
         msg.add_alternative(html_body, subtype="html")
     if extra_headers:
         for k, v in extra_headers.items():
-            msg[k] = v
+            msg[_header_safe(k)] = _header_safe(v)
     return msg
 
 

@@ -152,7 +152,12 @@ export default function Queue() {
   }
 
   const handleRemove = async (id) => {
-    await api.removeQueueItem(id)
+    try {
+      await api.removeQueueItem(id)
+    } catch (e) {
+      setError(e.message)
+      return
+    }
     invalidateQueue()
   }
 

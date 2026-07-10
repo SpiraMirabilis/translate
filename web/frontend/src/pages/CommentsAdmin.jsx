@@ -58,6 +58,8 @@ export default function CommentsAdmin() {
     try {
       await api.updateCommentAdmin(id, { status: newStatus })
       invalidateComments()
+    } catch (e) {
+      alert(e.message || 'Status update failed.')
     } finally { setItemBusy(id, false) }
   }
 
@@ -67,6 +69,8 @@ export default function CommentsAdmin() {
     try {
       await api.deleteCommentAdmin(id, true)
       invalidateComments()
+    } catch (e) {
+      alert(e.message || 'Soft delete failed.')
     } finally { setItemBusy(id, false) }
   }
 

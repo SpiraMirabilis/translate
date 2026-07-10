@@ -35,6 +35,23 @@ class WordPressClient:
         self.auth = (username, app_password)
         self.client = httpx.Client(timeout=30)
 
+    def close(self):
+        """Release the underlying httpx connection pool. Callers that build a
+        WordPressClient per request should close it (or use `with`)."""
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
     def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         resp = self.client.request(method, url, auth=self.auth, **kwargs)
         if resp.status_code >= 400:
@@ -142,11 +159,20 @@ class WordPressClient:
         resp = self._request("POST", f"{self.base}/fcn_chapter", json=payload)
         wp_id = resp.json()["id"]
 
-        # Link chapter to story via custom endpoint
-        self._request("POST", f"{self.t9_base}/chapter/{wp_id}/link-story", json={
-            "story_id": story_wp_id,
-            "group": group,
-        })
+        # Link chapter to story via custom endpoint. If linking fails, delete
+        # the just-created post — otherwise WP accumulates orphaned chapters
+        # that belong to no story and the next publish attempt creates dupes.
+        try:
+            self._request("POST", f"{self.t9_base}/chapter/{wp_id}/link-story", json={
+                "story_id": story_wp_id,
+                "group": group,
+            })
+        except Exception:
+            try:
+                self.delete_post("fcn_chapter", wp_id)
+            except Exception as cleanup_err:
+                print(f"[WP Client] Warning: failed to clean up orphaned chapter {wp_id}: {cleanup_err}")
+            raise
 
         return wp_id
 

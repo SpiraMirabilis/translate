@@ -419,15 +419,24 @@ export default function WriteEditor() {
   const restoreDraft = useCallback(() => {
     if (!draftOffer || !editorRef.current) return
     const { doc, unsupported: unsup } = linesToDoc(draftOffer.text.split('\n'))
-    if (!unsup.length) {
-      editorRef.current.commands.setContent(doc, { emitUpdate: false })
-      setWords(countWords(editorRef.current))
-      setTick((t) => t + 1) // emitUpdate:false skips onUpdate — refresh preview/toolbar
-      grammar.clearAll() // decorations are meaningless after a full content swap
-      if (draftOffer.title != null) setTitle(draftOffer.title)
-      markDirty(true)
-      scheduleAutosave()
+    if (unsup.length) {
+      // Don't silently no-op — tell the user why nothing happened. The offer
+      // banner stays up so Discard remains available; the draft stays in
+      // localStorage, so nothing is lost.
+      setSaveError(
+        `The draft couldn't be restored: it contains markdown constructs the write editor `
+        + `doesn't support (${[...new Set(unsup)].slice(0, 4).join(', ')}). `
+        + `Use Discard to drop the draft, or the translation editor to recover it.`
+      )
+      return
     }
+    editorRef.current.commands.setContent(doc, { emitUpdate: false })
+    setWords(countWords(editorRef.current))
+    setTick((t) => t + 1) // emitUpdate:false skips onUpdate — refresh preview/toolbar
+    grammar.clearAll() // decorations are meaningless after a full content swap
+    if (draftOffer.title != null) setTitle(draftOffer.title)
+    markDirty(true)
+    scheduleAutosave()
     setDraftOffer(null)
   }, [draftOffer, markDirty, scheduleAutosave, grammar.clearAll]) // eslint-disable-line react-hooks/exhaustive-deps
 

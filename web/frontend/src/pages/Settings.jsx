@@ -22,6 +22,14 @@ export default function Settings() {
       .finally(() => setLoading(false))
   }, [])
 
+  // Refetch providers after a key is saved so has_key / Test-button state
+  // updates without a full page reload.
+  const refreshProviders = () => {
+    api.listProviders()
+      .then(pd => setProviders(pd.providers || []))
+      .catch(e => setError(e.message))
+  }
+
   const handleSaveSettings = async () => {
     try {
       await api.updateSettings(settings)
@@ -65,7 +73,7 @@ export default function Settings() {
         <h2 className="text-sm font-semibold text-slate-300 mb-3">API Providers</h2>
         <div className="space-y-3">
           {providers.map(p => (
-            <ProviderCard key={p.name} provider={p} />
+            <ProviderCard key={p.name} provider={p} onKeySaved={refreshProviders} />
           ))}
         </div>
       </section>
@@ -512,7 +520,7 @@ function UnitsSection() {
   )
 }
 
-function ProviderCard({ provider }) {
+function ProviderCard({ provider, onKeySaved }) {
   const [key, setKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -526,6 +534,7 @@ function ProviderCard({ provider }) {
     try {
       await api.setApiKey(provider.name, { api_key: key })
       setKey('')
+      if (onKeySaved) onKeySaved()
     } catch (e) {
       setError(e.message)
     } finally {

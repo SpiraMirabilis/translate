@@ -14,6 +14,7 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
   const [isValid, setIsValid] = useState(false)
   const [validationError, setValidationError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState(null)
   const [showSource, setShowSource] = useState(false)
   const [responseEmpty, setResponseEmpty] = useState(isEmpty || false)
   const [remaining, setRemaining] = useState(
@@ -63,6 +64,7 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
 
   const submit = useCallback(async (action) => {
     setSubmitting(true)
+    setSubmitError(null)
     try {
       const body = { action }
       if (action === 'fix') body.json = editedJson
@@ -70,6 +72,7 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
       onDone()
     } catch (e) {
       console.error('JSON fix submit failed:', e)
+      setSubmitError(e.message || 'Submit failed.')
     } finally {
       setSubmitting(false)
     }
@@ -151,6 +154,14 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
             )}
           </div>
         </div>
+
+        {/* Submit failure */}
+        {submitError && (
+          <div className="flex items-center gap-2 px-5 py-2 border-t border-slate-700 text-xs text-rose-400 shrink-0">
+            <X size={14} className="shrink-0" />
+            <span>Failed to submit: {submitError}</span>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex items-center gap-3 px-5 py-4 border-t border-slate-700 shrink-0">

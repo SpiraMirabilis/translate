@@ -1087,7 +1087,7 @@ class TranslationEngine:
                 print(f"\nTranslating chunk {chunk_index} of {len(split_text)}")
 
                 expected_tokens = len(chunk_str) * average_ratio
-                print(f"Based on {total_input_chars} input characters * {average_ratio:.2f} (our historic average ratio) we expect {expected_tokens:.0f} tokens.")
+                print(f"Based on {len(chunk_str)} input characters * {average_ratio:.2f} (our historic average ratio) we expect {expected_tokens:.0f} tokens.")
 
                 # Get progress bar width based on terminal size
                 terminal_width = 80
@@ -1168,7 +1168,8 @@ class TranslationEngine:
                                         elapsed = time.time() - start_time
                                         tokens_per_second = token_count / elapsed if elapsed > 0 else 0
                                         completion_percentage = min(100, (token_count / expected_tokens) * 100) if expected_tokens > 0 else 0
-                                        progress_bar = "█" * int(completion_percentage / 2) + "░" * (50 - int(completion_percentage / 2))
+                                        filled = int(completion_percentage / 100 * progress_width)
+                                        progress_bar = "█" * filled + "░" * (progress_width - filled)
                                         print(f"\r[{progress_bar}] {token_count}/{int(expected_tokens)} tokens ({completion_percentage:.1f}%) - {elapsed:.1f}s elapsed", end="")
                                         if progress_callback:
                                             progress_callback({
@@ -1403,12 +1404,21 @@ class TranslationEngine:
                         else:
                             raise
             
+            if parsed_chunk is None:
+                # Attempt loop exhausted without a parsable response (e.g. the
+                # user chose "retry" on the final attempt). Fail cleanly instead
+                # of letting the None reach combine_json_chunks as a TypeError.
+                raise Exception(
+                    f"Chunk {chunk_index}/{len(split_text)}: retries exhausted "
+                    f"without a valid translation response.")
+
             self.logger.info(f"Translation of chunk {chunk_index} complete.")
             self.logger.debug(f"API call completed for chunk {chunk_index}")
-            
-            # Only trust the model's chapter number from the first chunk
+
+            # Only trust the model's chapter number from the first chunk;
+            # tolerate a model that omits the field entirely.
             if chunk_index == 1:
-                current_chapter = parsed_chunk['chapter']
+                current_chapter = parsed_chunk.get('chapter', current_chapter)
 
             end_object = self.combine_json_chunks(end_object, parsed_chunk, current_chapter)
 

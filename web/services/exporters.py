@@ -152,6 +152,7 @@ def _export_epub(db, config, logger, book, book_info) -> ExportResult:
 
 def _export_html(db, book, book_info) -> ExportResult:
     """Standalone HTML document with a linked table of contents."""
+    from html import escape
     book_id = book_info["id"]
     ch_list = [
         {
@@ -166,7 +167,7 @@ def _export_html(db, book, book_info) -> ExportResult:
         '<!DOCTYPE html>',
         '<html lang="en">',
         '<head>',
-        f'<meta charset="utf-8"><title>{book_info["title"]}</title>',
+        f'<meta charset="utf-8"><title>{escape(book_info["title"])}</title>',
         '<style>',
         'body { font-family: Georgia, serif; max-width: 42em; margin: 2em auto; padding: 0 1em; line-height: 1.7; color: #222; }',
         'h1 { text-align: center; margin: 1.5em 0 0.5em; }',
@@ -184,19 +185,19 @@ def _export_html(db, book, book_info) -> ExportResult:
         '</style>',
         '</head><body>',
         '<div class="title-page">',
-        f'<h1>{book_info["title"]}</h1>',
-        f'<p class="author">{book_info["author"]}</p>',
+        f'<h1>{escape(book_info["title"])}</h1>',
+        f'<p class="author">{escape(str(book_info["author"] or ""))}</p>',
         '</div>',
         '<nav><h2>Table of Contents</h2><ol>',
     ]
     for ch_data in ch_list:
         anchor = f"chapter-{ch_data['number']}"
-        html_parts.append(f'<li><a href="#{anchor}">{ch_data["title"]}</a></li>')
+        html_parts.append(f'<li><a href="#{anchor}">{escape(ch_data["title"])}</a></li>')
     html_parts.append('</ol></nav>')
 
     for ch_data in ch_list:
         anchor = f"chapter-{ch_data['number']}"
-        html_parts.append(f'<h2 id="{anchor}">{ch_data["title"]}</h2>')
+        html_parts.append(f'<h2 id="{anchor}">{escape(ch_data["title"])}</h2>')
         html_parts.append(render_lines_html(ch_data["content"]))
 
     html_parts.append('</body></html>')

@@ -92,5 +92,13 @@ def cdn_redirect_or_file(db, rel_path, local_filepath, media_type=None, headers=
     if media_type:
         kwargs["media_type"] = media_type
     if headers:
-        kwargs["headers"] = headers
+        kwargs["headers"] = dict(headers)
+    if local_filepath.lower().endswith(".svg"):
+        # SVG can carry <script>. <img> embedding still renders with these
+        # headers, but direct navigation downloads instead of executing on
+        # this origin, and the CSP sandbox kills scripts even if rendered.
+        hdrs = kwargs.setdefault("headers", {})
+        hdrs["Content-Security-Policy"] = "sandbox; script-src 'none'"
+        hdrs["Content-Disposition"] = "attachment"
+        hdrs["X-Content-Type-Options"] = "nosniff"
     return FileResponse(local_filepath, **kwargs)

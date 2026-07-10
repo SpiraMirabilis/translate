@@ -39,8 +39,11 @@ def decase_lines(lines, word, lowered=None, protected_terms=()):
     *changed lines* (the original handler incremented its substitution
     counter once per line, not per match).
     """
+    if not word:
+        return list(lines), 0
+
     if lowered is None:
-        lowered = (word[0].lower() + word[1:]) if word else word
+        lowered = word[0].lower() + word[1:]
 
     pattern = re.compile(re.escape(word) + r'\b' if word[-1].isalpha() else re.escape(word))
 

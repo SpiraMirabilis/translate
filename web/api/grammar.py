@@ -405,6 +405,14 @@ def grammar_polish(req: PolishRequest):
     system_prompt = POLISH_SYSTEM_PROMPT.replace("{TERMS_RULE}", terms_rule)
     system_prompt += "\n\n" + _dialect_rule(getattr(_config, "grammar_language", "en-US"))
 
+    # One running job per chapter: rapid re-clicks used to stack unbounded
+    # daemon threads, each a paid LLM call. Re-attach to the running job.
+    if req.book_id and req.chapter_number is not None:
+        latest = _entity_manager.latest_polish_job(req.book_id, req.chapter_number)
+        if latest and latest.get("status") == "running":
+            return {"job_id": latest["id"], "status": "running",
+                    "model": latest.get("model") or spec}
+
     job_id = _entity_manager.create_polish_job(
         req.book_id, req.chapter_number, spec, len(text))
     if job_id is None:

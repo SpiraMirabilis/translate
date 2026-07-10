@@ -198,8 +198,12 @@ def update_units(req: UnitsUpdate):
         json.loads(req.content)
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-    with open(_UNITS_PATH, "w", encoding="utf-8") as f:
+    # Atomic write: truncate-then-write would leave a corrupt units.json if
+    # the process died mid-write.
+    tmp = _UNITS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(req.content)
+    os.replace(tmp, _UNITS_PATH)
     return {"status": "ok"}
 
 

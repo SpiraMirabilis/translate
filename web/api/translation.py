@@ -99,7 +99,9 @@ class ChapterConflictRequest(BaseModel):
 # ------------------------------------------------------------------
 
 @router.post("/api/translate")
-async def start_translation(req: TranslateRequest):
+def start_translation(req: TranslateRequest):
+    # Sync handler on purpose: runs in FastAPI's threadpool so the DB lookups
+    # here can't stall the event loop (see the async-starvation punchlist item).
     if _job_manager.is_running:
         raise HTTPException(status_code=409, detail="A translation is already running.")
 
@@ -107,43 +109,57 @@ async def start_translation(req: TranslateRequest):
     if not lines:
         raise HTTPException(status_code=400, detail="No text provided.")
 
-    # Configure the job
     _job_manager.clear_cancel()
-    _job_manager.pending_text = lines
-    _job_manager.book_id = req.book_id
-    _job_manager.chapter_number = req.chapter_number
     _job_manager.is_running = True
-    _job_manager.status = "running"
-    _job_manager.error = None
-    _job_manager.last_result = None
 
-    # Override models if specified
-    if req.model:
-        _web_interface.translator.config.translation_model = req.model
-    if req.advice_model:
-        _web_interface.translator.config.advice_model = req.advice_model
-    _web_interface.cleaning_model = req.cleaning_model or None
+    # Per-request model overrides land in the shared translator config; capture
+    # the configured values so the worker thread can restore them afterwards
+    # (otherwise one request's override silently becomes the new default).
+    cfg = _web_interface.translator.config
+    orig_models = (cfg.translation_model, cfg.advice_model)
 
-    _web_interface.no_review = req.no_review
-    # Mutually exclusive with no_review: defensive guard for stale clients that
-    # may send both flags. UI also enforces this, but trust nothing from the wire.
-    _web_interface.two_pass = req.two_pass and not req.no_review
-    _web_interface.no_clean = req.no_clean
-    _web_interface.stream = not req.no_stream
-    _web_interface.save_as_draft = req.save_as_draft
+    try:
+        # Configure the job
+        _job_manager.pending_text = lines
+        _job_manager.book_id = req.book_id
+        _job_manager.chapter_number = req.chapter_number
+        _job_manager.status = "running"
+        _job_manager.error = None
+        _job_manager.last_result = None
 
-    # Resolve book name for the activity log
-    book_name = None
-    if req.book_id:
-        book = _web_interface.entity_manager.get_book(req.book_id)
-        if book:
-            book_name = book.get("title")
+        # Override models if specified
+        if req.model:
+            cfg.translation_model = req.model
+        if req.advice_model:
+            cfg.advice_model = req.advice_model
+        _web_interface.cleaning_model = req.cleaning_model or None
 
-    await _job_manager.log_activity_async(
-        type='start',
-        message=f'Translation started: {book_name or "No book"} — Chapter {req.chapter_number or "auto"}…',
-        book_id=req.book_id, chapter=req.chapter_number, book_name=book_name,
-    )
+        _web_interface.no_review = req.no_review
+        # Mutually exclusive with no_review: defensive guard for stale clients that
+        # may send both flags. UI also enforces this, but trust nothing from the wire.
+        _web_interface.two_pass = req.two_pass and not req.no_review
+        _web_interface.no_clean = req.no_clean
+        _web_interface.stream = not req.no_stream
+        _web_interface.save_as_draft = req.save_as_draft
+
+        # Resolve book name for the activity log
+        book_name = None
+        if req.book_id:
+            book = _web_interface.entity_manager.get_book(req.book_id)
+            if book:
+                book_name = book.get("title")
+
+        _job_manager.log_activity(
+            type='start',
+            message=f'Translation started: {book_name or "No book"} — Chapter {req.chapter_number or "auto"}…',
+            book_id=req.book_id, chapter=req.chapter_number, book_name=book_name,
+        )
+    except BaseException:
+        # A failure before the worker thread owns the flag would leave
+        # is_running stuck True (every later request 409s until restart).
+        _job_manager.is_running = False
+        cfg.translation_model, cfg.advice_model = orig_models
+        raise
 
     # Run translation in a background thread so the event loop stays free
     def run():
@@ -158,6 +174,7 @@ async def start_translation(req: TranslateRequest):
             _job_manager.log_activity(type='error', message=f'Error: {e}')
             _job_manager.send_message_sync({"type": "error", "message": str(e)})
         finally:
+            cfg.translation_model, cfg.advice_model = orig_models
             _job_manager.is_running = False
             if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
                 _job_manager.status = "complete"
@@ -165,8 +182,13 @@ async def start_translation(req: TranslateRequest):
             from modules import module_activity
             module_activity.flush()
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+    except BaseException:
+        _job_manager.is_running = False
+        cfg.translation_model, cfg.advice_model = orig_models
+        raise
 
     return {"status": "started"}
 

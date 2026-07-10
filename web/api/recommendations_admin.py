@@ -5,6 +5,7 @@ Requires authentication (handled by AuthMiddleware).
 """
 import datetime
 import logging
+import threading
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
@@ -26,6 +27,12 @@ def init(db_manager):
 class RecommendationUpdate(BaseModel):
     status: Optional[str] = None
     admin_notes: Optional[str] = None
+
+
+# Serializes the read-check-update in update_recommendation: two concurrent
+# status PUTs could both observe the pre-transition status and double-send
+# the acceptance email.
+_status_lock = threading.Lock()
 
 
 class RecommendationEmail(BaseModel):
@@ -54,27 +61,30 @@ def get_recommendation(rec_id: int):
 
 @router.put("/{rec_id}")
 def update_recommendation(rec_id: int, req: RecommendationUpdate, background_tasks: BackgroundTasks):
-    rec = _db.get_recommendation(rec_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
+    with _status_lock:
+        rec = _db.get_recommendation(rec_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
 
-    updates = {}
-    notify_status = None
-    if req.status is not None:
-        if req.status not in ("new", "reviewed", "accepted", "dismissed"):
-            raise HTTPException(status_code=400, detail="Invalid status")
-        updates["status"] = req.status
-        if req.status != "new":
-            updates["reviewed_at"] = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        # Auto-email the requester only when the status actually transitions
-        # into accepted/dismissed (skip no-op re-saves of the same status).
-        if req.status in ("accepted", "dismissed") and req.status != rec.get("status"):
-            notify_status = req.status
-    if req.admin_notes is not None:
-        updates["admin_notes"] = req.admin_notes
+        updates = {}
+        notify_status = None
+        if req.status is not None:
+            if req.status not in ("new", "reviewed", "accepted", "dismissed"):
+                raise HTTPException(status_code=400, detail="Invalid status")
+            updates["status"] = req.status
+            if req.status != "new":
+                # Naive server-local time — the app-wide convention (translation_date,
+                # published_at); utcnow() was offset from every other timestamp.
+                updates["reviewed_at"] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Auto-email the requester only when the status actually transitions
+            # into accepted/dismissed (skip no-op re-saves of the same status).
+            if req.status in ("accepted", "dismissed") and req.status != rec.get("status"):
+                notify_status = req.status
+        if req.admin_notes is not None:
+            updates["admin_notes"] = req.admin_notes
 
-    if updates:
-        _db.update_recommendation(rec_id, updates)
+        if updates:
+            _db.update_recommendation(rec_id, updates)
 
     if notify_status:
         background_tasks.add_task(

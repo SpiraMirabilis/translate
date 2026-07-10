@@ -169,6 +169,10 @@ const md = new MarkdownIt({
 })
 // Disable Markdown image syntax — illustrations ride as ⟦IMG⟧ markers, not ![]().
 md.disable(['image'])
+// No fuzzy linkify: bare-domain guesses ("archive.org", "asked chapter11.example
+// what…") false-positive in prose, and the Python renderers (EPUB/WP) only
+// link explicit-scheme URLs — keep the two sides converged.
+md.linkify.set({ fuzzyLink: false, fuzzyEmail: false })
 // linkify happily swallows ⟦⟧ into a URL's tail, so a bare URL flush against
 // an inline sentinel (⟦U⟧https://x⟦/U⟧) would link to a mangled href and break
 // the write editor's round-trip. Reject any URL containing marker brackets —
@@ -184,7 +188,7 @@ const PURIFY_CONFIG = {
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'a',
     'table', 'thead', 'tbody', 'tr', 'th', 'td',
   ],
-  ALLOWED_ATTR: ['href', 'target', 'rel', 'align'],
+  ALLOWED_ATTR: ['href', 'target', 'rel', 'align', 'start'],
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 }
 
@@ -276,15 +280,29 @@ export function parseFootnotes(lines) {
   return { map, ids: new Set(Object.keys(map)) }
 }
 
+// Matches either a backtick code span (group 1 = delimiter) or an inline
+// footnote marker [n] (group 2 = digits). See markFootnoteLine.
+const FN_INLINE_RE = /(`+)[\s\S]*?\1|\[(\d+)\](?!\()/g
+
 /**
  * Replace inline footnote markers ([n], n ∈ fnIds) with a sentinel token, but ONLY
  * on body lines — definition lines (the bottom [n] … block) are left verbatim so
  * they keep rendering as-is. Returns the line unchanged when there's nothing to do.
+ *
+ * Two look-alikes are deliberately skipped:
+ *  - `[1](url)` — that [1] is markdown link text, not a footnote ref (the `(?!\()`
+ *    lookahead), so links whose text is a bare number keep working.
+ *  - `[1]` inside a backtick code span — the alternation consumes code spans
+ *    whole (same-length backtick delimiters, lazy interior) so their contents
+ *    stay literal. An unclosed backtick never forms a span, matching markdown.
  */
 export function markFootnoteLine(line, fnIds) {
   if (typeof line !== 'string' || !fnIds || fnIds.size === 0) return line
   if (FN_DEF_RE.test(line)) return line  // definition line — leave the leading [n]
-  return line.replace(/\[(\d+)\]/g, (m, n) => (fnIds.has(n) ? `⟦FN:${n}⟧` : m))
+  return line.replace(FN_INLINE_RE, (m, ticks, n) => {
+    if (ticks !== undefined) return m  // code span — leave verbatim
+    return fnIds.has(n) ? `⟦FN:${n}⟧` : m
+  })
 }
 
 /** Apply markFootnoteLine across a line array (length/indices preserved). */

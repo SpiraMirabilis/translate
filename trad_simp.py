@@ -105,6 +105,12 @@ def _mask_re(text, pattern, table):
 
 def _convert_one(text):
     table = []
+    # The masking sentinels use PUA codepoints U+E000/U+E001. If the input
+    # already contains them (corrupt scrape, font-hack glyphs), _unmask would
+    # misinterpret them and could raise or splice wrong text — strip them
+    # first; they are never legitimate novel content.
+    if "\ue000" in text or "\ue001" in text:
+        text = text.replace("\ue000", "").replace("\ue001", "")
     # Shield 大乾 before OpenCC sees it — t2s would fold 乾 to 干.
     text = _mask(text, PROTECTED_TERMS, table)
     text = _get_converter().convert(text)

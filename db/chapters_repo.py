@@ -1,6 +1,7 @@
 import json
 import re
 import datetime
+import threading
 import traceback
 from modules import apply_source_ingest
 
@@ -573,7 +574,12 @@ class ChaptersRepo:
 
     # In-memory undo snapshot:
     # { book_id: { 'snapshots': [(ch_id, old_content, old_title), ...], 'query': str, 'replacement': str } }
+    # Bounded (oldest book evicted past _REPLACE_UNDO_MAX) and lock-guarded —
+    # each entry can hold a full book's content, and concurrent replace/undo
+    # calls arrive from threadpool handlers.
     _replace_undo = {}
+    _REPLACE_UNDO_MAX = 3
+    _replace_undo_lock = threading.Lock()
 
     @staticmethod
     def _replace_once(text, query, replacement, pattern):
@@ -623,16 +629,27 @@ class ChaptersRepo:
             with self._conn() as conn:
                 cursor = conn.cursor()
 
-                sql = 'SELECT id, chapter_number, translated_content, title FROM chapters WHERE book_id = ?'
-                params = [book_id]
+                # Chunk the IN-list like get_chapters_bulk does — older SQLite
+                # caps host parameters at 999, so a >999-chapter selection
+                # failed outright.
+                rows = []
                 if chapter_numbers:
-                    placeholders = ','.join('?' * len(chapter_numbers))
-                    sql += f' AND chapter_number IN ({placeholders})'
-                    params.extend(chapter_numbers)
-                sql += ' ORDER BY chapter_number'
-
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
+                    CHUNK = 500
+                    for i in range(0, len(chapter_numbers), CHUNK):
+                        chunk = chapter_numbers[i:i + CHUNK]
+                        placeholders = ','.join('?' * len(chunk))
+                        cursor.execute(
+                            'SELECT id, chapter_number, translated_content, title '
+                            f'FROM chapters WHERE book_id = ? AND chapter_number IN ({placeholders})',
+                            [book_id] + list(chunk))
+                        rows.extend(cursor.fetchall())
+                    rows.sort(key=lambda r: r[1])
+                else:
+                    cursor.execute(
+                        'SELECT id, chapter_number, translated_content, title '
+                        'FROM chapters WHERE book_id = ? ORDER BY chapter_number',
+                        (book_id,))
+                    rows = cursor.fetchall()
 
                 pattern = None
                 if is_regex:
@@ -679,16 +696,21 @@ class ChaptersRepo:
             if affected > 0:
                 self.invalidate_epub_cache(book_id)
 
-            # Store undo snapshot (one level, keyed by book)
+            # Store undo snapshot (one level, keyed by book; oldest evicted)
             if snapshots:
-                ChaptersRepo._replace_undo[book_id] = {
-                    'snapshots': snapshots,
-                    'query': query,
-                    'replacement': replacement,
-                    'affected_chapters': affected,
-                    'total_replacements': total,
-                    'title_replacements': title_total,
-                }
+                with ChaptersRepo._replace_undo_lock:
+                    ChaptersRepo._replace_undo.pop(book_id, None)  # refresh order
+                    ChaptersRepo._replace_undo[book_id] = {
+                        'snapshots': snapshots,
+                        'query': query,
+                        'replacement': replacement,
+                        'affected_chapters': affected,
+                        'total_replacements': total,
+                        'title_replacements': title_total,
+                    }
+                    while len(ChaptersRepo._replace_undo) > ChaptersRepo._REPLACE_UNDO_MAX:
+                        oldest = next(iter(ChaptersRepo._replace_undo))
+                        del ChaptersRepo._replace_undo[oldest]
 
             return {'affected_chapters': affected, 'total_replacements': total,
                     'title_replacements': title_total, 'can_undo': len(snapshots) > 0}
@@ -757,7 +779,13 @@ class ChaptersRepo:
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                
+
+                # Enable FK constraints so the footnotes ON DELETE CASCADE
+                # actually fires on SQLite (off by default per connection;
+                # delete_book already does this — without it every chapter
+                # delete orphaned its footnotes rows).
+                self.backend.enable_foreign_keys(conn)
+
                 # Get chapter details first (for logging)
                 if chapter_id:
                     cursor.execute('''
@@ -858,6 +886,14 @@ class ChaptersRepo:
                 )
                 cursor.execute(
                     "UPDATE reader_log SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE chapter_revisions SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE polish_jobs SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
                     (new_chapter_number, book_id, chapter_number),
                 )
                 # activity_log uses column name `chapter`, not `chapter_number`

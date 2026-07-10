@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
@@ -49,7 +49,7 @@ export default function Books() {
   const [exporting, setExporting] = useState(null) // 'bookId-format' or null
   const [batchPublishFor, setBatchPublishFor] = useState(null) // bookId or null
   const [selected, setSelected] = useState({})    // { bookId: Set of chapter numbers }
-  const [lastChecked, setLastChecked] = useState({}) // { bookId: chapter number }
+  const lastCheckedRef = useRef({}) // { bookId: chapter number } — shift-select anchor, never rendered
   const [batchBusy, setBatchBusy] = useState(false)
 
   // Book list + expanded book's chapter list are react-query queries.
@@ -70,6 +70,9 @@ export default function Books() {
   const chapters = expandedBook != null && chaptersQuery.data
     ? { [expandedBook]: chaptersQuery.data.chapters || [] }
     : {}
+  // Ref mirror so per-row callbacks can stay identity-stable (memoized rows).
+  const chaptersRef = useRef(chapters)
+  chaptersRef.current = chapters
   const invalidateChapters = (bookId) =>
     queryClient.invalidateQueries({ queryKey: ['chapters', bookId] })
 
@@ -96,15 +99,23 @@ export default function Books() {
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this book and all its chapters?')) return
-    await api.deleteBook(id)
-    invalidateBooks()
+    try {
+      await api.deleteBook(id)
+      invalidateBooks()
+    } catch (e) {
+      alert(`Failed to delete book: ${e.message}`)
+    }
   }
 
-  const handleDeleteChapter = async (bookId, num) => {
+  const handleDeleteChapter = useCallback(async (bookId, num) => {
     if (!confirm(`Delete chapter ${num}?`)) return
-    await api.deleteChapter(bookId, num)
-    invalidateChapters(bookId)
-  }
+    try {
+      await api.deleteChapter(bookId, num)
+      queryClient.invalidateQueries({ queryKey: ['chapters', bookId] })
+    } catch (e) {
+      alert(`Failed to delete chapter: ${e.message}`)
+    }
+  }, [queryClient])
 
   // Original works: create an empty chapter and jump into the write editor.
   const handleNewChapter = async (bookId) => {
@@ -166,12 +177,13 @@ export default function Books() {
   const getSelected = (bookId) => selected[bookId] || new Set()
   const selectedCount = (bookId) => getSelected(bookId).size
 
-  const toggleChapter = (bookId, chapterNum, shiftKey) => {
+  const toggleChapter = useCallback((bookId, chapterNum, shiftKey) => {
     setSelected(prev => {
       const cur = new Set(prev[bookId] || [])
-      const chapterList = (chapters[bookId] || []).map(c => c.chapter)
-      if (shiftKey && lastChecked[bookId] != null) {
-        const lastIdx = chapterList.indexOf(lastChecked[bookId])
+      const chapterList = (chaptersRef.current[bookId] || []).map(c => c.chapter)
+      const lastChecked = lastCheckedRef.current[bookId]
+      if (shiftKey && lastChecked != null) {
+        const lastIdx = chapterList.indexOf(lastChecked)
         const curIdx = chapterList.indexOf(chapterNum)
         if (lastIdx !== -1 && curIdx !== -1) {
           const [from, to] = lastIdx < curIdx ? [lastIdx, curIdx] : [curIdx, lastIdx]
@@ -183,8 +195,13 @@ export default function Books() {
       }
       return { ...prev, [bookId]: cur }
     })
-    setLastChecked(prev => ({ ...prev, [bookId]: chapterNum }))
-  }
+    lastCheckedRef.current[bookId] = chapterNum
+  }, [])
+
+  const handleRetranslateChapter = useCallback((bookId, chapterNum) => {
+    retranslateModal.open({ book: bookId, ch: chapterNum })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retranslateModal.open])
 
   const selectAll = (bookId) => {
     const all = new Set((chapters[bookId] || []).map(c => c.chapter))
@@ -395,14 +412,16 @@ export default function Books() {
                             >
                               <CheckCircle2 size={12} className="inline mr-1" />Proofread
                             </button>
-                            <button
-                              className="btn-ghost px-2 py-1 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
-                              disabled={batchBusy}
-                              onClick={() => handleBatchRequeue(book.id)}
-                              title="Requeue selected for retranslation"
-                            >
-                              <Sparkles size={12} className="inline mr-1" />Requeue
-                            </button>
+                            {!book.is_original && (
+                              <button
+                                className="btn-ghost px-2 py-1 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
+                                disabled={batchBusy}
+                                onClick={() => handleBatchRequeue(book.id)}
+                                title="Requeue selected for retranslation"
+                              >
+                                <Sparkles size={12} className="inline mr-1" />Requeue
+                              </button>
+                            )}
                             <button
                               className="btn-ghost px-2 py-1 text-xs text-rose-400 hover:text-rose-300 disabled:opacity-50"
                               disabled={batchBusy}
@@ -426,93 +445,18 @@ export default function Books() {
                           </tr>
                         </thead>
                         <tbody>
-                          {(chapters[book.id] || []).map(ch => {
-                            const isChecked = getSelected(book.id).has(ch.chapter)
-                            return (
-                              <tr key={ch.chapter} className={`border-b border-slate-800 last:border-0 ${isChecked ? 'bg-blue-500/10' : !ch.is_proofread ? 'bg-amber-500/5' : ''}`}>
-                                <td className="py-2 w-8 text-center">
-                                  <button
-                                    className="p-0.5 text-slate-500 hover:text-slate-300"
-                                    onClick={(e) => toggleChapter(book.id, ch.chapter, e.shiftKey)}
-                                  >
-                                    {isChecked
-                                      ? <CheckSquare size={14} className="text-blue-400" />
-                                      : <Square size={14} />
-                                    }
-                                  </button>
-                                </td>
-                                <td className="py-2 text-slate-400 font-mono">
-                                  <span className="inline-flex items-center gap-1">
-                                    {ch.chapter}
-                                    {ch.is_proofread
-                                      ? <CheckCircle2 size={11} className="text-emerald-500" title={`Proofread ${new Date(ch.is_proofread).toLocaleDateString()}`} />
-                                      : <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500/60" title="Not proofread" />
-                                    }
-                                  </span>
-                                </td>
-                                <td className="py-2 text-slate-300 truncate max-w-[240px]">
-                                  <span className="inline-flex items-center gap-1.5">
-                                    <span className="truncate">{ch.title}</span>
-                                    {publishStatus(ch.published_at) === 'draft' && (
-                                      <span className="shrink-0 px-1 py-px rounded text-[10px] font-medium bg-amber-500/15 text-amber-300 border border-amber-600/40"
-                                        title="Draft — not visible on the public site">draft</span>
-                                    )}
-                                    {publishStatus(ch.published_at) === 'scheduled' && (
-                                      <span className="shrink-0 px-1 py-px rounded text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-600/40 inline-flex items-center gap-0.5"
-                                        title={`Scheduled for ${new Date(ch.published_at).toLocaleString()}`}>
-                                        <Clock size={9} />{new Date(ch.published_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-                                      </span>
-                                    )}
-                                  </span>
-                                </td>
-                                <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">{ch.model || '—'}</td>
-                                <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">
-                                  {ch.translation_date ? new Date(ch.translation_date).toLocaleDateString() : '—'}
-                                </td>
-                                <td className="py-2">
-                                  <div className="flex gap-1 justify-end">
-                                    <Link
-                                      to={`/read/${book.id}?chapter=${ch.chapter}`}
-                                      className="btn-ghost p-1"
-                                      title="Read from here"
-                                    >
-                                      <BookOpen size={12} />
-                                    </Link>
-                                    {!book.is_original && (
-                                      <button
-                                        className="btn-ghost p-1"
-                                        title="Retranslate chapter"
-                                        onClick={() => retranslateModal.open({ book: book.id, ch: ch.chapter })}
-                                      >
-                                        <Sparkles size={12} />
-                                      </button>
-                                    )}
-                                    <Link
-                                      to={`/books/${book.id}/chapters/${ch.chapter}/edit`}
-                                      className="btn-ghost p-1"
-                                      title={book.is_original ? 'Edit (split-pane)' : 'Edit translation'}
-                                    >
-                                      <Edit2 size={12} />
-                                    </Link>
-                                    <Link
-                                      to={`/books/${book.id}/chapters/${ch.chapter}/write`}
-                                      className="btn-ghost p-1"
-                                      title="Open in write editor (WYSIWYG)"
-                                    >
-                                      <PenLine size={12} />
-                                    </Link>
-                                    <button
-                                      className="btn-ghost p-1 hover:text-rose-400"
-                                      title="Delete chapter"
-                                      onClick={() => handleDeleteChapter(book.id, ch.chapter)}
-                                    >
-                                      <Trash2 size={12} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            )
-                          })}
+                          {(chapters[book.id] || []).map(ch => (
+                            <ChapterRow
+                              key={ch.chapter}
+                              bookId={book.id}
+                              isOriginal={!!book.is_original}
+                              ch={ch}
+                              isChecked={getSelected(book.id).has(ch.chapter)}
+                              onToggle={toggleChapter}
+                              onRetranslate={handleRetranslateChapter}
+                              onDelete={handleDeleteChapter}
+                            />
+                          ))}
                         </tbody>
                       </table>
                     </>
@@ -628,3 +572,93 @@ export default function Books() {
     </div>
   )
 }
+
+// One chapter row in the expanded book table. Memoized (with stable parent
+// callbacks) so a checkbox toggle only re-renders the affected row instead
+// of all ~1,800; cv-auto lets offscreen rows skip layout/paint.
+const ChapterRow = memo(function ChapterRow({ bookId, isOriginal, ch, isChecked, onToggle, onRetranslate, onDelete }) {
+  return (
+    <tr className={`cv-auto border-b border-slate-800 last:border-0 ${isChecked ? 'bg-blue-500/10' : !ch.is_proofread ? 'bg-amber-500/5' : ''}`}>
+      <td className="py-2 w-8 text-center">
+        <button
+          className="p-0.5 text-slate-500 hover:text-slate-300"
+          onClick={(e) => onToggle(bookId, ch.chapter, e.shiftKey)}
+        >
+          {isChecked
+            ? <CheckSquare size={14} className="text-blue-400" />
+            : <Square size={14} />
+          }
+        </button>
+      </td>
+      <td className="py-2 text-slate-400 font-mono">
+        <span className="inline-flex items-center gap-1">
+          {ch.chapter}
+          {ch.is_proofread
+            ? <CheckCircle2 size={11} className="text-emerald-500" title={`Proofread ${new Date(ch.is_proofread).toLocaleDateString()}`} />
+            : <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500/60" title="Not proofread" />
+          }
+        </span>
+      </td>
+      <td className="py-2 text-slate-300 truncate max-w-[240px]">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="truncate">{ch.title}</span>
+          {publishStatus(ch.published_at) === 'draft' && (
+            <span className="shrink-0 px-1 py-px rounded text-[10px] font-medium bg-amber-500/15 text-amber-300 border border-amber-600/40"
+              title="Draft — not visible on the public site">draft</span>
+          )}
+          {publishStatus(ch.published_at) === 'scheduled' && (
+            <span className="shrink-0 px-1 py-px rounded text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-600/40 inline-flex items-center gap-0.5"
+              title={`Scheduled for ${new Date(ch.published_at).toLocaleString()}`}>
+              <Clock size={9} />{new Date(ch.published_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+            </span>
+          )}
+        </span>
+      </td>
+      <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">{ch.model || '—'}</td>
+      <td className="py-2 text-xs text-slate-500 hidden sm:table-cell">
+        {ch.translation_date ? new Date(ch.translation_date).toLocaleDateString() : '—'}
+      </td>
+      <td className="py-2">
+        <div className="flex gap-1 justify-end">
+          <Link
+            to={`/read/${bookId}?chapter=${ch.chapter}`}
+            className="btn-ghost p-1"
+            title="Read from here"
+          >
+            <BookOpen size={12} />
+          </Link>
+          {!isOriginal && (
+            <button
+              className="btn-ghost p-1"
+              title="Retranslate chapter"
+              onClick={() => onRetranslate(bookId, ch.chapter)}
+            >
+              <Sparkles size={12} />
+            </button>
+          )}
+          <Link
+            to={`/books/${bookId}/chapters/${ch.chapter}/edit`}
+            className="btn-ghost p-1"
+            title={isOriginal ? 'Edit (split-pane)' : 'Edit translation'}
+          >
+            <Edit2 size={12} />
+          </Link>
+          <Link
+            to={`/books/${bookId}/chapters/${ch.chapter}/write`}
+            className="btn-ghost p-1"
+            title="Open in write editor (WYSIWYG)"
+          >
+            <PenLine size={12} />
+          </Link>
+          <button
+            className="btn-ghost p-1 hover:text-rose-400"
+            title="Delete chapter"
+            onClick={() => onDelete(bookId, ch.chapter)}
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      </td>
+    </tr>
+  )
+})

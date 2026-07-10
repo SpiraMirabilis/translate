@@ -213,6 +213,10 @@ def get_book(book_id: int, request: Request, response: Response):
     _guard(request)
     _cache(response, _CACHE_SHORT)
     book = _get_public_book(book_id)
+    # Deliberate: book views count at fetch time (behind the 5-min cache, so
+    # they under-count) unlike chapter views' dwell beacon. A book "view" is a
+    # visit to its detail page, not sustained reading — reviewed 2026-07-10
+    # and accepted as-is.
     _bump_book_view(book_id)
     cover_url, cover_medium_url, cover_thumb_url = _cover_urls(book)
     return {
@@ -258,8 +262,11 @@ def _shape_public_chapter(ch: dict, book_id: int = None) -> dict:
         "content": content,
     }
     if ch.get("untranslated"):
-        lines = [l for l in ch["untranslated"] if not l.startswith('#')]
-        if lines and re.match(r'第\d', lines[0]):
+        # Strip only a LEADING heading line, mirroring the translated side —
+        # filtering every '#' line shifted the 1:1 line pairing that the
+        # reader's "Both" display mode depends on.
+        lines = list(ch["untranslated"])
+        if lines and (lines[0].startswith('#') or re.match(r'第\d', lines[0])):
             lines = lines[1:]
         if lines:
             result["untranslated"] = lines
@@ -520,7 +527,7 @@ def download_azw3(book_id: int, request: Request):
             ver = spaces.epub_version(book_id, version_basis)
             key = spaces.azw3_key(_db.config, book_id, ver)
             if spaces.exists(_db.config, key):
-                _log_view(book_id, 0, ip)
+                _log_view(book_id, -1, ip)  # -1 = AZW3 download (0 = EPUB)
                 return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
     except Exception:
         pass
@@ -553,8 +560,8 @@ def download_azw3(book_id: int, request: Request):
         except Exception:
             pass
 
-    # Log the download (chapter_number=0 signals an ebook download)
-    _log_view(book_id, 0, ip)
+    # Log the download (-1 = AZW3; 0 = EPUB — distinct so stats can tell them apart)
+    _log_view(book_id, -1, ip)
 
     filename = f"{book['title'].replace(' ', '_')}.azw3"
     return FileResponse(

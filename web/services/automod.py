@@ -158,31 +158,42 @@ def run_automod_for_comment(db_manager, comment_id: int) -> None:
         verdict = result["verdict"]
         reason = result["reason"]
 
+        # All writes are guarded with only_if_status='pending': the LLM call
+        # above takes seconds, and an admin may have moderated the comment in
+        # that window — automod must never overwrite a human decision (it
+        # could flip an admin spam-block back to approved and fire notify_reply).
         if verdict == "genuine":
-            db_manager.update_comment(
+            applied = db_manager.update_comment(
                 comment_id, status="approved",
                 automod_state="genuine", automod_reason=reason,
+                only_if_status="pending",
             )
-            # Reply just became approved — notify the parent commenter
-            # (if they opted in). Idempotent so safe even if this fires
-            # alongside an admin manual approval racing in.
-            try:
-                from web.services.notifications import notify_reply
-                notify_reply(db_manager, comment_id)
-            except Exception as ne:
-                logger.warning("automod: notify_reply failed for %s: %s", comment_id, ne)
+            if applied:
+                # Reply just became approved — notify the parent commenter
+                # (if they opted in). Idempotent so safe even if this fires
+                # alongside an admin manual approval racing in.
+                try:
+                    from web.services.notifications import notify_reply
+                    notify_reply(db_manager, comment_id)
+                except Exception as ne:
+                    logger.warning("automod: notify_reply failed for %s: %s", comment_id, ne)
+            else:
+                logger.info("automod: comment %s moderated by admin mid-run; verdict discarded", comment_id)
         elif verdict == "spam":
             db_manager.update_comment(
                 comment_id, status="blocked",
                 automod_state="spam", automod_reason=reason,
+                only_if_status="pending",
             )
         elif verdict == "unsure":
             db_manager.update_comment(
                 comment_id, automod_state="unsure", automod_reason=reason,
+                only_if_status="pending",
             )
         else:  # error
             db_manager.update_comment(
                 comment_id, automod_state="error", automod_reason=reason,
+                only_if_status="pending",
             )
     except Exception as e:
         logger.exception("automod: unhandled error on comment %s: %s", comment_id, e)

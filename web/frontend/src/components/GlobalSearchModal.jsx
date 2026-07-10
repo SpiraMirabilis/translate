@@ -11,6 +11,7 @@ export default function GlobalSearchModal({ books, onClose }) {
   var [results, setResults] = useState(null)
   var [loading, setLoading] = useState(false)
   var [totalMatches, setTotalMatches] = useState(0)
+  var [searchError, setSearchError] = useState(null)
 
   var inputRef = useRef(null)
   var debounceRef = useRef(null)
@@ -33,17 +34,21 @@ export default function GlobalSearchModal({ books, onClose }) {
     if (!q || !bookId) {
       setResults(null)
       setTotalMatches(0)
+      setSearchError(null)
       return
     }
     setLoading(true)
+    setSearchError(null)
     api.searchBook(bookId, { query: q, scope: sc, is_regex: regex })
       .then(function onResult(res) {
         setResults(res.results || [])
         setTotalMatches(res.total_matches || 0)
       })
-      .catch(function onErr() {
-        setResults([])
+      .catch(function onErr(err) {
+        // Keep results null so the failure isn't rendered as "No matches"
+        setResults(null)
         setTotalMatches(0)
+        setSearchError((err && err.message) || 'Search failed')
       })
       .finally(function done() { setLoading(false) })
   }, [])
@@ -54,6 +59,7 @@ export default function GlobalSearchModal({ books, onClose }) {
     if (!query || !selectedBook) {
       setResults(null)
       setTotalMatches(0)
+      setSearchError(null)
       return
     }
     debounceRef.current = setTimeout(function fire() {
@@ -164,7 +170,13 @@ export default function GlobalSearchModal({ books, onClose }) {
             </div>
           )}
 
-          {!loading && results !== null && results.length === 0 && query && (
+          {!loading && searchError && (
+            <div className="p-8 text-center text-rose-400 text-sm">
+              Search failed: {searchError}
+            </div>
+          )}
+
+          {!loading && !searchError && results !== null && results.length === 0 && query && (
             <div className="p-8 text-center text-slate-500 text-sm">
               No matches found{bookTitle ? ' in ' + bookTitle : ''}
             </div>

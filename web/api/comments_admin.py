@@ -12,10 +12,13 @@ Bans:
 CF push runs in BackgroundTasks so the admin click returns immediately.
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from web.services import automod, cf_bans
 from web.services.notifications import notify_reply
@@ -58,10 +61,19 @@ async def _bg_push_cf(ip: str, ban_id: int, note: str):
     ok, msg = await cf_bans.push_ban(ip, note)
     if ok:
         _db.mark_cf_pushed(ban_id)
+    else:
+        # Loud: the DB ban row exists but the edge block did NOT apply — the
+        # admin UI shows the ban as active. cf_pushed stays unset so the gap
+        # is at least visible there.
+        logger.error("CF edge ban push FAILED for %s (ban %s): %s — "
+                     "ban is DB-only until re-pushed", ip, ban_id, msg)
 
 
 async def _bg_remove_cf(ip: str):
-    await cf_bans.remove_ban(ip)
+    ok, msg = await cf_bans.remove_ban(ip)
+    if not ok:
+        logger.error("CF edge ban removal FAILED for %s: %s — "
+                     "the edge may still be blocking this IP", ip, msg)
 
 
 # ------------------------------------------------------------------
@@ -88,12 +100,7 @@ def count_comments(
     status: Optional[str] = Query(default="pending"),
     book_id: Optional[int] = Query(default=None),
 ):
-    if status == "pending":
-        count = _db.count_pending_comments(book_id=book_id)
-    else:
-        rows = _db.list_comments_admin(status=status, book_id=book_id, limit=1, offset=0)
-        # Cheap path; not used for huge totals
-        count = len(rows)
+    count = _db.count_comments_admin(status=status or None, book_id=book_id)
     return {"count": count}
 
 

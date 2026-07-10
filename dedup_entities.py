@@ -47,6 +47,17 @@ def book_id_key(book_id):
 
 
 def main():
+    # SQLite-only tool: it rewrites the entities table with raw sqlite3.
+    # On a MySQL deployment it would silently "dedup" a stale local
+    # database.db while the live data sits untouched in MySQL.
+    from dotenv import load_dotenv
+    load_dotenv()
+    if os.getenv("DB_BACKEND", "sqlite").lower() == "mysql":
+        print("ERROR: this deployment uses the MySQL backend (DB_BACKEND=mysql).")
+        print("dedup_entities.py only operates on the local SQLite database.db —")
+        print("running it here would modify stale data. Aborting.")
+        sys.exit(1)
+
     if not os.path.exists(DB_PATH):
         print(f"ERROR: Database not found at {DB_PATH}")
         sys.exit(1)

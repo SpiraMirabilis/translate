@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _CACHE_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ip_cache.db")
 _CACHE_TTL_DAYS = 30
+_FAILED_TTL_DAYS = 1   # empty results (failed reverse DNS + geo) retry sooner
+_DNS_TIMEOUT = 3.0     # seconds per reverse-DNS lookup
 
 
 def _init_cache():
@@ -37,15 +39,21 @@ def _init_cache():
 
 
 def _get_cached(cache_conn, ip: str) -> dict | None:
-    cutoff = (datetime.datetime.now(datetime.timezone.utc)
-              - datetime.timedelta(days=_CACHE_TTL_DAYS)).isoformat()
     row = cache_conn.execute(
-        "SELECT hostname, city, region, country, org FROM ip_cache "
-        "WHERE ip = ? AND cached_at >= ?", (ip, cutoff)
+        "SELECT hostname, city, region, country, org, cached_at FROM ip_cache "
+        "WHERE ip = ?", (ip,)
     ).fetchone()
-    if row:
-        return {"hostname": row[0], "city": row[1], "region": row[2],
-                "country": row[3], "org": row[4]}
+    if not row:
+        return None
+    info = {"hostname": row[0], "city": row[1], "region": row[2],
+            "country": row[3], "org": row[4]}
+    # Completely-failed lookups (no hostname, no geo) use a short TTL so a
+    # transient resolver/IPInfo outage isn't negative-cached for 30 days.
+    ttl_days = _CACHE_TTL_DAYS if any(v for v in info.values()) else _FAILED_TTL_DAYS
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=ttl_days)).isoformat()
+    if row[5] and row[5] >= cutoff:
+        return info
     return None
 
 
@@ -65,10 +73,24 @@ def _set_cached(cache_conn, ip: str, info: dict):
 # ---------------------------------------------------------------------------
 
 def _resolve_hostname(ip: str) -> str:
+    # gethostbyaddr has no timeout parameter and a dead resolver can block for
+    # minutes; run it on a disposable worker and give up after _DNS_TIMEOUT.
+    # (The abandoned thread ends when the system resolver's own timeout fires.)
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+
+    def _lookup():
+        try:
+            return socket.gethostbyaddr(ip)[0]
+        except (socket.herror, socket.gaierror, OSError):
+            return ""
+
+    ex = ThreadPoolExecutor(max_workers=1)
     try:
-        return socket.gethostbyaddr(ip)[0]
-    except (socket.herror, socket.gaierror, OSError):
+        return ex.submit(_lookup).result(timeout=_DNS_TIMEOUT)
+    except _FutTimeout:
         return ""
+    finally:
+        ex.shutdown(wait=False)
 
 
 def _lookup_ipinfo(handler, ip: str) -> dict:
@@ -185,11 +207,16 @@ def parse_duration(s: str) -> datetime.timedelta:
     if not m:
         raise ValueError(f"Invalid duration: {s!r}  (use e.g. 7d, 12h, 30m)")
     n, unit = int(m.group(1)), m.group(2)
-    if unit == 'd':
-        return datetime.timedelta(days=n)
-    elif unit == 'h':
-        return datetime.timedelta(hours=n)
-    return datetime.timedelta(minutes=n)
+    try:
+        if unit == 'd':
+            return datetime.timedelta(days=n)
+        elif unit == 'h':
+            return datetime.timedelta(hours=n)
+        return datetime.timedelta(minutes=n)
+    except OverflowError:
+        # Absurdly large n — surface as the same ValueError the API maps to a
+        # 400 instead of an unhandled 500.
+        raise ValueError(f"Duration too large: {s!r}")
 
 
 def collapse_ranges(numbers: list[int]) -> str:
@@ -312,13 +339,18 @@ def collect_reader_stats(db_manager, duration_str: str, group_by: str = "ip",
 
 
 def _summarize_chapters(chapters: list[int]) -> dict:
-    """Split a chapter-number list into chapter views vs. EPUB downloads (chapter 0)."""
+    """Split a chapter-number list into chapter views vs. ebook downloads.
+
+    Sentinels in reader_log.chapter_number: 0 = EPUB download, -1 = AZW3
+    download (was also 0 before 2026-07-10 — old AZW3 rows count as EPUB)."""
     epub_downloads = chapters.count(0)
+    azw3_downloads = chapters.count(-1)
     chapter_nums = [c for c in chapters if c > 0]
     return {
         "chapter_ranges": collapse_ranges(chapter_nums),
         "chapter_views": len(chapter_nums),
         "epub_downloads": epub_downloads,
+        "azw3_downloads": azw3_downloads,
     }
 
 

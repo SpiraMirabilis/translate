@@ -475,14 +475,19 @@ class UserInterface(ABC):
                 
                 # If book_id and chapter_number are set, save as a book chapter
                 if hasattr(self, 'book_id') and self.book_id is not None:
-                    # Use provided chapter number or the detected one
-                    chapter_number = end_object.get('chapter')
-        
-                    # Ensure we have a valid chapter number
-                    if not chapter_number or not isinstance(chapter_number, int) or chapter_number <= 0:
-                    # Fall back to explicitly provided chapter number or default to 1
-                        chapter_number = getattr(self, 'chapter_number', 1)
-                        self.logger.warning(f"Invalid chapter number in translation results, using {chapter_number}")
+                    # The user/queue-supplied chapter number wins; the model's
+                    # self-reported number is only a fallback. (A raw whose text
+                    # says "Chapter 12" but was queued as 13 used to save into —
+                    # and overwrite — slot 12, while the conflict guard had
+                    # checked slot 13.)
+                    chapter_number = getattr(self, 'chapter_number', None)
+                    if not isinstance(chapter_number, int) or chapter_number <= 0:
+                        chapter_number = end_object.get('chapter')
+                        if not chapter_number or not isinstance(chapter_number, int) or chapter_number <= 0:
+                            chapter_number = 1
+                            self.logger.warning(f"Invalid chapter number in translation results, using {chapter_number}")
+                        else:
+                            self.logger.info(f"No chapter number supplied; using model-detected {chapter_number}")
                     
                     # Save chapter to database. publish: the save_as_draft run
                     # option forces a draft; otherwise save_chapter's default
@@ -502,32 +507,11 @@ class UserInterface(ABC):
                     
                     if chapter_id:
                         print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
+                        # (Entity saves — new, edited, and pre-existing — were all
+                        # handled by the direct-SQL block above; a second add_entity
+                        # loop here used to redundantly re-save a hardcoded category
+                        # subset.)
 
-                        # Also save book-specific entities (only new/edited ones;
-                        # pre-existing entities were already handled above)
-                        for category in ['characters', 'places', 'organizations', 'abilities', 'titles', 'equipment', 'creatures']:
-                            if category not in end_object['entities']:
-                                continue
-
-                            for key, entity_data in end_object['entities'][category].items():
-                                if (category, key) not in new_or_edited_keys:
-                                    continue  # skip pre-existing — already bumped last_chapter above
-
-                                translation = entity_data.get("translation", "")
-                                last_chapter = entity_data.get("last_chapter", current_chapter)
-                                incorrect_translation = entity_data.get("incorrect_translation", None)
-                                gender = entity_data.get("gender", None)
-
-                                self.entity_manager.add_entity(
-                                    category,
-                                    key,
-                                    translation,
-                                    book_id=self.book_id,
-                                    last_chapter=last_chapter,
-                                    incorrect_translation=incorrect_translation,
-                                    gender=gender,
-                                )
-                
                 # In run_translation method, when calling display_results:
                 if hasattr(self, 'book_id') and self.book_id is not None:
                     # Get book info for output
@@ -811,9 +795,11 @@ class UserInterface(ABC):
         """
         import os
         from providers import create_provider
-        from config import TranslationConfig
 
-        config = TranslationConfig()
+        # Reuse the live config: constructing a fresh TranslationConfig here
+        # re-ran dotenv/settings loading on every chapter and ignored any
+        # --model override applied to the running translator.
+        config = self.translator.config
         cleaning_prompt_path = os.path.join(config.script_dir, "cleaning_prompt.txt")
 
         try:

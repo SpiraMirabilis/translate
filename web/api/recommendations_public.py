@@ -4,8 +4,9 @@ Public endpoint for submitting novel translation recommendations.
 Protected by Cloudflare Turnstile and rate limiting.
 """
 import os
+import re
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 from web.services import public_guard, turnstile, recommendation_emails
@@ -31,15 +32,20 @@ _limiter = public_guard.SlidingWindowLimiter(
 # ------------------------------------------------------------------
 
 class RecommendationRequest(BaseModel):
-    novel_title: str
-    author: Optional[str] = None
-    source_url: str
-    source_language: Optional[str] = "zh"
-    description: Optional[str] = None
-    requester_name: str
-    requester_email: str
-    notes: Optional[str] = None
-    turnstile_token: str
+    novel_title: str = Field(max_length=300)
+    author: Optional[str] = Field(default=None, max_length=200)
+    source_url: str = Field(max_length=1000)
+    source_language: Optional[str] = Field(default="zh", max_length=16)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    requester_name: str = Field(max_length=100)
+    requester_email: str = Field(max_length=254)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+    turnstile_token: str = Field(max_length=4096)
+
+
+# Deliberately loose — just enough to reject garbage and header-unsafe
+# values; deliverability is the mail system's problem.
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 @router.post("/recommendations")
@@ -56,14 +62,17 @@ async def submit_recommendation(req: RecommendationRequest, request: Request,
     # Basic validation
     if not req.novel_title.strip():
         raise HTTPException(status_code=400, detail="Novel title is required.")
-    if not req.source_url.strip():
-        raise HTTPException(status_code=400, detail="Source URL is required.")
+    if not re.match(r"^https?://", req.source_url.strip(), re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Source URL must start with http:// or https://.")
     if not req.requester_name.strip():
         raise HTTPException(status_code=400, detail="Your name is required.")
-    if not req.requester_email.strip() or "@" not in req.requester_email:
+    if not _EMAIL_RE.match(req.requester_email.strip()):
         raise HTTPException(status_code=400, detail="A valid email is required.")
 
-    rec_id = _db.create_recommendation({
+    # The handler must stay async for turnstile.verify; keep the sync DB write
+    # off the event loop.
+    import asyncio
+    rec_id = await asyncio.to_thread(_db.create_recommendation, {
         "novel_title": req.novel_title.strip(),
         "author": (req.author or "").strip() or None,
         "source_url": req.source_url.strip(),

@@ -69,8 +69,20 @@ def persist_env(key, value):
 
     Reserved for true secrets (provider API keys, WP app password). All
     non-secret user settings go through settings.json via update() instead.
+
+    Values are validated (no newlines — a value containing "\\nADMIN_PASSWORD=x"
+    would otherwise inject lines that take effect on next restart) and quoted,
+    and the file is kept at 0600.
     """
     import re
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key or ""):
+        raise ValueError(f"Invalid .env key: {key!r}")
+    value = "" if value is None else str(value)
+    if re.search(r"[\r\n\x00]", value):
+        raise ValueError("Value must not contain newlines")
+    # Double-quote so '#', spaces, and leading/trailing whitespace survive
+    # python-dotenv's parser; escape backslashes and embedded quotes.
+    quoted = '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
     with _lock:
         lines = []
         if os.path.exists(_ENV_PATH):
@@ -80,13 +92,18 @@ def persist_env(key, value):
         pattern = re.compile(rf"^{re.escape(key)}=")
         for i, line in enumerate(lines):
             if pattern.match(line):
-                lines[i] = f"{key}={value}\n"
+                lines[i] = f"{key}={quoted}\n"
                 break
         else:
-            lines.append(f"{key}={value}\n")
+            lines.append(f"{key}={quoted}\n")
 
-        with open(_ENV_PATH, "w") as f:
+        fd = os.open(_ENV_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.writelines(lines)
+        try:
+            os.chmod(_ENV_PATH, 0o600)  # tighten pre-existing files too
+        except OSError:
+            pass
 
 
 def _coerce_from_env(raw, t):

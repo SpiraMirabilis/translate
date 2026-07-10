@@ -32,7 +32,12 @@ export default function ReaderSettings({ open, onClose, prefs, setPrefs, hasSour
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
-      <div className={`fixed inset-y-0 right-0 z-50 w-80 max-w-[85vw] ${panelBg} border-l ${borderColor} flex flex-col shadow-2xl`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Reading settings"
+        className={`fixed inset-y-0 right-0 z-50 w-80 max-w-[85vw] ${panelBg} border-l ${borderColor} flex flex-col shadow-2xl`}
+      >
         <div className={`p-4 border-b ${borderColor} flex items-center justify-between`}>
           <h2 className={`font-semibold ${textPrimary}`}>Reading Settings</h2>
           <button onClick={onClose} className={`${textSecondary} p-1`}>

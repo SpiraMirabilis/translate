@@ -10,6 +10,7 @@ import logging
 import datetime
 import mimetypes
 from ebooklib import epub
+from html import escape as _esc
 from typing import Dict, List, Optional, Union, Tuple
 
 from illustrations import parse_marker
@@ -22,7 +23,8 @@ _MD_ALLOWED_TAGS = [
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'a',
     'table', 'thead', 'tbody', 'tr', 'th', 'td',
 ]
-_MD_ALLOWED_ATTRS = {'a': ['href', 'title'], 'th': ['align'], 'td': ['align']}
+_MD_ALLOWED_ATTRS = {'a': ['href', 'title'], 'th': ['align'], 'td': ['align'],
+                     'ol': ['start']}
 
 # Block-level Markdown styling for exported EPUB/HTML, mirroring the reader's
 # .chapter-markdown rules.
@@ -165,6 +167,35 @@ def _parse_table_run(lines, start):
 
 _STRIKE_EXT = None
 
+# Raw HTML in prose: markdown-it (the Reader) runs with html:false, so a
+# literal `<em>x</em>` typed in a chapter renders as text. python-markdown
+# interprets it (and bleach's allowlist then keeps it), so EPUB/WP silently
+# diverged. Escape tag-like `<` before python-markdown sees it. CommonMark
+# autolinks (`<https://…>`, `<user@host>`) must survive, so only escape when
+# the `<` is followed by something tag-shaped: an optional '/', a tag name,
+# then whitespace / '>' / '/' — plus comments/declarations (`<!`, `<?`).
+_RAW_HTML_TOKEN_RE = re.compile(r'<(?=/?[a-zA-Z][a-zA-Z0-9-]*(?:[\s>/])|!|\?)')
+
+
+def _escape_raw_html(text):
+    if '<' not in text:
+        return text
+    return _RAW_HTML_TOKEN_RE.sub('&lt;', text)
+
+
+_MD_INSTANCE = None
+
+
+def _md_convert(text, _markdown):
+    """Shared, reused Markdown converter (parity fix for per-cell/per-run
+    `markdown.markdown()` construction, which rebuilds the whole extension
+    stack on every call — noticeable at EPUB build over chatgroup books)."""
+    global _MD_INSTANCE
+    if _MD_INSTANCE is None:
+        _MD_INSTANCE = _markdown.Markdown(extensions=_md_extensions(_markdown))
+    _MD_INSTANCE.reset()
+    return _MD_INSTANCE.convert(_escape_raw_html(text))
+
 
 def _md_extensions(_markdown):
     """Extension list shared by every python-markdown call in this module.
@@ -172,32 +203,59 @@ def _md_extensions(_markdown):
     Includes a strikethrough inline processor (~~text~~ → <s>) because
     markdown-it (the Reader) enables strikethrough by default and the write
     editor actively emits it — without this, EPUB/WordPress/HTML export show
-    literal tildes where the Reader shows struck text."""
+    literal tildes where the Reader shows struck text. Also a bare-URL
+    linkifier: the Reader links explicit-scheme URLs (linkify, fuzzy off);
+    without this they were links on the site but plain text in EPUB/WP."""
     global _STRIKE_EXT
     if _STRIKE_EXT is None:
         from markdown.extensions import Extension
-        from markdown.inlinepatterns import SimpleTagInlineProcessor
+        from markdown.inlinepatterns import SimpleTagInlineProcessor, InlineProcessor
+        import xml.etree.ElementTree as _etree
 
         class _StrikeExtension(Extension):
             def extendMarkdown(self, md):
                 md.inlinePatterns.register(
                     SimpleTagInlineProcessor(r'()~~(.+?)~~', 's'), 'strikethrough', 175)
 
-        _STRIKE_EXT = _StrikeExtension()
-    return ['extra', 'sane_lists', 'nl2br', _STRIKE_EXT]
+        class _BareUrlProcessor(InlineProcessor):
+            def handleMatch(self, m, data):
+                url = m.group(0).rstrip('.,;:!?\'")')  # linkify-style trailing trim
+                if not url:
+                    return None, None, None
+                el = _etree.Element('a')
+                el.set('href', url)
+                el.text = url
+                return el, m.start(0), m.start(0) + len(url)
+
+        class _LinkifyExtension(Extension):
+            def extendMarkdown(self, md):
+                md.inlinePatterns.register(
+                    _BareUrlProcessor(r'https?://[^\s<>()\[\]⟦⟧]+'), 'bare_url', 75)
+
+        class _CombinedExtension(Extension):
+            def extendMarkdown(self, md):
+                _StrikeExtension().extendMarkdown(md)
+                _LinkifyExtension().extendMarkdown(md)
+
+        _STRIKE_EXT = _CombinedExtension()
+    # 'tables' + 'fenced_code' instead of the full 'extra' bundle: extra also
+    # pulls in footnotes ([^1] expansion), definition lists, and abbr — none of
+    # which markdown-it (the Reader) supports, so they rendered differently in
+    # EPUB/WP than on the site.
+    return ['tables', 'fenced_code', 'sane_lists', 'nl2br', _STRIKE_EXT]
 
 
 def _render_prose_markdown(text, _markdown, _re):
     """The pre-existing prose pipeline: python-markdown + pipe-table fixups."""
     if not text.strip():
         return ""
-    html = _markdown.markdown(text, extensions=_md_extensions(_markdown))
+    html = _md_convert(text, _markdown)
     # python-markdown emits a spurious all-empty body row for header-only tables
     # (e.g. a single 【…】 notification → `| X |` / `| --- |`). markdown-it (the
     # Reader) omits it, so strip it here to keep EPUB/HTML in parity with the
-    # Reader — leaving just the header row.
-    html = _re.sub(r"<tr>\s*(?:<td[^>]*>\s*</td>\s*)+</tr>\s*", "", html)
-    html = _re.sub(r"<tbody>\s*</tbody>\s*", "", html)
+    # Reader — leaving just the header row. Constrained to a tbody whose ONLY
+    # row is empty, so a deliberately blank row inside a larger table survives.
+    html = _re.sub(r"<tbody>\s*<tr>\s*(?:<td[^>]*>\s*</td>\s*)+</tr>\s*</tbody>\s*", "", html)
     return html
 
 
@@ -208,8 +266,7 @@ def _render_table_html(rows, _markdown):
     def cell_html(cell):
         tag = 'th' if cell['header'] else 'td'
         align = f' align="{cell["align"]}"' if cell['align'] else ''
-        inner = _markdown.markdown('\n'.join(cell['lines']),
-                                   extensions=_md_extensions(_markdown))
+        inner = _md_convert('\n'.join(cell['lines']), _markdown)
         return f'<{tag}{align}>{inner}</{tag}>'
 
     def row_html(row):
@@ -483,11 +540,11 @@ class OutputFormatter:
                     <link rel="stylesheet" href="style/default.css" type="text/css" />
                 </head>
                 <body>
-                    <h1>{book_title}</h1>
+                    <h1>{_esc(book_title)}</h1>
                     {f'<div class="cover-image" style="text-align: center;"><img src="{cover_file_name}" alt="Cover" style="max-width: 100%; height: auto;" /></div>' if cover_file_name else ''}
-                    <p>Author: {book_author}</p>
+                    <p>Author: {_esc(str(book_author or ''))}</p>
                     <p>Generation date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
-                    <p>{book_description}</p>
+                    <p>{_esc(str(book_description or ''))}</p>
                 </body>
                 </html>
             '''
@@ -550,11 +607,11 @@ class OutputFormatter:
                 epub_chapter.content = f'''
                     <html>
                     <head>
-                        <title>{chapter_title}</title>
+                        <title>{_esc(chapter_title)}</title>
                         <link rel="stylesheet" href="style/default.css" type="text/css" />
                     </head>
                     <body>
-                        <h1>{chapter_title}</h1>
+                        <h1>{_esc(chapter_title)}</h1>
                         {html_content}
                     </body>
                     </html>
@@ -677,6 +734,10 @@ class OutputFormatter:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"{display_title}\n\n")
                 for line in content:
+                    # Sentinel table markers are structural, not prose — drop
+                    # the marker lines and keep the cell text.
+                    if isinstance(line, str) and _TABLE_MARKER_RE.match(line):
+                        continue
                     f.write(f"{self._strip_markdown(line)}\n")
 
             self.logger.info(f"Saved text output to {output_path}")
@@ -708,7 +769,7 @@ class OutputFormatter:
                 f.write('<head>\n')
                 f.write('    <meta charset="UTF-8">\n')
                 display_title = self._display_title(title, chapter)
-                f.write(f'    <title>{display_title}</title>\n')
+                f.write(f'    <title>{_esc(display_title)}</title>\n')
                 f.write('    <style>\n')
                 f.write('        body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }\n')
                 f.write('        h1 { text-align: center; margin-bottom: 30px; }\n')
@@ -717,7 +778,7 @@ class OutputFormatter:
                 f.write('    </style>\n')
                 f.write('</head>\n')
                 f.write('<body>\n')
-                f.write(f'    <h1>{display_title}</h1>\n')
+                f.write(f'    <h1>{_esc(display_title)}</h1>\n')
 
                 # Render content as block-level Markdown (illustration markers,
                 # which have no embedded image in single-chapter HTML, are dropped).
@@ -754,9 +815,36 @@ class OutputFormatter:
             display_title = self._display_title(title, chapter)
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"# {display_title}\n\n")
-                
+
+                # Each stored line is its own paragraph (hence the blank line
+                # between), EXCEPT table runs: pipe-table rows and sentinel
+                # ⟦TABLE⟧ blocks must stay contiguous or the table breaks.
+                in_sentinel_table = False
+                prev_was_pipe = False
                 for line in content:
-                    if line.strip() == "":
+                    stripped = line.strip() if isinstance(line, str) else ""
+                    is_pipe = stripped.startswith("|")
+                    is_marker = bool(_TABLE_MARKER_RE.match(line)) if isinstance(line, str) else False
+                    if is_marker:
+                        if _TBL_OPEN_RE.match(line):
+                            in_sentinel_table = True
+                        f.write(f"{line}\n")
+                        if _CLOSE_RE.match(line) and _CLOSE_RE.match(line).group(1) == "TABLE":
+                            in_sentinel_table = False
+                            f.write("\n")
+                        prev_was_pipe = False
+                        continue
+                    if in_sentinel_table:
+                        f.write(f"{line}\n")
+                        continue
+                    if is_pipe:
+                        f.write(f"{line}\n")
+                        prev_was_pipe = True
+                        continue
+                    if prev_was_pipe:
+                        f.write("\n")  # close the pipe table before prose resumes
+                        prev_was_pipe = False
+                    if stripped == "":
                         f.write("\n")
                     else:
                         f.write(f"{line}\n\n")
@@ -856,15 +944,12 @@ class OutputFormatter:
                 book.add_item(intro)
                 self.logger.info(f"Creating new EPUB: {output_path}")
             
-            # Convert list of content lines to HTML
-            html_content = ""
-            for line in content:
-                if line.strip() == "":
-                    html_content += "<p>&nbsp;</p>\n"
-                else:
-                    # Escape HTML special characters
-                    line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    html_content += f"<p>{line}</p>\n"
+            # Convert content lines to HTML via the shared Markdown renderer —
+            # same pipeline as book EPUBs, so single-chapter exports keep
+            # renderer parity. Illustration markers have no embedded image on
+            # this legacy path, so they're dropped.
+            html_content = _render_markdown(
+                "\n".join(l for l in content if not parse_marker(l)))
             
             # Create chapter
             display_title = self._display_title(title, chapter)
@@ -887,11 +972,11 @@ class OutputFormatter:
                     item.content = f'''
                         <html>
                         <head>
-                            <title>{display_title}</title>
+                            <title>{_esc(display_title)}</title>
                             <link rel="stylesheet" href="style/default.css" type="text/css" />
                         </head>
                         <body>
-                            <h1>{display_title}</h1>
+                            <h1>{_esc(display_title)}</h1>
                             {html_content}
                         </body>
                         </html>
@@ -906,11 +991,11 @@ class OutputFormatter:
                 epub_chapter.content = f'''
                     <html>
                     <head>
-                        <title>{display_title}</title>
+                        <title>{_esc(display_title)}</title>
                         <link rel="stylesheet" href="style/default.css" type="text/css" />
                     </head>
                     <body>
-                        <h1>{display_title}</h1>
+                        <h1>{_esc(display_title)}</h1>
                         {html_content}
                     </body>
                     </html>

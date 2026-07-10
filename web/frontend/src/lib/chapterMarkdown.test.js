@@ -287,6 +287,21 @@ describe('markFootnoteLine / markFootnoteRefs', () => {
     expect(markFootnoteRefs(['a[1]', '', '[2] def'], ids))
       .toEqual(['a⟦FN:1⟧', '', '[2] def'])
   })
+
+  it('skips [n] that is markdown link text ([1](url))', () => {
+    expect(markFootnoteLine('see [1](https://example.com) for details', ids))
+      .toBe('see [1](https://example.com) for details')
+    // A real ref elsewhere on the same line still converts.
+    expect(markFootnoteLine('see [1](https://example.com) and this[2]', ids))
+      .toBe('see [1](https://example.com) and this⟦FN:2⟧')
+  })
+
+  it('skips [n] inside backtick code spans', () => {
+    expect(markFootnoteLine('use `arr[1]` here', ids)).toBe('use `arr[1]` here')
+    expect(markFootnoteLine('``a[1]`` and b[2]', ids)).toBe('``a[1]`` and b⟦FN:2⟧')
+    // Unclosed backtick is not a code span — the ref still converts.
+    expect(markFootnoteLine('a ` b[1]', ids)).toBe('a ` b⟦FN:1⟧')
+  })
 })
 
 describe('linkifyFootnotes', () => {

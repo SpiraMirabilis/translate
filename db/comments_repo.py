@@ -192,6 +192,20 @@ class CommentsRepo:
             n = cursor.fetchone()[0]
         return n
 
+    def count_comments_admin(self, *, status: Optional[str] = None,
+                             book_id: Optional[int] = None) -> int:
+        """COUNT(*) with the same filters as list_comments_admin."""
+        clauses, vals = [], []
+        if status:
+            clauses.append('status = ?'); vals.append(status)
+        if book_id is not None:
+            clauses.append('book_id = ?'); vals.append(book_id)
+        where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM comments{where}", tuple(vals))
+            return cursor.fetchone()[0]
+
     def list_comments_admin(self, *, status: Optional[str] = None,
                             book_id: Optional[int] = None,
                             chapter_number: Optional[int] = None,
@@ -215,7 +229,8 @@ class CommentsRepo:
     def update_comment(self, comment_id: int, *, body: Optional[str] = None,
                        status: Optional[str] = None, soft_delete: bool = False,
                        automod_state: Optional[str] = None,
-                       automod_reason: Optional[str] = None) -> bool:
+                       automod_reason: Optional[str] = None,
+                       only_if_status: Optional[str] = None) -> bool:
         """
         Update a comment. Returns True on success.
 
@@ -224,12 +239,17 @@ class CommentsRepo:
           - status: explicit status override.
           - soft_delete: replace body with [removed], set deleted_at, status='deleted'.
           - automod_state / automod_reason: record automod verdict metadata.
+          - only_if_status: compare-and-swap guard — the UPDATE only applies while
+            the row still has this status (automod uses 'pending' so it can never
+            overwrite an admin decision made during its LLM call).
 
         When status transitions to 'approved', the matching commenter is also
         flipped to is_trusted=1 (first-comment approval grants future trust).
         """
         existing = self.get_comment(comment_id)
         if existing is None:
+            return False
+        if only_if_status is not None and existing['status'] != only_if_status:
             return False
 
         sets, vals = [], []
@@ -263,9 +283,15 @@ class CommentsRepo:
             return False
 
         vals.append(comment_id)
+        where = "id = ?"
+        if only_if_status is not None:
+            where += " AND status = ?"
+            vals.append(only_if_status)
         with self._conn() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"UPDATE comments SET {', '.join(sets)} WHERE id = ?", vals)
+            cursor.execute(f"UPDATE comments SET {', '.join(sets)} WHERE {where}", vals)
+            if only_if_status is not None and cursor.rowcount == 0:
+                return False  # lost the race — someone changed the status meanwhile
 
         # Trust escalation on approval
         if new_status == 'approved':

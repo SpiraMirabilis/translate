@@ -1,6 +1,40 @@
 import { useEffect, useMemo, useRef, memo } from 'react'
 import { CATEGORY_COLORS } from '../../utils/categories'
-import { highlightSegments, applySearchHighlights } from '../../lib/editorHighlights'
+import { highlightSegments } from '../../lib/editorHighlights'
+
+// Merge entity segments and search-match ranges for one line into flat
+// intervals so search marks can overlay entity marks. Spans are split at
+// every boundary, so a part can be entity-only, search-only, or both.
+function mergeLineHighlights(line, matcher, lineMatches, activeMatch) {
+  const entityRanges = []
+  let pos = 0
+  for (const seg of highlightSegments(line, matcher, true)) {
+    if (seg.entity) entityRanges.push({ start: pos, end: pos + seg.text.length, entity: seg.entity })
+    pos += seg.text.length
+  }
+  const searchRanges = (lineMatches || [])
+    .map(m => ({
+      start: m.col,
+      end: Math.min(m.col + m.length, line.length),
+      active: !!(activeMatch && m.col === activeMatch.col && m.length === activeMatch.length && m.field === activeMatch.field),
+    }))
+    .filter(r => r.end > r.start)
+
+  const cuts = new Set([0, line.length])
+  for (const r of entityRanges) { cuts.add(r.start); cuts.add(r.end) }
+  for (const r of searchRanges) { cuts.add(r.start); cuts.add(r.end) }
+  const points = [...cuts].sort((a, b) => a - b)
+
+  const parts = []
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1]
+    if (a >= b) continue
+    const entity = entityRanges.find(r => r.start <= a && b <= r.end)?.entity || null
+    const search = searchRanges.find(r => r.start <= a && b <= r.end) || null
+    parts.push({ text: line.slice(a, b), entity, search: !!search, active: !!search?.active })
+  }
+  return parts.length ? parts : [{ text: line, entity: null, search: false, active: false }]
+}
 
 // ── English overlay backdrop component ───────────────────────────────
 const EnglishBackdrop = memo(function EnglishBackdrop({ text, textLines, matcher, scrollTop, paddingClass, searchMatches, activeMatch }) {
@@ -34,34 +68,37 @@ const EnglishBackdrop = memo(function EnglishBackdrop({ text, textLines, matcher
       style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}
     >
       {hasSearchMatches ? (
-        // Line-by-line rendering with search highlights
+        // Line-by-line rendering: entity highlights AND search highlights.
+        // Search marks overlay entity marks (the search background wins on
+        // overlap; the entity's dashed underline is kept).
         textLines.map((line, lineIdx) => {
-          const lineMatches = searchByLine[lineIdx]
-          if (lineMatches && lineMatches.length > 0) {
-            const parts = applySearchHighlights(line, lineMatches, activeMatch)
-            return (
-              <span key={lineIdx}>
-                {parts.map((p, j) => {
-                  if (p.search) {
-                    return (
-                      <span
-                        key={j}
-                        style={{
-                          backgroundColor: p.active ? '#f59e0b' : '#fbbf24',
-                          borderRadius: '1px',
-                        }}
-                      >
-                        <span style={{ color: 'transparent' }}>{p.text}</span>
-                      </span>
-                    )
-                  }
+          const parts = mergeLineHighlights(line, matcher, searchByLine[lineIdx], activeMatch)
+          return (
+            <span key={lineIdx}>
+              {parts.map((p, j) => {
+                if (!p.entity && !p.search) {
                   return <span key={j} style={{ color: 'transparent' }}>{p.text}</span>
-                })}
-                {lineIdx < textLines.length - 1 ? '\n' : ''}
-              </span>
-            )
-          }
-          return <span key={lineIdx} style={{ color: 'transparent' }}>{line}{lineIdx < textLines.length - 1 ? '\n' : ''}</span>
+                }
+                const colors = p.entity
+                  ? (CATEGORY_COLORS[p.entity.category] || CATEGORY_COLORS.characters)
+                  : null
+                const style = { borderRadius: p.search ? '1px' : '2px' }
+                if (colors) {
+                  style.backgroundColor = colors.bg
+                  style.borderBottom = `1px dashed ${colors.border}`
+                }
+                if (p.search) {
+                  style.backgroundColor = p.active ? '#f59e0b' : '#fbbf24'
+                }
+                return (
+                  <span key={j} style={style}>
+                    <span style={{ color: 'transparent' }}>{p.text}</span>
+                  </span>
+                )
+              })}
+              {lineIdx < textLines.length - 1 ? '\n' : ''}
+            </span>
+          )
         })
       ) : (
         // Original entity-only rendering

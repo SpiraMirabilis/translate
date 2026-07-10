@@ -176,7 +176,12 @@ class ClaudeProvider(ModelProvider):
                 break
             except anthropic.BadRequestError as e:
                 msg = str(e).lower()
-                if "output_config" in request_params:
+                # Only treat this as an effort rejection when the error actually
+                # implicates the effort params — an unrelated 400 (bad content,
+                # too many tokens, …) must not memoize the model as
+                # effort-rejecting and silently downgrade every later call.
+                if "output_config" in request_params and (
+                        "output_config" in msg or "thinking" in msg or "effort" in msg):
                     _MODELS_REJECTING_EFFORT.add(model)
                     request_params.pop("output_config", None)
                     request_params.pop("thinking", None)

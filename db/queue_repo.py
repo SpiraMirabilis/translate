@@ -97,17 +97,6 @@ class QueueRepo:
             with self._conn() as conn:
                 cursor = conn.cursor()
 
-                if priority:
-                    # Place at front: use min(position) - 1
-                    cursor.execute('SELECT MIN(position) FROM queue')
-                    min_pos = cursor.fetchone()[0]
-                    next_position = (min_pos - 1) if min_pos is not None else 0
-                else:
-                    # Place at back: use max(position) + 1
-                    cursor.execute('SELECT MAX(position) FROM queue')
-                    max_pos = cursor.fetchone()[0]
-                    next_position = (max_pos + 1) if max_pos is not None else 0
-
                 # Serialize content as JSON if list (like chapters table)
                 if isinstance(content, list):
                     content_json = json.dumps(content, ensure_ascii=False)
@@ -124,13 +113,23 @@ class QueueRepo:
                 # Normalize reason: treat empty/whitespace as None
                 reason = (retranslation_reason or "").strip() or None
 
-                # Insert queue item
-                cursor.execute('''
+                # Insert queue item. The position is computed inside the INSERT
+                # (single statement) — a separate SELECT MAX + INSERT raced under
+                # concurrency and the loser's row violated the UNIQUE(position)
+                # constraint (silently swallowed in non-strict mode).
+                if priority:
+                    pos_select = "SELECT COALESCE(MIN(position), 1) - 1 FROM queue"
+                else:
+                    pos_select = "SELECT COALESCE(MAX(position), -1) + 1 FROM queue"
+                cursor.execute(f'''
             INSERT INTO queue (book_id, chapter_number, title, source, content, metadata, position, created_date, retranslation_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (book_id, chapter_number, title or "Untitled", source, content_json, metadata_json, next_position, created_date, reason))
+            SELECT ?, ?, ?, ?, ?, ?, ({pos_select}), ?, ?
+            ''', (book_id, chapter_number, title or "Untitled", source, content_json, metadata_json, created_date, reason))
 
                 queue_id = cursor.lastrowid
+                cursor.execute("SELECT position FROM queue WHERE id = ?", (queue_id,))
+                row = cursor.fetchone()
+                next_position = row[0] if row else None
 
             self.logger.info(f"Added item to queue (ID: {queue_id}, position: {next_position}) for book '{book['title']}'")
             return queue_id
