@@ -438,9 +438,11 @@ class CommentsRepo:
                     (comment_id, norm, now),
                 )
                 return True
-            except Exception:
-                # Duplicate — UNIQUE constraint violation
-                conn.rollback()
-                return False
-            finally:
-                conn.close()
+            except Exception as e:
+                # Duplicate — UNIQUE constraint violation (sqlite3.IntegrityError /
+                # mysql.connector IntegrityError; no common base class across backends).
+                # _conn() owns commit/rollback/close — never touch the connection here.
+                msg = str(e)
+                if 'IntegrityError' in type(e).__name__ or 'UNIQUE' in msg or 'Duplicate' in msg:
+                    return False
+                raise

@@ -125,7 +125,8 @@ class LogsRepo:
                         (limit,)
                     )
                 rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+                cols = ['id', 'book_id', 'chapter_number', 'ip', 'viewed_at']
+                return [dict(zip(cols, r)) for r in rows]
         except Exception as e:
             self.logger.error(f"Error reading reader log: {e}")
             return []

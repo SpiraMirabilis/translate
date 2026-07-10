@@ -23,6 +23,11 @@ from database import DEFAULT_CATEGORIES
 from chapter_text_ops import decase_lines, substitute_in_lines, source_mentions
 CATEGORIES = DEFAULT_CATEGORIES
 
+# Null-safe book_id match that works on both backends. SQLite's `book_id IS ?`
+# is not valid MySQL syntax once the placeholder becomes a literal value.
+# Bind the book_id parameter TWICE for each use of this fragment.
+_BOOK_MATCH = "(book_id = ? OR (? IS NULL AND book_id IS NULL))"
+
 
 # ------------------------------------------------------------------
 # Request models
@@ -134,8 +139,10 @@ def list_entities(
         out = {}
         if limit is not None:
             # Paginated mode: include the unpaginated total so clients can page.
-            cursor.execute("SELECT COUNT(*) FROM entities" + where, params)
-            out["total"] = cursor.fetchone()[0]
+            # Alias the count: dict-row cursors (MySQL) key by column name,
+            # so bare COUNT(*) + fetchone()[0] only works on sqlite3.Row.
+            cursor.execute("SELECT COUNT(*) AS n FROM entities" + where, params)
+            out["total"] = cursor.fetchone()["n"]
             query += " LIMIT ? OFFSET ?"
             params = params + [limit, offset]
 
@@ -396,8 +403,9 @@ def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[str] = 
         dup_untranslated = []
         for row in cursor.fetchall():
             cursor.execute(
-                "SELECT id, category, translation, last_chapter FROM entities WHERE untranslated = ? AND book_id IS ? ORDER BY category",
-                (row["untranslated"], row["book_id"]),
+                "SELECT id, category, translation, last_chapter FROM entities "
+                "WHERE untranslated = ? AND " + _BOOK_MATCH + " ORDER BY category",
+                (row["untranslated"], row["book_id"], row["book_id"]),
             )
             instances = [dict(r) for r in cursor.fetchall()]
             dup_untranslated.append({
@@ -418,8 +426,9 @@ def get_duplicates(book_id: Optional[int] = Query(None), scope: Optional[str] = 
         dup_translations = []
         for row in cursor.fetchall():
             cursor.execute(
-                "SELECT id, category, untranslated, last_chapter FROM entities WHERE translation = ? AND book_id IS ? ORDER BY category",
-                (row["translation"], row["book_id"]),
+                "SELECT id, category, untranslated, last_chapter FROM entities "
+                "WHERE translation = ? AND " + _BOOK_MATCH + " ORDER BY category",
+                (row["translation"], row["book_id"], row["book_id"]),
             )
             instances = [dict(r) for r in cursor.fetchall()]
             dup_translations.append({
@@ -444,14 +453,14 @@ def resolve_duplicate(req: DuplicateResolveRequest):
             if not req.keep_category:
                 raise HTTPException(status_code=400, detail="keep_category required for keep_one action.")
             cursor.execute(
-                "DELETE FROM entities WHERE untranslated = ? AND category != ? AND book_id IS ?",
-                (req.untranslated, req.keep_category, req.book_id),
+                "DELETE FROM entities WHERE untranslated = ? AND category != ? AND " + _BOOK_MATCH,
+                (req.untranslated, req.keep_category, req.book_id, req.book_id),
             )
 
         elif req.action == "delete_all":
             cursor.execute(
-                "DELETE FROM entities WHERE untranslated = ? AND book_id IS ?",
-                (req.untranslated, req.book_id),
+                "DELETE FROM entities WHERE untranslated = ? AND " + _BOOK_MATCH,
+                (req.untranslated, req.book_id, req.book_id),
             )
 
         elif req.action == "rename":
@@ -459,8 +468,8 @@ def resolve_duplicate(req: DuplicateResolveRequest):
                 raise HTTPException(status_code=400, detail="renames required for rename action.")
             for category, new_translation in req.renames.items():
                 cursor.execute(
-                    "UPDATE entities SET translation = ? WHERE untranslated = ? AND category = ? AND book_id IS ?",
-                    (new_translation, req.untranslated, category, req.book_id),
+                    "UPDATE entities SET translation = ? WHERE untranslated = ? AND category = ? AND " + _BOOK_MATCH,
+                    (new_translation, req.untranslated, category, req.book_id, req.book_id),
                 )
 
         else:

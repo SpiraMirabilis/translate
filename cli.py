@@ -1,6 +1,7 @@
 import os
 from epub_processor import EPUBProcessor
 from fb2_processor import FB2Processor
+from directory_processor import DirectoryProcessor
 from typing import Dict, List, Optional, Any, Union, Tuple
 from abc import ABC, abstractmethod
 from database import DatabaseManager
@@ -1748,7 +1749,7 @@ class CommandLineInterface(UserInterface):
                     print(f"  {alias} -> {target}")
             
             print(f"\nExample usage:")
-            print(f"  python translator.py --model openai:gpt-4-turbo --file chapter.txt")
+            print(f"  python translator.py --model openai:gpt-5.4 --file chapter.txt")
             print(f"  python translator.py --model claude:claude-3-5-sonnet-20241022 --file chapter.txt")
             print(f"  python translator.py --model deepseek:deepseek-chat --file chapter.txt")
             
