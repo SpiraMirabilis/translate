@@ -79,6 +79,7 @@ function WsProvider({ children }) {
   const reconnectTimer = useRef(null)
   const listenersRef = useRef(new Set())
   const everConnectedRef = useRef(false)
+  const unmountedRef = useRef(false)
 
   const subscribe = useCallback((fn) => {
     listenersRef.current.add(fn)
@@ -94,6 +95,7 @@ function WsProvider({ children }) {
   }, [])
 
   const connect = useCallback(() => {
+    if (unmountedRef.current) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${protocol}//${location.host}/ws`)
@@ -109,6 +111,11 @@ function WsProvider({ children }) {
     }
     ws.onclose   = () => {
       setConnected(false)
+      // onclose also fires AFTER unmount cleanup calls ws.close() — without
+      // the guard that schedules a zombie reconnect loop nobody can stop
+      // (e.g. session expiry unmounts WsProvider; re-login mounts a second
+      // provider while the orphan keeps cycling until a full page reload).
+      if (unmountedRef.current) return
       reconnectTimer.current = setTimeout(connect, 2000)
     }
     ws.onerror   = () => ws.close()
@@ -122,8 +129,10 @@ function WsProvider({ children }) {
   }, [deliver])
 
   useEffect(() => {
+    unmountedRef.current = false
     connect()
     return () => {
+      unmountedRef.current = true
       clearTimeout(reconnectTimer.current)
       wsRef.current?.close()
     }

@@ -158,7 +158,19 @@ export default function ChapterEditor() {
   )
 
   useEffect(() => {
+    // Reset per-chapter state: this component instance is reused across
+    // prev/next navigation. Without these, the previous chapter's dirty
+    // flag re-arms the nav blocker, its retranslation annotations render on
+    // the new chapter's lines, and (worst) the draft-autosave timer can
+    // persist the OLD chapter's text under the NEW chapter's draft key —
+    // whose "restore" would corrupt the new chapter.
     setDraftOffer(null)
+    setLoading(true)
+    setError(null)
+    setDirty(false)
+    setAnnotations({})
+    setWpStatus(null)
+    clearUndoInfo()
     Promise.all([
       api.getChapter(parseInt(bookId), parseInt(chapterNum)),
       api.getBook(parseInt(bookId)),
@@ -250,7 +262,10 @@ export default function ChapterEditor() {
   // so session expiry or an accidental exit can be recovered.
   const chapterTitle = chapter?.title ?? null
   useEffect(() => {
-    if (!dirty) return
+    // `!loading` guard: during chapter navigation the draftKey has already
+    // changed while `text` still holds the previous chapter — arming the
+    // timer in that window would save the wrong chapter's draft.
+    if (!dirty || loading) return
     const timer = setTimeout(() => {
       try {
         localStorage.setItem(draftKey, JSON.stringify({
@@ -261,7 +276,7 @@ export default function ChapterEditor() {
       } catch { /* quota exceeded — ignore */ }
     }, 2000)
     return () => clearTimeout(timer)
-  }, [dirty, text, chapterTitle, draftKey])
+  }, [dirty, loading, text, chapterTitle, draftKey])
 
   const restoreDraft = useCallback(() => {
     if (!draftOffer) return

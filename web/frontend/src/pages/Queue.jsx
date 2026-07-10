@@ -69,6 +69,15 @@ export default function Queue() {
   // the handler closure is always the latest render's, so autoProcess/load are
   // read fresh without ref plumbing or dedup.
   useWsEvent((msg) => {
+    // Replayed terminal events (re-sent on every socket accept) must not
+    // repaint status: on first load they can race the mount-time
+    // getJobStatus fetch and a days-old complete/error would win. Live
+    // state comes from that fetch and the ws_reconnected catch-up.
+    if (msg.replayed && (msg.type === 'translation_complete' || msg.type === 'error'
+                         || msg.type === 'auto_process_done'
+                         || msg.type === 'translation_cancelled')) {
+      return
+    }
     if (msg.type === 'ws_reconnected') {
       // One-shot catch-up after a reconnect: WsQueryBridge refetches the queue
       // list (blanket invalidation); refresh local job status here.

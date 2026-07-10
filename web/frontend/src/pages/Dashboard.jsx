@@ -92,12 +92,24 @@ export default function Dashboard() {
 
   // Handle WebSocket messages — every message is delivered via the WS fan-out
   // (useWsEvent), so nothing is lost to React 18 batching. Missed events are
-  // replayed by the backend on connect (flagged `replayed: true`); they're
-  // handled identically since all effects here are idempotent. The backend
+  // replayed by the backend on connect (flagged `replayed: true`). The backend
   // does NOT replay activity_log/progress — the ws_reconnected catch-up below
   // re-syncs those from the REST API instead.
   useWsEvent((msg) => {
     const { type } = msg
+
+    // Replayed TERMINAL events must not re-run side effects: the backend
+    // re-sends the newest complete/error/cancelled on every socket accept
+    // for the process lifetime, so a days-old `translation_complete` would
+    // repaint the badge and clobber a user-edited chapter number on any
+    // reconnect. Current state already arrives via the mount-time
+    // getJobStatus query and the ws_reconnected catch-up. Replayed
+    // pending-PROMPT events still flow — the backend drops resolved prompts
+    // from the replay buffer, so a replayed one is genuinely still pending.
+    if (msg.replayed && (type === 'translation_complete' || type === 'error'
+                         || type === 'translation_cancelled')) {
+      return
+    }
 
     if (type === 'ws_reconnected') {
       // One-shot catch-up after the socket re-opens: restore job status and
