@@ -44,9 +44,15 @@ def _valid_ip(value: str) -> str:
         return ""
 
 
+def is_trusted_proxy(request: Request) -> bool:
+    """True when the direct socket peer is on the trusted-proxy allowlist."""
+    peer = request.client.host if request.client else ""
+    return peer in _trusted_proxies()
+
+
 def client_ip(request: Request) -> str:
     peer = request.client.host if request.client else ""
-    if peer not in _trusted_proxies():
+    if not is_trusted_proxy(request):
         # Direct connection (or untrusted proxy): never trust headers.
         return _valid_ip(peer) or peer
 

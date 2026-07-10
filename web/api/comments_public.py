@@ -27,6 +27,7 @@ import os
 import re
 import hmac
 import hashlib
+from html import escape as html_escape
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response
@@ -102,6 +103,27 @@ def _viewer_meta(uuid: Optional[str]) -> dict:
         "is_trusted": bool(_db.is_commenter_trusted(uuid)),
         "captcha_required": _captcha_required_for(uuid),
     }
+
+
+def _public_book_or_none(book_id: int):
+    """Return the book if it exists and is publicly visible, else None.
+
+    Private books must not surface comment threads (or even the fact that
+    comments are enabled) on the unauthenticated API.
+    """
+    book = _db.get_book(book_id=book_id)
+    if not book or not book.get("is_public", True):
+        return None
+    return book
+
+
+def _chapter_visible_for_comments(book_id: int, chapter_number: int) -> bool:
+    """True when the chapter is publicly readable (or is book-level discussion)."""
+    # chapter_number 0 is the book-discussion pseudo-chapter.
+    if not chapter_number or chapter_number <= 0:
+        return True
+    return bool(_db.get_chapter(book_id=book_id, chapter_number=chapter_number,
+                                published_only=True))
 
 
 # ------------------------------------------------------------------
@@ -208,9 +230,13 @@ async def list_chapter_comments(
     response.headers["Cache-Control"] = "private, max-age=60"
     response.headers["Vary"] = "X-Commenter-UUID"
 
+    # Private books: empty payload (not 404) so the reader badge stays quiet
+    # without leaking that the book exists. Same shape as "comments disabled".
+    if not _public_book_or_none(book_id):
+        return {"comments": [], "count": 0, "enabled": False, "viewer": _viewer_meta(viewer)}
     if not _db.get_book_comments_enabled(book_id):
-        # Comments disabled for this book — return empty rather than 403 so
-        # the badge silently shows 0 and the icon can be hidden by the UI.
+        return {"comments": [], "count": 0, "enabled": False, "viewer": _viewer_meta(viewer)}
+    if not _chapter_visible_for_comments(book_id, chapter_number):
         return {"comments": [], "count": 0, "enabled": False, "viewer": _viewer_meta(viewer)}
 
     rows = _db.list_comments_for_chapter(book_id, chapter_number, viewer)
@@ -235,7 +261,11 @@ async def count_chapter_comments(
     viewer = _viewer_uuid(x_commenter_uuid)
     response.headers["Cache-Control"] = "private, max-age=60"
     response.headers["Vary"] = "X-Commenter-UUID"
+    if not _public_book_or_none(book_id):
+        return {"count": 0, "enabled": False, "viewer": _viewer_meta(viewer)}
     if not _db.get_book_comments_enabled(book_id):
+        return {"count": 0, "enabled": False, "viewer": _viewer_meta(viewer)}
+    if not _chapter_visible_for_comments(book_id, chapter_number):
         return {"count": 0, "enabled": False, "viewer": _viewer_meta(viewer)}
     n = _db.count_comments_visible(book_id, chapter_number, viewer)
     return {"count": n, "enabled": True, "viewer": _viewer_meta(viewer)}
@@ -260,16 +290,18 @@ async def create_comment(
     if not body:
         raise HTTPException(status_code=400, detail="Comment body is required.")
 
+    # Private books: same 404 as a missing book (no existence leak via comments).
+    if not _public_book_or_none(req.book_id):
+        raise HTTPException(status_code=404, detail="Book not found.")
+
     # Per-book toggle
     if not _db.get_book_comments_enabled(req.book_id):
         raise HTTPException(status_code=403, detail="Comments are disabled for this book.")
 
     # Drafts and not-yet-due scheduled chapters aren't publicly visible — no
     # comments on them. chapter_number 0 is the book-discussion pseudo-chapter.
-    if req.chapter_number and req.chapter_number > 0:
-        if not _db.get_chapter(book_id=req.book_id, chapter_number=req.chapter_number,
-                               published_only=True):
-            raise HTTPException(status_code=404, detail="Chapter not found.")
+    if not _chapter_visible_for_comments(req.book_id, req.chapter_number):
+        raise HTTPException(status_code=404, detail="Chapter not found.")
 
     # Real client IP + rate limits
     ip = client_ip(request)
@@ -398,7 +430,8 @@ async def unsubscribe_confirm(token: str = ""):
     email = verify_unsubscribe_token(token)
     if not email:
         return HTMLResponse(_INVALID_UNSUB_PAGE, status_code=400)
-    site_name = os.getenv("PUBLIC_SITE_NAME") or os.getenv("SITE_NAME") or "Reader"
+    site_name = html_escape(
+        os.getenv("PUBLIC_SITE_NAME") or os.getenv("SITE_NAME") or "Reader")
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8>"
         f"<title>Unsubscribe — {site_name}</title>"
@@ -424,7 +457,8 @@ async def unsubscribe(token: str = ""):
     if not email:
         return HTMLResponse(_INVALID_UNSUB_PAGE, status_code=400)
     _db.add_email_suppression(email, reason="unsubscribe")
-    site_name = os.getenv("PUBLIC_SITE_NAME") or os.getenv("SITE_NAME") or "Reader"
+    site_name = html_escape(
+        os.getenv("PUBLIC_SITE_NAME") or os.getenv("SITE_NAME") or "Reader")
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8>"
         f"<title>Unsubscribed — {site_name}</title>"

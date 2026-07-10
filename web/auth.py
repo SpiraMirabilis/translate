@@ -7,6 +7,7 @@ completely disabled (local-dev mode).
 """
 
 import hashlib
+import hmac
 import os
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -14,6 +15,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from pydantic import BaseModel
+
+from web.services import public_guard
+from web.services.ip import client_ip, is_trusted_proxy
 
 # ── Configuration ────────────────────────────────────────────────────
 
@@ -26,9 +30,21 @@ _serializer: URLSafeTimedSerializer | None = None
 _secure_cookie: bool | None = None  # None = auto-detect from request
 _public_library: bool = True  # Whether /api/public/* is accessible without auth
 
+# Login brute-force guards (per-IP sliding windows).
+_login_short = public_guard.SlidingWindowLimiter(
+    60, 5, "Too many login attempts. Try again in a minute.")
+_login_long = public_guard.SlidingWindowLimiter(
+    3600, 20, "Too many login attempts. Try again later.")
+
 
 def is_public_library() -> bool:
     return _public_library
+
+
+def reset_login_limiters():
+    """Clear login rate-limit state (test hook / after configure_auth)."""
+    _login_short.reset()
+    _login_long.reset()
 
 
 def configure_auth():
@@ -51,6 +67,9 @@ def configure_auth():
             f"t9-session-signing:{_password}".encode()
         ).hexdigest()
         _serializer = URLSafeTimedSerializer(secret)
+    # Fresh limiters whenever auth is (re)configured so test suites that
+    # rebuild apps and re-login don't trip the 5/min guard on 127.0.0.1.
+    reset_login_limiters()
 
 
 def auth_required() -> bool:
@@ -61,8 +80,13 @@ def _is_secure(request: Request) -> bool:
     """Determine whether the cookie Secure flag should be set."""
     if _secure_cookie is not None:
         return _secure_cookie
-    # Auto-detect: trust X-Forwarded-Proto set by reverse proxy
-    return request.headers.get("x-forwarded-proto", "").lower() == "https"
+    # Only trust X-Forwarded-Proto from a trusted reverse proxy (same
+    # allowlist as client_ip). A direct client forging the header must not
+    # force Secure=False (or True) on the session cookie.
+    if is_trusted_proxy(request):
+        return request.headers.get("x-forwarded-proto", "").lower() == "https"
+    # Direct connection: Secure if the request itself is HTTPS.
+    return request.url.scheme == "https"
 
 
 def validate_cookie(cookie_value: str) -> bool:
@@ -129,7 +153,15 @@ async def login(req: LoginRequest, request: Request, response: Response):
     if not auth_required():
         return {"authenticated": True}
 
-    if req.password != _password:
+    ip = client_ip(request) or "unknown"
+    _login_short.check(ip)
+    _login_long.check(ip)
+
+    # Constant-time compare via fixed-length digests so unequal password
+    # lengths don't short-circuit or raise on hmac.compare_digest.
+    offered_h = hashlib.sha256((req.password or "").encode("utf-8")).digest()
+    expected_h = hashlib.sha256((_password or "").encode("utf-8")).digest()
+    if not hmac.compare_digest(offered_h, expected_h):
         raise HTTPException(status_code=403, detail="Wrong password")
 
     secure = _is_secure(request)

@@ -93,13 +93,11 @@ def _correlate(payload: IngestReply):
             if verify_rec(rec_id, sig) and _db.get_recommendation(rec_id):
                 return (rec_id, "plus")
 
-    # (b) our Message-ID pattern echoed in In-Reply-To / References.
-    for value in (payload.in_reply_to, payload.references):
-        m = _MSGID_RE.search(value or "")
-        if m:
-            rec_id = int(m.group(1))
-            if _db.get_recommendation(rec_id):
-                return (rec_id, "msgid")
+    # (b) Message-ID correlation is deliberately NOT accepted without a
+    # signature: In-Reply-To / References are attacker-controlled headers
+    # once mail reaches the monitored mailbox, and rec{N}.hex@ is forgeable.
+    # Only the signed plus-address tag (path a) is trusted for auto-match.
+    # Unmatched replies still land in the admin Unmatched tab for manual link.
 
     # (c) give up — store as unmatched (surfaced in the admin Unmatched tab).
     return (None, "unmatched")

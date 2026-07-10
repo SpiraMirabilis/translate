@@ -237,6 +237,32 @@ class TestPublicSurfaces:
         resp = api_client.post("/api/public/comments", json={**body, "chapter_number": 1})
         assert resp.status_code != 404
 
+    def test_comments_hidden_for_private_book(self, api_client, admin_client, db):
+        """Private books must not expose comment list/create on the public API."""
+        resp = admin_client.post("/api/books", json={"title": "Private Comments Book"})
+        book_id = resp.json()["id"]
+        _save(db, book_id, 1, lines=["published prose"])
+        db.update_book(book_id, is_public=False)
+
+        body = {
+            "book_id": book_id, "chapter_number": 1,
+            "commenter_uuid": "01234567-89ab-4cde-8f01-23456789abcd",
+            "email": "a@b.com",
+            "display_name": "X", "body": "hello", "turnstile_token": "",
+        }
+        # Create: 404 (same as missing book — no existence leak)
+        assert api_client.post("/api/public/comments", json=body).status_code == 404
+        # List/count: empty + disabled, not 500 and not a real thread
+        listed = api_client.get(f"/api/public/comments/chapter/{book_id}/1")
+        assert listed.status_code == 200
+        data = listed.json()
+        assert data["comments"] == []
+        assert data["enabled"] is False
+        counted = api_client.get(f"/api/public/comments/chapter/{book_id}/1/count")
+        assert counted.status_code == 200
+        assert counted.json()["count"] == 0
+        assert counted.json()["enabled"] is False
+
 
 class TestMigrationBackfill:
     def test_backfill_existing_chapters_stay_visible(self, tmp_path):

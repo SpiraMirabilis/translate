@@ -75,6 +75,24 @@ def attach_illustrations(db, book_id, ch):
     return ch
 
 
+def safe_media_path(script_dir, rel_path):
+    """Resolve rel_path under script_dir; raise 404 if it escapes the root.
+
+    Defense-in-depth against a poisoned cover_image / illustrations.filename
+    (e.g. '../../.env') reaching FileResponse.
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        raise HTTPException(status_code=404, detail="File missing.")
+    # Reject absolute paths and null bytes up front.
+    if os.path.isabs(rel_path) or "\x00" in rel_path:
+        raise HTTPException(status_code=404, detail="File missing.")
+    root = os.path.realpath(script_dir)
+    candidate = os.path.realpath(os.path.join(root, rel_path))
+    if candidate != root and not candidate.startswith(root + os.sep):
+        raise HTTPException(status_code=404, detail="File missing.")
+    return candidate
+
+
 def cdn_redirect_or_file(db, rel_path, local_filepath, media_type=None, headers=None):
     """Redirect to the CDN object if present, else serve the local file."""
     try:
@@ -84,6 +102,18 @@ def cdn_redirect_or_file(db, rel_path, local_filepath, media_type=None, headers=
             key = spaces.key_for(cfg, rel_path)
             if spaces.exists(cfg, key):
                 return RedirectResponse(spaces.public_url(cfg, key), status_code=302)
+    except Exception:
+        pass
+    # Containment check even when the caller already joined script_dir —
+    # catches a relative path that escaped via '..' components.
+    try:
+        root = os.path.realpath(db.config.script_dir)
+        resolved = os.path.realpath(local_filepath)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            raise HTTPException(status_code=404, detail="File missing.")
+        local_filepath = resolved
+    except HTTPException:
+        raise
     except Exception:
         pass
     if not os.path.exists(local_filepath):

@@ -174,6 +174,15 @@ def create_app(config=None, logger=None) -> FastAPI:
     # ------------------------------------------------------------------
     @app.get("/simple", response_class=HTMLResponse)
     async def simple_book_list():
+        from web.auth import is_public_library, auth_required
+        # Honour the same public-library gate as /api/public/* — otherwise
+        # turning T9_PUBLIC_LIBRARY off still leaks the catalog at /simple.
+        if auth_required() and not is_public_library():
+            return HTMLResponse(
+                "<!DOCTYPE html><title>Not found</title><p>Not found.</p>",
+                status_code=404,
+            )
+
         import azw3
         site = getattr(config, "public_site_name", None) or "Library"
         azw3_on = azw3.is_available()  # only show the AZW3 column when we can build them

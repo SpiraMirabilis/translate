@@ -135,6 +135,11 @@ def api_client(web_app):
 def admin_client(web_app):
     """Client holding a valid admin session cookie (real login flow)."""
     from tests.api_client import SyncASGIClient
+    from web.auth import reset_login_limiters
+
+    # Per-test reset: many HTTP tests share 127.0.0.1 and would otherwise
+    # exhaust the login sliding-window limiter mid-suite.
+    reset_login_limiters()
 
     login = SyncASGIClient(web_app).post(
         "/api/auth/login", json={"password": TEST_PASSWORD})
