@@ -391,16 +391,6 @@ class CommandLineInterface(UserInterface):
         else:
             self.chapter_number = None
 
-        # Handle retranslation
-        if args.retranslate:
-            if not args.book_id or not args.chapter_number:
-                print("Error: --retranslate requires --book-id and --chapter-number")
-                exit(1)
-            
-            return self._retranslate_chapter(args.book_id, args.chapter_number)
-        
-    # Rest of the method...
-
         # CLI provided API keys
         if args.key:
             # Determine which provider this key is for using the factory
@@ -433,6 +423,14 @@ class CommandLineInterface(UserInterface):
         # Handle advice model override
         if args.advice_model:
             self.translator.config.advice_model = args.advice_model
+
+        # Handle retranslation (after model/key overrides so --model applies)
+        if args.retranslate:
+            if not args.book_id or not args.chapter_number:
+                print("Error: --retranslate requires --book-id and --chapter-number")
+                exit(1)
+
+            return self._retranslate_chapter(args.book_id, args.chapter_number)
 
         # Directory processing, EPUB info editing, and queue listing/clearing
         self._dispatch_commands(args, _POST_MODEL_COMMANDS)
