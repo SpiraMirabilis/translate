@@ -62,6 +62,7 @@ SCHEMA = {
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 _data = None  # cached dict; populated lazily by load()
+_mtime_ns = None  # st_mtime_ns of settings.json when _data was last read
 
 
 def persist_env(key, value):
@@ -152,45 +153,74 @@ def _seed_from_env():
     return out
 
 
+def _file_mtime_ns():
+    try:
+        return os.stat(_PATH).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _load_locked():
+    """(Re)read settings.json into the cache. Caller must hold _lock."""
+    global _data, _mtime_ns
+    if os.path.exists(_PATH):
+        with open(_PATH, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        # Fill in any missing keys with defaults so newly-added settings
+        # don't break existing deployments.
+        data = {key: stored.get(key, default) for key, (_, default, _) in SCHEMA.items()}
+    else:
+        data = _seed_from_env()
+        _save_locked(data)
+
+    _sync_to_env(data)
+    _data = data
+    _mtime_ns = _file_mtime_ns()
+
+
+def _refresh_locked():
+    """Reload the cache when settings.json changed on disk. Caller holds _lock.
+
+    The admin and public reader apps run as separate processes sharing one
+    settings.json; without this, a process would never see the other's
+    update() writes (cache toggles, site names, public_library, ...).
+    _save_locked() writes via os.replace, so a concurrent read never sees a
+    partial file. A file that fails to parse (hand-edited) keeps the cached
+    values instead of taking the process down.
+    """
+    if _data is None:
+        _load_locked()
+    elif _file_mtime_ns() != _mtime_ns:
+        try:
+            _load_locked()
+        except (ValueError, OSError):
+            pass  # keep serving the cached settings
+
+
 def load():
     """Load settings from settings.json (or seed from env on first run).
 
     Mirrors values into os.environ so legacy os.getenv() callers work.
-    Returns a copy of the loaded dict. Idempotent — subsequent calls return
-    the cached dict without re-reading the file.
+    Returns a copy of the loaded dict, re-reading the file only when its
+    mtime shows another process has rewritten it.
     """
-    global _data
     with _lock:
-        if _data is not None:
-            return dict(_data)
-
-        if os.path.exists(_PATH):
-            with open(_PATH, "r", encoding="utf-8") as f:
-                stored = json.load(f)
-            # Fill in any missing keys with defaults so newly-added settings
-            # don't break existing deployments.
-            data = {key: stored.get(key, default) for key, (_, default, _) in SCHEMA.items()}
-        else:
-            data = _seed_from_env()
-            _save_locked(data)
-
-        _sync_to_env(data)
-        _data = data
+        _refresh_locked()
         return dict(_data)
 
 
 def get(key, default=None):
-    """Return a single setting value."""
-    if _data is None:
-        load()
-    return _data.get(key, default)
+    """Return a single setting value (fresh across processes)."""
+    with _lock:
+        _refresh_locked()
+        return _data.get(key, default)
 
 
 def all_settings():
-    """Return a copy of the full settings dict."""
-    if _data is None:
-        load()
-    return dict(_data)
+    """Return a copy of the full settings dict (fresh across processes)."""
+    with _lock:
+        _refresh_locked()
+        return dict(_data)
 
 
 def update(updates):
@@ -198,17 +228,11 @@ def update(updates):
 
     Raises ValueError if any key is not in SCHEMA. Returns the updated dict.
     """
-    global _data
+    global _mtime_ns
     with _lock:
-        if _data is None:
-            # Inline first-load to avoid releasing+reacquiring the lock.
-            if os.path.exists(_PATH):
-                with open(_PATH, "r", encoding="utf-8") as f:
-                    stored = json.load(f)
-                _data = {key: stored.get(key, default) for key, (_, default, _) in SCHEMA.items()}
-            else:
-                _data = _seed_from_env()
-            _sync_to_env(_data)
+        # Merge onto the latest on-disk state so concurrent writers
+        # (admin + public processes) don't clobber each other's keys.
+        _refresh_locked()
 
         for key in updates:
             if key not in SCHEMA:
@@ -218,5 +242,6 @@ def update(updates):
             _data[key] = val
 
         _save_locked(_data)
+        _mtime_ns = _file_mtime_ns()
         _sync_to_env(_data)
         return dict(_data)

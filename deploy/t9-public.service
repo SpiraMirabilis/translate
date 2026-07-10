@@ -1,0 +1,50 @@
+# T9 Public Reader — systemd user service
+#
+# The public-only process (web/public_app.py): serves /api/public/*,
+# /api/health, /simple and the Library/Reader SPA on port 8001. No admin
+# routes, auth, or translation machinery exist in this process — the
+# reader vhost reverse-proxies to it wholesale, and heavy work in the
+# main t9.service (port 8000) cannot slow public serving.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/t9-public.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#
+# Usage:
+#   systemctl --user start t9-public
+#   systemctl --user status t9-public
+#   journalctl --user -u t9-public -f
+#
+# Enable on boot (requires lingering):
+#   loginctl enable-linger $USER
+#   systemctl --user enable t9-public
+
+[Unit]
+Description=T9 Public Reader
+After=network.target
+
+# Same .env as t9.service (DB credentials, Spaces, Turnstile, email, ...).
+AssertFileNotEmpty=%h/t9/.env
+ConditionPathExists=%h/t9/.env
+
+[Service]
+Type=exec
+WorkingDirectory=%h/t9
+
+# Build frontend if dist/ is missing (shared with t9.service)
+ExecStartPre=/bin/bash -c 'if [ ! -f web/frontend/dist/index.html ]; then echo "Building frontend..."; cd web/frontend && npm run build; fi'
+
+ExecStart=/usr/bin/python3 -m uvicorn web.public_app:app --host 127.0.0.1 --port 8001 --proxy-headers --forwarded-allow-ips='127.0.0.1'
+Restart=on-failure
+RestartSec=5
+
+# Environment
+EnvironmentFile=%h/t9/.env
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

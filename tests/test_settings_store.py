@@ -18,6 +18,7 @@ def store(tmp_path, monkeypatch):
     path = str(tmp_path / "settings.json")
     monkeypatch.setattr(settings_store, "_PATH", path)
     monkeypatch.setattr(settings_store, "_data", None)
+    monkeypatch.setattr(settings_store, "_mtime_ns", None)
     # Clear every managed env var so seeding is deterministic.
     for env_var, _default, _t in settings_store.SCHEMA.values():
         monkeypatch.delenv(env_var, raising=False)
@@ -84,12 +85,55 @@ def test_load_mirrors_values_into_environ(store, monkeypatch):
     assert os.environ["OVERLOAD_RETRY_WAIT_SECONDS"] == "300"
 
 
-def test_load_is_cached(store):
+def test_corrupt_file_keeps_cached_values(store):
     first = settings_store.load()
-    # Corrupt the file on disk — cached load must not re-read it.
+    # Corrupt the file on disk (hand-edit gone wrong) — the reload attempt
+    # must fail soft and keep serving the cached values.
     with open(store, "w") as f:
         f.write("{ this is not json")
     assert settings_store.load() == first
+    assert settings_store.get("site_name") == first["site_name"]
+
+
+# ── cross-process reload (mtime-based) ─────────────────────────────
+
+
+def test_external_write_is_picked_up(store):
+    """Another process rewriting settings.json is seen without a restart."""
+    settings_store.load()
+    assert settings_store.get("site_name") == "T9"
+
+    on_disk = json.load(open(store))
+    on_disk["site_name"] = "OtherProcess"
+    on_disk["disable_content_cache"] = True
+    with open(store, "w") as f:
+        json.dump(on_disk, f)
+    # Guarantee a different mtime even on coarse-timestamp filesystems.
+    st = os.stat(store)
+    os.utime(store, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    assert settings_store.get("site_name") == "OtherProcess"
+    assert settings_store.get("disable_content_cache") is True
+    # The reload re-mirrors into os.environ for legacy os.getenv() callers.
+    assert os.environ["SITE_NAME"] == "OtherProcess"
+
+
+def test_update_merges_onto_latest_disk_state(store):
+    """update() must not clobber keys another process changed since our read."""
+    settings_store.load()
+
+    on_disk = json.load(open(store))
+    on_disk["public_library"] = False
+    with open(store, "w") as f:
+        json.dump(on_disk, f)
+    st = os.stat(store)
+    os.utime(store, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    settings_store.update({"site_name": "Merged"})
+
+    result = json.load(open(store))
+    assert result["site_name"] == "Merged"
+    assert result["public_library"] is False  # other process's write survives
 
 
 # ── save / load round trip ─────────────────────────────────────────

@@ -124,6 +124,30 @@ def web_app(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def public_web_app(tmp_path, monkeypatch):
+    """Public-only app (the web/public_app.py surface) on a tmp SQLite DB.
+
+    Shares tmp_path with the `db` fixture like web_app does. settings_store
+    is pointed at a tmp settings.json so the PublicGateMiddleware and
+    /simple read a per-test public_library value, never the real file.
+    """
+    import settings_store
+
+    monkeypatch.setenv("T9_PUBLIC_LIBRARY", "1")
+    monkeypatch.setattr(settings_store, "_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(settings_store, "_data", None)
+    monkeypatch.setattr(settings_store, "_mtime_ns", None)
+
+    from web.services.view_logger import ViewLogger
+    monkeypatch.setattr(ViewLogger, "start", lambda self: None)
+
+    from web.app_factory import create_app
+
+    return create_app(config=FakeWebConfig(tmp_path), logger=FakeLogger(),
+                      public_only=True)
+
+
+@pytest.fixture
 def api_client(web_app):
     """Unauthenticated client against the test app."""
     from tests.api_client import SyncASGIClient

@@ -1,0 +1,40 @@
+# T9 Watchdog — systemd user service
+#
+# Monitors the health endpoints of t9.service (:8000) and t9-public.service
+# (:8001); restarts the failing service on sustained failure, escalating to
+# a VM reboot only if restarts don't recover it. Deliberately NOT BindsTo
+# either service — it must keep monitoring one while the other is stopped
+# (the watchdog skips cleanly stopped units instead of restarting them).
+#
+# Install:
+#   cp deploy/t9-watchdog.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now t9-watchdog
+#
+# Logs:
+#   journalctl --user -u t9-watchdog -f
+
+[Unit]
+Description=T9 Service Watchdog
+After=t9.service t9-public.service
+
+[Service]
+Type=exec
+WorkingDirectory=%h/t9
+ExecStart=/usr/bin/python3 deploy/t9_watchdog.py
+Restart=on-failure
+RestartSec=10
+
+# Optional tuning via environment (defaults are sensible)
+# Environment=T9_WATCHDOG_TARGETS=t9.service=http://127.0.0.1:8000/api/health;t9-public.service=http://127.0.0.1:8001/api/health
+# Environment=T9_POLL_INTERVAL=30
+# Environment=T9_FAIL_THRESHOLD=3
+# Environment=T9_RESTART_COOLDOWN=60
+# Environment=T9_REBOOT_AFTER_RESTARTS=2
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
