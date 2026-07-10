@@ -55,6 +55,18 @@
       "request_timeout_seconds": 600,
       "max_retries": 2
     },
+    "meta": {
+      "class": "OpenAIProvider",
+      "base_url": "https://api.meta.ai/v1/",
+      "api_key_env": "META_KEY",
+      "default_model": "muse-spark-1.1",
+      "models": ["muse-spark-1.1"],
+      "max_chars": 12000,
+      "max_output_tokens": 131072,
+      "connect_timeout_seconds": 15,
+      "request_timeout_seconds": 600,
+      "max_retries": 2
+    },
     "anthropic": {
       "class": "ClaudeProvider",
       "api_key_env": "ANTHROPIC_KEY",
@@ -120,6 +132,7 @@
     "ds": "deepseek",
     "claude": "anthropic",
     "grok": "xai",
+    "muse": "meta",
     "gemini": "google",
     "or": "openrouter",
     "cc": "claudecode"
