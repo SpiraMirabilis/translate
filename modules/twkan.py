@@ -204,6 +204,7 @@ def strip_ad_lines(content, line_matchers, substr_regexes):
 
 class TwkanModule(TranslationModule):
     id = "twkan"
+    default_enabled = True
     name = "Site Ad Stripper"
     description = ("Strip obfuscated source-site ad spam from source text "
                   "(confusable-aware). Whole-line ads are deleted; inline ad "
