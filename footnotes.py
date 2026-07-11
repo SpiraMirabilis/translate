@@ -30,6 +30,31 @@ SENT_RE = re.compile(SENT_OPEN + r"(\d+)" + SENT_CLOSE)
 PLACEHOLDER_RE = re.compile(r"\[(\d+)\]|" + SENT_OPEN + r"(\d+)" + SENT_CLOSE)
 
 
+# Bracket/quote pairs a marker should sit OUTSIDE of. When the anchored term is
+# wrapped in a matching pair, the marker hops the closer so a work's title stays
+# intact:  《Rhapsody on the Epang Palace》[2]  — not  《Rhapsody on the Epang[2]》.
+# Only hops when the character *before* the anchor is the opener matching the
+# character *after* it, so ordinary trailing punctuation is untouched:
+# "Decree Extending Grace[2]." keeps the marker before the period, as it should.
+CLOSER_FOR = {
+    "《": "》", "〈": "〉", "「": "」", "『": "』", "（": "）", "〔": "〕",
+    "【": "】", "〖": "〗", "〘": "〙", "〚": "〛",
+    "“": "”", "‘": "’", '"': '"', "'": "'", "(": ")", "[": "]", "{": "}",
+}
+
+
+def marker_position(line, start, end):
+    """Where a footnote marker for line[start:end] should be inserted.
+
+    Normally that is `end` (immediately after the term). If the term is wrapped in
+    a matching bracket/quote pair, the marker hops outside the closer — repeatedly,
+    so nested wrappers like 《"Title"》 are handled too."""
+    while 0 < start and end < len(line) and CLOSER_FOR.get(line[start - 1]) == line[end]:
+        start -= 1
+        end += 1
+    return end
+
+
 def content_to_list(raw):
     """Normalize chapter content (JSON string / list / str) to a list of lines."""
     if isinstance(raw, list):
@@ -116,8 +141,11 @@ def strip_footnotes(lines):
 
 
 def find_occurrence(prose_lines, anchor, occurrence):
-    """Return (line_idx, col_just_past_anchor) for the `occurrence`-th (1-based)
-    appearance of `anchor` across `prose_lines`, or None if not found."""
+    """Return (line_idx, marker_col) for the `occurrence`-th (1-based) appearance
+    of `anchor` across `prose_lines`, or None if not found.
+
+    marker_col is bracket-aware (see marker_position), so a term wrapped in 《》
+    or quotes gets its marker placed outside the pair."""
     if not anchor:
         return None
     count = 0
@@ -129,18 +157,21 @@ def find_occurrence(prose_lines, anchor, occurrence):
                 break
             count += 1
             if count == occurrence:
-                return (li, idx + len(anchor))
+                return (li, marker_position(line, idx, idx + len(anchor)))
             start = idx + len(anchor)
     return None
 
 
 def occurrence_at(prose_lines, anchor, line_idx, col_end):
     """How many times `anchor` appears in `prose_lines` up to and including the
-    match that ENDS at (line_idx, col_end). Used to record the right occurrence
-    when backfilling from an existing marker position. Returns 1 if not matched."""
+    match whose MARKER sits at (line_idx, col_end). Used to record the right
+    occurrence when backfilling from an existing marker position.
+
+    The inverse of find_occurrence, so it must apply the same bracket-aware
+    placement — otherwise a marker outside 《》 would fail to map back to the
+    term inside it. Returns 1 if not matched."""
     if not anchor:
         return 1
-    target_start = col_end - len(anchor)
     count = 0
     for li, line in enumerate(prose_lines):
         start = 0
@@ -149,7 +180,7 @@ def occurrence_at(prose_lines, anchor, line_idx, col_end):
             if idx == -1:
                 break
             count += 1
-            if li == line_idx and idx == target_start:
+            if li == line_idx and marker_position(line, idx, idx + len(anchor)) == col_end:
                 return count
             start = idx + len(anchor)
     return count or 1

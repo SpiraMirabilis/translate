@@ -160,3 +160,82 @@ def test_renumber_continues_existing_numbering():
                    "[2] gamma note"]
     assert final_for_item == {0: 2}
     assert changed is False
+
+
+# ---------------------------------------------------------------------------
+# Bracket-aware marker placement: a marker must never split a bracketed or
+# quoted title (《Title》[1], not 《Tit[1]le》), while ordinary trailing
+# punctuation is left alone.
+# ---------------------------------------------------------------------------
+def _place(line, term):
+    i = line.find(term)
+    pos = fn.marker_position(line, i, i + len(term))
+    return line[:pos] + "[1]" + line[pos:]
+
+
+def test_marker_hops_cjk_book_brackets():
+    line = "Xiao Mo imitated 《Rhapsody on the Epang Palace》, then wrote his own."
+    assert _place(line, "Rhapsody on the Epang Palace") == (
+        "Xiao Mo imitated 《Rhapsody on the Epang Palace》[1], then wrote his own.")
+
+
+def test_marker_hops_single_quotes():
+    line = "The song 'King of Qin Shattering Battle Lines' spread."
+    assert _place(line, "King of Qin Shattering Battle Lines") == (
+        "The song 'King of Qin Shattering Battle Lines'[1] spread.")
+
+
+def test_marker_hops_nested_pairs():
+    assert _place('read 《"Nested Title"》 aloud', "Nested Title") == 'read 《"Nested Title"》[1] aloud'
+
+
+def test_marker_hops_parentheses():
+    assert _place("(Parenthetical Term) follows", "Parenthetical Term") == "(Parenthetical Term)[1] follows"
+
+
+def test_marker_hops_lenticular_brackets():
+    # Item/system-message brackets in Chinese web novels — book 8's food cards
+    # are 〘…〙, and 【…】 is the usual system-prompt wrapper.
+    assert _place("I drew a 〘Food Card — Snail Noodles〙!", "Food Card — Snail Noodles") == (
+        "I drew a 〘Food Card — Snail Noodles〙[1]!")
+    assert _place("【Skill Acquired】 flashed past", "Skill Acquired") == "【Skill Acquired】[1] flashed past"
+
+
+def test_marker_does_not_hop_on_partial_anchor():
+    # A partial anchor ends mid-name with no closer to hop, so the marker stays
+    # put rather than jumping a bracket it was never inside.
+    assert _place("I drew a 〘Food Card — Snail Noodles〙!", "Snail Noodles") == (
+        "I drew a 〘Food Card — Snail Noodles[1]〙!")
+
+
+def test_marker_does_not_hop_trailing_period():
+    # A period is not a closer: the marker belongs before it.
+    line = 'He wrote "Decree Extending Grace." Then he slept.'
+    assert _place(line, "Decree Extending Grace") == 'He wrote "Decree Extending Grace[1]." Then he slept.'
+
+
+def test_marker_does_not_hop_unpaired_closer():
+    # Closer present but no matching opener before the term -> no hop.
+    assert _place("sword Non-Aggression) in hand", "Non-Aggression") == "sword Non-Aggression[1]) in hand"
+
+
+def test_marker_plain_term_unchanged():
+    assert _place("the long sword Non-Aggression in hand", "Non-Aggression") == (
+        "the long sword Non-Aggression[1] in hand")
+
+
+def test_render_footnotes_places_marker_outside_brackets():
+    lines = ["Xiao Mo wrote 《Prelude to Water Melody》, tweaking it."]
+    rows = [{"id": 1, "anchor": "Prelude to Water Melody", "body": "Su Shi's ci.", "occurrence": 1}]
+    out, orphans = fn.render_footnotes(lines, rows)
+    assert orphans == []
+    assert out[0] == "Xiao Mo wrote 《Prelude to Water Melody》[1], tweaking it."
+
+
+def test_occurrence_at_is_inverse_of_find_occurrence_with_brackets():
+    # occurrence_at must apply the same hop, or a marker sitting outside 》 would
+    # fail to map back to the term inside it.
+    prose = ["a 《Title》 here", "and 《Title》 again"]
+    for occ in (1, 2):
+        li, col = fn.find_occurrence(prose, "Title", occ)
+        assert fn.occurrence_at(prose, "Title", li, col) == occ
