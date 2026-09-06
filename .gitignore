@@ -129,6 +129,9 @@ celerybeat.pid
 
 # Environments
 .env
+# Credential handoff scratch files — never commit
+bucket.txt
+*credentials*.txt
 .venv
 settings.json
 env/
@@ -192,3 +195,8 @@ ip_cache.db
 .env.bak*
 backups/
 .DS_Store
+footnote_candidates.db
+
+# Per-book system-prompt debug dumps (translation_engine._debug_prompt_path)
+prompt.tmp
+prompt-book*.tmp

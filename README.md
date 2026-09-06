@@ -378,6 +378,8 @@ Secrets and infrastructure go in `.env`; most other settings are managed from th
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASS` / `MYSQL_DB` / `MYSQL_POOL_SIZE` | MySQL connection settings |
 | `SPACES_ENABLED` / `SPACES_BUCKET` / `SPACES_REGION` / `SPACES_PREFIX` / `SPACES_CDN_BASE` | S3-compatible object storage (DigitalOcean Spaces) offload |
 | `BUCKET_ACCESS_ID` / `BUCKET_SECRET` / `BUCKET_ENDPOINT` | Object storage credentials |
+| `BACKUP_BUCKET` / `BACKUP_BUCKET_REGION` / `BACKUP_BUCKET_ENDPOINT` | Private bucket for MySQL dumps (no CDN) — see `backup_mysql.sh` |
+| `BACKUP_BUCKET_ACCESS_ID` / `BACKUP_BUCKET_SECRET` | Backup-bucket credentials; fall back to `BUCKET_ACCESS_ID`/`BUCKET_SECRET` |
 | `CF_TURNSTILE_SITE_KEY` / `CF_TURNSTILE_SECRET_KEY` | Cloudflare Turnstile for comments & recommendations |
 | `CF_API_EMAIL` / `CF_API_KEY` | Cloudflare credentials for pushing comment IP bans to the edge |
 | `COMMENT_AUTOMOD_ENABLED` / `COMMENT_AUTOMOD_MODEL` | AI auto-moderation of new comments |
