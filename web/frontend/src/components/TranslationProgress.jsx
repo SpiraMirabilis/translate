@@ -34,17 +34,25 @@ export default function TranslationProgress({ progress, status }) {
   const { chunk, total, phase, token_count, expected_tokens, percent, tokens_per_second, elapsed } = progress
   const hasTokenData = token_count != null && expected_tokens != null
 
-  // Paused: Claude Code session usage limit reached. The translation thread is
-  // sleeping until the reset time; show that clearly rather than an active bar.
+  // Paused: a Claude Code usage limit was reached (session or weekly). The
+  // translation thread is sleeping until the reset time; show that clearly
+  // rather than an active bar.
   if (phase === 'session_limit') {
+    const limitLabel = progress.limit === 'weekly' ? 'Weekly limit' : 'Session limit'
     const mins = progress.wait_seconds ? Math.max(1, Math.round(progress.wait_seconds / 60)) : null
+    // A weekly reset can be days out, so a bare clock time would be
+    // ambiguous — include the date once the wait passes half a day.
     const resumeAt = progress.resume_at
-      ? new Date(progress.resume_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      ? new Date(progress.resume_at * 1000).toLocaleString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          ...(progress.wait_seconds > 12 * 3600 ? { month: 'short', day: 'numeric' } : {}),
+        })
       : null
     return (
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs">
-          <span className="text-amber-300">⏸ Session limit reached — queue paused</span>
+          <span className="text-amber-300">⏸ {limitLabel} reached — queue paused</span>
           {resumeAt && (
             <span className="text-slate-400">
               resuming ~{resumeAt}{mins ? ` (~${mins} min)` : ''}
