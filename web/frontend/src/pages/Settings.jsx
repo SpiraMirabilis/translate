@@ -356,6 +356,9 @@ export default function Settings() {
       {/* Developer */}
       <DeveloperSection />
 
+      {/* Sitemap */}
+      <SitemapSection />
+
       {/* Database */}
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">Database</h2>
@@ -367,6 +370,136 @@ export default function Settings() {
         </div>
       </section>
     </div>
+  )
+}
+
+
+function SitemapSection() {
+  // The sitemap is a static file on disk (SITEMAP_DIR), rebuilt by cron and
+  // served straight from /sitemap.xml — nothing here is on the crawl path.
+  // This card reports what is currently published and can force a rebuild.
+  const [status, setStatus] = useState(null)
+  const [busy, setBusy] = useState(null)   // 'check' | 'publish' | 'download'
+  const [error, setError] = useState(null)
+  const [published, flashPublished] = useTransientFlag(3000)
+
+  const check = async (refresh = true) => {
+    setBusy('check'); setError(null)
+    try {
+      setStatus(await api.sitemapStatus(refresh))
+    } catch (e) {
+      setError(e.message); setStatus(null)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const publish = async () => {
+    setBusy('publish'); setError(null)
+    try {
+      const res = await api.sitemapPublish()
+      setStatus(s => (s ? { ...s, published: res.published, url_count: res.url_count } : s))
+      flashPublished()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const download = async (kind) => {
+    setBusy('download'); setError(null)
+    try {
+      const blob = kind === 'zip' ? await api.sitemapZip() : await api.sitemapXml()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = kind === 'zip' ? 'sitemap.zip' : 'sitemap.xml'; a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const size = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`
+  const when = (epochSeconds) => epochSeconds ? new Date(epochSeconds * 1000).toLocaleString() : null
+  const pub = status?.published
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold text-slate-300 mb-3">Sitemap</h2>
+      <div className="card p-4 space-y-3">
+        <p className="text-sm text-slate-400">
+          Google-compliant XML sitemap of the public reader — the library, every public
+          book page, and every published chapter. A cron job rebuilds it twice a day and
+          the public site serves the file straight from disk; generating one walks every
+          chapter row, so no crawler ever triggers a build.
+        </p>
+        <p className="text-xs text-slate-500">
+          URLs are built from <code className="text-slate-400">SITE_BASE_URL</code> (.env).
+          Drafts and not-yet-due scheduled chapters are left out, so nothing is advertised
+          before a reader can open it.
+        </p>
+
+        {error && <div className="text-sm text-rose-400">{error}</div>}
+
+        {status && (
+          <div className="text-sm text-slate-300 space-y-1">
+            <div>
+              <span className="text-slate-500">Published:</span>{' '}
+              {pub?.exists ? (
+                <>
+                  {pub.url
+                    ? <a className="text-sky-400 hover:underline" href={pub.url} target="_blank" rel="noreferrer">{pub.url}</a>
+                    : <code className="text-slate-300">sitemap.xml</code>}
+                  <span className="text-slate-500"> — rebuilt {when(pub.modified_at)}</span>
+                </>
+              ) : (
+                <span className="text-amber-400">nothing on disk yet — publish once to create it</span>
+              )}
+            </div>
+            <div>
+              <span className="text-slate-500">URLs now:</span> {status.url_count.toLocaleString()}
+              {' · '}
+              <span className="text-slate-500">Size:</span> {size(status.total_bytes)}
+              {' · '}
+              <span className="text-slate-500">Files:</span> {status.files.length}
+            </div>
+            {status.index && (
+              <div className="text-xs text-amber-400">
+                Past {status.max_urls_per_file.toLocaleString()} URLs per file — sitemap.xml is
+                now an index over {status.files.length - 1} part files, all served from the
+                same directory.
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button className="btn-secondary flex items-center gap-1.5" onClick={() => check(true)} disabled={!!busy}>
+            {busy === 'check' ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            {status ? 'Recheck' : 'Check'}
+          </button>
+          <button className="btn-primary flex items-center gap-1.5" onClick={publish} disabled={!!busy}>
+            {busy === 'publish' ? <Loader2 size={13} className="animate-spin" />
+              : published ? <Check size={13} /> : <RefreshCw size={13} />}
+            {published ? 'Published!' : 'Rebuild & publish now'}
+          </button>
+          <button className="btn-secondary flex items-center gap-1.5" onClick={() => download('xml')} disabled={!!busy}>
+            <Download size={13} /> sitemap.xml
+          </button>
+          {status?.index && (
+            <button className="btn-secondary flex items-center gap-1.5" onClick={() => download('zip')} disabled={!!busy}>
+              <Download size={13} /> sitemap.zip ({status.files.length} files)
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-slate-500">
+          Building walks every chapter row — expect a few seconds on a large catalog.
+        </p>
+      </div>
+    </section>
   )
 }
 

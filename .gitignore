@@ -194,6 +194,9 @@ database.db.*
 ip_cache.db
 .env.bak*
 backups/
+
+# Generated sitemap files (rebuilt by cron; served at /sitemap.xml)
+sitemaps/
 .DS_Store
 footnote_candidates.db
 

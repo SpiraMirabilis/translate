@@ -58,6 +58,7 @@ export const api = {
   skipReview:    (bookId) => post('/api/translate/skip-review', { book_id: bookId ?? null }),
   submitJsonFix: (body)  => post('/api/translate/submit-json-fix', body),
   resolveChapterConflict: (body) => post('/api/translate/resolve-chapter-conflict', body),
+  // No bookId = cancel everything that is running.
   cancelJob:     (bookId) => post('/api/translate/cancel', { book_id: bookId ?? null }),
   getJobStatus:  ()      => get('/api/translate/status'),
 
@@ -185,6 +186,14 @@ export const api = {
   setApiKey:        (name, body) => post(`/api/settings/providers/${name}/key`, body),
   testProvider:     (name)       => post(`/api/settings/providers/${name}/test`, {}),
   exportDb:         ()           => get('/api/settings/db/export-json'),
+
+  // Sitemap (admin-only — the public process has no such route, so a crawler
+  // can never set off a full catalog walk). refresh=true skips the 5-minute
+  // server-side cache; the download that follows a status call reuses it.
+  sitemapStatus:    (refresh)    => get(`/api/sitemap/status${refresh ? '?refresh=true' : ''}`),
+  sitemapPublish:   ()           => post('/api/sitemap/publish', {}),
+  sitemapXml:       ()           => get('/api/sitemap.xml'),
+  sitemapZip:       ()           => get('/api/sitemap.zip'),
   getUnits:         ()           => get('/api/settings/units'),
   updateUnits:      (body)       => put('/api/settings/units', body),
 

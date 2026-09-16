@@ -317,6 +317,43 @@ Covered by `tests/test_trad_simp.py`.
 - **Retrofitting existing chapters**: `python3 bulk_convert_trad_to_simp.py --book-id N [--dry-run]` rewrites stored `untranslated_content` for chapters saved before the toggle was flipped on.
 - **Dependency**: `OpenCC` (pip) + `libopencc1.1`/`libopencc-data` (apt). Imported lazily — never loaded unless the feature is actually triggered.
 
+### Sitemap (`sitemap.py`)
+A Google-compliant XML sitemap of the public reader, rebuilt by cron and served
+as a **static file** — generating one walks every published chapter of every
+public book (~38k URLs, ~20s, 5 MB), so no crawler may trigger a build.
+
+- **Cron**: `10 4,16 * * * cd /home/mdm/t9 && /usr/bin/python3 sitemap.py` — twice
+  daily into `SITEMAP_DIR` (default `sitemaps/`, gitignored). `write_files()`
+  writes each file via temp + `os.replace` (a crawler mid-rebuild sees old or new
+  bytes, never half a document) and deletes `sitemap*.xml` files the build did not
+  produce, so a catalog shrinking back under `MAX_URLS_PER_FILE` leaves no orphaned
+  parts being served.
+- **Public route**: `/sitemap.xml` (+ `/sitemap-N.xml`) in `web/app_factory.py`
+  reads the directory and nothing else; it 404s when the public library is off.
+  `robots.txt` gains a `Sitemap:` line only when the file actually exists — a
+  Sitemap line pointing at a 404 is a standing Search Console error.
+- **Admin API** (`web/api/sitemap.py`, session auth, admin process only —
+  registered under `if not public_only`): `GET /api/sitemap/status` (counts +
+  what's on disk), `POST /api/sitemap/publish` (rebuild now, always uncached),
+  `GET /api/sitemap.xml` / `.zip` (download). Settings → Sitemap drives all three.
+- **URLs come from `SITE_BASE_URL`**, never from the request — generation happens
+  on the *admin* host, and a request-derived base would stamp every URL with
+  t9.boondollars.com. With no base configured the endpoints 400 and no canonical
+  tags are emitted.
+- **Visibility mirrors the public API exactly**: `is_public` books,
+  `published_only=True` chapters. A draft or a not-yet-due scheduled chapter is
+  never advertised before a reader can open it.
+- **Above `MAX_URLS_PER_FILE` (45,000)** `sitemap.xml` becomes a `<sitemapindex>`
+  over `sitemap-1.xml`… — all in the same directory, since a sitemap may only
+  list URLs at or below its own path. The caller always submits `sitemap.xml`.
+- ⚠️ **The reader answers to two path shapes for one page** — `/read/{id}/{n}`
+  (what the RSS feeds link to) and `/library/read/{id}/{n}` (what the site links
+  to and what the sitemap lists). `app_factory` splices an absolute
+  `<link rel="canonical">` into the served index.html for both, pointing at the
+  `/library` form, alongside the per-book RSS autodiscovery tag — React-injected
+  tags are invisible to crawlers, which never run the JS. A chapterless
+  `/read/{id}` canonicalises to the book page.
+
 ### Database backups
 Daily `mysqldump` of the `t9` database to a **private DigitalOcean Space**, run from
 this VM (the MySQL grant is host-restricted — `t9@localhost` on the db host is denied,

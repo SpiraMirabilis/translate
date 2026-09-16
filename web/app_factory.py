@@ -23,8 +23,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import RedirectResponse, HTMLResponse, JSONResponse
+from starlette.responses import RedirectResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
+import sitemap as sitemap_builder
 from config import TranslationConfig
 from logger import Logger
 from database import DatabaseManager
@@ -226,6 +227,86 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
     app.include_router(comments_public.router)
 
     # ------------------------------------------------------------------
+    # robots.txt
+    #
+    # Registered here (before the SPA catch-all) so it isn't swallowed by
+    # the index.html route. Served by both processes, with different bodies:
+    # the admin host is disallowed wholesale, the public reader allows the
+    # SPA but keeps crawlers off the generated ebook downloads.
+    #
+    # robots.txt matches URL paths, not rendered links, so blocking the API
+    # paths is what actually protects them — the reader's download buttons
+    # and /simple both point at the same /api/public/... URLs. The SPA book
+    # and chapter routes stay crawlable. `*` inside a path is the widely
+    # supported wildcard extension (Google/Bing/etc.); the download handlers
+    # also send X-Robots-Tag as a backstop for crawlers that ignore it.
+    # ------------------------------------------------------------------
+    _ROBOTS_ADMIN = "User-agent: *\nDisallow: /\n"
+
+    _ROBOTS_PUBLIC = (
+        "User-agent: *\n"
+        "\n"
+        "# Generated ebook downloads: a crawl miss can kick off a multi-minute\n"
+        "# EPUB/AZW3 build, and the files are not content we want indexed.\n"
+        "Disallow: /api/public/books/*/epub\n"
+        "Disallow: /api/public/books/*/azw3\n"
+        "\n"
+        "# Same downloads as reached from the plain-HTML book list.\n"
+        "Disallow: /simple\n"
+    )
+
+    @app.get("/robots.txt", response_class=PlainTextResponse)
+    async def robots_txt():
+        if not public_only:
+            return PlainTextResponse(_ROBOTS_ADMIN)
+        import settings_store
+        if not settings_store.get("public_library", True):
+            # Library switched off — the whole public surface 404s, so don't
+            # invite crawling of it.
+            return PlainTextResponse(_ROBOTS_ADMIN)
+        body = _ROBOTS_PUBLIC
+        # Advertise the sitemap only once one exists on disk: a Sitemap: line
+        # pointing at a 404 is a standing error in Search Console. The cron
+        # rebuild (python3 sitemap.py) is what makes it appear.
+        base = sitemap_builder.resolve_base_url(config)
+        if base and os.path.isfile(os.path.join(_sitemap_dir, "sitemap.xml")):
+            body += f"\nSitemap: {base}/sitemap.xml\n"
+        return PlainTextResponse(body)
+
+    # ------------------------------------------------------------------
+    # Generated sitemap files.
+    #
+    # Served as plain static bytes off disk — Google only accepts a sitemap
+    # it can fetch from the site itself, but generating one walks every
+    # chapter row of every public book (~38k), which no crawler may trigger.
+    # A cron job runs `python3 sitemap.py` (see sitemap.py::write_files,
+    # which writes atomically) and this route only reads the result.
+    # Registered before the SPA catch-all so /sitemap.xml isn't swallowed by
+    # index.html, and before /simple for the same reason.
+    # ------------------------------------------------------------------
+    _sitemap_dir = sitemap_builder.resolve_output_dir(config)
+    _sitemap_name_re = re.compile(r"^sitemap(?:-\d{1,4})?\.xml$")
+
+    @app.get("/sitemap.xml", include_in_schema=False)
+    @app.get("/sitemap-{part}.xml", include_in_schema=False)
+    async def sitemap_file(part: str = None):
+        from fastapi.responses import FileResponse
+        name = "sitemap.xml" if part is None else f"sitemap-{part}.xml"
+        # part comes straight off the URL: pin it to the generated shape so
+        # nothing resembling a path can be assembled here.
+        if not _sitemap_name_re.match(name):
+            return PlainTextResponse("Not found", status_code=404)
+        if public_only:
+            import settings_store
+            if not settings_store.get("public_library", True):
+                return PlainTextResponse("Not found", status_code=404)
+        path = os.path.join(_sitemap_dir, name)
+        if not os.path.isfile(path):
+            return PlainTextResponse("Not found", status_code=404)
+        return FileResponse(path, media_type="application/xml",
+                            headers={"Cache-Control": "public, max-age=3600"})
+
+    # ------------------------------------------------------------------
     # Plain-HTML book list for primitive / e-ink browsers.
     #
     # No SPA, no JS, minimal CSS — a bare <ul> of public books linking to
@@ -330,7 +411,9 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # For book-detail and chapter-reader routes we splice a per-book
         # <link rel="alternate"> into the served index.html so non-JS crawlers
         # discover the book's feed.
-        _book_path_re = re.compile(r"^(?:library/book|library/read|read)/(\d+)(?:/(\d+))?/?$")
+        _book_path_re = re.compile(
+            r"^(?P<kind>library/book|library/read|read)/(?P<book>\d+)(?:/(?P<chapter>\d+))?/?$")
+        _library_path_re = re.compile(r"^library/?$")
         # The global-feed autodiscovery tag baked into index.html. On book
         # and chapter pages it is REPLACED by the book's own feed tag, so
         # single-feed autodiscovery tools (e.g. Novel Updates) can't pick
@@ -340,7 +423,46 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         with open(index_html, "r", encoding="utf-8") as fh:
             _index_html_text = fh.read()
 
-        def _index_with_book_feed(book_id: int, chapter: int | None):
+        def _canonical_url(kind: str, book_id: int, chapter: int | None) -> str | None:
+            """Absolute canonical URL for a reader route, or None if unknown.
+
+            The reader is reachable at two path shapes for the same page —
+            /read/{id}/{n} (what the RSS feeds link to) and
+            /library/read/{id}/{n} (what the site itself links to, and what
+            the sitemap lists). Without a canonical those are two URLs for
+            one chapter. The /library form wins everywhere.
+
+            Absolute, because a canonical is only useful across hosts: the
+            admin host serves these same paths behind a login wall, and the
+            tag points Google at the reader host either way. With no
+            SITE_BASE_URL configured we emit nothing rather than guess.
+            """
+            base = sitemap_builder.resolve_base_url(config)
+            if not base:
+                return None
+            if kind == "library/book" or chapter is None:
+                # A chapterless /read/{id} or /library/read/{id} lands on the
+                # book (the reader picks a chapter client-side and rewrites
+                # the URL), so the book page is the canonical target.
+                return f"{base}/library/book/{book_id}"
+            return f"{base}/library/read/{book_id}/{chapter}"
+
+        def _with_head_tags(html: str, tags: list) -> str:
+            tags = [t for t in tags if t]
+            if not tags:
+                return html
+            return html.replace("</head>", "".join(tags) + "</head>", 1)
+
+        def _canonical_tag(url: str | None) -> str | None:
+            return f'<link rel="canonical" href="{escape(url, quote=True)}" />' if url else None
+
+        def _index_for_book(kind: str, book_id: int, chapter: int | None):
+            """index.html with this book's RSS autodiscovery + canonical tags.
+
+            Both are invisible to non-JS clients otherwise: feed readers and
+            crawlers fetch the URL server-side and never run the React that
+            would inject them.
+            """
             book = entity_manager.get_book(book_id=book_id)
             if not book or not book.get("is_public", True):
                 return None
@@ -355,8 +477,14 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
                    f'title="{title}" href="{href}" />')
             html, n = _global_feed_re.subn(tag.replace("\\", "\\\\"), _index_html_text, count=1)
             if n == 0:  # index.html lost its global tag — just add ours
-                html = _index_html_text.replace("</head>", tag + "</head>", 1)
-            return html
+                html = _with_head_tags(_index_html_text, [tag])
+            return _with_head_tags(html, [_canonical_tag(_canonical_url(kind, book_id, chapter))])
+
+        def _index_for_library():
+            base = sitemap_builder.resolve_base_url(config)
+            if not base:
+                return None
+            return _with_head_tags(_index_html_text, [_canonical_tag(f"{base}/library")])
 
         # The public process only serves the reader SPA routes; everything
         # else gets the themed 404 page. The admin process serves index.html
@@ -376,8 +504,12 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
                 return FileResponse(file_path)
             m = _book_path_re.match(full_path)
             if m:
-                chapter = int(m.group(2)) if m.group(2) else None
-                html = _index_with_book_feed(int(m.group(1)), chapter)
+                chapter = int(m.group("chapter")) if m.group("chapter") else None
+                html = _index_for_book(m.group("kind"), int(m.group("book")), chapter)
+                if html is not None:
+                    return HTMLResponse(html)
+            elif _library_path_re.match(full_path):
+                html = _index_for_library()
                 if html is not None:
                     return HTMLResponse(html)
             if public_only:
