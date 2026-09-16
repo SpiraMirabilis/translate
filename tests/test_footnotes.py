@@ -224,6 +224,39 @@ def test_marker_plain_term_unchanged():
         "the long sword Non-Aggression[1] in hand")
 
 
+# ---------------------------------------------------------------------------
+# Word-boundary marker placement: an anchor that matches a PREFIX of a longer
+# word must not split it. Book 93 ch32 rendered "widow[3]ed mother" because the
+# anchor was "an orphan and a widow" and the prose read "a widowed mother".
+# ---------------------------------------------------------------------------
+def test_marker_advances_past_a_suffix_rather_than_splitting_a_word():
+    line = "We are an orphan and a widowed mother, unacquainted with the court."
+    assert _place(line, "an orphan and a widow") == (
+        "We are an orphan and a widowed[1] mother, unacquainted with the court.")
+
+
+def test_marker_advances_past_a_plural():
+    assert _place("the Licentiates gathered", "Licentiate") == "the Licentiates[1] gathered"
+
+
+def test_word_advance_still_hops_a_bracket_pair():
+    # The word advance runs first, so the marker ends up outside the paren.
+    assert _place("(Licentiates) here", "Licentiate") == "(Licentiates)[1] here"
+
+
+def test_exact_word_match_is_unaffected():
+    assert _place("a widowed mother", "widowed") == "a widowed[1] mother"
+
+
+def test_trailing_punctuation_still_keeps_the_marker_before_it():
+    assert _place("Decree Extending Grace.", "Decree Extending Grace") == (
+        "Decree Extending Grace[1].")
+
+
+def test_marker_does_not_advance_across_a_space():
+    assert _place("the salt bureau clerk", "salt") == "the salt[1] bureau clerk"
+
+
 def test_render_footnotes_places_marker_outside_brackets():
     lines = ["Xiao Mo wrote 《Prelude to Water Melody》, tweaking it."]
     rows = [{"id": 1, "anchor": "Prelude to Water Melody", "body": "Su Shi's ci.", "occurrence": 1}]

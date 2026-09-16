@@ -46,9 +46,19 @@ CLOSER_FOR = {
 def marker_position(line, start, end):
     """Where a footnote marker for line[start:end] should be inserted.
 
-    Normally that is `end` (immediately after the term). If the term is wrapped in
-    a matching bracket/quote pair, the marker hops outside the closer — repeatedly,
-    so nested wrappers like 《"Title"》 are handled too."""
+    Normally that is `end` (immediately after the term). Two adjustments:
+
+    1. A marker never lands *inside* a word. An anchor that happens to match a
+       prefix of a longer word — "widow" in "widowed", "Licentiate" in
+       "Licentiates" — advances to the end of that word, so the rendering is
+       "widowed[3]" rather than "widow[3]ed".
+    2. If the term is wrapped in a matching bracket/quote pair, the marker hops
+       outside the closer — repeatedly, so nested wrappers like 《"Title"》 are
+       handled too. This runs after (1), so "(Licentiates)" still hops the paren.
+    """
+    if 0 < end < len(line) and line[end - 1].isalnum() and line[end].isalnum():
+        while end < len(line) and line[end].isalnum():
+            end += 1
     while 0 < start and end < len(line) and CLOSER_FOR.get(line[start - 1]) == line[end]:
         start -= 1
         end += 1
