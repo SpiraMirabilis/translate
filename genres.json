@@ -5,35 +5,199 @@
       "name": "Chinese Xianxia",
       "source_language": "zh",
       "prompt_file": "prompts/chinese_xianxia.txt",
-      "description": "Chinese cultivation/xianxia web novels"
+      "description": "Chinese cultivation/xianxia web novels",
+      "categories": [
+        {
+          "name": "characters",
+          "attributes": [
+            "gender"
+          ]
+        },
+        {
+          "name": "places",
+          "attributes": []
+        },
+        {
+          "name": "organizations",
+          "attributes": []
+        },
+        {
+          "name": "abilities",
+          "attributes": []
+        },
+        {
+          "name": "titles",
+          "attributes": []
+        },
+        {
+          "name": "equipment",
+          "attributes": []
+        },
+        {
+          "name": "creatures",
+          "attributes": []
+        },
+        {
+          "name": "cultivation terms",
+          "attributes": []
+        }
+      ]
     },
     {
       "id": "chinese_general",
       "name": "Chinese General",
       "source_language": "zh",
       "prompt_file": "prompts/chinese_xianxia.txt",
-      "description": "General Chinese web novels (modern, romance, sci-fi, etc.)"
+      "description": "General Chinese web novels (modern, romance, sci-fi, etc.)",
+      "categories": [
+        {
+          "name": "characters",
+          "attributes": [
+            "gender"
+          ]
+        },
+        {
+          "name": "places",
+          "attributes": []
+        },
+        {
+          "name": "organizations",
+          "attributes": []
+        },
+        {
+          "name": "abilities",
+          "attributes": []
+        },
+        {
+          "name": "titles",
+          "attributes": []
+        },
+        {
+          "name": "equipment",
+          "attributes": []
+        },
+        {
+          "name": "creatures",
+          "attributes": []
+        },
+        {
+          "name": "cultivation terms",
+          "attributes": []
+        }
+      ]
     },
     {
       "id": "japanese_light_novel",
       "name": "Japanese Light Novel",
       "source_language": "ja",
       "prompt_file": "prompts/japanese_ln.txt",
-      "description": "Japanese light novels and web novels"
+      "description": "Japanese light novels and web novels",
+      "categories": [
+        {
+          "name": "characters",
+          "attributes": [
+            "gender"
+          ]
+        },
+        {
+          "name": "places",
+          "attributes": []
+        },
+        {
+          "name": "organizations",
+          "attributes": []
+        },
+        {
+          "name": "abilities",
+          "attributes": []
+        },
+        {
+          "name": "titles",
+          "attributes": []
+        },
+        {
+          "name": "items",
+          "attributes": []
+        }
+      ]
     },
     {
       "id": "korean_web_novel",
       "name": "Korean Web Novel",
       "source_language": "ko",
       "prompt_file": "prompts/korean_wn.txt",
-      "description": "Korean web novels"
+      "description": "Korean web novels",
+      "categories": [
+        {
+          "name": "characters",
+          "attributes": [
+            "gender"
+          ]
+        },
+        {
+          "name": "places",
+          "attributes": []
+        },
+        {
+          "name": "organizations",
+          "attributes": []
+        },
+        {
+          "name": "abilities",
+          "attributes": []
+        },
+        {
+          "name": "titles",
+          "attributes": []
+        },
+        {
+          "name": "equipment",
+          "attributes": []
+        },
+        {
+          "name": "creatures",
+          "attributes": []
+        }
+      ]
     },
     {
       "id": "russian_web_novel",
       "name": "Russian Web Novel",
       "source_language": "ru",
       "prompt_file": "prompts/russian_wn.txt",
-      "description": "Russian web novels (LitRPG, progression, popadanets/isekai, etc.)"
+      "description": "Russian web novels (LitRPG, progression, popadanets/isekai, etc.)",
+      "categories": [
+        {
+          "name": "characters",
+          "attributes": [
+            "gender"
+          ]
+        },
+        {
+          "name": "places",
+          "attributes": []
+        },
+        {
+          "name": "organizations",
+          "attributes": []
+        },
+        {
+          "name": "abilities",
+          "attributes": []
+        },
+        {
+          "name": "titles",
+          "attributes": []
+        },
+        {
+          "name": "equipment",
+          "attributes": []
+        },
+        {
+          "name": "creatures",
+          "attributes": []
+        }
+      ]
     },
     {
       "id": "custom",

@@ -197,13 +197,13 @@ def create_book(req: BookCreate):
     if not book_id:
         raise HTTPException(status_code=500, detail="Failed to create book.")
 
-    # Apply genre preset: prompt template and categories (derived from prompt)
+    # Apply genre preset: prompt template, plus the genre's declared categories
     if genre_obj:
-        from genres import read_genre_prompt, extract_categories_meta_from_prompt
+        from genres import read_genre_prompt, genre_categories
         prompt = read_genre_prompt(_entity_manager.config.script_dir, genre_obj)
         if prompt:
             _entity_manager.set_book_prompt_template(book_id, prompt)
-            cats = extract_categories_meta_from_prompt(prompt)
+            cats = genre_categories(genre_obj, prompt)
             if cats:
                 _entity_manager.set_book_categories(book_id, cats)
 

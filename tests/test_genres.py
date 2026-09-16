@@ -7,6 +7,8 @@ from genres import (
     get_genre,
     load_genres,
     read_genre_prompt,
+    genre_categories,
+
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -99,10 +101,31 @@ def test_extract_categories_meta_marks_gendered():
     assert by_name["abilities"] == []
 
 
-def test_real_xianxia_prompt_yields_categories():
-    genre = get_genre(SCRIPT_DIR, "chinese_xianxia")
-    prompt = read_genre_prompt(SCRIPT_DIR, genre)
-    assert prompt is not None
-    cats = extract_categories_from_prompt(prompt)
-    assert cats is not None
-    assert "characters" in cats
+def test_every_shipped_genre_declares_categories():
+    """Categories live in genres.json, not in the prompt corpus.
+
+    They used to be reverse-engineered from the ++++ response-template block in
+    each prompt file. That block is now built by prompt_contract at assembly
+    time and no longer sits in the corpus, so a genre that forgets to declare
+    its categories would silently create books with none.
+    """
+    for genre in load_genres(SCRIPT_DIR):
+        if not genre.get("prompt_file"):
+            continue                      # "custom" configures categories by hand
+        cats = genre_categories(genre)
+        assert cats, f"{genre['id']} declares no categories"
+        by_name = {c["name"]: c["attributes"] for c in cats}
+        assert "characters" in by_name
+        assert by_name["characters"] == ["gender"]
+
+
+def test_genre_categories_falls_back_to_prompt_template():
+    """A hand-written prompt file that still carries a template block keeps
+    seeding categories the old way."""
+    cats = genre_categories({"id": "handmade"}, SYNTHETIC_PROMPT)
+    assert {c["name"] for c in cats} >= {"characters", "places", "abilities"}
+
+
+def test_genre_categories_none_when_nothing_declared():
+    assert genre_categories({"id": "custom"}, None) is None
+    assert genre_categories({"id": "custom"}, "no template markers here") is None

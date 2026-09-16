@@ -60,6 +60,32 @@ def extract_categories_from_prompt(prompt_text):
     return list(entities.keys())
 
 
+def genre_categories(genre, prompt_text=None):
+    """A genre's entity categories as ``[{"name", "attributes"}, ...]``.
+
+    Declared in genres.json. They used to be reverse-engineered from the
+    ++++ response-template block in the genre's prompt file, which made a
+    book's category list a side effect of example text — and stopped working
+    once the response contract moved into code (prompt_contract.py). The prompt
+    is still parsed as a fallback so a hand-written prompt file that carries a
+    template block keeps seeding categories the old way.
+
+    Returns None when neither source yields any.
+    """
+    declared = (genre or {}).get("categories")
+    if isinstance(declared, list) and declared:
+        out = []
+        for c in declared:
+            if isinstance(c, str):
+                out.append({"name": c, "attributes": []})
+            elif isinstance(c, dict) and c.get("name"):
+                out.append({"name": c["name"],
+                            "attributes": list(c.get("attributes") or [])})
+        if out:
+            return out
+    return extract_categories_meta_from_prompt(prompt_text) if prompt_text else None
+
+
 def extract_categories_meta_from_prompt(prompt_text):
     """Extract entity categories *with attributes* from a prompt's response template.
 

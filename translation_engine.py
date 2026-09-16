@@ -9,6 +9,9 @@ import re
 import uuid
 from database import DEFAULT_CATEGORIES
 from modules import apply_system_prompt, apply_source_module
+from prompt_contract import (
+    genre_example, response_contract_section, strip_legacy_contract,
+)
 from providers.base import (
     OverloadedError,
     looks_overloaded,
@@ -274,7 +277,7 @@ class TranslationEngine:
             self.logger.warning(f"Failed to parse response template JSON from prompt: {e}")
             return None
 
-    def _build_response_template(self, categories, entities, chapter_number=3, base_template=None, source_language='zh', mode='full', gendered_categories=None):
+    def _build_response_template(self, categories, entities, chapter_number=3, base_template=None, source_language='zh', mode='full', gendered_categories=None, note_updates_enabled=False, footnote_candidates_enabled=False):
         """
         Build the response template JSON dynamically from the book's active
         categories, using real entities as examples where available.
@@ -291,6 +294,11 @@ class TranslationEngine:
             source_language: source language code for placeholder entity keys
             mode: 'full' (default — title/content/entities), 'entity_only' (entities only),
                   'translate_only' (title/content but no entities)
+            note_updates_enabled: include the optional note_updates example (the channel
+                  the model uses to revise notes on entities it already knows)
+            footnote_candidates_enabled: include the optional footnote_candidates example
+                  (the channel a book scanning inline uses to return referents worth a
+                  translator's footnote)
         Returns:
             str: A pretty-printed JSON string suitable for the response template
         """
@@ -396,6 +404,20 @@ class TranslationEngine:
             rf["gendered_categories"] = gendered_categories
         return rf
 
+
+    @staticmethod
+    def _resolved_gendered(categories, gendered_categories):
+        """Which of this book's categories are gender-tracked.
+
+        ``None`` means no book context was passed, which historically meant the
+        legacy "characters only" default — kept so a contextless call renders the
+        same gender rule the prompt corpus used to state. Mirrors the same
+        condition in _build_response_template.
+        """
+        if gendered_categories is None:
+            return ["characters"] if "characters" in (categories or []) else []
+        return [c for c in gendered_categories if c]
+
     @staticmethod
     def _placeholder_entity_key(category, source_language='zh'):
         """Return a placeholder entity key in the appropriate source language."""
@@ -406,7 +428,7 @@ class TranslationEngine:
         }
         return placeholders.get(source_language, f"示例{category}")
 
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None, mode='full', chapter_title=None, gendered_categories=None, book=None, chunk_index=None, total_chunks=None, previous_summary=None):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None, mode='full', chapter_title=None, gendered_categories=None, book=None, chunk_index=None, total_chunks=None, previous_summary=None, footnote_section=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
 
@@ -425,6 +447,11 @@ class TranslationEngine:
             total_chunks: Total number of chunks the chapter was split into.
             previous_summary: Running summary of all previously-translated chunks of this
                 same chapter, injected for continuity when chunk_index > 1.
+            footnote_section: Pre-rendered FOOTNOTE CANDIDATES block for books that
+                collect footnote candidates during translation (scan_mode
+                "translation"). Built once per chapter by the caller —
+                footnote_scan_core.inline_scan_section — because this method runs
+                again for every chunk and the exclusion-list lookup hits the DB.
         """
         # Debug info
         self.logger.debug(f"generate_system_prompt: type of pretext = {type(pretext)}")
@@ -464,12 +491,13 @@ class TranslationEngine:
                 self.logger.error(f"Error loading system prompt from file: {e}")
                 raise
 
-        # Strip out comment lines (lines whose first non-whitespace char is #).
+        # Strip out comment lines (lines whose first non-whitespace chars are //).
         # Applied uniformly so book-stored templates (saved raw from genre prompt
         # files) are cleaned at translation time without a DB migration.
+        # '//' rather than '#' so book-specific notes can use Markdown headings.
         prompt = ''.join(
             line for line in prompt.splitlines(keepends=True)
-            if not line.lstrip().startswith('#')
+            if not line.lstrip().startswith('//')
         )
 
         # Insert the entity categories list into the template
@@ -503,28 +531,20 @@ class TranslationEngine:
         else:
             prompt = re.sub(r'[^\n]*\{\{CHAPTER_TITLE\}\}[^\n]*\n?', '', prompt)
 
-        # Parse the base template from the prompt before rebuilding it
+        # Harvest the book's own worked example BEFORE the legacy contract is
+        # stripped: 14 distinct template blocks exist across the frozen prompts,
+        # so a book keeps its own example entities until the backfill removes
+        # them, and falls back to the per-language example after that.
         base_template = self._parse_template_from_prompt(prompt)
+        if base_template is None:
+            base_template = dict(genre_example(source_language))
 
-        # Rebuild the response template with the book's actual categories and real entity examples
-        template_pattern = re.compile(
-            r'(\+\+\+\+ Response Template Example\n).*?(\+\+\+\+ Response Template End)',
-            re.DOTALL,
-        )
-        match = template_pattern.search(prompt)
-        if match:
-            dynamic_template = self._build_response_template(
-                list(entities.keys()), entities, chapter_number or 3,
-                base_template=base_template, source_language=source_language,
-                mode=mode, gendered_categories=gendered_categories,
-            )
-            prompt = prompt[:match.start()] + match.group(1) + "\n" + dynamic_template + "\n" + match.group(2) + prompt[match.end():]
-            self.logger.debug(f"Rebuilt response template with categories: {list(entities.keys())} (mode={mode})")
-
-        # For Gemini providers, remove the JSON schema example to avoid conflicts with responseSchema
-        if provider and hasattr(provider, 'provider_name') and 'Gemini' in provider.provider_name:
-            prompt = template_pattern.sub('', prompt)
-            self.logger.debug("Removed JSON schema template for Gemini provider")
+        # The response contract is code-owned (prompt_contract). Remove whatever
+        # this prompt still says about it and append the authoritative section
+        # further down. Per-book templates are frozen copies taken at book
+        # creation, so a contract stated only in prompt text runs stale forever:
+        # when note_updates shipped, 44 of 67 stored prompts never learned of it.
+        prompt = strip_legacy_contract(prompt)
 
         # Mode-specific overrides appended at the end so they override anything earlier in the prompt
         if mode == 'entity_only':
@@ -546,6 +566,28 @@ class TranslationEngine:
                 "source. You must NOT emit an 'entities' field in your response — return only 'title', "
                 "'chapter', 'summary', and 'content'.\n"
             )
+
+
+        # The response contract itself, rendered for this mode. Gemini gets the
+        # prose but not the worked example — its native responseSchema supersedes
+        # the example and the two used to conflict.
+        is_gemini = bool(provider and 'Gemini' in (getattr(provider, 'provider_name', '') or ''))
+        dynamic_template = self._build_response_template(
+            list(entities.keys()), entities, chapter_number or 3,
+            base_template=base_template, source_language=source_language,
+            mode=mode, gendered_categories=gendered_categories,
+            note_updates_enabled=getattr(self.config, 'entity_note_updates', True),
+            footnote_candidates_enabled=bool(footnote_section),
+        )
+        prompt = prompt.rstrip() + "\n\n---\n\n" + response_contract_section(
+            mode=mode,
+            gendered_categories=self._resolved_gendered(list(entities.keys()), gendered_categories),
+            template_json=dynamic_template,
+            include_example=not is_gemini,
+        ) + "\n"
+        self.logger.debug(
+            f"Appended response contract (mode={mode}, gemini={is_gemini}, "
+            f"categories={list(entities.keys())})")
 
         # If this chapter carries illustration sentinels, instruct the model to
         # preserve them verbatim. Injected dynamically (only when a marker is
