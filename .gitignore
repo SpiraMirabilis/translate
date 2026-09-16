@@ -244,3 +244,9 @@ output/
 *.sql
 wp-cli.phar
 /tl
+/=*
+
+# Process leftovers
+nohup.out
+*.swp
+.prewarm_ebooks.lock
