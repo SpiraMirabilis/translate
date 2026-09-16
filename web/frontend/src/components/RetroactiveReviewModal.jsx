@@ -449,7 +449,7 @@ function PropagateOverlay({ entityId, oldTranslation, newTranslation, untranslat
         action,
         from_chapter: fromChapter,
       })
-      setResult({ action, affected: res.affected })
+      setResult({ action, affected: res.affected, notesAffected: res.notes_affected ?? 0 })
     } catch (e) {
       setError(e.message)
     } finally {
@@ -533,6 +533,12 @@ function PropagateOverlay({ entityId, oldTranslation, newTranslation, untranslat
                 : `Added ${result.affected} chapter${result.affected !== 1 ? 's' : ''} to the retranslation queue.`}
               {result.affected === 0 && ' No chapters were affected.'}
             </p>
+            {result.action === 'substitute' && result.notesAffected > 0 && (
+              <p className="text-xs text-slate-400">
+                Also rewrote the old translation out of {result.notesAffected} entity note
+                {result.notesAffected !== 1 ? 's' : ''}, so it can&rsquo;t be fed back into later translations.
+              </p>
+            )}
             <div className="flex justify-end">
               <button className="btn-primary" onClick={onDone}>Done</button>
             </div>
