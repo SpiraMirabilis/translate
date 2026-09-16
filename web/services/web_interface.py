@@ -311,11 +311,14 @@ class WebInterface(UserInterface):
         renumber_existing (move existing chapter aside), renumber_new (move
         the incoming chapter to a different number).
 
-        On "merge", `chapter_text` is mutated in place to contain ONLY the new
-        source, and the existing chapter's already-translated lines are stashed
-        in `self._merge_prefix`. The translation thread translates only the new
-        segment; ui.py prepends the stashed existing translation at save time so
-        the old text is not re-translated.
+        On "merge", the two sides are combined into one chapter at this number:
+        `chapter_text` is mutated in place to contain the appended source (the
+        whole incoming item, minus any duplicated prefix it shares with the
+        existing source), and the existing chapter's already-translated lines are
+        stashed in `self._merge_prefix`. The translation thread translates only
+        that appended source; ui.py prepends the stashed existing source and
+        translation at save time, so the old text is neither re-translated nor
+        replaced.
 
         Renumber decisions cascade: if the chosen target number itself
         conflicts (renumber_new) the panel re-opens for the new number; if
@@ -404,14 +407,27 @@ class WebInterface(UserInterface):
             new_num = (result or {}).get("new_chapter_number")
 
             if decision == "merge":
-                # Incremental merge: translate ONLY the newly appended segment and
-                # stitch its output onto the end of the existing translation at save
-                # time (see ui.py). Stash the already-translated existing chapter as a
-                # prefix and feed the translate thread just the new source — avoids
-                # re-translating (and re-billing) text that's already done.
+                # Combine both sides into ONE chapter at this number, no renumbering:
+                # the incoming source is appended to the existing source, the incoming
+                # text is translated, and its translation is appended to the existing
+                # translation. The existing chapter is never re-translated or replaced
+                # — it's stashed in `self._merge_prefix` and re-stitched in ui.py at
+                # save time.
                 #
-                # Find the append boundary: every non-empty line of the existing
-                # source must appear, in order, as a prefix of the incoming text.
+                # Two shapes of incoming text land here, and only the boundary
+                # differs:
+                #   1. A re-fetched raw that now carries the old text PLUS more (the
+                #      whole existing source appears, in order, as a prefix). Strip
+                #      that duplicated prefix so the shared part isn't stored — and
+                #      billed — twice.
+                #   2. An independent continuation — part 2 of a split chapter, an
+                #      author's note, a separately queued segment — that shares no
+                #      lines with the existing text. Nothing to strip; the whole
+                #      incoming item is the appended section.
+                # Divergence is the *normal* case for (2), not an error: appending
+                # only ever adds, so it can't destroy the existing chapter the way
+                # the old full-replacement fallback did (book 69 lost story chapters
+                # 134 and 179 that way, before this path stashed a prefix at all).
                 existing_norm = _normalise(existing_untranslated)
                 remainder = None
                 matched = 0
@@ -425,22 +441,16 @@ class WebInterface(UserInterface):
                             remainder = list(new_untranslated[i + 1:])
                             break
                     else:
-                        break  # diverged — not a clean append
+                        break  # diverged — case (2): append the incoming item whole
 
                 if remainder is None:
-                    # The incoming text doesn't start with the existing source, so
-                    # there is no appended segment to isolate. Translate the full
-                    # incoming text WITHOUT stashing a prefix — stitching the old
-                    # translation onto a full retranslation would duplicate it.
-                    self.logger.warning(
-                        f"Merge chapter {chapter_number}: incoming text is not an append "
-                        f"of the existing source; translating the full incoming text instead.")
-                    if isinstance(chapter_text, list):
-                        chapter_text[:] = list(new_untranslated)
-                    return True
-
-                if not any(str(l).strip() for l in remainder):
-                    # Nothing genuinely new beyond the existing source — skip.
+                    remainder = list(new_untranslated)
+                    self.logger.info(
+                        f"Merge chapter {chapter_number}: incoming text is not a continuation "
+                        f"of the existing source; appending it whole.")
+                elif not any(str(l).strip() for l in remainder):
+                    # The incoming text was the existing source and nothing more —
+                    # appending it would add nothing. Keep the chapter as-is.
                     self.job_manager.log_activity(
                         type='info',
                         message=(f'Chapter {chapter_number}: appended segment is empty — '
