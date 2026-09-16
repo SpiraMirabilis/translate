@@ -117,6 +117,14 @@ class TranslationModule:
         return prompt
 
     # --- lifecycle events (side effects allowed; ctx carries 'db') ---
+    def event_new_chapter_saved(self, ctx):
+        """Fired after a NEW chapter row is committed (first insert only —
+        re-saves and retranslations never fire it). ``ctx`` additionally
+        carries ``chapter_number`` and ``source_lines`` (the post-transform
+        source line array). Must not block: heavy work belongs on a
+        background thread."""
+        return None
+
     def event_add_to_book(self, ctx):
         """Fired when this module becomes enabled for a book."""
         return None

@@ -24,6 +24,7 @@ from .unit_converter_module import UnitConverterModule
 from .broken_line_module import BrokenLineModule
 from .chapter_spacing_module import ChapterSpacingModule
 from .markdown_notifications_module import MarkdownNotificationsModule
+from .footnote_scan_module import FootnoteScanModule
 
 # Registry. Insertion order == apply order when multiple modules are enabled.
 # trad_to_simp runs first so every downstream source transform (e.g. novel543's
@@ -113,6 +114,26 @@ def _load_module_settings(book, db):
         return db.get_module_settings(book_id)
     except Exception:  # noqa: BLE001 - settings must never break the pipeline
         return {}
+
+
+def module_config(book, module_id, db=None, ctx=None):
+    """``(enabled, settings)`` for one module on one book.
+
+    Whether the module is on (per-book override, else its auto rule) and its
+    fully-resolved settings (stored values over schema defaults). Lets a caller
+    outside the hook dispatchers — the translation engine asking whether this
+    book collects footnote candidates inline — ask that question without
+    reaching into the registry or the settings table itself. A module that
+    doesn't exist is ``(False, {})``.
+    """
+    mod = REGISTRY.get(module_id)
+    if mod is None:
+        return False, {}
+    enabled = module_id in resolve_module_ids(book, ctx)
+    stored = (ctx or {}).get("module_settings")
+    if stored is None:
+        stored = _load_module_settings(book, db)
+    return enabled, mod.resolve_settings((stored or {}).get(module_id))
 
 
 def _ctx(book, config, logger, db=None, **extra):

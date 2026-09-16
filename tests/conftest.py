@@ -73,6 +73,20 @@ class FakeWebConfig(FakeConfig):
 TEST_PASSWORD = "test-password-123"
 
 
+@pytest.fixture(autouse=True)
+def no_live_footnote_scan(monkeypatch):
+    """Keep the footnote scanner from making real model calls in tests.
+
+    The module auto-enables for any zh-source book (create_book's default), so
+    every save_chapter in the suite would otherwise start its worker thread and
+    hit the scan model. Tests that care about the hook (see test_footnote_scan)
+    re-patch ``enqueue`` themselves to capture the jobs.
+    """
+    from modules.footnote_scan_module import footnote_scan_worker
+
+    monkeypatch.setattr(footnote_scan_worker, "enqueue", lambda job: None)
+
+
 @pytest.fixture
 def fake_logger():
     return FakeLogger()

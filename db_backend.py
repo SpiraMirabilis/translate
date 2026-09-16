@@ -736,6 +736,50 @@ _COMMON_DDL_SQLITE = [
         FOREIGN KEY(job_id) REFERENCES polish_jobs(id) ON DELETE CASCADE
     )''',
     'CREATE INDEX IF NOT EXISTS idx_polish_suggestions_job ON polish_suggestions(job_id)',
+
+    # footnote_candidates / footnote_scans — LLM-collected cultural-referent
+    # footnote SUGGESTIONS awaiting human review (footnote_scan module + CLI).
+    # Candidates never touch chapters or the real footnotes table; the scan
+    # rows are the re-run guard (same source hash → chapter is not re-scanned).
+    '''CREATE TABLE IF NOT EXISTS footnote_candidates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        chapter_title TEXT,
+        term_zh TEXT,
+        term_en TEXT,
+        body TEXT NOT NULL,
+        sentence TEXT,
+        model TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_date TEXT NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_footnote_candidates_book_ch ON footnote_candidates(book_id, chapter_number)',
+    'CREATE INDEX IF NOT EXISTS idx_footnote_candidates_book_status ON footnote_candidates(book_id, status)',
+    '''CREATE TABLE IF NOT EXISTS footnote_scans (
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        n_found INTEGER NOT NULL,
+        scanned_at TEXT NOT NULL,
+        PRIMARY KEY (book_id, chapter_number),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    # chapter_entities — which entity records actually occur in a chapter's
+    # source text. Computed at save_chapter time (exact substring match of the
+    # entity's untranslated form) so the reader's "Terms this chapter" panel is
+    # a join rather than a full-glossary scan per request.
+    '''CREATE TABLE IF NOT EXISTS chapter_entities (
+        chapter_id INTEGER NOT NULL,
+        entity_id INTEGER NOT NULL,
+        occurrences INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (chapter_id, entity_id),
+        FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_chapter_entities_entity ON chapter_entities(entity_id)',
 ]
 
 _COMMON_DDL_MYSQL = [
@@ -1092,6 +1136,45 @@ _COMMON_DDL_MYSQL = [
         FOREIGN KEY(job_id) REFERENCES polish_jobs(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_polish_suggestions_job ON polish_suggestions(job_id)',
+
+    # footnote_candidates / footnote_scans — footnote suggestions awaiting
+    # review (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS footnote_candidates (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        chapter_title TEXT,
+        term_zh VARCHAR(255),
+        term_en VARCHAR(500),
+        body TEXT NOT NULL,
+        sentence TEXT,
+        model VARCHAR(100) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        created_date VARCHAR(50) NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_footnote_candidates_book_ch ON footnote_candidates(book_id, chapter_number)',
+    'CREATE INDEX idx_footnote_candidates_book_status ON footnote_candidates(book_id, status)',
+    '''CREATE TABLE IF NOT EXISTS footnote_scans (
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        model VARCHAR(100) NOT NULL,
+        content_hash VARCHAR(64) NOT NULL,
+        n_found INTEGER NOT NULL,
+        scanned_at VARCHAR(50) NOT NULL,
+        PRIMARY KEY (book_id, chapter_number),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    # chapter_entities — per-chapter entity index (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS chapter_entities (
+        chapter_id INTEGER NOT NULL,
+        entity_id INTEGER NOT NULL,
+        occurrences INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (chapter_id, entity_id),
+        FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_chapter_entities_entity ON chapter_entities(entity_id)',
 ]
 
 

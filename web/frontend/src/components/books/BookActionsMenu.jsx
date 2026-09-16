@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Trash2, Edit2, Download, ChevronDown, Loader2, ScrollText, Sparkles, Globe, Tags, ListChecks, Code, Boxes, RefreshCw
+  Trash2, Edit2, Download, ChevronDown, Loader2, ScrollText, Sparkles, Globe, Tags, ListChecks, Code, Boxes, RefreshCw, Asterisk
 } from 'lucide-react'
 
-export default function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache }) {
+export default function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache, onFootnotes }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -70,6 +70,7 @@ export default function BookActionsMenu({ book, exporting, onExport, onPublish, 
               <div className="border-t border-slate-700 my-1" />
               <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Chapters</div>
               {item(<Sparkles size={12} />, 'Repair Chapter Pronouns', onPronounRepair)}
+              {item(<Asterisk size={12} />, 'Footnote Candidates', onFootnotes)}
             </>
           )}
           <div className="border-t border-slate-700 my-1" />

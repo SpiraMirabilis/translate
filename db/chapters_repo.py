@@ -3,7 +3,7 @@ import re
 import datetime
 import threading
 import traceback
-from modules import apply_source_ingest
+from modules import apply_source_ingest, fire_new_chapter_saved
 
 
 class ChaptersRepo:
@@ -154,6 +154,24 @@ class ChaptersRepo:
                     self.rerender_chapter_footnotes(chapter_id)
             except Exception as e:
                 self.logger.error(f"Footnote reapply skipped for chapter {chapter_number}: {e}")
+
+
+            # New-chapter module events (e.g. footnote_scan's background
+            # candidate collection). First inserts only — re-saves and
+            # retranslations never re-fire.
+            try:
+                if not existing:
+                    if isinstance(untranslated_content, list):
+                        source_lines = untranslated_content
+                    elif isinstance(untranslated_content, str):
+                        source_lines = untranslated_content.split('\n')
+                    else:
+                        source_lines = []
+                    fire_new_chapter_saved(book, self.config, self.logger, db=self,
+                                           chapter_number=chapter_number,
+                                           source_lines=source_lines)
+            except Exception as e:
+                self.logger.error(f"New-chapter module events skipped for chapter {chapter_number}: {e}")
 
             return chapter_id
 

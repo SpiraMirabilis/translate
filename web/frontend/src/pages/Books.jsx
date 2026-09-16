@@ -358,6 +358,7 @@ export default function Books() {
                     onReview={() => reviewModal.open(book.id)}
                     onPrompt={() => promptModal.open(book.id)}
                     onApiLogs={() => navigate(`/books/${book.id}/api-calls`)}
+                    onFootnotes={() => navigate(`/footnotes/${book.id}`)}
                     onEdit={() => editBookModal.open(book.id)}
                     onDelete={() => handleDelete(book.id)}
                     onPronounRepair={() => pronounRepairModal.open(book.id)}

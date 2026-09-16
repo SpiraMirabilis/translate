@@ -208,6 +208,14 @@ export const api = {
   wpCancelPublish:  (bookId)         => post(`/api/wordpress/books/${bookId}/cancel`, {}),
   wpPublishChapter: (bookId, num, body = {}) => post(`/api/wordpress/books/${bookId}/chapters/${num}/publish`, body),
 
+  // Footnote candidates (review GUI — suggestions only, never placement)
+  listFootnoteCandidateBooks: () => get('/api/footnote-candidates/books'),
+  listFootnoteCandidates: (bookId, status) =>
+    get(`/api/books/${bookId}/footnote-candidates${status ? '?status=' + status : ''}`),
+  updateFootnoteCandidate: (id, body) => put(`/api/footnote-candidates/${id}`, body),
+  batchFootnoteCandidates: (bookId, ids, status) =>
+    post(`/api/books/${bookId}/footnote-candidates/batch`, { ids, status }),
+
   // Recommendations
   listRecommendations: (status) => get(`/api/recommendations${status ? '?status=' + status : ''}`),
   countRecommendations: (status) => get(`/api/recommendations/count${status ? '?status=' + status : ''}`),

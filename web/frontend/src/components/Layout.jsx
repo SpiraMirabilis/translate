@@ -3,16 +3,17 @@ import { Outlet, NavLink } from 'react-router-dom'
 import { useWs, useSite } from '../App'
 import { api } from '../services/api'
 import {
-  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users
+  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users, Asterisk
 } from 'lucide-react'
 
 const nav = [
-  { to: '/',                icon: Languages,        label: 'Translate'       },
+  { to: '/',                icon: Languages,        label: 'Translate',       badgeKey: 'jobs' },
   { to: '/books',           icon: BookOpen,          label: 'Books'           },
   { to: '/entities',        icon: Database,          label: 'Entities'        },
   { to: '/queue',           icon: ListChecks,        label: 'Queue'           },
   { to: '/recommendations', icon: MessageSquarePlus, label: 'Recommendations', badgeKey: 'recs' },
   { to: '/comments',        icon: MessageSquare,     label: 'Comments',        badgeKey: 'comments' },
+  { to: '/footnotes',       icon: Asterisk,          label: 'Footnotes'       },
   { to: '/api-logs',        icon: ScrollText,        label: 'API Logs'        },
   { to: '/reader-stats',    icon: Users,             label: 'Reader Stats'    },
   { to: '/settings',        icon: Settings,          label: 'Settings'        },

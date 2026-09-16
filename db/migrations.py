@@ -429,6 +429,81 @@ def _m015_queue_claim_status(conn, cursor, backend, logger):
     cursor.execute("UPDATE queue SET status = 'queued' WHERE status IS NULL OR status = ''")
 
 
+_FOOTNOTE_CANDIDATES_DDL = {
+    "sqlite": ["""
+        CREATE TABLE IF NOT EXISTS footnote_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            chapter_title TEXT,
+            term_zh TEXT,
+            term_en TEXT,
+            body TEXT NOT NULL,
+            sentence TEXT,
+            model TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_date TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+    """, """
+        CREATE TABLE IF NOT EXISTS footnote_scans (
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            n_found INTEGER NOT NULL,
+            scanned_at TEXT NOT NULL,
+            PRIMARY KEY (book_id, chapter_number),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+    """],
+    "mysql": ["""
+        CREATE TABLE IF NOT EXISTS footnote_candidates (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            chapter_title TEXT,
+            term_zh VARCHAR(255),
+            term_en VARCHAR(500),
+            body TEXT NOT NULL,
+            sentence TEXT,
+            model VARCHAR(100) NOT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'pending',
+            created_date VARCHAR(50) NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """, """
+        CREATE TABLE IF NOT EXISTS footnote_scans (
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            model VARCHAR(100) NOT NULL,
+            content_hash VARCHAR(64) NOT NULL,
+            n_found INTEGER NOT NULL,
+            scanned_at VARCHAR(50) NOT NULL,
+            PRIMARY KEY (book_id, chapter_number),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """],
+}
+
+
+def _m016_footnote_candidates(conn, cursor, backend, logger):
+    """LLM-collected footnote suggestions awaiting review (footnote_scan
+    module + CLI) and the per-chapter scan guard that prevents re-scanning
+    unchanged source. Promoted from the standalone footnote_candidates.db."""
+    for ddl in _FOOTNOTE_CANDIDATES_DDL[backend.name]:
+        cursor.execute(ddl)
+    for index_ddl in (
+        "CREATE INDEX idx_footnote_candidates_book_ch ON footnote_candidates(book_id, chapter_number)",
+        "CREATE INDEX idx_footnote_candidates_book_status ON footnote_candidates(book_id, status)",
+    ):
+        try:
+            cursor.execute(index_ddl)
+        except Exception:
+            # Index already exists (fresh installs create it via baseline DDL)
+            pass
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -445,6 +520,7 @@ MIGRATIONS = [
     Migration(13, "recommendation_replies", _m013_recommendation_replies),
     Migration(14, "chapters_translation_date_index", _m014_chapters_translation_date_index),
     Migration(15, "queue_claim_status", _m015_queue_claim_status),
+    Migration(16, "footnote_candidates", _m016_footnote_candidates),
 ]
 
 

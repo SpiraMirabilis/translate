@@ -35,6 +35,8 @@ const CommentsAdmin   = lazy(() => import('./pages/CommentsAdmin'))
 const ApiCalls        = lazy(() => import('./pages/ApiCalls'))
 const ApiLogPage      = lazy(() => import('./pages/ApiLogPage'))
 const ReaderStats     = lazy(() => import('./pages/ReaderStats'))
+const FootnoteCandidates = lazy(() => import('./pages/FootnoteCandidates'))
+const FootnoteReview  = lazy(() => import('./pages/FootnoteReview'))
 
 function PageSpinner() {
   return (
@@ -207,6 +209,8 @@ const router = createBrowserRouter(createRoutesFromElements(
         <Route path="queue" element={lazyEl(<Queue />)} />
         <Route path="recommendations" element={lazyEl(<Recommendations />)} />
         <Route path="comments" element={lazyEl(<CommentsAdmin />)} />
+        <Route path="footnotes" element={lazyEl(<FootnoteCandidates />)} />
+        <Route path="footnotes/:bookId" element={lazyEl(<FootnoteReview />)} />
         <Route path="settings" element={lazyEl(<Settings />)} />
         <Route path="help" element={lazyEl(<Help />)} />
       </Route>
