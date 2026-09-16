@@ -200,3 +200,47 @@ footnote_candidates.db
 # Per-book system-prompt debug dumps (translation_engine._debug_prompt_path)
 prompt.tmp
 prompt-book*.tmp
+
+# ── Local scratch, exports, and vendored tooling ──────────────────────────
+# Working files that live in the project root because the tools default there.
+# None of it is input to the app; all of it is regenerated or disposable.
+
+# Book/chapter scratch dumps and one-off review artifacts
+*.diff
+entities.json
+awards.json
+token_ratios.json
+legacygap*.json
+kuang_repair_*.json
+/chap1.txt
+/chap1-2.txt
+/chap1simp.txt
+/ch184.txt
+/192.txt
+/demons.txt
+/json2.txt
+/test_chapter.txt
+/seslimit.txt
+/weeklimit.txt
+/15footies.txt
+/35footies.json
+/b82ch1-120.json
+/b83-ch1-327.json
+/mirrorlegacy.json
+/wanli.json
+/wholethim.json
+/verifyplan.json
+/lying-troubleshooting.json
+/genius_warlock*
+/legacy/
+
+# Generated ebook/HTML exports (output/ is ~400MB of built books)
+output/
+*.fb2
+*.PNG
+/cover.png
+
+# Imported source dumps and vendored binaries
+*.sql
+wp-cli.phar
+/tl
