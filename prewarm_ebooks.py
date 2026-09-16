@@ -318,7 +318,9 @@ def main():
         if not azw3_ok:
             _context("ebook-convert not available — will prewarm EPUB only (no AZW3).")
 
-        books = db.list_books(order_by="title")
+        # Most-viewed first: when a run is cut short (load spike, time budget),
+        # the books readers actually download are the ones already warmed.
+        books = db.list_books(order_by="popular")
         if args.book_id is not None:
             books = [b for b in books if b["id"] == args.book_id]
 

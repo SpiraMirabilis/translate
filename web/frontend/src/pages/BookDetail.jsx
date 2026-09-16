@@ -341,7 +341,7 @@ export default function BookDetail() {
                   className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2 ${downloading ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
                   {downloading === 'azw3' ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                  {downloading === 'azw3' ? 'Preparing...' : 'Kindle'}
+                  {downloading === 'azw3' ? 'Preparing...' : 'AZW3'}
                 </button>
               )}
               <a
