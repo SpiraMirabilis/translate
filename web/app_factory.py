@@ -15,6 +15,7 @@ Both processes share the same database (MySQL; per-process pools) and the
 same built frontend in web/frontend/dist. Runtime settings propagate across
 processes via settings_store's mtime-based reload of settings.json.
 """
+import copy
 import os
 import re
 from html import escape
@@ -55,40 +56,73 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # Admin machinery — translation engine, job manager, module hooks.
         # Imported lazily so the public process never loads any of it.
         from translation_engine import TranslationEngine
-        from web.services.job_manager import job_manager
+        from web.services.job_manager import job_hub, job_registry
         from web.services.web_interface import WebInterface
         from web.api import (
             translation, books, entities, queue_api, settings_api,
             dictionary_api, activity_log_api, api_calls, wordpress_api,
             recommendations_admin, reader_stats_api, comments_admin,
-            revisions, grammar, mail_ingest, deps,
+            revisions, grammar, mail_ingest, deps, footnote_candidates,
+            sitemap,
         )
 
+        # Shared engine for the non-job callers (entity advice, dictionary
+        # lookups, book tooling). Translation runs do NOT use it — see below.
         translator = TranslationEngine(config, logger, entity_manager)
-        web_interface = WebInterface(translator, entity_manager, logger, job_manager)
-        job_manager.db_manager = entity_manager
-        # Module activity summaries go through job_manager so they hit the DB AND
+
+        def make_web_interface(job, translation_model=None, advice_model=None):
+            """Build a WebInterface owned by exactly one translation run.
+
+            Per-run model overrides used to be written onto the shared config
+            and restored in a finally block. That is non-reentrant: a second
+            run would swap the first's model mid-chapter (and with it
+            max_chars, hence the chunking), then restore the value the first
+            run saw at entry. Cloning the config per job removes the race
+            outright — TranslationEngine holds nothing but config/logger/db,
+            so an instance per run is cheap.
+
+            It also gives each run its own WebInterface, which is what makes
+            ui.py's one-shot fields (_merge_prefix, _cleaned_translations)
+            safe once more than one job can be live.
+            """
+            run_cfg = copy.copy(config)
+            if translation_model:
+                run_cfg.translation_model = translation_model
+            if advice_model:
+                run_cfg.advice_model = advice_model
+            engine = TranslationEngine(run_cfg, logger, entity_manager)
+            return WebInterface(engine, entity_manager, logger, job)
+
+        job_hub.db_manager = entity_manager
+        # Module activity summaries go through the hub so they hit the DB AND
         # broadcast live over WebSocket (plain db.add_activity_log otherwise).
+        # The hub, not a job: module backfills aren't part of any translation
+        # run, and routing them through one would stamp them with that job's
+        # book_id rather than the book the transform actually touched.
         from modules import set_activity_notifier
-        set_activity_notifier(job_manager.log_activity)
+        set_activity_notifier(job_hub.log_activity)
 
         deps.init(entity_manager)
-        translation.init(web_interface, job_manager)
+        translation.init(make_web_interface, job_registry, entity_manager)
         books.init(entity_manager, translator, logger)
         revisions.init(entity_manager)
         grammar.init(entity_manager, config)
         entities.init(entity_manager, translator)
-        queue_api.init(entity_manager, job_manager, web_interface)
+        queue_api.init(entity_manager, job_registry, make_web_interface)
         settings_api.init(config)
         settings_api.init_db(entity_manager)
         dictionary_api.init(entity_manager, translator)
         activity_log_api.init(entity_manager)
         api_calls.init(entity_manager)
-        wordpress_api.init(config, entity_manager, job_manager)
+        # Publishing is its own long-running task, not a translation job — it
+        # broadcasts and logs through the hub directly.
+        wordpress_api.init(config, entity_manager, job_hub)
         recommendations_admin.init(entity_manager)
         mail_ingest.init(entity_manager)
         reader_stats_api.init(entity_manager)
         comments_admin.init(entity_manager)
+        footnote_candidates.init(entity_manager)
+        sitemap.init(entity_manager, config)
 
     if public_only:
         # No docs/openapi on the public surface — nothing to advertise.
@@ -202,7 +236,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             translation, books, entities, queue_api, settings_api,
             dictionary_api, activity_log_api, api_calls, wordpress_api,
             recommendations_admin, reader_stats_api, comments_admin,
-            revisions, grammar, mail_ingest,
+            revisions, grammar, mail_ingest, footnote_candidates, sitemap,
         )
         app.include_router(translation.router)
         app.include_router(books.router)
@@ -219,6 +253,10 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         app.include_router(mail_ingest.router)
         app.include_router(reader_stats_api.router)
         app.include_router(comments_admin.router)
+        app.include_router(footnote_candidates.router)
+        # Sitemap generation — admin only, and absent from the public process
+        # so no crawler can trigger a 38k-row build (see web/api/sitemap.py).
+        app.include_router(sitemap.router)
 
     # Public API routes — both processes
     app.include_router(health.router)

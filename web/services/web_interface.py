@@ -2,7 +2,7 @@
 Web-based UserInterface implementation.
 
 Runs the existing translation pipeline (from ui.py) in a background thread,
-communicating with the frontend via the JobManager / WebSocket.
+communicating with the frontend via its Job / the JobHub WebSocket.
 """
 import sys
 import os
@@ -385,7 +385,7 @@ class WebInterface(UserInterface):
                 payload["error"] = error_message
                 error_message = None
 
-            self.job_manager.pending_chapter_conflict = payload
+            self.job_manager.await_prompt("chapter_conflict", payload)
             self.job_manager.send_message_sync({
                 "type": "chapter_conflict_needed",
                 **payload,
@@ -558,7 +558,7 @@ class WebInterface(UserInterface):
             "is_empty": not bool(raw_response and raw_response.strip()),
             "timeout_seconds": timeout,
         }
-        self.job_manager.pending_json_fix = payload
+        self.job_manager.await_prompt("json_fix", payload)
         self.job_manager.send_message_sync({
             "type": "json_fix_needed",
             **payload,

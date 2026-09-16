@@ -1,7 +1,10 @@
-"""Tests for JobManager's multi-socket WebSocket registry + replay buffer."""
+"""Tests for the JobHub multi-socket WebSocket registry + replay buffer.
+
+Exercised through a Job, which delegates every hub method — that delegation is
+what lets the API routers treat a per-book job like the old singleton."""
 import asyncio
 
-from web.services.job_manager import JobManager
+from web.services.job_manager import Job, JobHub
 
 
 class FakeWS:
@@ -16,7 +19,7 @@ class FakeWS:
 
 
 def test_add_and_remove_websocket():
-    jm = JobManager()
+    jm = Job(JobHub())
     ws1, ws2 = FakeWS(), FakeWS()
     loop = asyncio.new_event_loop()
     try:
@@ -32,7 +35,7 @@ def test_add_and_remove_websocket():
 
 
 def test_broadcast_reaches_all_sockets():
-    jm = JobManager()
+    jm = Job(JobHub())
     ws1, ws2 = FakeWS(), FakeWS()
     loop = asyncio.new_event_loop()
     try:
@@ -46,7 +49,7 @@ def test_broadcast_reaches_all_sockets():
 
 
 def test_dead_socket_dropped_without_silencing_live_one():
-    jm = JobManager()
+    jm = Job(JobHub())
     dead, live = FakeWS(fail=True), FakeWS()
     loop = asyncio.new_event_loop()
     try:
@@ -61,7 +64,7 @@ def test_dead_socket_dropped_without_silencing_live_one():
 
 
 def test_messages_buffered_with_no_socket_and_replayed():
-    jm = JobManager()
+    jm = Job(JobHub())
     # No socket attached — must not raise, must buffer
     jm.send_message_sync({"type": "translation_complete", "result": {"ok": 1}})
     loop = asyncio.new_event_loop()
@@ -75,7 +78,7 @@ def test_messages_buffered_with_no_socket_and_replayed():
 
 
 def test_activity_log_and_progress_not_replayed():
-    jm = JobManager()
+    jm = Job(JobHub())
     jm.send_message_sync({"type": "activity_log", "entry": {}})
     jm.send_message_sync({"type": "progress", "phase": "chunk"})
     jm.send_message_sync({"type": "json_fix_needed", "payload": {}})
@@ -90,7 +93,7 @@ def test_activity_log_and_progress_not_replayed():
 def test_replay_buffer_bounded():
     # json_fix_resolved neither collapses nor is dropped on resolve, so the
     # deque maxlen is its only backstop.
-    jm = JobManager()
+    jm = Job(JobHub())
     for i in range(150):
         jm.send_message_sync({"type": "json_fix_resolved", "i": i})
     loop = asyncio.new_event_loop()
@@ -111,7 +114,7 @@ def test_replay_collapses_terminal_events():
     Otherwise every completion since process start accumulates, and each fresh
     tab replays the whole pile on connect.
     """
-    jm = JobManager()
+    jm = Job(JobHub())
     for i in range(150):
         jm.send_message_sync({"type": "translation_complete", "chapter": i})
         jm.send_message_sync({"type": "error", "i": i})
@@ -136,7 +139,7 @@ def test_replay_collapses_terminal_events():
 
 
 def test_resolved_prompts_pruned_from_replay():
-    jm = JobManager()
+    jm = Job(JobHub())
     jm.send_message_sync({"type": "entity_review_needed", "entities": {}})
     jm.send_message_sync({"type": "json_fix_needed", "payload": {}})
     jm.submit_review({"entities": {}})
@@ -150,7 +153,7 @@ def test_resolved_prompts_pruned_from_replay():
 
 
 def test_reset_does_not_orphan_sockets():
-    jm = JobManager()
+    jm = Job(JobHub())
     ws = FakeWS()
     loop = asyncio.new_event_loop()
     try:
@@ -166,7 +169,7 @@ def test_send_message_sync_from_thread_broadcasts():
     """send_message_sync bridges a worker thread into the event loop."""
     import threading
 
-    jm = JobManager()
+    jm = Job(JobHub())
     ws = FakeWS()
 
     async def scenario():
@@ -183,3 +186,48 @@ def test_send_message_sync_from_thread_broadcasts():
 
     asyncio.run(scenario())
     assert [m["type"] for m in ws.sent] == ["translation_complete"]
+
+
+def test_live_message_carries_the_same_seq_as_its_replay_copy():
+    """A client must be able to recognise a replay of an event it already saw.
+
+    Without the seq on the live copy there is no identity to compare, and every
+    reconnect (constant on a flaky link) looks like brand-new news.
+    """
+    jm = Job(JobHub(), book_id=7)
+    ws = FakeWS()
+    loop = asyncio.new_event_loop()
+    try:
+        jm.add_websocket(ws, loop)
+        loop.run_until_complete(
+            jm.send_message_async({"type": "translation_complete", "chapter": 3}))
+        backlog = jm.add_websocket(FakeWS(), loop)
+        assert ws.sent[0]["seq"] == backlog[0]["seq"]
+    finally:
+        loop.close()
+
+
+def test_parking_on_a_prompt_retracts_that_books_terminal_events():
+    """A run blocked on a human has not ended, so its buffered outcome is stale.
+
+    Replaying an earlier chapter's completion to a reconnecting tab wiped the
+    open modal — and the modal is the only way to unblock the run.
+    """
+    hub = JobHub()
+    book, other = Job(hub, book_id=7), Job(hub, book_id=9)
+    book.send_message_sync({"type": "translation_complete", "chapter": 20})
+    other.send_message_sync({"type": "translation_complete", "chapter": 5})
+
+    book.await_prompt("chapter_conflict", {"chapter_number": 21})
+
+    loop = asyncio.new_event_loop()
+    try:
+        backlog = hub.add_websocket(FakeWS(), loop)
+        kinds = [(m["type"], m.get("book_id")) for m in backlog]
+        assert ("translation_complete", 7) not in kinds   # stale — retracted
+        assert ("translation_complete", 9) in kinds       # another book's stands
+        assert ("chapter_conflict_needed", 7) not in kinds  # sent separately
+        assert book.status == "awaiting_chapter_conflict"
+        assert book.pending_chapter_conflict == {"chapter_number": 21}
+    finally:
+        loop.close()

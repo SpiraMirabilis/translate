@@ -714,9 +714,16 @@ class UserInterface(ABC):
                 
                 
             return end_object
-        except Exception as e: 
-           self.logger.error(f"Error during translation process: {str(e)}")
-           raise
+        except TranslationCancelled:
+            # A user cancelling their book is a normal outcome, not a failure.
+            # It used to fall into the handler below and log an ERROR with an
+            # empty message — noise that multiplies now that each book can be
+            # cancelled independently.
+            self.logger.info("Translation cancelled by user.")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error during translation process: {str(e)}")
+            raise
 
     def resolve_duplicate_entities(self, duplicates, untranslated_text):
         """

@@ -243,6 +243,22 @@ class QueueRepo:
             self.logger.error(f"Error getting next queue item: {e}")
             return None
 
+    def get_queue_item_book_id(self, queue_id):
+        """Return the book a queue row belongs to, or None if it is gone.
+
+        Used by the release endpoint to decide whether the row's *own* book is
+        translating — a job on some other book has no claim on it.
+        """
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT book_id FROM queue WHERE id = ?", (queue_id,))
+                row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            self.logger.error(f"Error getting book for queue item {queue_id}: {e}")
+            return None
+
     def claim_next_queue_item(self, book_id=None, worker_id=None):
         """
         Atomically claim the next queued item for processing.
@@ -413,7 +429,11 @@ class QueueRepo:
 
     def remove_from_queue(self, queue_id):
         """
-        Remove an item from the queue and reorder remaining items.
+        Remove an item from the queue.
+
+        Remaining rows are NOT renumbered — gaps in `position` are fine, and
+        leaving them is what makes this safe to call from several book workers
+        at once (a global renumber would race on UNIQUE(position)).
 
         Args:
             queue_id: Queue item ID to remove
@@ -567,6 +587,30 @@ class QueueRepo:
             return [row[0] for row in rows]
         except Exception as e:
             self.logger.error(f"Error getting queued book ids: {e}")
+            return []
+
+    def get_next_queued_book_ids(self):
+        """Distinct book IDs with claimable items, in queue order.
+
+        Ordered by each book's earliest queued position, so a worker asked for
+        "whatever is next" picks the book the flat queue would have served
+        next. `get_queued_book_ids()` returns the same set unordered for the
+        UI's filter dropdown.
+
+        Returns:
+            list[int]: Book IDs, earliest-queued first.
+        """
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT book_id FROM queue "
+                    "WHERE status IS NULL OR status = 'queued' "
+                    "GROUP BY book_id ORDER BY MIN(position) ASC")
+                rows = cursor.fetchall()
+            return [row[0] for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting next queued book ids: {e}")
             return []
 
     def clear_queue(self, book_id=None):

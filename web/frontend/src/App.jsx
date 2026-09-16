@@ -11,6 +11,7 @@ import { Loader2 } from 'lucide-react'
 import { queryClient } from './lib/queryClient'
 import Layout from './components/Layout'
 import WsQueryBridge from './components/WsQueryBridge'
+import { JobsProvider } from './hooks/useJobs'
 // Public first-paint paths stay eager — readers should never wait on a
 // second round trip for the shell they landed on.
 import Reader from './pages/Reader'
@@ -159,7 +160,9 @@ function AdminGate() {
   return (
     <WsProvider>
       <WsQueryBridge />
-      <Outlet />
+      <JobsProvider>
+        <Outlet />
+      </JobsProvider>
     </WsProvider>
   )
 }

@@ -8,18 +8,79 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 
 from translation_engine import TranslationCancelled
+from web.services.job_manager import JobBusyError, JobCapacityError
 
 router = APIRouter()
 
 # Injected by app.py
-_web_interface = None
-_job_manager = None
+_make_web_interface = None
+_registry = None
+_entity_manager = None
 
 
-def init(web_interface, job_manager):
-    global _web_interface, _job_manager
-    _web_interface = web_interface
-    _job_manager = job_manager
+def init(make_web_interface, job_registry, entity_manager):
+    global _make_web_interface, _registry, _entity_manager
+    _make_web_interface = make_web_interface
+    _registry = job_registry
+    _entity_manager = entity_manager
+
+
+def _begin_job_or_409(book_id):
+    """Claim this book's translation slot, or fail with a reason the UI can show."""
+    try:
+        return _registry.begin(book_id)
+    except JobBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except JobCapacityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def _resolve_job(book_id=None, awaiting=None):
+    """Find the job a control request refers to.
+
+    `book_id` names it outright. Older clients (and the UI before it learned
+    about multiple jobs) send nothing, so fall back to the only job that is
+    actually waiting on this prompt — unambiguous whenever one job is parked,
+    which is the only time these endpoints are callable at all.
+    """
+    if book_id is not None:
+        return _registry.get(book_id)
+
+    candidates = _registry.active()
+    if awaiting is not None:
+        parked = [j for j in candidates if j.status == awaiting]
+        if parked:
+            candidates = parked
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return None
+    raise HTTPException(
+        status_code=409,
+        detail="Several translations are running — say which book this is for "
+               "by passing book_id.",
+    )
+
+
+def _job_state(job):
+    """The per-job payload the status/jobs endpoints return."""
+    state = {
+        "job_id": job.job_id,
+        "book_id": job.book_id,
+        "chapter_number": job.chapter_number,
+        "chapter_title": job.chapter_title,
+        "status": job.status,
+        "is_running": job.is_running,
+        "error": job.error,
+        "auto_process": job.auto_process,
+    }
+    if job.status == "awaiting_review" and job.pending_review:
+        state["pending_review"] = job.pending_review
+    if job.status == "awaiting_json_fix" and job.pending_json_fix:
+        state["pending_json_fix"] = job.pending_json_fix
+    if job.status == "awaiting_chapter_conflict" and job.pending_chapter_conflict:
+        state["pending_chapter_conflict"] = job.pending_chapter_conflict
+    return state
 
 
 # ------------------------------------------------------------------
@@ -38,7 +99,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     loop = asyncio.get_event_loop()
-    backlog = _job_manager.add_websocket(websocket, loop)
+    backlog = _registry.hub.add_websocket(websocket, loop)
     try:
         # Catch-up replay: events (completion, errors, review prompts) that
         # fired while no tab was open. Flagged so the client can dedupe.
@@ -51,7 +112,7 @@ async def websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         # Remove exactly this socket — a stale disconnect can't kill a live one.
-        _job_manager.remove_websocket(websocket)
+        _registry.hub.remove_websocket(websocket)
 
 
 # ------------------------------------------------------------------
@@ -76,6 +137,17 @@ class ReviewSubmitRequest(BaseModel):
     # Keys match the entity category keys from entity_review_needed message.
     # Each category maps to {untranslated: {translation, deleted?, ...}}
     entities: dict
+    # Decisions on the model's proposed note/gender revisions, keyed by entity id
+    # (as a string) or untranslated text:
+    # {"12": {"note": "edited text", "gender": "female"|null, "rejected": bool}}.
+    # A null/absent gender on an entry that proposed one means the gender half was
+    # declined; the note half still applies.
+    # Omitted entirely by clients that predate the feature, which is read as
+    # "don't touch any notes" rather than as blanket approval.
+    note_updates: Optional[dict] = None
+    # Which job this answers. Optional so older clients still work when only
+    # one translation is parked on a prompt.
+    book_id: Optional[int] = None
 
 
 class JsonFixRequest(BaseModel):
@@ -87,11 +159,22 @@ class JsonFixRequest(BaseModel):
 
     action: str  # "retry" | "fix" | "abort"
     fixed_json: Optional[str] = Field(default=None, alias="json")  # Only for "fix" action
+    book_id: Optional[int] = None  # which job this answers
 
 
 class ChapterConflictRequest(BaseModel):
     decision: str  # "proceed" | "cancel" | "merge" | "renumber_existing" | "renumber_new"
     new_chapter_number: Optional[int] = None  # Required for renumber_* decisions
+    book_id: Optional[int] = None  # which job this answers
+
+
+class SkipReviewRequest(BaseModel):
+    book_id: Optional[int] = None
+
+
+class CancelRequest(BaseModel):
+    # Omitted = cancel every running job (what the pre-multi-job UI expects).
+    book_id: Optional[int] = None
 
 
 # ------------------------------------------------------------------
@@ -106,95 +189,89 @@ def start_translation(req: TranslateRequest):
     if not lines:
         raise HTTPException(status_code=400, detail="No text provided.")
 
-    if not _job_manager.try_begin_job():
-        raise HTTPException(status_code=409, detail="A translation is already running.")
+    job = _begin_job_or_409(req.book_id)
+    job.clear_cancel()
 
-    _job_manager.clear_cancel()
-
-    # Per-request model overrides land in the shared translator config; capture
-    # the configured values so the worker thread can restore them afterwards
-    # (otherwise one request's override silently becomes the new default).
-    cfg = _web_interface.translator.config
-    orig_models = (cfg.translation_model, cfg.advice_model)
+    # This run gets its own WebInterface, engine and config clone, so the
+    # per-request model overrides can't leak into (or be clobbered by) anyone
+    # else's run. Nothing to save or restore afterwards.
+    web_interface = _make_web_interface(
+        job, translation_model=req.model, advice_model=req.advice_model)
 
     try:
         # Configure the job
-        _job_manager.pending_text = lines
-        _job_manager.book_id = req.book_id
-        _job_manager.chapter_number = req.chapter_number
-        _job_manager.status = "running"
-        _job_manager.error = None
-        _job_manager.last_result = None
+        job.pending_text = lines
+        job.book_id = req.book_id
+        job.chapter_number = req.chapter_number
+        job.status = "running"
+        job.error = None
+        job.last_result = None
 
-        # Override models if specified
-        if req.model:
-            cfg.translation_model = req.model
-        if req.advice_model:
-            cfg.advice_model = req.advice_model
-        _web_interface.cleaning_model = req.cleaning_model or None
-
-        _web_interface.no_review = req.no_review
+        web_interface.cleaning_model = req.cleaning_model or None
+        web_interface.no_review = req.no_review
         # Mutually exclusive with no_review: defensive guard for stale clients that
         # may send both flags. UI also enforces this, but trust nothing from the wire.
-        _web_interface.two_pass = req.two_pass and not req.no_review
-        _web_interface.no_clean = req.no_clean
-        _web_interface.stream = not req.no_stream
-        _web_interface.save_as_draft = req.save_as_draft
+        web_interface.two_pass = req.two_pass and not req.no_review
+        web_interface.no_clean = req.no_clean
+        web_interface.stream = not req.no_stream
+        web_interface.save_as_draft = req.save_as_draft
 
         # Resolve book name for the activity log
         book_name = None
         if req.book_id:
-            book = _web_interface.entity_manager.get_book(req.book_id)
+            book = _entity_manager.get_book(req.book_id)
             if book:
                 book_name = book.get("title")
 
-        _job_manager.log_activity(
+        job.log_activity(
             type='start',
             message=f'Translation started: {book_name or "No book"} — Chapter {req.chapter_number or "auto"}…',
             book_id=req.book_id, chapter=req.chapter_number, book_name=book_name,
         )
     except BaseException:
-        # A failure before the worker thread owns the flag would leave
-        # is_running stuck True (every later request 409s until restart).
-        _job_manager.end_job()
-        cfg.translation_model, cfg.advice_model = orig_models
+        # A failure before the worker thread owns the slot would leave this
+        # book permanently un-startable (every later request 409s).
+        _registry.end(req.book_id)
         raise
 
     # Run translation in a background thread so the event loop stays free
     def run():
         try:
-            _web_interface.run_translation()
+            web_interface.run_translation()
         except TranslationCancelled:
-            _job_manager.status = "idle"
-            _job_manager.send_message_sync({"type": "translation_cancelled"})
+            job.status = "idle"
+            job.send_message_sync({"type": "translation_cancelled"})
         except Exception as e:
-            _job_manager.status = "error"
-            _job_manager.error = str(e)
-            _job_manager.log_activity(type='error', message=f'Error: {e}')
-            _job_manager.send_message_sync({"type": "error", "message": str(e)})
+            job.status = "error"
+            job.error = str(e)
+            job.log_activity(type='error', message=f'Error: {e}')
+            job.send_message_sync({"type": "error", "message": str(e)})
         finally:
-            cfg.translation_model, cfg.advice_model = orig_models
-            _job_manager.end_job()
-            if _job_manager.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
-                _job_manager.status = "complete"
-            # Run boundary: summarize any module transforms from this run.
+            _registry.end(req.book_id)
+            if job.status not in ("error", "idle", "awaiting_review", "awaiting_json_fix", "awaiting_chapter_conflict"):
+                job.status = "complete"
+            # Run boundary: summarize this run's module transforms. Scoped to
+            # this book so a concurrent job's pending summaries aren't flushed
+            # early and attributed to this run's boundary.
             from modules import module_activity
-            module_activity.flush()
+            module_activity.flush(book_id=job.book_id)
+            _registry.prune()
 
     try:
-        thread = threading.Thread(target=run, daemon=True)
+        thread = threading.Thread(
+            target=run, daemon=True, name=f"translate-book{req.book_id}")
         thread.start()
     except BaseException:
-        _job_manager.end_job()
-        cfg.translation_model, cfg.advice_model = orig_models
+        _registry.end(req.book_id)
         raise
 
-    return {"status": "started"}
+    return {"status": "started", "job_id": job.job_id, "book_id": job.book_id}
 
 
 @router.post("/api/translate/submit-review")
 async def submit_review(req: ReviewSubmitRequest):
-    if _job_manager.status != "awaiting_review":
+    job = _resolve_job(req.book_id, awaiting="awaiting_review")
+    if job is None or job.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Not waiting for entity review.")
 
     # Log entity changes before unblocking the translation thread
@@ -209,53 +286,83 @@ async def submit_review(req: ReviewSubmitRequest):
                 accepted.append({'untranslated': untranslated, 'translation': data.get('translation', '')})
 
     if accepted:
-        await _job_manager.log_activity_async(
+        await job.log_activity_async(
             type='entities_accepted', message='New entities:',
             entities=[{'name': e['untranslated'], 'label': f"{e['untranslated']} → {e['translation']}"} for e in accepted],
         )
     for e in edited:
-        await _job_manager.log_activity_async(
+        await job.log_activity_async(
             type='entity_edited', message='Entity edited:',
             entities=[{'name': e['untranslated'], 'label': f'{e["untranslated"]} — "{e["from"]}" → "{e["to"]}"'}],
         )
     if deleted:
-        await _job_manager.log_activity_async(
+        await job.log_activity_async(
             type='entity_deleted', message='Entities deleted:',
             entities=[{'name': n, 'label': n} for n in deleted],
         )
-    await _job_manager.log_activity_async(type='info', message='Review submitted — resuming translation…')
+    if req.note_updates:
+        kept = [d for d in req.note_updates.values()
+                if isinstance(d, dict) and not d.get('rejected')]
+        rejected = len(req.note_updates) - len(kept)
+        # One entry may revise the note, correct the gender, or both, so the
+        # counts are per change and not per entry.
+        n_notes = sum(1 for d in kept if (d.get('note') or '').strip())
+        n_genders = sum(1 for d in kept if (d.get('gender') or '').strip())
+        if n_notes:
+            await job.log_activity_async(
+                type='entity_note_updated',
+                message=f'{n_notes} entity note{"" if n_notes == 1 else "s"} revised.',
+            )
+        if n_genders:
+            await job.log_activity_async(
+                type='entity_note_updated',
+                message=f'{n_genders} entity gender{"" if n_genders == 1 else "s"} corrected.',
+            )
+        if rejected:
+            await job.log_activity_async(
+                type='info',
+                message=f'{rejected} proposed entity change{"" if rejected == 1 else "s"} rejected.',
+            )
 
-    _job_manager.submit_review(req.entities)
+    await job.log_activity_async(type='info', message='Review submitted — resuming translation…')
+
+    payload = dict(req.entities)
+    if req.note_updates is not None:
+        payload["note_updates"] = req.note_updates
+    job.submit_review(payload)
     return {"status": "ok"}
 
 
 @router.post("/api/translate/skip-review")
-async def skip_review():
-    if _job_manager.status != "awaiting_review":
+async def skip_review(req: SkipReviewRequest = SkipReviewRequest()):
+    job = _resolve_job(req.book_id, awaiting="awaiting_review")
+    if job is None or job.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Not waiting for entity review.")
-    await _job_manager.log_activity_async(type='info', message='Entity review skipped — resuming translation…')
-    _job_manager.skip_review()
+    await job.log_activity_async(type='info', message='Entity review skipped — resuming translation…')
+    job.skip_review()
     return {"status": "ok"}
 
 
 @router.post("/api/translate/submit-json-fix")
 async def submit_json_fix(req: JsonFixRequest):
-    if _job_manager.status != "awaiting_json_fix":
+    job = _resolve_job(req.book_id, awaiting="awaiting_json_fix")
+    if job is None or job.status != "awaiting_json_fix":
         raise HTTPException(status_code=409, detail="Not waiting for JSON fix.")
 
     action_labels = {"retry": "Retrying chunk…", "fix": "Manual JSON fix submitted — resuming…", "abort": "Translation aborted by user."}
-    await _job_manager.log_activity_async(
+    await job.log_activity_async(
         type='json_fix' if req.action != 'abort' else 'info',
         message=action_labels.get(req.action, f'JSON fix action: {req.action}'),
     )
 
-    _job_manager.submit_json_fix({"action": req.action, "json": req.fixed_json})
+    job.submit_json_fix({"action": req.action, "json": req.fixed_json})
     return {"status": "ok"}
 
 
 @router.post("/api/translate/resolve-chapter-conflict")
 async def resolve_chapter_conflict(req: ChapterConflictRequest):
-    if _job_manager.status != "awaiting_chapter_conflict":
+    job = _resolve_job(req.book_id, awaiting="awaiting_chapter_conflict")
+    if job is None or job.status != "awaiting_chapter_conflict":
         raise HTTPException(status_code=409, detail="Not waiting for chapter conflict resolution.")
     valid_decisions = ("proceed", "cancel", "merge", "renumber_existing", "renumber_new", "insert_shift")
     if req.decision not in valid_decisions:
@@ -264,7 +371,7 @@ async def resolve_chapter_conflict(req: ChapterConflictRequest):
         if req.new_chapter_number is None or req.new_chapter_number < 1:
             raise HTTPException(status_code=400, detail="new_chapter_number must be a positive integer for renumber decisions.")
 
-    pending = _job_manager.pending_chapter_conflict or {}
+    pending = job.pending_chapter_conflict or {}
     ch = pending.get("chapter_number")
     book_name = pending.get("book_title")
     label_map = {
@@ -275,53 +382,114 @@ async def resolve_chapter_conflict(req: ChapterConflictRequest):
         "renumber_new":       f"Renumbering incoming chapter to {req.new_chapter_number}…",
         "insert_shift":       f"Inserting at chapter {(ch or 0) + 1} and shifting later queue items up by 1…",
     }
-    await _job_manager.log_activity_async(
+    await job.log_activity_async(
         type='info', message=f'Chapter {ch}: {label_map[req.decision]}',
         book_id=pending.get("book_id"), chapter=ch, book_name=book_name,
     )
 
-    _job_manager.submit_chapter_conflict(req.decision, req.new_chapter_number)
+    job.submit_chapter_conflict(req.decision, req.new_chapter_number)
     return {"status": "ok"}
+
+
+# Aggregate status precedence: a job needing a human outranks one merely
+# running, so a single-valued summary surfaces the thing that needs attention.
+# Every value here is outside translation_status.py's IDLE_STATUSES, so the CLI
+# guard still reads "something is happening" correctly.
+_STATUS_PRECEDENCE = (
+    "awaiting_chapter_conflict",
+    "awaiting_json_fix",
+    "awaiting_review",
+    "waiting",
+    "running",
+)
+
+
+@router.get("/api/translate/jobs")
+async def list_jobs():
+    """Every live translation, keyed by book — what the multi-job UI hydrates from."""
+    active = _registry.active()
+    return {
+        "jobs": [_job_state(j) for j in active],
+        "running": len(active),
+        "max_concurrent": _registry.max_concurrent(),
+    }
 
 
 @router.get("/api/translate/status")
 async def get_status():
+    """Aggregate status, plus the per-book breakdown.
+
+    The top-level status/is_running/auto_process fields are kept as aggregates
+    because translation_status.py (the CLI guard run before entity-repair
+    sweeps) reads them, and a bare `jobs` list would silently report "idle" to
+    every existing caller.
+    """
+    active = _registry.active()
+    statuses = {j.status for j in active}
+    status = next((s for s in _STATUS_PRECEDENCE if s in statuses), "idle")
+
     result = {
-        "status": _job_manager.status,
-        "is_running": _job_manager.is_running,
-        "error": _job_manager.error,
-        "auto_process": _job_manager.auto_process,
+        "status": status,
+        "is_running": bool(active),
+        "error": next((j.error for j in active if j.error), None),
+        "auto_process": any(j.auto_process for j in active),
+        "jobs": {str(j.book_id): _job_state(j) for j in active},
+        "running": len(active),
+        "max_concurrent": _registry.max_concurrent(),
     }
-    if _job_manager.status == "awaiting_review" and _job_manager.pending_review:
-        result["pending_review"] = _job_manager.pending_review
-    if _job_manager.status == "awaiting_json_fix" and _job_manager.pending_json_fix:
-        result["pending_json_fix"] = _job_manager.pending_json_fix
-    if _job_manager.status == "awaiting_chapter_conflict" and _job_manager.pending_chapter_conflict:
-        result["pending_chapter_conflict"] = _job_manager.pending_chapter_conflict
+
+    # Back-compat: single-job clients read these at the top level. Only
+    # meaningful when exactly one job is parked, which is when they ask.
+    parked = [j for j in active if j.status.startswith("awaiting_")]
+    if len(parked) == 1:
+        job = parked[0]
+        for key in ("pending_review", "pending_json_fix", "pending_chapter_conflict"):
+            value = _job_state(job).get(key)
+            if value:
+                result[key] = value
     return result
 
 
+def _cancel_job(job):
+    """Stop one job: flag the engine, then unblock whatever it is parked on."""
+    # Signal the engine to stop at its next cancellation checkpoint. Without
+    # this the thread keeps streaming and the backend treats the interruption
+    # as a transient failure and silently retries.
+    job.request_cancel()
+
+    if job.auto_process:
+        job.stop_auto_process()
+    if job.status == "awaiting_review":
+        job.skip_review()
+    if job.status == "awaiting_json_fix":
+        job.submit_json_fix({"action": "abort"})
+    if job.status == "awaiting_chapter_conflict":
+        job.submit_chapter_conflict("cancel")
+    job.status = "idle"
+
+
 @router.post("/api/translate/cancel")
-async def cancel_translation():
+async def cancel_translation(req: CancelRequest = CancelRequest()):
     """
-    Cancel the running translation. Sets the cooperative-cancel flag (the engine
+    Cancel a running translation. Sets the cooperative-cancel flag (the engine
     polls it between and mid-chunk and raises TranslationCancelled), stops the
     auto-process loop, and unblocks any pause the thread is parked on (entity
     review / JSON fix / chapter conflict) so it can reach the next cancel check.
-    """
-    # Signal the engine to stop at its next cancellation checkpoint. This is the
-    # key fix: previously the thread kept streaming and the backend treated the
-    # interruption as a transient failure and silently retried.
-    _job_manager.request_cancel()
 
-    if _job_manager.auto_process:
-        _job_manager.stop_auto_process()
-    if _job_manager.status == "awaiting_review":
-        _job_manager.skip_review()
-    if _job_manager.status == "awaiting_json_fix":
-        _job_manager.submit_json_fix({"action": "abort"})
-    if _job_manager.status == "awaiting_chapter_conflict":
-        _job_manager.submit_chapter_conflict("cancel")
-    _job_manager.status = "idle"
-    await _job_manager.log_activity_async(type='info', message='Translation cancelled.')
-    return {"status": "cancelled"}
+    With no book_id, cancels every running job — what a client that predates
+    per-book jobs means by "cancel".
+    """
+    if req.book_id is not None:
+        job = _registry.get(req.book_id)
+        targets = [job] if job is not None and job.is_running else []
+    else:
+        targets = _registry.active()
+
+    if not targets:
+        return {"status": "not_running", "cancelled": []}
+
+    for job in targets:
+        _cancel_job(job)
+        await job.log_activity_async(type='info', message='Translation cancelled.')
+
+    return {"status": "cancelled", "cancelled": [j.book_id for j in targets]}

@@ -14,7 +14,8 @@ const LIST_CHANGING_EVENTS = new Set([
  * inside the admin WsProvider tree (see AdminGate in App.jsx) so every admin
  * page's queries stay fresh without per-page manual reload chains.
  *
- * - translation lifecycle events → invalidate books/queue/job-status/chapters
+ * - translation lifecycle events → invalidate books/jobs, and the queue and
+ *   chapter lists for the book the event names
  * - ws_reconnected → blanket invalidation (catch up on anything missed)
  * - progress / activity_log → no-op (too chatty; pages consume them directly)
  *
@@ -31,10 +32,27 @@ export default function WsQueryBridge() {
     if (msg.replayed) return
 
     if (LIST_CHANGING_EVENTS.has(msg.type)) {
+      const bookId = msg.book_id ?? null
+
+      // Book counts change either way, and this key has no book scope.
       queryClient.invalidateQueries({ queryKey: ['books'] })
-      queryClient.invalidateQueries({ queryKey: ['queue'] })
-      queryClient.invalidateQueries({ queryKey: ['job-status'] })
-      queryClient.invalidateQueries({ queryKey: ['chapters'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+
+      // Scope the per-book lists. With several books translating these events
+      // arrive N times as often, so invalidating every book's queue and
+      // chapter list on each one is a real refetch storm.
+      if (bookId == null) {
+        queryClient.invalidateQueries({ queryKey: ['queue'] })
+        queryClient.invalidateQueries({ queryKey: ['chapters'] })
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['chapters', bookId] })
+        // Queue.jsx keys as ['queue', filterBook || null]; the unfiltered
+        // ("All books") view must refresh for any book's event.
+        queryClient.invalidateQueries({
+          predicate: (q) => q.queryKey[0] === 'queue'
+            && (q.queryKey[1] == null || String(q.queryKey[1]) === String(bookId)),
+        })
+      }
     } else if (msg.type === 'ws_reconnected') {
       queryClient.invalidateQueries()
     }

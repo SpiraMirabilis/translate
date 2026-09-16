@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/wordpress")
 
 _config = None
 _db = None
-_job_manager = None
+_job_hub = None
 
 # In-progress publish state
 _publish_thread: Optional[threading.Thread] = None
@@ -24,11 +24,11 @@ _publish_book_id: Optional[int] = None   # book the running publish belongs to
 _publish_lock = threading.Lock()         # guards the check-then-start above
 
 
-def init(config, entity_manager, job_manager):
-    global _config, _db, _job_manager
+def init(config, entity_manager, job_hub):
+    global _config, _db, _job_hub
     _config = config
     _db = entity_manager
-    _job_manager = job_manager
+    _job_hub = job_hub
 
 
 def _get_client() -> WordPressClient:
@@ -222,7 +222,7 @@ def publish_single_chapter(book_id: int, chapter_number: int, req: PublishChapte
 
     # Activity log
     try:
-        _job_manager.log_activity(
+        _job_hub.log_activity(
             "wordpress",
             f"Chapter {chapter_number} of \"{book['title']}\" {action} on WordPress",
             book_id=book_id,
@@ -296,7 +296,9 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
     client = None
 
     def send(msg: dict):
-        _job_manager.send_message_sync(msg)
+        # Stamp the book so a modal open on one book ignores another book's
+        # publish progress. book_id was already in scope; it just wasn't sent.
+        _job_hub.send_message_sync({"book_id": book_id, **msg})
 
     try:
         url = _config.wp_url
@@ -454,7 +456,7 @@ def _publish_worker(book_id: int, book: dict, story_status: str, story_rating: s
 
         # Activity log
         try:
-            _job_manager.log_activity(
+            _job_hub.log_activity(
                 "wordpress",
                 f"Published \"{book['title']}\" to WordPress: {created} created, {updated} updated, {skipped} skipped, {errors} errors",
                 book_id=book_id,

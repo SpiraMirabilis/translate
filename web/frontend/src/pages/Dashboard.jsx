@@ -2,8 +2,11 @@
  * Dashboard — main translation workspace.
  *
  * Left panel:  input, book/chapter selector, model override, translate button
- * Right panel: persistent activity log + progress
- * Bottom:      entity review panel (modal overlay when entities need review)
+ * Right panel: persistent activity log + one progress card per running book
+ *
+ * Several books can translate at once, so this page owns no job state: it
+ * reads useJobs() and the interactive prompts are hosted globally by
+ * PromptHost (they can arrive while you are on any page).
  */
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -11,14 +14,12 @@ import { Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { useWsEvent } from '../hooks/useWsEvent'
 import ErrorState from '../components/ErrorState'
-import EntityReviewPanel from '../components/EntityReviewPanel'
-import JsonFixPanel from '../components/JsonFixPanel'
-import ChapterConflictPanel from '../components/ChapterConflictPanel'
-import TranslationProgress from '../components/TranslationProgress'
+import JobList from '../components/jobs/JobList'
 import ComboBox from '../components/ComboBox'
+import { useJobs } from '../hooks/useJobs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
-  Play, Square, Info, Trash2
+  Play, Info, Trash2, ListPlus
 } from 'lucide-react'
 
 export default function Dashboard() {
@@ -43,183 +44,64 @@ export default function Dashboard() {
   const [noStream, setNoStream] = useLocalStorage('dashboard.noStream', false)
   const [saveAsDraft, setSaveAsDraft] = useLocalStorage('dashboard.saveAsDraft', false)
 
-  const [jobStatus, setJobStatus] = useState('idle')   // idle | running | awaiting_review | complete | error
-  const [chunkProgress, setChunkProgress] = useState(null)
   const [hideSynopses, setHideSynopses] = useLocalStorage('dashboard.hideSynopses', false)
-  const [entityReview, setEntityReview] = useState(null) // { entities, context } or null
-  const [jsonFix, setJsonFix] = useState(null) // { raw_response, chunk_index, total_chunks, chunk_text } or null
-  const [chapterConflict, setChapterConflict] = useState(null) // { book_id, chapter_number, ... } or null
+
+  // Job state is shared, keyed by book — several can run at once. Prompts are
+  // rendered globally by PromptHost, so this page no longer owns modal slots.
+  const {
+    isBookRunning, atCapacity, markStarted, maxConcurrent,
+    active: activeJobsList, refresh: refreshJobs,
+  } = useJobs()
+  const activeCount = activeJobsList.length
 
   const logRef = useRef(null)
 
   // Books + providers + activity log + job status as queries. Failures
   // surface as a retryable banner instead of a silently empty workspace.
-  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  const booksQuery = useQuery({ queryKey: ['books', 'minimal'], queryFn: () => api.listBooksMinimal() })
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => api.listProviders() })
   const activityLogQuery = useQuery({ queryKey: ['activity-log'], queryFn: () => api.getActivityLog() })
-  const jobStatusQuery = useQuery({ queryKey: ['job-status'], queryFn: () => api.getJobStatus() })
 
   const books = booksQuery.data?.books || []
   const providers = providersQuery.data?.providers || []
   const activityLogData = activityLogQuery.data
   const activityLog = useMemo(() => activityLogData?.entries || [], [activityLogData])
 
-  const initialQueries = [booksQuery, providersQuery, activityLogQuery, jobStatusQuery]
+  const initialQueries = [booksQuery, providersQuery, activityLogQuery]
   const loadErrorObj = initialQueries.find(q => q.error)?.error
   const loadError = loadErrorObj ? (loadErrorObj.message || 'Request failed') : null
   const loadInitial = () => initialQueries.forEach(q => q.refetch())
-
-  // Restore job state on the first successful status fetch only (e.g. reopen
-  // the entity-review panel if a job is awaiting review). Later refetches —
-  // WsQueryBridge invalidates ['job-status'] on translation events — must not
-  // re-apply, since the WS handler below owns live status transitions.
-  const restoredRef = useRef(false)
-  useEffect(() => {
-    const d = jobStatusQuery.data
-    if (!d || restoredRef.current) return
-    restoredRef.current = true
-    if (d.status && d.status !== 'idle') setJobStatus(d.status)
-    if (d.status === 'awaiting_review' && d.pending_review) {
-      setEntityReview(d.pending_review)
-    }
-    if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
-      setJsonFix(d.pending_json_fix)
-    }
-    if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
-      setChapterConflict(d.pending_chapter_conflict)
-    }
-  }, [jobStatusQuery.data])
 
   // Handle WebSocket messages — every message is delivered via the WS fan-out
   // (useWsEvent), so nothing is lost to React 18 batching. Missed events are
   // replayed by the backend on connect (flagged `replayed: true`). The backend
   // does NOT replay activity_log/progress — the ws_reconnected catch-up below
   // re-syncs those from the REST API instead.
+  // This page now only reacts to activity-log traffic and to its OWN book
+  // finishing. Everything else about job state lives in useJobs, keyed by book.
   useWsEvent((msg) => {
     const { type } = msg
 
-    // Replayed TERMINAL events must not re-run side effects: the backend
-    // re-sends the newest complete/error/cancelled on every socket accept
-    // for the process lifetime, so a days-old `translation_complete` would
-    // repaint the badge and clobber a user-edited chapter number on any
-    // reconnect. Current state already arrives via the mount-time
-    // getJobStatus query and the ws_reconnected catch-up. Replayed
-    // pending-PROMPT events still flow — the backend drops resolved prompts
-    // from the replay buffer, so a replayed one is genuinely still pending.
-    if (msg.replayed && (type === 'translation_complete' || type === 'error'
-                         || type === 'translation_cancelled')) {
+    if (type === 'ws_reconnected') {
+      queryClient.invalidateQueries({ queryKey: ['activity-log'] })
       return
     }
 
-    if (type === 'ws_reconnected') {
-      // One-shot catch-up after the socket re-opens: restore job status and
-      // any pending modal, and re-sync the activity log.
-      api.getJobStatus().then(d => {
-        if (d.status === 'running' || d.status === 'waiting') {
-          setJobStatus(d.status)
-        }
-        if (d.status === 'awaiting_review' && d.pending_review) {
-          setJobStatus('awaiting_review')
-          setEntityReview(d.pending_review)
-        }
-        if (d.status === 'awaiting_json_fix' && d.pending_json_fix) {
-          setJobStatus('awaiting_json_fix')
-          setJsonFix(d.pending_json_fix)
-        }
-        if (d.status === 'awaiting_chapter_conflict' && d.pending_chapter_conflict) {
-          setJobStatus('awaiting_chapter_conflict')
-          setChapterConflict(d.pending_chapter_conflict)
-        }
-        // Translation finished while disconnected — catch up so the UI doesn't
-        // get stuck on "Repairing translation…" or similar in-progress UI.
-        if (d.status === 'complete' || d.status === 'error' || d.status === 'idle') {
-          setJobStatus(d.status)
-          setChunkProgress(null)
-          setEntityReview(null)
-          setJsonFix(null)
-          setChapterConflict(null)
-        }
-      }).catch(() => {})
+    if (type === 'translation_complete' || type === 'error') {
       queryClient.invalidateQueries({ queryKey: ['activity-log'] })
     }
 
-    if (type === 'progress') {
-      setChunkProgress(msg)
-      setJobStatus(msg.phase === 'session_limit' ? 'waiting' : 'running')
-    }
-
-    if (type === 'entity_review_needed') {
-      setJobStatus('awaiting_review')
-      setEntityReview({ entities: msg.entities, context: msg.context, phase: msg.phase || 'post' })
-    }
-
-    if (type === 'chapter_conflict_needed') {
-      setJobStatus('awaiting_chapter_conflict')
-      setChapterConflict({
-        book_id: msg.book_id,
-        chapter_number: msg.chapter_number,
-        book_title: msg.book_title,
-        existing_title: msg.existing_title,
-        existing_untranslated: msg.existing_untranslated,
-        new_title: msg.new_title,
-        new_untranslated: msg.new_untranslated,
-        error: msg.error,
-      })
-    }
-
-    if (type === 'json_fix_needed') {
-      setJobStatus('awaiting_json_fix')
-      setJsonFix({
-        raw_response: msg.raw_response,
-        chunk_index: msg.chunk_index,
-        total_chunks: msg.total_chunks,
-        chunk_text: msg.chunk_text,
-        is_empty: msg.is_empty,
-        timeout_seconds: msg.timeout_seconds,
-      })
-    }
-
-    // Backend auto-resolved the JSON fix (timed out → retry); dismiss modal.
-    if (type === 'json_fix_resolved') {
-      setJsonFix(null)
-      setJobStatus('running')
-    }
-
-    if (type === 'translation_complete') {
-      setJobStatus('complete')
-      setChunkProgress(null)
-      setEntityReview(null)
-      setJsonFix(null)
-      setChapterConflict(null)
-      // Auto-advance to the next chapter so the paste → translate → paste loop
-      // doesn't require manually bumping the number. We set an absolute value
-      // (completed chapter + 1) rather than incrementing, so it's idempotent if
-      // the message is somehow delivered twice. `chapter` is whatever the backend
-      // actually used, including auto-assigned numbers when the field was blank.
-      if (Number.isFinite(msg.chapter)) {
-        setChapterNum(String(msg.chapter + 1))
-      }
-      // Re-fetch full log so late/backfilled entries are reflected
-      queryClient.invalidateQueries({ queryKey: ['activity-log'] })
-    }
-
-    if (type === 'error') {
-      setJobStatus('error')
-      setChunkProgress(null)
-      setEntityReview(null)
-      setJsonFix(null)
-      setChapterConflict(null)
-      queryClient.invalidateQueries({ queryKey: ['activity-log'] })
-    }
-
-    // The engine actually stopped after a cancel — clear any transient progress
-    // (a late in-flight chunk update may have flipped the badge back to running).
-    if (type === 'translation_cancelled') {
-      setJobStatus('idle')
-      setChunkProgress(null)
-      setEntityReview(null)
-      setJsonFix(null)
-      setChapterConflict(null)
+    // Auto-advance to the next chapter so the paste → translate → paste loop
+    // doesn't require manually bumping the number. Gated on this composer's
+    // own book: any other book's completion (a queue worker draining book 79
+    // while you stage book 14) would otherwise rewrite the field — and it is
+    // persisted to localStorage, so the wrong number outlives the session.
+    // The replay guard stays as belt-and-braces: the backend re-sends the
+    // newest terminal event on every socket accept.
+    if (type === 'translation_complete' && !msg.replayed
+        && Number.isFinite(msg.chapter)
+        && String(msg.book_id ?? '') === String(selectedBook ?? '')) {
+      setChapterNum(String(msg.chapter + 1))
     }
 
     // Append activity log entries from the backend straight into the query
@@ -239,15 +121,19 @@ export default function Dashboard() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [activityLog])
 
+  const bookIdValue = selectedBook ? parseInt(selectedBook) : null
+  const thisBookRunning = isBookRunning(bookIdValue)
+  const [startError, setStartError] = useState(null)
+
   const handleTranslate = async () => {
     if (!inputText.trim()) return
-    setEntityReview(null)
-    setChunkProgress(null)
-    setJobStatus('running')
+    setStartError(null)
+    setQueueMsg(null)
+    markStarted(bookIdValue)
     try {
       await api.translate({
         text: inputText,
-        book_id: selectedBook ? parseInt(selectedBook) : null,
+        book_id: bookIdValue,
         chapter_number: chapterNum ? parseInt(chapterNum) : null,
         model: modelOverride || null,
         advice_model: adviceModel || null,
@@ -258,29 +144,54 @@ export default function Dashboard() {
         no_stream: noStream,
         save_as_draft: saveAsDraft,
       })
-    } catch {
-      setJobStatus('error')
+    } catch (e) {
+      // A refusal (this book is busy, or all slots are in use) is normal now,
+      // so show why inline rather than painting the whole page as errored.
+      setStartError(e?.message || 'Could not start translation.')
+    } finally {
+      refreshJobs()
     }
   }
 
-  const handleCancel = async () => {
-    try { await api.cancelJob() } catch { /* ignore */ }
-    setJobStatus('idle')
+  // Queue instead of translating now. Same composer state, different sink:
+  // the chapter is parked in the queue and picked up by a queue worker later.
+  // A book is required — the queue is keyed by book, unlike a one-off
+  // translation which can run with "No book / Default".
+  const [queuing, setQueuing] = useState(false)
+  const [queueMsg, setQueueMsg] = useState(null)
+
+  const handleAddToQueue = async () => {
+    if (!inputText.trim() || !bookIdValue) return
+    setStartError(null)
+    setQueueMsg(null)
+    setQueuing(true)
+    try {
+      const res = await api.addToQueue({
+        text: inputText,
+        book_id: bookIdValue,
+        chapter_number: chapterNum ? parseInt(chapterNum) : null,
+      })
+      queryClient.invalidateQueries({ queryKey: ['queue'] })
+      // Advance the composer the way a finished translation does, so the
+      // paste → queue → paste loop doesn't need the number re-typed.
+      if (chapterNum) setChapterNum(String(parseInt(chapterNum) + 1))
+      setInputText('')
+      setQueueMsg(`Added to queue${res?.count ? ` — ${res.count} item${res.count === 1 ? '' : 's'} waiting` : ''}.`)
+    } catch (e) {
+      setStartError(e?.message || 'Could not add to queue.')
+    } finally {
+      setQueuing(false)
+    }
   }
 
-  const handleReviewDone = () => {
-    setEntityReview(null)
-    setJobStatus('running')
+  const handleCancel = async (bookId) => {
+    try { await api.cancelJob(bookId) } catch { /* ignore */ }
+    refreshJobs()
   }
 
-  const handleJsonFixDone = () => {
-    setJsonFix(null)
-    setJobStatus('running')
-  }
-
-  const handleChapterConflictDone = () => {
-    setChapterConflict(null)
-    setJobStatus('running')
+  const handleStopAuto = async (bookId) => {
+    try { await api.stopAutoProcess(bookId) } catch { /* ignore */ }
+    refreshJobs()
   }
 
   const clearLog = async () => {
@@ -293,14 +204,15 @@ export default function Dashboard() {
     (p.models || []).map(m => `${p.name}:${m}`)
   )
 
-  const isRunning = jobStatus === 'running' || jobStatus === 'waiting' || jobStatus === 'awaiting_review' || jobStatus === 'awaiting_json_fix' || jobStatus === 'awaiting_chapter_conflict'
 
   return (
     <div className="h-full flex flex-col">
       {/* Top bar */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-900/50 shrink-0">
         <h1 className="text-sm font-semibold text-slate-300">Translation Workspace</h1>
-        <StatusBadge status={jobStatus} />
+        <span className="text-xs text-slate-500">
+          {activeCount ? `${activeCount} of ${maxConcurrent} translating` : 'Idle'}
+        </span>
       </div>
 
       {/* Initial-load failure banner */}
@@ -479,20 +391,45 @@ export default function Dashboard() {
 
             {/* Action buttons */}
             <div className="flex gap-2">
-              {isRunning ? (
-                <button className="btn-danger flex items-center gap-1.5 flex-1" onClick={handleCancel}>
-                  <Square size={13} /> Cancel
-                </button>
-              ) : (
-                <button
-                  className="btn-primary flex items-center gap-1.5 flex-1"
-                  onClick={handleTranslate}
-                  disabled={!inputText.trim()}
-                >
-                  <Play size={13} /> Translate
-                </button>
-              )}
+              {/* Stays "Translate" even while other books run — each job has
+                  its own Cancel on its card. Only this book being busy, or
+                  every slot being taken, blocks a new start. */}
+              <button
+                className="btn-primary flex items-center gap-1.5 flex-1"
+                onClick={handleTranslate}
+                disabled={!inputText.trim() || thisBookRunning || atCapacity}
+                title={
+                  thisBookRunning ? 'This book is already translating'
+                    : atCapacity ? `All ${maxConcurrent} translation slots are in use`
+                    : undefined
+                }
+              >
+                <Play size={13} /> Translate
+              </button>
+              {/* Queuing is always allowed — it starts nothing, so a busy book
+                  or a full slot roster is irrelevant. It does need a book. */}
+              <button
+                className="btn-secondary flex items-center gap-1.5"
+                onClick={handleAddToQueue}
+                disabled={!inputText.trim() || !bookIdValue || queuing}
+                title={!bookIdValue ? 'Select a book to queue a chapter' : 'Add this chapter to the queue'}
+              >
+                <ListPlus size={13} /> {queuing ? 'Queuing…' : 'Add to queue'}
+              </button>
             </div>
+            {queueMsg && (
+              <p className="text-xs text-emerald-400 mt-1.5">
+                {queueMsg} <Link to="/queue" className="underline hover:text-emerald-300">View queue</Link>
+              </p>
+            )}
+            {(thisBookRunning || atCapacity || startError) && (
+              <p className="text-xs text-amber-400 mt-1.5">
+                {startError
+                  || (thisBookRunning
+                    ? 'This book is already translating — its chapters run in order.'
+                    : `All ${maxConcurrent} translation slots are in use.`)}
+              </p>
+            )}
           </div>
 
           {/* Text input */}
@@ -503,7 +440,6 @@ export default function Dashboard() {
               placeholder="Paste Chinese text here…"
               value={inputText}
               onChange={e => setInputText(e.target.value)}
-              disabled={isRunning}
             />
             <p className="text-xs text-slate-600 text-right">
               {inputText.length.toLocaleString()} chars
@@ -533,9 +469,9 @@ export default function Dashboard() {
           </div>
 
           {/* Progress banner — visible while running */}
-          {isRunning && (
+          {activeCount > 0 && (
             <div className="px-4 py-3 border-b border-indigo-900 bg-indigo-950/40 shrink-0">
-              <TranslationProgress progress={chunkProgress} status={jobStatus} />
+              <JobList onCancel={handleCancel} onStopAuto={handleStopAuto} />
             </div>
           )}
 
@@ -558,44 +494,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Entity review overlay */}
-      {entityReview && (
-        <EntityReviewPanel
-          entities={entityReview.entities}
-          context={entityReview.context}
-          phase={entityReview.phase}
-          genderedCategories={entityReview.gendered_categories}
-          onDone={handleReviewDone}
-        />
-      )}
-
-      {/* JSON fix overlay */}
-      {jsonFix && (
-        <JsonFixPanel
-          rawResponse={jsonFix.raw_response}
-          chunkIndex={jsonFix.chunk_index}
-          totalChunks={jsonFix.total_chunks}
-          chunkText={jsonFix.chunk_text}
-          isEmpty={jsonFix.is_empty}
-          timeoutSeconds={jsonFix.timeout_seconds}
-          onDone={handleJsonFixDone}
-        />
-      )}
-
-      {/* Chapter-conflict overlay */}
-      {chapterConflict && (
-        <ChapterConflictPanel
-          bookId={chapterConflict.book_id}
-          chapterNumber={chapterConflict.chapter_number}
-          bookTitle={chapterConflict.book_title}
-          existingTitle={chapterConflict.existing_title}
-          existingUntranslated={chapterConflict.existing_untranslated}
-          newTitle={chapterConflict.new_title}
-          newUntranslated={chapterConflict.new_untranslated}
-          errorMessage={chapterConflict.error}
-          onDone={handleChapterConflictDone}
-        />
-      )}
     </div>
   )
 }
@@ -645,17 +543,3 @@ function ActivityEntry({ entry }) {
   )
 }
 
-function StatusBadge({ status }) {
-  const map = {
-    idle:             { label: 'Idle',           cls: 'badge-slate'   },
-    running:          { label: 'Translating…',   cls: 'badge-indigo'  },
-    waiting:          { label: 'Paused (limit)', cls: 'badge-amber'   },
-    awaiting_review:  { label: 'Review needed',  cls: 'badge-amber'   },
-    awaiting_json_fix:{ label: 'JSON Fix',       cls: 'badge-amber'   },
-    awaiting_chapter_conflict: { label: 'Chapter conflict', cls: 'badge-amber' },
-    complete:         { label: 'Complete',        cls: 'badge-emerald' },
-    error:            { label: 'Error',           cls: 'badge-rose'    },
-  }
-  const { label, cls } = map[status] || map.idle
-  return <span className={cls}>{label}</span>
-}

@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 from config import TranslationConfig
 
 class Logger:
@@ -33,13 +34,21 @@ class Logger:
         if logger.handlers:
             return logger
 
-        # Formatter for log messages
-        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        # Formatter for log messages. The thread name distinguishes the
+        # concurrent per-book translation workers, whose lines would otherwise
+        # interleave in this one file with nothing to tell them apart.
+        formatter = logging.Formatter(
+            "%(asctime)s - %(threadName)s - %(levelname)s - %(message)s")
 
         # File handler. WARNING floor (not ERROR) so operationally relevant
         # warnings — 529 overload waits, failed sends, skipped steps — persist
         # without needing DEBUG mode.
-        file_handler = logging.FileHandler("translate.log", mode="w")  # Overwrites the file
+        #
+        # Appends rather than truncates: with several jobs (and two processes)
+        # sharing this file, opening it in "w" meant a newly started run wiped
+        # a running one's log out from under it. Rotates so it stays bounded.
+        file_handler = logging.handlers.RotatingFileHandler(
+            "translate.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG if self.config.debug_mode else logging.WARNING)
         file_handler.setFormatter(formatter)
 

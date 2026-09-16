@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink } from 'react-router-dom'
+import PromptHost from './jobs/PromptHost'
+import ErrorBoundary from './ErrorBoundary'
+import { useJobs } from '../hooks/useJobs'
 import { useWs, useSite } from '../App'
 import { api } from '../services/api'
 import {
@@ -45,8 +48,16 @@ export default function Layout() {
     return () => clearInterval(interval)
   }, [])
 
+  const { active } = useJobs()
+
   // New requests and unread email replies both surface on the Recommendations nav item.
-  const badges = { recs: newRecsCount + unreadRepliesCount, comments: pendingCommentsCount }
+  // The Translate badge counts live translations — prompts can now arrive while
+  // you are on any page, so the nav is where you notice them.
+  const badges = {
+    recs: newRecsCount + unreadRepliesCount,
+    comments: pendingCommentsCount,
+    jobs: active.length,
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -134,6 +145,14 @@ export default function Layout() {
       <main className="flex-1 overflow-y-auto pt-12 md:pt-0">
         <Outlet />
       </main>
+
+      {/* Interactive translation prompts, hosted globally so a book needing a
+          decision reaches the user wherever they are. Boundaried because it
+          renders on every admin page: a throw here would otherwise take the
+          whole shell down, not just the prompt. */}
+      <ErrorBoundary label="Translation prompts" silent>
+        <PromptHost />
+      </ErrorBoundary>
     </div>
   )
 }

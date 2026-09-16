@@ -1,4 +1,4 @@
-"""Tests for JobManager.on_progress pause/resume activity logging.
+"""Tests for Job.on_progress pause/resume activity logging.
 
 Both the Anthropic API and Claude Code providers raise OverloadedError into
 the engine's shared retry loop, which emits phase="overloaded" progress
@@ -6,7 +6,7 @@ events; session limits emit phase="session_limit". Each pause must produce
 exactly one activity-log line (and one on resume) so a 529 wait is visible
 in the UI instead of looking like a hung job.
 """
-from web.services.job_manager import JobManager
+from web.services.job_manager import Job, JobHub
 
 
 class FakeDB:
@@ -19,7 +19,7 @@ class FakeDB:
 
 
 def _jm():
-    jm = JobManager()
+    jm = Job(JobHub())
     jm.db_manager = FakeDB()
     jm.status = "running"
     jm.book_id = 57
@@ -68,3 +68,17 @@ def test_second_overload_after_recovery_logs_again():
     jm.on_progress({"phase": "overloaded", "wait_seconds": 300})
     warnings = [e for e in jm.db_manager.entries if e["type"] == "warning"]
     assert len(warnings) == 2
+
+
+def test_weekly_limit_message_names_the_kind():
+    jm = _jm()
+    jm.on_progress({"phase": "session_limit", "limit": "weekly", "wait_seconds": 7200})
+    assert "weekly limit" in jm.db_manager.entries[0]["message"]
+    assert jm.status == "waiting"
+
+
+def test_weekly_limit_resume_message_names_the_kind():
+    jm = _jm()
+    jm.on_progress({"phase": "session_limit", "limit": "weekly", "wait_seconds": 7200})
+    jm.on_progress({"phase": "chunk", "chunk": 1})
+    assert "Weekly limit reset" in jm.db_manager.entries[1]["message"]

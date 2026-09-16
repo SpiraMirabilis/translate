@@ -9,13 +9,26 @@ from db.core import DEFAULT_CATEGORIES, INCLUDE_SIMILAR_PREFIX
 # from an explicit book_id=None (global entities only).
 _UNSCOPED = object()
 
+# Sentinel: distinguishes "no note argument" from an explicit note=None (clear it).
+_UNSET = object()
+
 
 class EntitiesRepo:
     """Entity dictionary: cache loading, CRUD, text matching, and import/export."""
 
-    def _load_entities(self, book_id=None):
-        """Load existing entities from database into memory cache"""
+    def get_entities_snapshot(self, book_id=None):
+        """Build and return this book's entity dict WITHOUT touching self.entities.
 
+        The translation path uses this instead of the shared cache. `self.entities`
+        holds one book at a time, so two concurrent per-book jobs would otherwise
+        swap the glossary out from under each other between chunks — book A's
+        chapter prompted with book B's entities. That corruption is semantic, not
+        structural, so `_entities_lock` cannot prevent it; giving each run its own
+        snapshot can.
+
+        Callers that genuinely want the shared cache refreshed (the admin Entities
+        and Dictionary pages) should use _load_entities()/reload_entities().
+        """
         # Build default entity categories dict, using book-specific categories if available
         if book_id is not None:
             cats = self.get_book_categories(book_id)
@@ -62,20 +75,29 @@ class EntitiesRepo:
                         entity_data["book_id"] = entity_book_id
                     if note:
                         entity_data["note"] = note
-                    
+
                     # Add to our entities dictionary
                     entities[category][untranslated] = entity_data
-            with self._entities_lock:
-                self.entities = entities
+
             self.logger.debug(f"Loaded {sum(len(cat) for cat in entities.values())} entities from database")
             return entities
 
         except Exception as e:
             self.logger.error(f"Error loading entities from database: {e}")
             # Return default empty structure on error
-            with self._entities_lock:
-                self.entities = default_entities
             return default_entities
+
+    def _load_entities(self, book_id=None):
+        """Load entities from the database into the shared in-memory cache.
+
+        Thin wrapper over get_entities_snapshot() so there is one query
+        implementation. The translation path deliberately does NOT call this —
+        see get_entities_snapshot().
+        """
+        entities = self.get_entities_snapshot(book_id)
+        with self._entities_lock:
+            self.entities = entities
+        return entities
 
     def reload_entities(self, book_id=None):
         """Public alias for _load_entities(): reload the entity cache."""

@@ -1169,6 +1169,16 @@ class TranslationEngine:
         
         return parsed_response
     
+    def _debug_prompt_path(self, book_id):
+        """Where to dump the system prompt for debugging.
+
+        Per book, because concurrent jobs would otherwise overwrite each
+        other's dump (and the write is not atomic, so a reader could see a
+        torn mix of two books' prompts).
+        """
+        suffix = f"-book{book_id}" if book_id else ""
+        return f"{self.config.script_dir}/prompt{suffix}.tmp"
+
     def extract_entities(self, chapter_text, book_id=None, chapter_number=None,
                          progress_callback=None, retranslation_reason=None, should_cancel=None,
                          return_note_updates=False):
@@ -1218,11 +1228,8 @@ class TranslationEngine:
         provider, model_name = self.config.get_client(self.config.translation_model)
         self.logger.debug(f"extract_entities: using {provider.provider_name}/{model_name}")
 
-        # Load entities scoped to this book so categories from other books
-        # don't leak into the system prompt's {{ENTITY_CATEGORIES}}.
-        if book_id:
-            self.entity_manager._load_entities(book_id=book_id)
-        old_entities = self.entity_manager.entities.copy()
+        # Per-run entity snapshot, scoped to this book (see translate_chapter).
+        old_entities = self.entity_manager.get_entities_snapshot(book_id)
         if book_id:
             for cat in self.entity_manager.get_book_categories(book_id):
                 old_entities.setdefault(cat, {})
@@ -1396,23 +1403,26 @@ class TranslationEngine:
         # Handle empty input
         if not chapter_text:
             self.logger.warning("Empty text provided for translation. Nothing to translate.")
+            # One query, two top-level dicts — mirrors the pair of independent
+            # .copy() calls this used to make off the shared cache.
+            empty_entities = self.entity_manager.get_entities_snapshot(book_id)
             return {
                 "end_object": {"title": "Empty Chapter", "chapter": 0, "content": [], "entities": {}},
                 "new_entities": {},
                 "totally_new_entities": {},
-                "old_entities": self.entity_manager.entities.copy(),
-                "real_old_entities": self.entity_manager.entities.copy(),
+                "old_entities": empty_entities,
+                "real_old_entities": dict(empty_entities),
                 "current_chapter": 0,
                 "total_char_count": 0
             }
 
         total_char_count = sum(len(line) for line in chapter_text)
 
-        # Load entities scoped to this book so categories from other books
-        # don't leak into the system prompt's {{ENTITY_CATEGORIES}}.
-        if book_id:
-            self.entity_manager._load_entities(book_id=book_id)
-        old_entities = self.entity_manager.entities.copy()
+        # Per-run entity snapshot, scoped to this book. Deliberately NOT the shared
+        # entity_manager.entities cache: that holds one book at a time, so a
+        # concurrent job on another book would swap this chapter's glossary out
+        # mid-translation. This dict belongs to this run alone.
+        old_entities = self.entity_manager.get_entities_snapshot(book_id)
         # Ensure all categories for this book exist in the dict
         if book_id:
             for cat in self.entity_manager.get_book_categories(book_id):
@@ -1465,8 +1475,8 @@ class TranslationEngine:
 
         self.logger.debug("Initializing totally_new_entities")
         totally_new_entities = {}
-        self.entity_manager.save_json_file(f"{self.config.script_dir}/prompt.tmp", system_prompt)
-        
+        self.entity_manager.save_json_file(self._debug_prompt_path(book_id), system_prompt)
+
         self.logger.debug(f"About to process {len(split_text)} chunks")
         for chunk_index, chunk in enumerate(split_text, 1):
             # Cooperative cancellation point — between chunks the job stops cleanly

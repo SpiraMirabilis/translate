@@ -194,6 +194,18 @@ export default function Settings() {
               />
               <p className="text-xs text-slate-500 mt-1">How long the JSON Fix modal waits for manual input before defaulting to &quot;Retry Chunk&quot; so unattended jobs don&apos;t hang. 0 = wait forever.</p>
             </div>
+            <div>
+              <label className="label">Max concurrent translations</label>
+              <input
+                className="input text-sm"
+                type="number"
+                min="1"
+                value={settings.max_concurrent_translations ?? 3}
+                onChange={e => setSettings(s => ({ ...s, max_concurrent_translations: parseInt(e.target.value || '1', 10) }))}
+                placeholder="3"
+              />
+              <p className="text-xs text-slate-500 mt-1">How many books may translate at the same time. Chapters within a book always run in order — the entity glossary is built as it goes — but different books share nothing. Raise with care: each extra job is another database connection and another concurrent API stream.</p>
+            </div>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
                 {saved ? <Check size={13} /> : <Check size={13} />}

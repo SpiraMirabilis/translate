@@ -53,22 +53,10 @@ export default function ChapterConflictPanel({
     setErrorMsg(errorMessage || null)
   }, [existingUntranslated, newUntranslated, existingTitle, newTitle, bookTitle, chapterNumber, errorMessage])
 
-  // On mount, fetch the latest payload as a safety net for the case where
-  // the user refreshed mid-conflict and the props are stale.
-  useEffect(() => {
-    api.getJobStatus().then(d => {
-      if (d.pending_chapter_conflict) {
-        const p = d.pending_chapter_conflict
-        if (Array.isArray(p.existing_untranslated)) setExisting(p.existing_untranslated)
-        if (Array.isArray(p.new_untranslated))      setIncoming(p.new_untranslated)
-        if (p.existing_title)                       setETitle(p.existing_title)
-        if (p.new_title)                            setNTitle(p.new_title)
-        if (p.book_title)                           setBTitle(p.book_title)
-        if (p.chapter_number)                       setChNum(p.chapter_number)
-        if (p.error)                                setErrorMsg(p.error)
-      }
-    }).catch(() => {})
-  }, [])
+  // No mount refetch: it used to read the *global* job status, which with
+  // several books translating could load another book's conflict into this
+  // modal. The jobs provider hydrates pending_chapter_conflict per book (so a
+  // mid-conflict refresh still restores it) and passes it down as props.
 
   const submit = useCallback(async (decision, newChapterNumber = null) => {
     setSubmitting(true)
@@ -77,6 +65,7 @@ export default function ChapterConflictPanel({
       await api.resolveChapterConflict({
         decision,
         new_chapter_number: newChapterNumber,
+        book_id: bookId,
       })
       // Cascade: if the renumber surfaces a new conflict, the backend will
       // emit another `chapter_conflict_needed` message and Dashboard will
@@ -87,7 +76,7 @@ export default function ChapterConflictPanel({
       setErrorMsg(e.message || 'Failed to resolve conflict.')
       setSubmitting(false)
     }
-  }, [onDone])
+  }, [onDone, bookId])
 
   const submitRenumber = () => {
     const n = parseInt(renumberDraft, 10)
@@ -216,8 +205,9 @@ export default function ChapterConflictPanel({
         ) : (
           <div className="px-5 py-4 border-t border-slate-700 shrink-0">
             <div className="text-xs text-slate-500 mb-3">
-              &quot;Skip&quot; drops the queue item. &quot;Append &amp; translate new part&quot; keeps the existing
-              translation and only translates the appended source, joining the two.
+              &quot;Skip&quot; drops the queue item. &quot;Append &amp; translate new part&quot; combines both
+              sides into this one chapter: the existing translation is kept as-is, only the
+              queue item is translated, and both source and translation are joined end to end.
               &quot;Renumber&quot; moves either chapter to a new number. &quot;Insert &amp; shift queue&quot; translates
               this item as the next chapter and bumps every later queue item up by one.
               &quot;Overwrite&quot; replaces the existing chapter.

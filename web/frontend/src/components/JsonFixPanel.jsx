@@ -9,7 +9,7 @@ const JsonCodeMirror = lazy(() => import('./JsonCodeMirror'))
 import { api } from '../services/api'
 import { RefreshCw, Check, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
 
-export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chunkText, isEmpty, timeoutSeconds, onDone }) {
+export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chunkText, isEmpty, timeoutSeconds, onDone, bookId = null }) {
   const [editedJson, setEditedJson] = useState(rawResponse || '')
   const [isValid, setIsValid] = useState(false)
   const [validationError, setValidationError] = useState('')
@@ -21,20 +21,14 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
     Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? Math.round(timeoutSeconds) : null
   )
 
-  // Always fetch raw_response from API — the WS message triggers the modal
-  // but the payload can get lost/truncated in transit.
+  // No mount refetch: this used to re-read the *global* job status, which with
+  // several books translating would repaint another book's payload into this
+  // modal. The jobs provider hydrates pending_json_fix per book and passes it
+  // down as props, so the props are already the authority.
   useEffect(() => {
-    api.getJobStatus().then(d => {
-      if (d.pending_json_fix) {
-        const fix = d.pending_json_fix
-        if (fix.raw_response) setEditedJson(fix.raw_response)
-        if (fix.is_empty) setResponseEmpty(true)
-        if (remaining === null && fix.timeout_seconds > 0) {
-          setRemaining(Math.round(fix.timeout_seconds))
-        }
-      }
-    }).catch(() => {})
-  }, [rawResponse])
+    if (rawResponse) setEditedJson(rawResponse)
+    if (isEmpty) setResponseEmpty(true)
+  }, [rawResponse, isEmpty])
 
   // Validate JSON on every edit
   useEffect(() => {
@@ -66,7 +60,7 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
     setSubmitting(true)
     setSubmitError(null)
     try {
-      const body = { action }
+      const body = { action, book_id: bookId }
       if (action === 'fix') body.json = editedJson
       await api.submitJsonFix(body)
       onDone()
@@ -76,7 +70,7 @@ export default function JsonFixPanel({ rawResponse, chunkIndex, totalChunks, chu
     } finally {
       setSubmitting(false)
     }
-  }, [editedJson, onDone])
+  }, [editedJson, onDone, bookId])
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">

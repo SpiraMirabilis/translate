@@ -53,6 +53,9 @@ const postForm = (path, formData) => request('POST', path, formData, true)
 // ------------------------------------------------------------------
 export const api = {
   // Translation
+  // Every control call carries the book it refers to, since several books can
+  // be translating at once. Omitting book_id still works (the backend falls
+  // back to the only job parked on that prompt) but is never what we want.
   translate:     (body)  => post('/api/translate', body),
   submitReview:  (body)  => post('/api/translate/submit-review', body),
   skipReview:    (bookId) => post('/api/translate/skip-review', { book_id: bookId ?? null }),
@@ -61,6 +64,7 @@ export const api = {
   // No bookId = cancel everything that is running.
   cancelJob:     (bookId) => post('/api/translate/cancel', { book_id: bookId ?? null }),
   getJobStatus:  ()      => get('/api/translate/status'),
+  listJobs:      ()      => get('/api/translate/jobs'),
 
   // Books
   listBooks:     ()           => get('/api/books'),
@@ -159,6 +163,7 @@ export const api = {
   // Queue
   listQueue:        (bookId)     => get(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
   removeQueueItem:  (id)         => del(`/api/queue/${id}`),
+  releaseQueueItem: (id)         => post(`/api/queue/${id}/release`, {}),
   clearQueue:       (bookId)     => del(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
   addToQueue:       (body)       => post('/api/queue/add', body),
   uploadToQueue:    (formData)   => postForm('/api/queue/upload', formData),
@@ -167,7 +172,8 @@ export const api = {
   uploadFb2:        (formData)   => postForm('/api/queue/upload-fb2', formData),
   uploadJson:       (formData)   => postForm('/api/queue/upload-json', formData),
   processNext:      (body = {})  => post('/api/queue/process-next', body),
-  stopAutoProcess:  ()           => post('/api/queue/stop-auto', {}),
+  processAllBooks:  (body = {})  => post('/api/queue/process-all', body),
+  stopAutoProcess:  (bookId)     => post('/api/queue/stop-auto', { book_id: bookId ?? null }),
 
   // Site info (public, unauthenticated)
   getSiteInfo:      ()           => get('/api/public/site_info'),

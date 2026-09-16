@@ -1,24 +1,25 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { api } from '../services/api'
 import { useLocalStorage } from '../hooks/useLocalStorage'
-import { useWsEvent } from '../hooks/useWsEvent'
+import { useJobs } from '../hooks/useJobs'
 import {
   Play, Trash2, Upload, FileText, Loader2, ListChecks, X, StopCircle, RefreshCw, Info
 } from 'lucide-react'
-import TranslationProgress from '../components/TranslationProgress'
+import JobList from '../components/jobs/JobList'
 import ComboBox from '../components/ComboBox'
 
 export default function Queue() {
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [filterBook, setFilterBook] = useLocalStorage('queue.filterBook', '')
-  const [processing, setProcessing] = useState(false)
-  const [jobStatus, setJobStatus] = useState('idle')
   const [showUpload, setShowUpload] = useState(false)
   const [error, setError] = useState(null)
-  const [chunkProgress, setChunkProgress] = useState(null)
+
+  // Job state is shared and keyed by book — several can run at once.
+  const {
+    isBookRunning, atCapacity, maxConcurrent, markStarted,
+    active: activeJobsList, jobFor, refresh: refreshJobs,
+  } = useJobs()
   const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
   const [adviceModel, setAdviceModel]             = useLocalStorage('shared.adviceModel', '')
   const [cleaningModel, setCleaningModel]         = useLocalStorage('shared.cleaningModel', '')
@@ -50,89 +51,58 @@ export default function Queue() {
   const loading = queueQuery.isPending
   const invalidateQueue = () => queryClient.invalidateQueries({ queryKey: ['queue'] })
 
-  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  // Pickers only need id + title; ['books', …] keeps WsQueryBridge's
+  // prefix invalidation working.
+  const booksQuery = useQuery({ queryKey: ['books', 'minimal'], queryFn: () => api.listBooksMinimal() })
   const books = booksQuery.data?.books || []
+  // The filter drop-down is built from `books`; when that fetch is slow, fails
+  // or is starved (it's the heaviest admin call), the list silently collapses
+  // to "All books" and looks like a queue bug. Surface the real state instead.
+  const booksBroken = !booksQuery.isPending && books.length === 0
 
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => api.listProviders() })
   const providers = providersQuery.data?.providers || []
 
-  useEffect(() => {
-    api.getJobStatus().then(d => {
-      setJobStatus(d.status)
-      if (d.is_running) setProcessing(true)
-      if (d.auto_process) setAutoProcess(true)
-    }).catch(() => {})
-  }, [])
+  // No local job state and no WebSocket handler here: both live in useJobs, so
+  // this page and Dashboard can no longer disagree about what is running.
+  // Prompts are shown by the global PromptHost, so there is nothing to
+  // navigate to either.
 
-  // Watch for job events to update UI. useWsEvent delivers every message via
-  // the WS fan-out (no lastMessage state, no missed/replayed-stale messages);
-  // the handler closure is always the latest render's, so autoProcess/load are
-  // read fresh without ref plumbing or dedup.
-  useWsEvent((msg) => {
-    // Replayed terminal events (re-sent on every socket accept) must not
-    // repaint status: on first load they can race the mount-time
-    // getJobStatus fetch and a days-old complete/error would win. Live
-    // state comes from that fetch and the ws_reconnected catch-up.
-    if (msg.replayed && (msg.type === 'translation_complete' || msg.type === 'error'
-                         || msg.type === 'auto_process_done'
-                         || msg.type === 'translation_cancelled')) {
-      return
-    }
-    if (msg.type === 'ws_reconnected') {
-      // One-shot catch-up after a reconnect: WsQueryBridge refetches the queue
-      // list (blanket invalidation); refresh local job status here.
-      api.getJobStatus().then(d => {
-        setJobStatus(d.status)
-        setProcessing(!!d.is_running)
-        if (d.auto_process) setAutoProcess(true)
-      }).catch(() => {})
-    }
-    if (msg.type === 'progress') {
-      setChunkProgress(msg)
-      setJobStatus(msg.phase === 'session_limit' ? 'waiting' : 'running')
-    }
-    if (msg.type === 'translation_complete') {
-      setChunkProgress(null)
-      // Queue list refetch is handled by WsQueryBridge's invalidation.
-      // During auto-process the backend drives the loop, so stay in "running".
-      // For single-shot, mark complete.
-      if (!autoProcess) {
-        setJobStatus('complete')
-        setProcessing(false)
-      }
-    }
-    if (msg.type === 'auto_process_done') {
-      setChunkProgress(null)
-      setProcessing(false)
-      setJobStatus('complete')
-      setAutoProcess(false)
-      // Queue list refetch is handled by WsQueryBridge's invalidation.
-    }
-    if (msg.type === 'auto_process_stopping') {
-      // Visual feedback — backend acknowledged, will stop after current chapter
-    }
-    if (msg.type === 'error') {
-      setProcessing(false)
-      setJobStatus('error')
-      setChunkProgress(null)
-      setAutoProcess(false)
-    }
-    if (msg.type === 'entity_review_needed') {
-      setJobStatus('awaiting_review')
-      navigate('/')
-    }
-    if (msg.type === 'json_fix_needed') {
-      setJobStatus('awaiting_json_fix')
-      navigate('/')
-    }
+  const runOptions = () => ({
+    translation_model: translationModel || null,
+    advice_model: adviceModel || null,
+    cleaning_model: cleaningModel || null,
+    no_review: noReview,
+    two_pass: twoPass,
+    no_clean: noClean,
+    no_stream: noStream,
+    save_as_draft: saveAsDraft,
+    auto_process: autoProcess,
+    max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
   })
 
-  const handleProcessNext = async () => {
-    setProcessing(true)
+  const handleProcessAll = async () => {
     setError(null)
     try {
+      const res = await api.processAllBooks(runOptions())
+      const blocked = (res.skipped || []).filter(s => s.reason === 'at_capacity')
+      if (blocked.length) {
+        setError(`Started ${res.started.length}; ${blocked.length} book(s) waiting for a free slot.`)
+      }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      refreshJobs()
+    }
+  }
+
+  const handleProcessNext = async () => {
+    setError(null)
+    const bookId = filterBook ? parseInt(filterBook) : null
+    markStarted(bookId)
+    try {
       await api.processNext({
-        book_id: filterBook ? parseInt(filterBook) : null,
+        book_id: bookId,
         translation_model: translationModel || null,
         advice_model: adviceModel || null,
         cleaning_model: cleaningModel || null,
@@ -144,16 +114,36 @@ export default function Queue() {
         auto_process: autoProcess,
         max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
       })
-      setJobStatus('running')
     } catch (e) {
       setError(e.message)
-      setProcessing(false)
+    } finally {
+      refreshJobs()
     }
+  }
+
+  const handleCancelJob = async (bookId) => {
+    try { await api.cancelJob(bookId) } catch { /* ignore */ }
+    refreshJobs()
+  }
+
+  const handleStopAuto = async (bookId) => {
+    try { await api.stopAutoProcess(bookId) } catch { /* ignore */ }
+    refreshJobs()
   }
 
   const handleRemove = async (id) => {
     try {
       await api.removeQueueItem(id)
+    } catch (e) {
+      setError(e.message)
+      return
+    }
+    invalidateQueue()
+  }
+
+  const handleRelease = async (id) => {
+    try {
+      await api.releaseQueueItem(id)
     } catch (e) {
       setError(e.message)
       return
@@ -173,7 +163,11 @@ export default function Queue() {
     invalidateQueue()
   }
 
-  const isJobRunning = processing || jobStatus === 'running' || jobStatus === 'waiting' || jobStatus === 'awaiting_review'
+  // Per book, not global: a job on another book must not disable this book's
+  // controls. Only the capacity check stays global.
+  const filterBookId = filterBook ? parseInt(filterBook) : null
+  const filterBookRunning = isBookRunning(filterBookId)
+  const filterBookJob = jobFor(filterBookId)
 
   const modelOptions = providers.flatMap(p =>
     (p.models || []).map(m => `${p.name}:${m}`)
@@ -188,17 +182,19 @@ export default function Queue() {
             <Upload size={13} /> Upload File
           </button>
           {queue.length > 0 && filterBook && (
-            <button className="btn-danger flex items-center gap-1.5 text-xs" onClick={handleClear}>
+            <button
+              className="btn-danger flex items-center gap-1.5 text-xs"
+              onClick={handleClear}
+              disabled={filterBookRunning}
+              title={filterBookRunning ? 'This book is translating' : undefined}
+            >
               <X size={13} /> Clear Queue
             </button>
           )}
-          {isJobRunning && autoProcess ? (
+          {filterBookRunning && autoProcess && filterBookJob?.auto_process ? (
             <button
               className="btn-danger flex items-center gap-1.5"
-              onClick={async () => {
-                try { await api.stopAutoProcess() } catch { /* ignore */ }
-                setAutoProcess(false)
-              }}
+              onClick={() => handleStopAuto(filterBookId)}
               title="Finish the current chapter then stop"
             >
               <StopCircle size={13} /> Stop after current
@@ -207,15 +203,31 @@ export default function Queue() {
             <button
               className="btn-primary flex items-center gap-1.5"
               onClick={handleProcessNext}
-              disabled={isJobRunning || queue.length === 0}
+              disabled={filterBookRunning || atCapacity || queue.length === 0}
+              title={
+                filterBookRunning ? 'This book is already translating'
+                  : atCapacity ? `All ${maxConcurrent} translation slots are in use`
+                  : undefined
+              }
             >
-              {isJobRunning
+              {filterBookRunning
                 ? <><Loader2 size={13} className="animate-spin" /> Processing…</>
                 : autoProcess
                   ? <><RefreshCw size={13} /> Start Auto-process</>
                   : <><Play size={13} /> Process Next</>}
             </button>
           )}
+          {/* One worker per queued book, up to the concurrency limit. */}
+          <button
+            className="btn-primary flex items-center gap-1.5"
+            onClick={handleProcessAll}
+            disabled={atCapacity || queuedBookIds.length === 0}
+            title={atCapacity
+              ? `All ${maxConcurrent} translation slots are in use`
+              : 'Start one worker per book with queued chapters'}
+          >
+            <RefreshCw size={13} /> Process All Books
+          </button>
         </div>
       </div>
 
@@ -347,8 +359,8 @@ export default function Queue() {
               onChange={e => {
                 const val = e.target.checked
                 setAutoProcess(val)
-                if (!val && processing) {
-                  api.stopAutoProcess().catch(() => {})
+                if (!val && filterBookRunning) {
+                  api.stopAutoProcess(filterBookId).catch(() => {})
                 }
               }}
             />
@@ -368,39 +380,54 @@ export default function Queue() {
         </div>
       </div>
 
-      {/* Job status banner */}
-      {isJobRunning && (
+      {/* One card per running book. The old single banner also told the user to
+          "go to the Translate tab" for a prompt; PromptHost now shows prompts
+          wherever they are. */}
+      {activeJobsList.length > 0 && (
         <div className="card p-4 mb-4 border-indigo-700 bg-indigo-950/40 space-y-3">
-          {jobStatus === 'awaiting_review' ? (
-            <div className="flex items-center gap-2">
-              <Loader2 size={14} className="text-amber-400" />
-              <span className="text-sm text-amber-300">
-                Waiting for entity review — go to the Translate tab
-              </span>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <TranslationProgress progress={chunkProgress} status={jobStatus} />
-              {autoProcess && (
-                <p className="text-xs text-slate-500">
-                  Auto-processing{maxChapters ? ` (limit: ${maxChapters})` : ''} — {queue.length} chapter{queue.length !== 1 ? 's' : ''} remaining
-                </p>
-              )}
-            </div>
+          <JobList onCancel={handleCancelJob} onStopAuto={handleStopAuto} />
+          {autoProcess && (
+            <p className="text-xs text-slate-500">
+              Auto-processing{maxChapters ? ` (limit: ${maxChapters})` : ''} — {queue.length} chapter{queue.length !== 1 ? 's' : ''} remaining
+            </p>
           )}
         </div>
       )}
 
       {/* Filter */}
-      <div className="mb-4">
+      <div className="mb-4 flex items-center gap-3">
         <select className="input w-48" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
           <option value="">All books</option>
           {books.filter(b => queuedBookIds.includes(b.id)).map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
+          {/* A saved filter whose book has since drained out of the queue is no
+              longer in the options above — without this the <select> renders as
+              "All books" while still filtering to an empty book. */}
+          {filterBook && !books.some(b => queuedBookIds.includes(b.id) && String(b.id) === String(filterBook)) && (
+            <option value={filterBook}>
+              {books.find(b => String(b.id) === String(filterBook))?.title
+                ? `${filterBook}: ${books.find(b => String(b.id) === String(filterBook)).title} (no queued chapters)`
+                : `Book ${filterBook} (no queued chapters)`}
+            </option>
+          )}
         </select>
+        {booksQuery.isPending && (
+          <span className="text-xs text-slate-500 flex items-center gap-1">
+            <Loader2 size={12} className="animate-spin" /> loading books…
+          </span>
+        )}
+        {booksBroken && (
+          <button className="btn-ghost text-xs text-amber-400 flex items-center gap-1"
+                  onClick={() => booksQuery.refetch()}
+                  title={booksQuery.error?.message || 'The book list came back empty'}>
+            <RefreshCw size={12} /> book list unavailable — retry
+          </button>
+        )}
       </div>
 
-      {(error || queueQuery.error) && (
-        <p className="text-rose-400 text-sm mb-4">{error || queueQuery.error.message}</p>
+      {(error || queueQuery.error || booksQuery.error) && (
+        <p className="text-rose-400 text-sm mb-4">
+          {error || queueQuery.error?.message || `Book list: ${booksQuery.error.message}`}
+        </p>
       )}
 
       {loading ? (
@@ -412,26 +439,51 @@ export default function Queue() {
         </div>
       ) : (
         <div className="card divide-y divide-slate-700">
-          {queue.map((item, i) => (
-            <div key={item.id} className="flex items-center gap-3 px-4 py-3">
-              <span className="text-xs text-slate-600 w-5 text-right">{i + 1}</span>
-              <FileText size={14} className="text-slate-500 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-200 truncate">{item.title || `Item ${item.id}`}</p>
-                <p className="text-xs text-slate-500">
-                  {item.book_title || `Book ${item.book_id}`}
-                  {item.chapter_number ? ` · Ch. ${item.chapter_number}` : ''}
-                </p>
+          {queue.map((item, i) => {
+            const processing = item.status === 'processing'
+            return (
+              <div key={item.id} className="flex items-center gap-3 px-4 py-3">
+                <span className="text-xs text-slate-600 w-5 text-right">{i + 1}</span>
+                {processing
+                  ? <Loader2 size={14} className="text-amber-400 shrink-0 animate-spin" />
+                  : <FileText size={14} className="text-slate-500 shrink-0" />}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-slate-200 truncate">
+                    {item.title || `Item ${item.id}`}
+                    {processing && (
+                      <span className="ml-2 align-middle text-[10px] uppercase tracking-wide text-amber-400 border border-amber-400/40 rounded px-1 py-0.5">
+                        In progress
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {item.book_title || `Book ${item.book_id}`}
+                    {item.chapter_number ? ` · Ch. ${item.chapter_number}` : ''}
+                  </p>
+                </div>
+                {/* A claimed row is strandable only when ITS OWN book has no live
+                    worker — a job on another book has no claim on it, and gating
+                    on "anything running" made the escape hatch useless as soon as
+                    a second book started. */}
+                {processing && !isBookRunning(item.book_id) && (
+                  <button
+                    className="btn-ghost p-1.5 text-xs hover:text-amber-300 shrink-0"
+                    onClick={() => handleRelease(item.id)}
+                    title="Worker is gone — return this chapter to the queue"
+                  >
+                    <RefreshCw size={13} />
+                  </button>
+                )}
+                <button
+                  className="btn-ghost p-1.5 hover:text-rose-400 shrink-0"
+                  onClick={() => handleRemove(item.id)}
+                  disabled={processing || isBookRunning(item.book_id)}
+                >
+                  <Trash2 size={13} />
+                </button>
               </div>
-              <button
-                className="btn-ghost p-1.5 hover:text-rose-400 shrink-0"
-                onClick={() => handleRemove(item.id)}
-                disabled={isJobRunning}
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -450,6 +502,9 @@ function UploadModal({ books, onClose, onDone }) {
   const [createBook, setCreateBook] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
+  // Set when a bulk upload reports chapters that already exist; drives the
+  // Keep / Discard prompt. { label, numbers }
+  const [conflict, setConflict] = useState(null)
 
   const isEpub = files.length === 1 && files[0].name.toLowerCase().endsWith('.epub')
   const isFb2 = files.length === 1 && /\.fb2(\.zip)?$/.test(files[0].name.toLowerCase())
@@ -461,6 +516,34 @@ function UploadModal({ books, onClose, onDone }) {
     const selected = Array.from(e.target.files || [])
     setFiles(selected)
     setCreateBook(false)
+    setConflict(null)
+  }
+
+  // One upload attempt. `onConflict` is 'ask' (default — backend reports
+  // collisions), 'keep' (queue duplicates anyway), or 'discard' (skip them).
+  const doUpload = async (onConflict) => {
+    if (isBook) {
+      const fd = new FormData()
+      fd.append('file', files[0])
+      if (bookId) fd.append('book_id', bookId)
+      fd.append('create_book', createBook ? 'true' : 'false')
+      fd.append('on_conflict', onConflict)
+      return isJson ? api.uploadJson(fd) : isFb2 ? api.uploadFb2(fd) : api.uploadEpub(fd)
+    }
+    if (isBatch) {
+      const fd = new FormData()
+      for (const f of files) fd.append('files', f)
+      fd.append('book_id', bookId)
+      if (chapterNum) fd.append('start_chapter', chapterNum)
+      fd.append('on_conflict', onConflict)
+      return api.uploadBatch(fd)
+    }
+    // Single text file: no duplicate prompt.
+    const fd = new FormData()
+    fd.append('file', files[0])
+    fd.append('book_id', bookId)
+    if (chapterNum) fd.append('chapter_number', chapterNum)
+    return api.uploadToQueue(fd)
   }
 
   const handleUpload = async () => {
@@ -470,25 +553,22 @@ function UploadModal({ books, onClose, onDone }) {
 
     setUploading(true); setError(null)
     try {
-      if (isBook) {
-        const fd = new FormData()
-        fd.append('file', files[0])
-        if (bookId) fd.append('book_id', bookId)
-        fd.append('create_book', createBook ? 'true' : 'false')
-        await (isJson ? api.uploadJson(fd) : isFb2 ? api.uploadFb2(fd) : api.uploadEpub(fd))
-      } else if (isBatch) {
-        const fd = new FormData()
-        for (const f of files) fd.append('files', f)
-        fd.append('book_id', bookId)
-        if (chapterNum) fd.append('start_chapter', chapterNum)
-        await api.uploadBatch(fd)
-      } else {
-        const fd = new FormData()
-        fd.append('file', files[0])
-        fd.append('book_id', bookId)
-        if (chapterNum) fd.append('chapter_number', chapterNum)
-        await api.uploadToQueue(fd)
+      const res = await doUpload('ask')
+      if (res && res.status === 'conflict') {
+        setConflict({ label: res.existing_label, numbers: res.existing_numbers })
+        setUploading(false)
+        return
       }
+      onDone()
+    } catch (e) {
+      setError(e.message); setUploading(false)
+    }
+  }
+
+  const resolveConflict = async (mode) => {  // 'keep' | 'discard'
+    setConflict(null); setUploading(true); setError(null)
+    try {
+      await doUpload(mode)
       onDone()
     } catch (e) {
       setError(e.message); setUploading(false)
@@ -551,13 +631,30 @@ function UploadModal({ books, onClose, onDone }) {
 
         {error && <p className="text-rose-400 text-sm">{error}</p>}
 
-        <div className="flex justify-end gap-2">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary flex items-center gap-1.5" onClick={handleUpload} disabled={uploading}>
-            {uploading ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-            Upload{isBatch ? ` ${files.length} files` : ''}
-          </button>
-        </div>
+        {conflict ? (
+          <div className="space-y-3 rounded border border-amber-700/50 bg-amber-950/30 p-3">
+            <p className="text-sm text-amber-200">
+              Chapter{conflict.numbers?.length === 1 ? '' : 's'} {conflict.label} already exist{conflict.numbers?.length === 1 ? 's' : ''} in this book.
+            </p>
+            <p className="text-xs text-slate-400">
+              <strong className="text-slate-300">Keep</strong> queues them anyway (re-translates/overwrites).{' '}
+              <strong className="text-slate-300">Discard</strong> skips the duplicates and queues only the new chapters.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={() => setConflict(null)} disabled={uploading}>Cancel</button>
+              <button className="btn-secondary" onClick={() => resolveConflict('discard')} disabled={uploading}>Discard</button>
+              <button className="btn-primary" onClick={() => resolveConflict('keep')} disabled={uploading}>Keep</button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-end gap-2">
+            <button className="btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="btn-primary flex items-center gap-1.5" onClick={handleUpload} disabled={uploading}>
+              {uploading ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+              Upload{isBatch ? ` ${files.length} files` : ''}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

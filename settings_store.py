@@ -29,6 +29,11 @@ SCHEMA = {
     "character_fix_model":     ("CHARACTER_FIX_MODEL",     "claude:claude-opus-4-8",  str),
     "overload_retry_wait_seconds": ("OVERLOAD_RETRY_WAIT_SECONDS", 300,             int),
     "json_fix_timeout_seconds":    ("JSON_FIX_TIMEOUT_SECONDS",    300,             int),
+    # How many books may translate at once. Chapters within a book always stay
+    # sequential (the entity glossary is built incrementally); different books
+    # share nothing, so they can run in parallel. Bounded because each worker is
+    # another MySQL pool consumer and another concurrent provider stream.
+    "max_concurrent_translations": ("MAX_CONCURRENT_TRANSLATIONS", 3,               int),
     "site_name":               ("SITE_NAME",               "T9",                      str),
     "public_site_name":        ("PUBLIC_SITE_NAME",        "Boonnovels",              str),
     "site_base_url":           ("SITE_BASE_URL",           "",                        str),
