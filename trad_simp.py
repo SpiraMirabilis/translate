@@ -28,9 +28,30 @@ _converter = None
 
 # Proper nouns whose 乾 is the qián trigram, not gān "dry". Simplified keeps 乾.
 # These are shielded from OpenCC entirely.
-PROTECTED_TERMS = (
-    "大乾",
-)
+#
+# Masking runs BEFORE OpenCC, so each entry must match the text as it arrives.
+# A partially-converted mirror (twkan serves 乾清宫 with the simplified 宫) and a
+# fully traditional raw (乾清宮) both occur, so terms whose other characters
+# differ between scripts are listed in both spellings.
+# Each key matches the text as it ARRIVES; each value is what should survive.
+# Masking runs before OpenCC, so a key may be traditional — but restoring it
+# verbatim would also freeze the characters that ought to simplify (旋乾轉坤
+# must keep its 乾 and still yield 转). Hence a mapping, not a plain list.
+PROTECTED_TERMS = {
+    "大乾": "大乾",
+    # The Palace of Heavenly Purity — 76 occurrences in book 93 alone, against
+    # zero for 干清宫. t2s folds it to 干清宫 without this.
+    "乾清宮": "乾清宫",
+    "乾清宫": "乾清宫",
+    # 旋乾轉坤 "turn heaven and earth about": 乾 is the trigram, as in 乾坤,
+    # but OpenCC's phrase dictionary only protects the bare pair.
+    "旋乾轉坤": "旋乾转坤",
+    "旋乾转坤": "旋乾转坤",
+    # Given names built on the Qian hexagram's 元亨利貞.
+    "乾亨": "乾亨",
+    "徐乾學": "徐乾学",
+    "徐乾学": "徐乾学",
+}
 
 # 著 stays 著 (zhù) in these; everywhere else it is the aspect particle 着.
 #
@@ -91,6 +112,19 @@ def _mask(text, terms, table):
     return text
 
 
+def _mask_map(text, mapping, table):
+    """Like ``_mask``, but the sentinel restores the term's *corrected* form.
+
+    Longest keys first, so an entry cannot be shadowed by a shorter one that
+    overlaps it.
+    """
+    for term in sorted(mapping, key=len, reverse=True):
+        if term in text:
+            table.append(mapping[term])
+            text = text.replace(term, _SENTINEL.format(len(table) - 1))
+    return text
+
+
 def _unmask(text, table):
     return _SENTINEL_RE.sub(lambda m: table[int(m.group(1))], text)
 
@@ -111,8 +145,8 @@ def _convert_one(text):
     # first; they are never legitimate novel content.
     if "\ue000" in text or "\ue001" in text:
         text = text.replace("\ue000", "").replace("\ue001", "")
-    # Shield 大乾 before OpenCC sees it — t2s would fold 乾 to 干.
-    text = _mask(text, PROTECTED_TERMS, table)
+    # Shield the qián proper nouns before OpenCC sees them — t2s folds 乾 to 干.
+    text = _mask_map(text, PROTECTED_TERMS, table)
     text = _get_converter().convert(text)
     # Shield the zhù words (in their post-conversion form), then normalise the
     # remaining 著 to the simplified aspect particle 着.

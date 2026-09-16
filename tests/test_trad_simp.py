@@ -58,8 +58,37 @@ def test_mainland_vocabulary_untouched(src):
     ("大乾王朝", "大乾王朝"),
     ("大乾时期", "大乾时期"),
     ("乾坤袋", "乾坤袋"),
+    # Proper nouns OpenCC's phrase dictionary does not cover. The masking runs
+    # before OpenCC, so partially-converted mirrors (乾清宫, simplified 宫) and
+    # fully traditional raws (乾清宮) both have to match.
+    ("乾清宫里传来", "乾清宫里传来"),
+    ("乾清宮裡傳來", "乾清宫里传来"),
+    ("旋乾转坤的缘故", "旋乾转坤的缘故"),
+    ("旋乾轉坤之力", "旋乾转坤之力"),
+    ("進士朱乾亨朱家", "进士朱乾亨朱家"),
+    ("徐乾学等被控", "徐乾学等被控"),
+    ("徐乾學等被控", "徐乾学等被控"),
+    # …without breaking the gān words that share the character.
+    ("乾股", "干股"),
+    ("软豆乾", "软豆干"),
+    ("一乾二净", "一干二净"),
+    ("乾爹", "干爹"),
 ])
 def test_qian_vs_gan(src, expected):
+    assert convert_text(src) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    # OpenCC resolves these reading-dependent characters correctly on its own;
+    # the cases are pinned so a future config change cannot regress them.
+    ("徵发徭役", "征发徭役"),          # 徵 zhēng "levy" → 征
+    ("宫商角徵羽", "宫商角徵羽"),      # 徵 zhǐ, the pentatonic note, stays 徵
+    ("藉此机会", "借此机会"),          # 藉 jiè → 借
+    ("声名狼藉", "声名狼藉"),          # 藉 jí stays 藉
+    ("剃髮易服", "剃发易服"),
+    ("五穀丰登", "五谷丰登"),
+])
+def test_reading_dependent_characters(src, expected):
     assert convert_text(src) == expected
 
 
