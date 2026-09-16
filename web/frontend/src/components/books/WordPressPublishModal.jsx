@@ -27,6 +27,9 @@ export default function WordPressPublishModal({ book, onClose }) {
   useEffect(() => {
     return subscribe((m) => {
       if (m.type !== 'wp_publish') return
+      // Ignore another book's publish run. The `!= null` guard keeps this
+      // working against a backend that doesn't stamp book_id yet.
+      if (m.book_id != null && m.book_id !== book.id) return
       if (m.step === 'chapter') {
         setProgress({ current: m.current, total: m.total, title: m.title })
       } else if (m.step === 'done') {
