@@ -21,6 +21,7 @@ from .novel543 import Novel543Module
 from .twkan import TwkanModule
 from .partial_repair_module import PartialRepairModule
 from .unit_converter_module import UnitConverterModule
+from .broken_line_module import BrokenLineModule
 from .chapter_spacing_module import ChapterSpacingModule
 from .markdown_notifications_module import MarkdownNotificationsModule
 
@@ -29,13 +30,17 @@ from .markdown_notifications_module import MarkdownNotificationsModule
 # boilerplate strip, chatgroup_transformer's line matching) sees canonical
 # simplified text. partial_repair runs before
 # unit_converter so leftover source-language lines are re-translated before metric
-# annotations are added. markdown_notifications runs last (after chapter_spacing):
+# annotations are added. broken_line runs just before chapter_spacing: it merges
+# comma-ended split paragraphs (dropping any blank between them), then the
+# double-spacer re-normalizes spacing over the joined result.
+# markdown_notifications runs last (after chapter_spacing):
 # the double-spacer would otherwise split a table's contiguous rows, so the table
 # must be assembled after spacing settles.
 REGISTRY = {m.id: m for m in [
     TradToSimpModule(), ChatgroupTransformerModule(), Novel543Module(),
     TwkanModule(), PartialRepairModule(),
-    UnitConverterModule(), ChapterSpacingModule(), MarkdownNotificationsModule(),
+    UnitConverterModule(), BrokenLineModule(), ChapterSpacingModule(),
+    MarkdownNotificationsModule(),
 ]}
 
 

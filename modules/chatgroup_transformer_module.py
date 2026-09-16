@@ -79,6 +79,7 @@ import re
 
 from .activity import log_module_activity
 from .base import TranslationModule
+from .entity_names import load_person_names
 
 # Double-quote characters we treat as chat/notification quoting: straight (") and
 # the curly pair (“ ”).
@@ -133,26 +134,20 @@ def _load_entity_names(db, book_id, settings):
         return None
     if db is None or not book_id:
         return None
-    use_default = settings.get("use_default_username_restriction", True)
+    if settings.get("use_default_username_restriction", True):
+        # Shared with markdown_notifications' speaker gate.
+        return load_person_names(db, book_id)
     try:
+        cats = [c for c in (settings.get("username_categories") or []) if c]
+        if not cats:
+            return set()  # explicit custom mode with no categories → allow none
         conn = db.backend.get_connection()
         cur = conn.cursor()
-        if use_default:
-            cur.execute(
-                "SELECT untranslated, translation FROM entities "
-                "WHERE (book_id = ? OR book_id IS NULL) "
-                "AND gender IS NOT NULL AND gender != ''",
-                (book_id,))
-        else:
-            cats = [c for c in (settings.get("username_categories") or []) if c]
-            if not cats:
-                conn.close()
-                return set()  # explicit custom mode with no categories → allow none
-            placeholders = ",".join("?" for _ in cats)
-            cur.execute(
-                "SELECT untranslated, translation FROM entities "
-                "WHERE book_id = ? AND category IN (" + placeholders + ")",
-                (book_id, *cats))
+        placeholders = ",".join("?" for _ in cats)
+        cur.execute(
+            "SELECT untranslated, translation FROM entities "
+            "WHERE book_id = ? AND category IN (" + placeholders + ")",
+            (book_id, *cats))
         names = {v for row in cur.fetchall() for v in row[:2] if v}
         conn.close()
         return names
