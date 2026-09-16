@@ -591,7 +591,20 @@ export default function Reader({ isPublic = false }) {
           <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderSegment(seg)) }} />
         ))
     )
-  }, [chapter, contentMode, hasSource, fnLines, fnIds, illustrationSrc, isDark, prefs.theme])
+
+  // Mark noted terms in the rendered chapter. This runs against the live DOM
+  // rather than the markdown pipeline: the chapter is injected as an HTML
+  // string, and rewriting that string to add <span>s would mean parsing HTML
+  // with a regex. Re-runs whenever the rendered body or the matcher changes,
+  // and unmarks on the way out so turning the setting off restores the text.
+  useEffect(() => {
+    const root = bodyRef.current
+    if (!root) return
+    clearTermHighlights(root)
+    if (!termMatcher) return
+    applyTermHighlights(root, termMatcher,
+      (t) => (CATEGORY_COLORS[t.category] || CATEGORY_COLORS.characters).border)
+    return () => clearTermHighlights(root)
 
   if (loading) {
     return (
@@ -665,6 +678,9 @@ export default function Reader({ isPublic = false }) {
               )}
             </button>
           )}
+          <button onClick={() => termsModal.open()} className={`${barText} ${barHover} p-1.5`} title="Terms in this chapter">
+            <Languages size={20} />
+          </button>
           <button onClick={() => searchModal.open()} className={`${barText} ${barHover} p-1.5`} title="Search (Ctrl+F)">
             <Search size={20} />
           </button>
@@ -753,7 +769,9 @@ export default function Reader({ isPublic = false }) {
             )}
 
             {/* Chapter text (memoized — see chapterBody above) */}
-            <div style={contentStyle} onClick={onFootnoteClick} onKeyDown={onFootnoteClick}>
+            <div ref={bodyRef} style={contentStyle}
+                 onClick={onFootnoteClick} onKeyDown={onFootnoteClick}
+                 onMouseOver={onTermOver} onMouseOut={onTermOut}>
               {chapterBody}
             </div>
 
@@ -814,9 +832,23 @@ export default function Reader({ isPublic = false }) {
         open={searchOpen}
         onClose={searchModal.close}
         bookId={bookId}
-        onNavigate={setCurrentNum}
+        onNavigate={selectChapter}
         theme={prefs.theme}
         api={readerApi}
+      />
+      <ReaderTerms
+        open={termsOpen}
+        onClose={termsModal.close}
+        bookId={bookId}
+        chapterNumber={currentNum}
+        theme={prefs.theme}
+        api={readerApi}
+        scope={scope}
+        canEdit={canEdit}
+        // Opening another modal swaps the `modal` param, which closes this
+        // one on its own — an explicit close() first would navigate(-1) and
+        // race the push (see the ReaderTOC note). Back returns here.
+        onEditEntity={(id) => entityModal.open(id)}
       />
       <ReaderComments
         open={commentsOpen}
@@ -831,6 +863,13 @@ export default function Reader({ isPublic = false }) {
         footnote={activeFootnote}
         theme={prefs.theme}
         onClose={() => setActiveFootnote(null)}
+      />
+
+      {/* Glossary-term note, same popover with the term as its label */}
+      <FootnotePopover
+        footnote={activeTerm}
+        theme={prefs.theme}
+        onClose={() => setActiveTerm(null)}
       />
 
       {/* Entity edit modal */}
