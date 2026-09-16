@@ -253,3 +253,46 @@ wp-cli.phar
 nohup.out
 *.swp
 .prewarm_ebooks.lock
+
+# Local login helper — holds the admin password in plaintext
+auth.sh
+
+# Scraped novel raws dropped in the project root for queueing
+/무림마조(1-369화연 이만두 노벨).txt
+
+# Per-book CLI one-offs. Written against one book's conventions (its talent
+# panel, its bracket style, its separator glyph, its stat names), so they are
+# working files rather than project tooling — they live here, not in git.
+add_talents_book30.py
+audit_stat_names.py
+add_incantation_footnotes.py
+bulk_convert_zodiac_hours.py
+cast_or_mention.py
+clean_watermarks.py
+extract_book30_talents.py
+extract_bracket_lines.py
+extract_brackets.py
+extract_talents.py
+extract_talents_book48.py
+extract_talents_llm.py
+fix_bracket_spacing.py
+fix_brackets.py
+fix_chapter_titles.py
+fix_comma_splits.py
+fix_ritual_phrase.py
+import_awards.py
+repair_book8_separators.py
+requeue_book30_talents.py
+strip_image_blobs.py
+strip_korean.py
+strip_prose_bracket_lines.py
+/utility_scripts/
+
+# Superseded design note, kept on disk for reference only.
+GUIPlan.md
+
+# Deployment- and site-specific: one VM, one domain, one source site.
+deploy/novels-redirects.conf
+deploy/resource_monitor.sh
+harvest_wp_redirects.py
+/scraping_utilities/
