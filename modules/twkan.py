@@ -42,6 +42,7 @@ enabling it does not retroactively rewrite already-stored chapters.
 """
 import json
 import re
+import unicodedata
 
 from .base import TranslationModule
 
@@ -103,13 +104,22 @@ def _substr_regex(pattern):
     Returns ``None`` for patterns too short to excise safely (guards against an
     over-broad user pattern nuking real text): the skeletonized pattern, minus
     glob metacharacters, must be at least two characters.
+
+    A *single* character is allowed through only when it is a Unicode symbol
+    (category ``S*`` — ``→``, ``✌``, ``❻``, ``₮``). Symbols never carry meaning
+    in ordinary prose the way a lone letter, digit or punctuation mark does, so
+    excising one cannot silently eat real text. Note ``。`` and ``.`` are ``Po``
+    (punctuation), not ``S*``, so they stay blocked. Nothing ships with a
+    one-character default — this only makes such a pattern *possible* to
+    configure per book, and a book whose prose really does use ``→`` (LitRPG
+    stat lines: ``HP 50→30``) simply must not add it.
     """
     if pattern in _substr_regex_cache:
         return _substr_regex_cache[pattern]
     skel_pat = _get_skeleton()(pattern)
     literal = skel_pat.replace("*", "").replace("?", "")
     rx = None
-    if len(literal) >= 2:
+    if len(literal) >= 2 or (len(literal) == 1 and unicodedata.category(literal)[0] == "S"):
         rx = re.compile("(?s:" + glob_to_regex(skel_pat) + ")")
     _substr_regex_cache[pattern] = rx
     return rx
