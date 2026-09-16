@@ -801,6 +801,14 @@ def get_chapter(book_id: int, chapter_number: int):
     return _attach_illustrations(book_id, chapter)
 
 
+@router.get("/{book_id}/chapters/{chapter_number}/terms")
+def get_chapter_terms(book_id: int, chapter_number: int):
+    """Admin twin of the public terms endpoint — ungated, so drafts have one too."""
+    get_book_or_404(book_id)
+    return {"terms": _entity_manager.get_chapter_terms(book_id, chapter_number),
+            "gendered_categories": _entity_manager.get_book_gendered_categories(book_id)}
+
+
 @router.post("/{book_id}/chapters")
 def create_chapter(book_id: int, req: ChapterCreate):
     """Create an empty chapter (write editor / original works).
