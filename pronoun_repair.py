@@ -127,7 +127,7 @@ def _build_marked_window(paragraphs: list, idx: int, ctx: int = 1) -> str:
 
 
 def _model_spec() -> str:
-    return os.getenv("PRONOUN_REPAIR_MODEL", "claude:claude-haiku-4-5").strip()
+    return os.getenv("PRONOUN_REPAIR_MODEL", "claude:claude-sonnet-4-5").strip()
 
 
 def _get_provider():
