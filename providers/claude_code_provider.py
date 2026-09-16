@@ -245,9 +245,10 @@ class ClaudeCodeProvider(ModelProvider):
             finally:
                 self._unlink(sys_path)
 
-            # A session-usage-limit notice can arrive on stdout (typically
-            # exit 0) or stderr; surface it as a SessionLimitError so the
-            # engine pauses until the reset time rather than failing the chunk.
+            # A usage-limit notice (session or weekly) can arrive on stdout
+            # (typically exit 0) or stderr; surface it as a SessionLimitError
+            # so the engine pauses until the reset time rather than failing
+            # the chunk.
             if looks_session_limited(result.stdout) or looks_session_limited(result.stderr):
                 notice = result.stdout.strip() or result.stderr.strip()
                 raise SessionLimitError(notice[:300], reset_text=notice)

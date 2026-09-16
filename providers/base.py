@@ -19,8 +19,10 @@ class OverloadedError(Exception):
 
 
 class SessionLimitError(Exception):
-    """Raised when the Claude Code CLI reports the user's session usage limit
-    is exhausted, e.g. "You've hit your session limit · resets 10:40pm (UTC)".
+    """Raised when the Claude Code CLI reports the user's usage limit is
+    exhausted — either the session limit ("You've hit your session limit ·
+    resets 10:40pm (UTC)") or the weekly one ("You've hit your weekly limit ·
+    resets Aug 21 2pm (UTC)").
 
     Unlike OverloadedError (a transient saturation retried after a fixed
     interval), this carries a concrete reset time. The translation engine
@@ -36,52 +38,95 @@ class SessionLimitError(Exception):
         self.reset_text = reset_text if reset_text is not None else str(message)
 
 
-# The Claude Code CLI prints the usage-limit notice as plain text, e.g.
-# "You've hit your session limit · resets 10:40pm (UTC)". Key on the stable
-# "session limit" phrase rather than the (reworded-over-time) tail.
-_SESSION_LIMIT_RE = re.compile(r"hit\s+your\s+session\s+limit", re.IGNORECASE)
-
-# Pulls the reset clock time out of the notice. Handles 12-hour ("10:40pm",
-# "3 pm") and bare 24-hour ("22:40") forms, with an optional parenthesised
-# timezone such as "(UTC)".
-_SESSION_RESET_RE = re.compile(
-    r"resets?\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?\s*(?:\(\s*([A-Za-z/]+)\s*\))?",
+# The Claude Code CLI prints the usage-limit notice as plain text. Two kinds
+# exist, and both have to park the queue:
+#   "You've hit your session limit · resets 10:40pm (UTC)"
+#   "You've hit your weekly limit · resets Aug 21 2pm (UTC)"
+#   "You've hit your weekly limit · resets 2pm (UTC) (within 24 hrs)"
+# Key on the stable "hit your <kind> limit" phrase rather than the
+# (reworded-over-time) tail. The kind word is captured so callers can say
+# which limit they're waiting on; the wait itself is driven by the reset
+# clause, which is the only part that differs materially (a weekly reset can
+# name a calendar date days out, a session reset never does).
+_SESSION_LIMIT_RE = re.compile(
+    r"hit\s+your\s+(session|weekly|usage|\d+\s*-?\s*hour)\s+limit",
     re.IGNORECASE,
 )
 
+_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+# Clock-time tail shared by the reset patterns below: 12-hour ("10:40pm",
+# "3 pm"), bare 24-hour ("22:40"), optional parenthesised zone ("(UTC)").
+_TIME_TAIL = (
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[ap]\.?m\.?)?"
+    r"\s*(?:\(\s*(?P<tz>[A-Za-z/_]+)\s*\))?"
+)
+
+# "resets Aug 21 2pm (UTC)" / "resets 21 Aug 2026 at 2pm" — the weekly form,
+# whose reset can be days away and so names a date.
+_RESET_DATED_RE = re.compile(
+    r"resets?\s+(?:on\s+)?(?:"
+    r"(?P<mon1>[A-Za-z]{3,9})\.?\s+(?P<day1>\d{1,2})(?:st|nd|rd|th)?"
+    r"|"
+    r"(?P<day2>\d{1,2})(?:st|nd|rd|th)?\s+(?P<mon2>[A-Za-z]{3,9})\.?"
+    r")(?:,?\s+(?P<year>\d{4}))?[\s,]+(?:at\s+)?" + _TIME_TAIL,
+    re.IGNORECASE,
+)
+
+# "resets 10:40pm (UTC)" — a clock time only, meaning the next occurrence of it.
+_RESET_TIME_RE = re.compile(r"resets?\s+" + _TIME_TAIL, re.IGNORECASE)
+
+# Last-ditch: a wording we don't recognise between "resets" and the clock time
+# ("resets tomorrow at 3pm"). Requires am/pm so a stray date number can't be
+# mistaken for an hour.
+_RESET_LOOSE_RE = re.compile(
+    r"resets?\b[^\d\n]{0,24}?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?P<ampm>[ap]\.?m\.?)\s*(?:\(\s*(?P<tz>[A-Za-z/_]+)\s*\))?",
+    re.IGNORECASE,
+)
+
+# A reset further out than this isn't a limit notice we understand — the
+# weekly ceiling is 7 days, so anything beyond means we mis-parsed and are
+# better off falling back to the caller's retry interval.
+_MAX_RESET_WAIT_SECONDS = 8 * 24 * 60 * 60
+
 
 def looks_session_limited(text) -> bool:
-    """Return True if `text` looks like a Claude Code session-limit notice."""
+    """Return True if `text` looks like a Claude Code usage-limit notice.
+
+    Covers both the per-session limit and the weekly limit; use `limit_kind`
+    if you need to tell them apart."""
     if not text:
         return False
     return bool(_SESSION_LIMIT_RE.search(str(text)))
 
 
-def parse_session_reset_seconds(text, now: Optional[datetime] = None,
-                                grace_seconds: int = 60) -> Optional[int]:
-    """Seconds to wait until `grace_seconds` past the reset time named in a
-    session-limit notice, or None if no reset time can be parsed.
-
-    The reset clause states a clock time (and usually a timezone). We resolve
-    it to the next occurrence of that time — today if it's still ahead,
-    otherwise tomorrow — and add the grace period (default 60s, per the
-    requirement to resume "1 minute past the time specified").
-
-    Timezone handling: an explicit "(UTC)"/"(GMT)" is honoured; anything else
-    (a named zone we can't resolve here, or no zone at all) is treated as the
-    server's local time, which matches how the CLI renders it for interactive
-    users.
-    """
+def limit_kind(text) -> Optional[str]:
+    """Return the kind of limit named in a usage-limit notice ("session",
+    "weekly", "usage", "5-hour", ...), or None if `text` isn't one."""
     if not text:
         return None
-    m = _SESSION_RESET_RE.search(str(text))
+    m = _SESSION_LIMIT_RE.search(str(text))
     if not m:
         return None
+    kind = m.group(1).strip().lower()
+    kind = re.sub(r"\s*-\s*", "-", kind)
+    return re.sub(r"\s+", "-", kind)
 
-    hour = int(m.group(1))
-    minute = int(m.group(2) or 0)
-    ampm = (m.group(3) or "").lower()
-    tzname = (m.group(4) or "").upper()
+
+def _parse_clock(m) -> Optional[tuple]:
+    """(hour, minute, tzname) from a reset-pattern match, or None if the clock
+    time is out of range."""
+    hour = int(m.group("hour"))
+    minute = int(m.group("minute") or 0)
+    ampm = (m.group("ampm") or "").replace(".", "").lower()
+    tzname = (m.group("tz") or "").upper()
 
     if ampm == "pm" and hour != 12:
         hour += 12
@@ -89,19 +134,80 @@ def parse_session_reset_seconds(text, now: Optional[datetime] = None,
         hour = 0
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
+    return hour, minute, tzname
 
+
+def _now_in_zone(tzname: str, now: Optional[datetime]) -> datetime:
+    """Current time in the notice's timezone: an explicit "(UTC)"/"(GMT)" is
+    honoured; anything else (a named zone we can't resolve here, or no zone at
+    all) is treated as server-local, which matches how the CLI renders it for
+    interactive users."""
     if tzname in ("UTC", "GMT", "Z"):
-        cur = (now.astimezone(timezone.utc)
-               if (now is not None and now.tzinfo is not None)
-               else datetime.now(timezone.utc))
-    else:
-        cur = now if now is not None else datetime.now()
+        return (now.astimezone(timezone.utc)
+                if (now is not None and now.tzinfo is not None)
+                else datetime.now(timezone.utc))
+    return now if now is not None else datetime.now()
 
-    target = cur.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= cur:
-        target += timedelta(days=1)
+
+def parse_session_reset_seconds(text, now: Optional[datetime] = None,
+                                grace_seconds: int = 60) -> Optional[int]:
+    """Seconds to wait until `grace_seconds` past the reset time named in a
+    usage-limit notice, or None if no reset time can be parsed.
+
+    Two shapes of reset clause are handled:
+
+    * A clock time only ("resets 10:40pm (UTC)") — the session-limit form, and
+      the weekly form when the reset lands within a day. Resolved to the next
+      occurrence of that time: today if it's still ahead, otherwise tomorrow.
+    * A date and a clock time ("resets Aug 21 2pm (UTC)") — the weekly form
+      when the reset is days out. The year is absent from the notice, so we
+      take the next year in which that date is still ahead of us (which rolls
+      a December notice read in January forward correctly).
+
+    The grace period (default 60s) satisfies the requirement to resume "1
+    minute past the time specified"."""
+    if not text:
+        return None
+    s = str(text)
+
+    target = None
+    cur = None
+    m = _RESET_DATED_RE.search(s)
+    if m:
+        month = _MONTHS.get((m.group("mon1") or m.group("mon2") or "").lower())
+        day = int(m.group("day1") or m.group("day2"))
+        clock = _parse_clock(m) if month else None
+        if clock:
+            hour, minute, tzname = clock
+            cur = _now_in_zone(tzname, now)
+            year = int(m.group("year")) if m.group("year") else None
+            years = [year] if year else [cur.year, cur.year + 1]
+            for candidate in years:
+                try:
+                    t = datetime(candidate, month, day, hour, minute,
+                                 tzinfo=cur.tzinfo)
+                except ValueError:
+                    continue  # e.g. Feb 29 of a non-leap year
+                if year or t > cur:
+                    target = t
+                    break
+
+    if target is None:
+        m = _RESET_TIME_RE.search(s) or _RESET_LOOSE_RE.search(s)
+        if not m:
+            return None
+        clock = _parse_clock(m)
+        if not clock:
+            return None
+        hour, minute, tzname = clock
+        cur = _now_in_zone(tzname, now)
+        target = cur.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= cur:
+            target += timedelta(days=1)
 
     wait = (target - cur).total_seconds() + grace_seconds
+    if wait > _MAX_RESET_WAIT_SECONDS:
+        return None
     return int(max(grace_seconds, wait))
 
 

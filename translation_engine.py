@@ -3,6 +3,7 @@ import json
 import sqlite3
 import math
 import os
+import random
 import time
 import re
 import uuid
@@ -13,6 +14,7 @@ from providers.base import (
     looks_overloaded,
     SessionLimitError,
     looks_session_limited,
+    limit_kind,
     parse_session_reset_seconds,
 )
 
@@ -71,12 +73,17 @@ class TranslationEngine:
 
         Configurable via the OVERLOAD_RETRY_WAIT_SECONDS setting/env var
         (default 300). settings_store mirrors the setting into os.environ.
+
+        Jittered by ±10%: several books can be translating against the same
+        provider, and a 529 parks all of them at once. Without jitter they
+        would wake together and re-stampede the API that just shed load.
         """
         raw = os.getenv("OVERLOAD_RETRY_WAIT_SECONDS", "300")
         try:
-            return max(1, int(raw))
+            base = max(1, int(raw))
         except (TypeError, ValueError):
-            return 300
+            base = 300
+        return max(1, int(base * random.uniform(0.9, 1.1)))
 
     def _sleep_for_overload(self, reason, progress_callback=None, chunk_index=None, should_cancel=None):
         """Wait the configured interval after a 529, then return so the caller
@@ -99,35 +106,50 @@ class TranslationEngine:
                 pass
         self._interruptible_sleep(wait, should_cancel)
 
+    # Fallback pause when a *weekly* limit notice carries no parseable reset
+    # time. The overload interval (5 min by default) is right for a session
+    # limit, which resets within hours, but a weekly reset can be days out —
+    # retrying that often would be hundreds of pointless calls.
+    UNPARSEABLE_WEEKLY_WAIT_SECONDS = 30 * 60
+
     def _sleep_for_session_limit(self, reason, progress_callback=None, chunk_index=None, should_cancel=None):
-        """Pause the queue until just past the Claude Code session-limit reset
+        """Pause the queue until just past the Claude Code usage-limit reset
         time named in `reason`, then return so the caller can retry the chunk.
 
+        Handles both kinds of notice — the session limit ("resets 10:40pm
+        (UTC)") and the weekly limit, whose reset may name a calendar date
+        ("resets Aug 21 2pm (UTC)") when it's more than a day out.
+
         Like the overload wait, this is intentionally not bounded by the
-        per-chunk retry budget — the session is throttled, not broken, and the
-        chapter resumes from the same chunk once usage resets. If the reset
-        time can't be parsed we fall back to the overload retry interval and
-        loop again, re-reading the (still-current) limit notice next time."""
+        per-chunk retry budget — usage is throttled, not broken, and the
+        chapter resumes from the same chunk once it resets. If the reset time
+        can't be parsed we fall back to a fixed interval and loop again,
+        re-reading the (still-current) limit notice next time."""
+        kind = limit_kind(reason) or "session"
         wait = parse_session_reset_seconds(str(reason))
         if wait is None:
-            wait = self._overload_retry_wait_seconds()
-            detail = "reset time unparseable, using overload interval"
+            wait = (self.UNPARSEABLE_WEEKLY_WAIT_SECONDS if kind == "weekly"
+                    else self._overload_retry_wait_seconds())
+            detail = "reset time unparseable, using fallback interval"
         else:
             detail = "until 1 min past reset"
         where = f" on chunk {chunk_index}" if chunk_index else ""
         mins = max(1, round(wait / 60))
         print(
-            f"\n⏸️  Claude Code session limit hit{where}. "
+            f"\n⏸️  Claude Code {kind} limit hit{where}. "
             f"Pausing ~{mins} min ({detail}) before resuming..."
         )
         self.logger.warning(
-            f"Session limit hit{where}: {str(reason)[:200]}. "
+            f"{kind.capitalize()} limit hit{where}: {str(reason)[:200]}. "
             f"Pausing {wait}s before retry."
         )
         if progress_callback:
             try:
                 progress_callback({
+                    # Phase name kept as-is (the UI and job_manager key on it);
+                    # "limit" says which of the two kinds it is.
                     "phase": "session_limit",
+                    "limit": kind,
                     "wait_seconds": wait,
                     "resume_at": time.time() + wait,
                     "chunk": chunk_index,

@@ -10,6 +10,7 @@ from providers.base import (
     SessionLimitError,
     looks_overloaded,
     looks_session_limited,
+    limit_kind,
     parse_session_reset_seconds,
 )
 
@@ -187,7 +188,68 @@ def test_parse_reset_seconds_24_hour_form():
     assert parse_session_reset_seconds("resets 22:40", now=now) == 38460
 
 
+def test_weekly_limited_notice():
+    notice = "You've hit your weekly limit · resets Aug 21 2pm (UTC)"
+    assert looks_session_limited(notice) is True
+    assert limit_kind(notice) == "weekly"
+
+
+def test_limit_kind_distinguishes_session_and_weekly():
+    assert limit_kind("You've hit your session limit · resets 10:40pm (UTC)") == "session"
+    assert limit_kind("You've hit your 5-hour limit · resets 3pm") == "5-hour"
+    assert limit_kind("All good, carry on") is None
+    assert limit_kind("") is None
+
+
+def test_parse_reset_seconds_weekly_within_24h():
+    # "resets 2pm (UTC) (within 24 hrs)" carries no date -> next 2pm.
+    now = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+    notice = "You've hit your weekly limit · resets 2pm (UTC) (within 24 hrs)"
+    assert parse_session_reset_seconds(notice, now=now) == 2 * 3600 + 60
+
+
+def test_parse_reset_seconds_weekly_dated():
+    now = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+    notice = "You've hit your weekly limit · resets Aug 21 2pm (UTC)"
+    # Aug 21 2pm is 2 days 2 hours out, + 60s grace.
+    assert parse_session_reset_seconds(notice, now=now) == (2 * 86400) + (2 * 3600) + 60
+
+
+def test_parse_reset_seconds_dated_today():
+    now = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+    assert parse_session_reset_seconds("resets Aug 19 2pm (UTC)", now=now) == 7260
+
+
+def test_parse_reset_seconds_dated_rolls_to_next_year():
+    now = datetime(2026, 12, 30, 12, 0, 0, tzinfo=timezone.utc)
+    # Jan 2 has already passed this year -> 2027.
+    assert parse_session_reset_seconds("resets Jan 2 9am (UTC)", now=now) == (2 * 86400) + (21 * 3600) + 60
+
+
+def test_parse_reset_seconds_dated_variants():
+    now = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+    expected = (2 * 86400) + (2 * 3600) + 60
+    for form in ("resets Aug 21 2pm (UTC)",
+                 "resets August 21st, 2pm (UTC)",
+                 "resets 21 Aug 2026 at 2pm (UTC)",
+                 "resets on Aug 21 14:00 (UTC)"):
+        assert parse_session_reset_seconds(form, now=now) == expected, form
+
+
+def test_parse_reset_seconds_absurd_date_returns_none():
+    # Beyond the 8-day ceiling a weekly reset can have -> treat as unparseable
+    # so the caller falls back to its retry interval.
+    now = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+    assert parse_session_reset_seconds("resets Dec 25 9am (UTC)", now=now) is None
+
+
+def test_parse_reset_seconds_unknown_wording_before_clock():
+    now = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+    assert parse_session_reset_seconds("resets tomorrow at 3pm (UTC)", now=now) == 10860
+
+
 def test_parse_reset_seconds_unparseable_returns_none():
     assert parse_session_reset_seconds("no clock in here") is None
+    assert parse_session_reset_seconds("resets Smarch 4 2pm (UTC)") is None
     assert parse_session_reset_seconds("") is None
     assert parse_session_reset_seconds(None) is None
