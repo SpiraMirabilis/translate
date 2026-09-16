@@ -85,6 +85,7 @@ export const api = {
   listChapters:        (bookId)       => get(`/api/books/${bookId}/chapters`),
   getChapter:          (bookId, num)  => get(`/api/books/${bookId}/chapters/${num}`),
   getChaptersBatch:    (bookId, nums) => get(`/api/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
+  getChapterTerms:     (bookId, num)  => get(`/api/books/${bookId}/chapters/${num}/terms`),
   updateChapter:       (bookId, num, body) => put(`/api/books/${bookId}/chapters/${num}`, body),
   createChapter:       (bookId, body = {}) => post(`/api/books/${bookId}/chapters`, body),
 
@@ -291,6 +292,9 @@ export const publicApi = {
   listChapters:     (bookId)       => get(`/api/public/books/${bookId}/chapters`),
   getChapter:       (bookId, num)  => get(`/api/public/books/${bookId}/chapters/${num}`),
   getChaptersBatch: (bookId, nums) => get(`/api/public/books/${bookId}/chapters/batch?nums=${nums.join(',')}`),
+  // The chapter's glossary — entities the chapter actually mentions, with the
+  // note each carried at that point in the book.
+  getChapterTerms:  (bookId, num)  => get(`/api/public/books/${bookId}/chapters/${num}/terms`),
   // Fired by the Reader after a dwell, NOT on fetch — prefetched chapters and
   // cache hits must not count as views. See record_chapter_view in public.py.
   recordChapterView: (bookId, num) => post(`/api/public/books/${bookId}/chapters/${num}/view`),

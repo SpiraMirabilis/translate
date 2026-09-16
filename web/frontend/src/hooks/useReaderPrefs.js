@@ -6,6 +6,10 @@ const DEFAULTS = {
   theme: 'dark',
   lineHeight: 1.8,
   margins: 'medium',
+  // Glossary term highlights: off by default (it marks up the prose), and
+  // scoped to characters when on — the category set most readers lose track of.
+  highlightTerms: false,
+  highlightCharactersOnly: true,
 }
 
 const MARGIN_CLASS = {

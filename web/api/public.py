@@ -314,6 +314,31 @@ def get_chapter(book_id: int, chapter_number: int, request: Request, response: R
     return _chapter_cache(request, response, _shape_public_chapter(ch, book_id))
 
 
+@router.get("/books/{book_id}/chapters/{chapter_number}/terms")
+def get_chapter_terms(book_id: int, chapter_number: int, request: Request, response: Response):
+    """The glossary for one chapter — what the reader's "Terms this chapter" panel shows.
+
+    A pure read of the chapter_entities index (written at save time), joined to
+    the live entity rows, so a corrected rendering reaches readers as soon as
+    the cache expires without anything being reindexed. Notes are point-in-time:
+    what the note said at THIS chapter, never what it says now — see
+    get_chapter_terms.
+
+    An unindexed chapter returns an empty list rather than 404: the panel is a
+    bonus, and a book still waiting on the backfill must not look broken.
+    """
+    _guard(request)
+    _get_public_book(book_id)
+    _cache(response, _CACHE_SHORT)
+    terms = _db.get_chapter_terms(book_id, chapter_number, published_only=True)
+    # gendered_categories, not just the per-term gender value: the reader's
+    # "characters only" highlight scope is a question about the CATEGORY (does
+    # this book track gender for it), and a character whose gender was never
+    # filled in carries no gender field to infer it from.
+    return {"terms": terms,
+            "gendered_categories": _db.get_book_gendered_categories(book_id)}
+
+
 @router.post("/books/{book_id}/chapters/{chapter_number}/view", status_code=204)
 def record_chapter_view(book_id: int, chapter_number: int, request: Request):
     """Record that a reader actually read this chapter.

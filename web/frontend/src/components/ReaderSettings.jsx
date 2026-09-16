@@ -149,6 +149,55 @@ export default function ReaderSettings({ open, onClose, prefs, setPrefs, hasSour
             </div>
           </div>
 
+          {/* Glossary term highlights */}
+          <div>
+            <label className={`text-xs font-medium ${textSecondary} uppercase tracking-wider`}>Highlight Terms</label>
+            <div className="flex gap-2 mt-2">
+              {[
+                { id: false, label: 'Off' },
+                { id: true,  label: 'On'  },
+              ].map(opt => (
+                <button
+                  key={String(opt.id)}
+                  onClick={() => update('highlightTerms', opt.id)}
+                  className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all
+                    ${!!prefs.highlightTerms === opt.id
+                      ? `border-indigo-500 ${isDark ? 'bg-indigo-500/10 text-indigo-300' : 'bg-indigo-50 text-indigo-700'}`
+                      : `${borderColor} ${textPrimary} hover:border-indigo-400/50`}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className={`text-xs ${textSecondary} mt-1.5`}>
+              Underlines glossary terms that carry a note. Hover one for the note
+              as it stood at this chapter — nothing from later chapters.
+            </p>
+
+            {/* Scope — only meaningful while highlighting is on */}
+            {prefs.highlightTerms && (
+              <div className="mt-3">
+                <div className="flex gap-2">
+                  {[
+                    { id: true,  label: 'Characters only' },
+                    { id: false, label: 'All terms' },
+                  ].map(opt => (
+                    <button
+                      key={String(opt.id)}
+                      onClick={() => update('highlightCharactersOnly', opt.id)}
+                      className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all
+                        ${(prefs.highlightCharactersOnly !== false) === opt.id
+                          ? `border-indigo-500 ${isDark ? 'bg-indigo-500/10 text-indigo-300' : 'bg-indigo-50 text-indigo-700'}`
+                          : `${borderColor} ${textPrimary} hover:border-indigo-400/50`}`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className={`text-xs ${textSecondary} mt-1.5`}>
+                  Characters are the categories this book tracks a gender for.
+                </p>
+              </div>
           {/* Source / Translation toggle */}
           {hasSource && (
             <div>

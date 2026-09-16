@@ -163,6 +163,63 @@ The system also hosts **original fiction** written directly in the browser, alon
 - **Writing features**: live word count, session counter, daily goal (localStorage), focus/typewriter mode (Ctrl+Shift+F, Esc exits), Reader-parity preview toggle, illustrations rendered inline as atom nodes (⟦IMG:id⟧ markers).
 - **Underline & text color** (XenForo parity — no markdown form): inline `⟦⟧` sentinels in storage — `⟦U⟧…⟦/U⟧` and `⟦COLOR:#rrggbb⟧…⟦/COLOR⟧` (lowercase 6-digit hex canonical). Balanced pairs are swapped for `<u>`/`<span style="color:…">` AFTER sanitization (the ⟦FN⟧ pattern) by `replaceInlineSentinels` in chapterMarkdown.js / `_apply_inline_sentinels` in output_formatter.py; unmatched/misnested/invalid markers stay literal (and block saves via `sentinel:literal`). Markers inside code spans stay literal; a pair may span a whole code span; pairs never cross block boundaries. bbcode.js maps them to `[U]`/`[COLOR=#hex]`. Editor: StarterKit Underline (Ctrl+U) + TextStyle/Color (`@tiptap/extension-text-style`), color picker in MarkButtons; `FlexibleCode` overrides TipTap Code's `excludes:"_"` so code spans keep coexisting marks. Bare URLs containing marker brackets are rejected by `md.validateLink` (styled-but-unlinked) — linkify would otherwise swallow `⟦/U⟧` into the href.
 
+### "Terms this chapter" — the per-chapter entity index
+The reader (public and admin) can open the book's glossary narrowed to the chapter
+in front of it: term, category, gender, and the note. Which entities a chapter
+contains is **stored**, not computed per request — answering it live means testing
+every entity of the book (6-8k rows for the big ones) against the chapter, which is
+fine once per translation and not fine once per reader click in the public process.
+
+- **`chapter_entities`** (migration 19): `(chapter_id, entity_id, occurrences)`, ~1.7M
+  rows for the current corpus. Written by `save_chapter` on **every** save (a
+  retranslation changes which terms are in the text), replaced wholesale per chapter.
+  Entity records are written *before* `save_chapter` in `ui.py`, so terms first seen
+  in a chapter are already indexable when it is stored.
+- **Matching is the "exact" rule and nothing else**: NFC-normalised substring match of
+  the entity's `untranslated` form against the chapter **source**. The prefix/suffix
+  "similar" bucket `entities_inside_text` builds for the prompt is deliberately not
+  indexed — it exists to hint naming style, and sharing two characters with something
+  in the chapter is not being *in* the chapter. Matching uses `str.count`, not a
+  compiled regex per key (450ms → 17ms on an 8k glossary; there is no pattern syntax
+  to escape in the first place).
+- ⚠️ **The index is only as current as the glossary was at save time.** An entity added
+  or renamed at ch300 is missing from ch5's panel until the book is reindexed —
+  `backfill_chapter_entities.py -b N` (or `--all [--missing-only]`). Everything *joined*
+  (translation, category, gender, note) is live, so a corrected rendering reaches
+  readers without any reindex; only membership is cached.
+- **Notes are point-in-time.** `get_chapter_terms` resolves them through
+  `notes_as_of(book_id, chapter)`, so a reader on ch12 gets the note as it read at ch12.
+  A note tracks a character's *present* state (age, realm, rank, allegiance), so serving
+  the current note would let the glossary spoil the book. `notes_as_of` narrows its
+  revision scan by `entity_ids` when the list is short (≤500), which is what makes this
+  a ~45ms endpoint instead of a ~140ms one.
+- **Endpoints**: `GET /api/public/books/{id}/chapters/{n}/terms` (published-gated, 5-min
+  cache, lives in the public process) and the ungated admin twin
+  `GET /api/books/{id}/chapters/{n}/terms`. Both return `{terms, gendered_categories}` —
+  the category list, not just each row's gender value, because "is this a character" is
+  a question about the category and a character whose gender was never filled in has no
+  field to infer it from. An unindexed chapter returns `[]`, never a 404.
+- **Reader UI**: `ReaderTerms.jsx` (toolbar Languages icon, `?modal=terms`), grouped by
+  the book's own category order, most-mentioned first, with a filter box past 12 terms.
+  Two chips: **new** (`first_seen`, the chapter introduced the entity) and **note
+  updated** (`note_changed` — `entities_with_note_change_at`, a chapter-stamped
+  `entity_note_revisions` row with a non-null `previous_note`). Creations are excluded
+  from the second so the two never double up, and that test does not lean on
+  `origin_chapter`, which records when extraction ran. Undated revisions (hand edits,
+  script sweeps) belong to the present and flag nothing — the same rule `notes_as_of`
+  applies when it rewinds.
+  In the admin reader a row opens `EntityFormModal` — by *opening* that modal, not by
+  closing this one first: `useUrlModal.close()` is a `navigate(-1)` and would race the push.
+- **Term highlights in the prose** (Reading Settings → Highlight Terms, default off;
+  scope defaults to "Characters only"): terms **carrying a note** get a dotted underline
+  and show the note on hover, pinned on click for touch. `lib/readerHighlights.js` walks
+  the rendered DOM's text nodes rather than rewriting the HTML string (the chapter is
+  injected with `dangerouslySetInnerHTML`), skipping links, code, and footnote markers.
+  Matching is **case-sensitive and boundary-checked** — the glossary is full of
+  renderings like "Master", "Yao" and "Gold" whose lowercase or embedded forms are
+  ordinary English, and a false highlight in prose is worse than a missed one. The note
+  popover is `FootnotePopover` with a `label` instead of `[n]`.
+
 ### Chapter publishing (drafts / scheduling)
 Per-chapter visibility via `chapters.published_at` (migration 11): **NULL = draft, future = scheduled, past = live**. Visibility is evaluated at query time (`published_at <= now`), so scheduled chapters appear automatically — no cron. All pre-existing chapters were backfilled to their translation_date (everything stayed live).
 - **Defaults**: translation-pipeline chapters publish immediately; original-work chapters are born drafts. The "Save as draft(s)" checkbox on the Dashboard and Queue pages overrides the pipeline default (`save_as_draft` run option → `save_chapter(publish=False)`). Re-saves/retranslations never change publish state.

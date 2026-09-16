@@ -155,6 +155,15 @@ class ChaptersRepo:
             except Exception as e:
                 self.logger.error(f"Footnote reapply skipped for chapter {chapter_number}: {e}")
 
+            # Refresh this chapter's entity index (the reader's "Terms this
+            # chapter" panel). Runs on every save, not just the first: a
+            # retranslation or an editor rewrite changes which terms are in the
+            # text. Entity records are written before save_chapter, so terms
+            # first seen in this chapter are already indexable here.
+            try:
+                self.index_chapter_entities(chapter_id, book_id, untranslated_content)
+            except Exception as e:
+                self.logger.error(f"Entity index skipped for chapter {chapter_number}: {e}")
 
             # New-chapter module events (e.g. footnote_scan's background
             # candidate collection). First inserts only — re-saves and

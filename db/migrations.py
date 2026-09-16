@@ -587,6 +587,46 @@ def _m018_entity_note_revisions(conn, cursor, backend, logger):
             pass
 
 
+_CHAPTER_ENTITIES_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS chapter_entities (
+            chapter_id  INTEGER NOT NULL,
+            entity_id   INTEGER NOT NULL,
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (chapter_id, entity_id),
+            FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS chapter_entities (
+            chapter_id  INTEGER NOT NULL,
+            entity_id   INTEGER NOT NULL,
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (chapter_id, entity_id),
+            FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m019_chapter_entities(conn, cursor, backend, logger):
+    """Per-chapter index of the entities that actually occur in the chapter.
+
+    Powers the reader's "Terms this chapter" panel. Rows are written by
+    save_chapter; existing chapters are filled in by
+    backfill_chapter_entities.py (the migration deliberately does not scan
+    38k chapters inline — a deploy must not block on it, and an unindexed
+    chapter degrades to an empty panel, not an error)."""
+    cursor.execute(_CHAPTER_ENTITIES_DDL[backend.name])
+    try:
+        cursor.execute("CREATE INDEX idx_chapter_entities_entity "
+                       "ON chapter_entities(entity_id)")
+    except Exception:
+        # Already exists (fresh installs create it via baseline DDL)
+        pass
+
 _ENTITY_GENDER_REVISIONS_DDL = {
     "sqlite": """
         CREATE TABLE IF NOT EXISTS entity_gender_revisions (
@@ -662,6 +702,7 @@ MIGRATIONS = [
     Migration(16, "footnote_candidates", _m016_footnote_candidates),
     Migration(17, "chapters_book_rollup_indexes", _m017_chapters_book_rollup_indexes),
     Migration(18, "entity_note_revisions", _m018_entity_note_revisions),
+    Migration(19, "chapter_entities", _m019_chapter_entities),
     Migration(20, "entity_gender_revisions", _m020_entity_gender_revisions),
 ]
 

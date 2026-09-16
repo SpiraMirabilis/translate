@@ -11,15 +11,17 @@ import ReaderTOC from '../components/ReaderTOC'
 import ReaderSettings from '../components/ReaderSettings'
 import ReaderSearch from '../components/ReaderSearch'
 import ReaderComments from '../components/ReaderComments'
+import ReaderTerms from '../components/ReaderTerms'
 import EntityFormModal from '../components/EntityFormModal'
 import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
+import { buildTermMatcher, applyTermHighlights, clearTermHighlights } from '../lib/readerHighlights'
 import { renderBlock, renderInline, renderSegment, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes } from '../lib/chapterMarkdown'
 import FootnotePopover from '../components/FootnotePopover'
 import ErrorState from '../components/ErrorState'
 import { useSite } from '../App'
 import {
-  ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle
+  ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle, Languages
 } from 'lucide-react'
 
 // How long a chapter must stay open (and visible) before it counts as read.
@@ -67,11 +69,13 @@ export default function Reader({ isPublic = false }) {
   const settingsModal = useUrlModal('settings')
   const searchModal = useUrlModal('search')
   const commentsModal = useUrlModal('comments')
+  const termsModal = useUrlModal('terms')
   const entityModal = useUrlModal('editEntity', { idKey: 'ent' })
   const tocOpen = tocModal.isOpen
   const settingsOpen = settingsModal.isOpen
   const searchOpen = searchModal.isOpen
   const commentsOpen = commentsModal.isOpen
+  const termsOpen = termsModal.isOpen
   const [commentCount, setCommentCount] = useState(0)
   const [commentsEnabled, setCommentsEnabled] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -85,6 +89,9 @@ export default function Reader({ isPublic = false }) {
     : null
 
   const contentRef = useRef(null)
+  // The rendered chapter text itself (contentRef is the scroll container) —
+  // term highlights are applied to this subtree after React writes its HTML.
+  const bodyRef = useRef(null)
   const queryClient = useQueryClient()
   // Cache scope: readerApi differs by isPublic, so keep the caches separate.
   const scope = isPublic ? 'public' : 'admin'
@@ -346,13 +353,14 @@ export default function Reader({ isPublic = false }) {
       }
       if (e.key === 'Escape') {
         if (searchOpen) searchModal.close()
+        else if (termsOpen) termsModal.close()
         else if (commentsOpen) commentsModal.close()
         else if (settingsOpen) settingsModal.close()
         else if (tocOpen) tocModal.close()
         else if (entityModal.isOpen) entityModal.close()
         return
       }
-      if (tocOpen || settingsOpen || searchOpen || commentsOpen || entityModal.isOpen) return
+      if (tocOpen || settingsOpen || searchOpen || commentsOpen || termsOpen || entityModal.isOpen) return
       if (e.key === 'ArrowLeft') goChapter(-1)
       if (e.key === 'ArrowRight') goChapter(1)
     }
@@ -458,8 +466,54 @@ export default function Reader({ isPublic = false }) {
     ? (chapter?.untranslated || [])
     : (chapter?.content || [])
   const { map: footnotes, ids: fnIds } = useMemo(() => parseFootnotes(fnLines), [fnLines])
+  // ── Glossary term highlights ─────────────────────────────────────────
+  // Off by default; when on, terms that carry a note get a dotted underline
+  // and show it on hover (tap pins it open on touch). The query is shared with
+  // the Terms modal by queryKey, so opening one does not refetch the other.
+  const highlightTerms = !!prefs.highlightTerms
+  const charactersOnly = prefs.highlightCharactersOnly !== false
+  const termsQuery = useQuery({
+    queryKey: [scope, 'chapter-terms', bookId, currentNum],
+    queryFn: () => readerApi.getChapterTerms(bookId, currentNum),
+    enabled: (highlightTerms || termsOpen) && currentNum != null,
+    staleTime: 5 * 60 * 1000,
+  })
+  const termMatcher = useMemo(() => (
+    highlightTerms
+      ? buildTermMatcher(termsQuery.data?.terms, {
+          charactersOnly,
+          genderedCategories: termsQuery.data?.gendered_categories || [],
+        })
+      : null
+  ), [highlightTerms, charactersOnly, termsQuery.data])
+
+  const [activeTerm, setActiveTerm] = useState(null)
+  useEffect(() => { if (!termMatcher) setActiveTerm(null) }, [termMatcher])
+
+  // Hover opens the note, leaving closes it; a click pins it so touch devices
+  // (which get no hover) and anyone wanting to read a long note can keep it up.
+  const onTermOver = useCallback((e) => {
+    const el = e.target.closest?.('.term-note')
+    if (!el) return
+    setActiveTerm(prev => (prev?.pinned ? prev : {
+      label: el.dataset.term, text: el.dataset.note,
+      rect: el.getBoundingClientRect(), pinned: false,
+    }))
+  }, [])
+  const onTermOut = useCallback((e) => {
+    if (!e.target.closest?.('.term-note')) return
+    setActiveTerm(prev => (prev && !prev.pinned ? null : prev))
+  }, [])
+
   const [activeFootnote, setActiveFootnote] = useState(null)
+  // Turning annotations off removes the popover's anchor — close it too.
   const onFootnoteClick = useCallback((e) => {
+    const termEl = e.target.closest?.('.term-note')
+    if (termEl) {
+      e.preventDefault()
+      setActiveTerm({
+        label: termEl.dataset.term, text: termEl.dataset.note,
+        rect: termEl.getBoundingClientRect(), pinned: true,
     const ref = e.target.closest?.('.footnote-ref')
     if (!ref) return
     if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return

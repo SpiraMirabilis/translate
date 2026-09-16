@@ -16,13 +16,14 @@ from db.wp_repo import WpStateRepo
 from db.revisions_repo import ChapterRevisionsRepo
 from db.polish_repo import PolishJobsRepo
 from db.footnote_candidates_repo import FootnoteCandidatesRepo
+from db.chapter_entities_repo import ChapterEntitiesRepo
 
 
 class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
                       FootnotesRepo, CommentsRepo, RecommendationsRepo,
                       RecommendationRepliesRepo, LogsRepo, WpStateRepo,
                       ChapterRevisionsRepo, PolishJobsRepo,
-                      FootnoteCandidatesRepo, DatabaseCore):
+                      FootnoteCandidatesRepo, ChapterEntitiesRepo, DatabaseCore):
     """Class to manage database operations including entities, books, and chapters using SQLite"""
 
     def __init__(self, config: 'TranslationConfig', logger: 'Logger', *, strict_writes: bool = False):

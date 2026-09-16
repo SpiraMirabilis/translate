@@ -1,9 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
-// Small modeless, non-blocking footnote popover. Renders a fixed-position box
-// next to the clicked marker (no backdrop, so the page stays interactive).
+// Small modeless, non-blocking popover. Renders a fixed-position box next to
+// the anchor that opened it (no backdrop, so the page stays interactive).
 // Dismisses on outside click, Escape, scroll, and resize.
+//
+// Serves two anchors: footnote markers ({ n, text, rect }, shown as "[n]") and
+// highlighted glossary terms ({ label, text, rect }, shown as the term itself).
 export default function FootnotePopover({ footnote, theme, onClose }) {
   const boxRef = useRef(null)
   const [pos, setPos] = useState(null)  // { left, top } in viewport coords, or null until measured
@@ -34,7 +37,7 @@ export default function FootnotePopover({ footnote, theme, onClose }) {
   useEffect(() => {
     function onDown(e) {
       if (boxRef.current && !boxRef.current.contains(e.target) &&
-          !e.target.closest?.('.footnote-ref')) {
+          !e.target.closest?.('.footnote-ref, .term-note')) {
         onClose()
       }
     }
@@ -72,11 +75,13 @@ export default function FootnotePopover({ footnote, theme, onClose }) {
       }}
     >
       <div className="flex items-start gap-2 p-3">
-        <span className="font-semibold shrink-0 text-indigo-500">[{footnote.n}]</span>
+        <span className="font-semibold shrink-0 text-indigo-500">
+          {footnote.label ? footnote.label : `[${footnote.n}]`}
+        </span>
         <span className="min-w-0 break-words">{footnote.text}</span>
         <button
           onClick={onClose}
-          aria-label="Close footnote"
+          aria-label="Close"
           className={`shrink-0 -mr-1 -mt-0.5 rounded p-0.5 ${isDark ? 'hover:bg-slate-700' : 'hover:bg-black/10'}`}
         >
           <X size={14} />
