@@ -311,6 +311,45 @@ export function markFootnoteRefs(lines, fnIds) {
   return (lines || []).map((line) => markFootnoteLine(line, fnIds))
 }
 
+/** True when `line` is a footnote definition line for an id in fnIds. */
+export function isFootnoteDef(line, fnIds) {
+  if (typeof line !== 'string' || !fnIds) return false
+  const m = line.match(FN_DEF_RE)
+  return !!m && fnIds.has(m[1])
+}
+
+/**
+ * The "Disable Annotations" counterpart of markFootnoteLine: remove inline
+ * footnote markers ([n], n ∈ fnIds) from a body line instead of turning them
+ * into sentinels. Same skip rules — definition lines, [n](url) link text, and
+ * code spans are left untouched.
+ */
+export function stripFootnoteLine(line, fnIds) {
+  if (typeof line !== 'string' || !fnIds || fnIds.size === 0) return line
+  if (FN_DEF_RE.test(line)) return line
+  return line.replace(FN_INLINE_RE, (m, ticks, n) => {
+    if (ticks !== undefined) return m  // code span — leave verbatim
+    return fnIds.has(n) ? '' : m
+  })
+}
+
+/**
+ * Strip all footnote markup from a line array (mirrors the backend's
+ * footnotes.py::strip_footnotes): definition lines are dropped, inline
+ * markers removed, and blank lines left dangling at the end (the gap above
+ * the removed definition block) are trimmed.
+ */
+export function stripFootnoteRefs(lines, fnIds) {
+  if (!fnIds || fnIds.size === 0) return lines || []
+  const out = (lines || [])
+    .filter((line) => !isFootnoteDef(line, fnIds))
+    .map((line) => stripFootnoteLine(line, fnIds))
+  while (out.length && typeof out[out.length - 1] === 'string' && !out[out.length - 1].trim()) {
+    out.pop()
+  }
+  return out
+}
+
 /**
  * Swap footnote sentinels in rendered + sanitized HTML for a clickable control.
  * Runs AFTER DOMPurify (the allowlist strips class/data-*, and html:false escapes

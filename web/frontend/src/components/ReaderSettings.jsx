@@ -149,6 +149,31 @@ export default function ReaderSettings({ open, onClose, prefs, setPrefs, hasSour
             </div>
           </div>
 
+          {/* Footnote annotations */}
+          <div>
+            <label className={`text-xs font-medium ${textSecondary} uppercase tracking-wider`}>Annotations</label>
+            <div className="flex gap-2 mt-2">
+              {[
+                { id: false, label: 'Shown' },
+                { id: true,  label: 'Hidden' },
+              ].map(opt => (
+                <button
+                  key={String(opt.id)}
+                  onClick={() => update('disableAnnotations', opt.id)}
+                  className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all
+                    ${!!prefs.disableAnnotations === opt.id
+                      ? `border-indigo-500 ${isDark ? 'bg-indigo-500/10 text-indigo-300' : 'bg-indigo-50 text-indigo-700'}`
+                      : `${borderColor} ${textPrimary} hover:border-indigo-400/50`}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className={`text-xs ${textSecondary} mt-1.5`}>
+              Hidden removes footnote markers and their notes from the chapter.
+            </p>
+          </div>
+
           {/* Glossary term highlights */}
           <div>
             <label className={`text-xs font-medium ${textSecondary} uppercase tracking-wider`}>Highlight Terms</label>
@@ -198,6 +223,9 @@ export default function ReaderSettings({ open, onClose, prefs, setPrefs, hasSour
                   Characters are the categories this book tracks a gender for.
                 </p>
               </div>
+            )}
+          </div>
+
           {/* Source / Translation toggle */}
           {hasSource && (
             <div>

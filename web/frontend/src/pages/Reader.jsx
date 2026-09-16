@@ -16,7 +16,7 @@ import EntityFormModal from '../components/EntityFormModal'
 import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
 import { buildTermMatcher, applyTermHighlights, clearTermHighlights } from '../lib/readerHighlights'
-import { renderBlock, renderInline, renderSegment, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes } from '../lib/chapterMarkdown'
+import { renderBlock, renderInline, renderSegment, splitSegments, parseFootnotes, markFootnoteLine, markFootnoteRefs, linkifyFootnotes, isFootnoteDef, stripFootnoteLine, stripFootnoteRefs } from '../lib/chapterMarkdown'
 import FootnotePopover from '../components/FootnotePopover'
 import ErrorState from '../components/ErrorState'
 import { useSite } from '../App'
@@ -466,6 +466,9 @@ export default function Reader({ isPublic = false }) {
     ? (chapter?.untranslated || [])
     : (chapter?.content || [])
   const { map: footnotes, ids: fnIds } = useMemo(() => parseFootnotes(fnLines), [fnLines])
+  // "Disable Annotations": same scan, but markers and definition lines are
+  // removed from the display instead of linkified.
+  const hideAnnotations = !!prefs.disableAnnotations
   // ── Glossary term highlights ─────────────────────────────────────────
   // Off by default; when on, terms that carry a note get a dotted underline
   // and show it on hover (tap pins it open on touch). The query is shared with
@@ -507,6 +510,7 @@ export default function Reader({ isPublic = false }) {
 
   const [activeFootnote, setActiveFootnote] = useState(null)
   // Turning annotations off removes the popover's anchor — close it too.
+  useEffect(() => { if (hideAnnotations) setActiveFootnote(null) }, [hideAnnotations])
   const onFootnoteClick = useCallback((e) => {
     const termEl = e.target.closest?.('.term-note')
     if (termEl) {
@@ -514,6 +518,9 @@ export default function Reader({ isPublic = false }) {
       setActiveTerm({
         label: termEl.dataset.term, text: termEl.dataset.note,
         rect: termEl.getBoundingClientRect(), pinned: true,
+      })
+      return
+    }
     const ref = e.target.closest?.('.footnote-ref')
     if (!ref) return
     if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return
@@ -565,6 +572,10 @@ export default function Reader({ isPublic = false }) {
         const TBL = /^\s*⟦\/?(?:TABLE|TR|TH|TD)(?::(?:left|center|right))?⟧\s*$/
         if (typeof line === 'string' && TBL.test(line)) line = ''
         if (typeof src === 'string' && TBL.test(src)) src = ''
+        // Annotations off: hide definition lines (blanked, not removed — the
+        // 1:1 source/translated pairing must keep its indices) and strip
+        // inline markers instead of linkifying them.
+        if (hideAnnotations && isFootnoteDef(line, fnIds)) line = ''
         const isEmpty = (!line || !line.trim()) && (!src || !src.trim())
         if (isEmpty) return <div key={i} className="h-4" />
         return (
@@ -575,7 +586,9 @@ export default function Reader({ isPublic = false }) {
               </p>
             )}
             {line && line.trim() && (
-              <p className="chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderInline(markFootnoteLine(line, fnIds))) }} />
+              <p className="chapter-markdown" dangerouslySetInnerHTML={{ __html: hideAnnotations
+                ? renderInline(stripFootnoteLine(line, fnIds))
+                : linkifyFootnotes(renderInline(markFootnoteLine(line, fnIds))) }} />
             )}
           </div>
         )
@@ -583,7 +596,7 @@ export default function Reader({ isPublic = false }) {
     ) : (
       // Single mode (source or translated): full block-level Markdown,
       // split into segments around illustration markers.
-      splitSegments(markFootnoteRefs(fnLines, fnIds))
+      splitSegments(hideAnnotations ? stripFootnoteRefs(fnLines, fnIds) : markFootnoteRefs(fnLines, fnIds))
         .map((seg, i) => seg.type === 'img' ? (
           <img key={i} src={illustrationSrc(seg.id)}
             alt="" loading="lazy" className="block mx-auto my-6 max-w-full rounded" />
@@ -591,6 +604,7 @@ export default function Reader({ isPublic = false }) {
           <div key={i} className="cv-auto chapter-markdown" dangerouslySetInnerHTML={{ __html: linkifyFootnotes(renderSegment(seg)) }} />
         ))
     )
+  }, [chapter, contentMode, hasSource, fnLines, fnIds, hideAnnotations, illustrationSrc, isDark, prefs.theme])
 
   // Mark noted terms in the rendered chapter. This runs against the live DOM
   // rather than the markdown pipeline: the chapter is injected as an HTML

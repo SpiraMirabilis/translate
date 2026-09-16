@@ -8,7 +8,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   markerId, splitSegments, parseFootnotes, markFootnoteLine,
-  markFootnoteRefs, linkifyFootnotes, renderInline, renderBlock,
+  markFootnoteRefs, linkifyFootnotes, isFootnoteDef, stripFootnoteLine,
+  stripFootnoteRefs, renderInline, renderBlock,
   parseTableRun, renderTable, renderSegment, TABLE_MARKER_RE,
   replaceInlineSentinels,
 } from './chapterMarkdown'
@@ -301,6 +302,45 @@ describe('markFootnoteLine / markFootnoteRefs', () => {
     expect(markFootnoteLine('``a[1]`` and b[2]', ids)).toBe('``a[1]`` and b⟦FN:2⟧')
     // Unclosed backtick is not a code span — the ref still converts.
     expect(markFootnoteLine('a ` b[1]', ids)).toBe('a ` b⟦FN:1⟧')
+  })
+})
+
+describe('stripFootnoteLine / stripFootnoteRefs (Disable Annotations)', () => {
+  const ids = new Set(['1', '2'])
+
+  it('removes known inline refs, keeps unknown ones', () => {
+    expect(stripFootnoteLine('hello[1] world[2]', ids)).toBe('hello world')
+    expect(stripFootnoteLine('danmaku [666] stays', ids)).toBe('danmaku [666] stays')
+  })
+
+  it('shares markFootnoteLine skip rules: defs, link text, code spans', () => {
+    expect(stripFootnoteLine('[1] definition text', ids)).toBe('[1] definition text')
+    expect(stripFootnoteLine('see [1](https://example.com) and this[2]', ids))
+      .toBe('see [1](https://example.com) and this')
+    expect(stripFootnoteLine('use `arr[1]` here but not this[2]', ids))
+      .toBe('use `arr[1]` here but not this')
+  })
+
+  it('is a no-op when there are no footnote ids', () => {
+    expect(stripFootnoteLine('hello[1]', new Set())).toBe('hello[1]')
+    expect(stripFootnoteRefs(['a[1]'], new Set())).toEqual(['a[1]'])
+  })
+
+  it('drops definition lines and the blank gap above them', () => {
+    expect(stripFootnoteRefs(['prose[1] here', 'more[2]', '', '[1] First', '[2] Second'], ids))
+      .toEqual(['prose here', 'more'])
+  })
+
+  it('keeps interior blank lines and non-string lines', () => {
+    expect(stripFootnoteRefs(['a[1]', '', 'b', '', '[1] def'], ids))
+      .toEqual(['a', '', 'b'])
+  })
+
+  it('isFootnoteDef only matches defined ids', () => {
+    expect(isFootnoteDef('[1] a note', ids)).toBe(true)
+    expect(isFootnoteDef('[9] not defined', ids)).toBe(false)
+    expect(isFootnoteDef('body[1] text', ids)).toBe(false)
+    expect(isFootnoteDef(null, ids)).toBe(false)
   })
 })
 
