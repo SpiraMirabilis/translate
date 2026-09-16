@@ -212,10 +212,22 @@ def _md_extensions(_markdown):
         from markdown.inlinepatterns import SimpleTagInlineProcessor, InlineProcessor
         import xml.etree.ElementTree as _etree
 
+        # Mirror markdown-it's CommonMark "flanking" rules, which the naive
+        # r'()~~(.+?)~~' did not: an opening ~~ must be followed by non-space
+        # and a closing ~~ preceded by non-space, and neither may sit inside a
+        # longer run of tildes. Without this, novels that use trailing tildes
+        # for sound effects ("Boom~~~" / "Roar~~~") had the first line open a
+        # strike that the next one closed, striking out everything between —
+        # visible in EPUB/AZW3/HTML/WordPress but NOT in the Reader, which uses
+        # markdown-it and got it right. Spanning a soft line break is still
+        # allowed, because markdown-it allows it for a genuine ~~struck~~ pair.
+        _STRIKE_RE = r'(?<!~)~~(?=[^\s~])((?:(?!~~).)+?)(?<=[^\s~])~~(?!~)'
+
         class _StrikeExtension(Extension):
             def extendMarkdown(self, md):
                 md.inlinePatterns.register(
-                    SimpleTagInlineProcessor(r'()~~(.+?)~~', 's'), 'strikethrough', 175)
+                    SimpleTagInlineProcessor(r'()' + _STRIKE_RE, 's'),
+                    'strikethrough', 175)
 
         class _BareUrlProcessor(InlineProcessor):
             def handleMatch(self, m, data):
