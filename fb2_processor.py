@@ -429,14 +429,21 @@ class FB2Processor:
 
     # -- queue / orchestration --------------------------------------------
 
-    def add_chapters_to_queue(self, chapters, book_id=None, fb2_path=None):
-        """Add extracted chapters to the translation queue."""
+    def add_chapters_to_queue(self, chapters, book_id=None, fb2_path=None, skip_numbers=None):
+        """Add extracted chapters to the translation queue.
+
+        skip_numbers: optional iterable of chapter numbers to skip (already
+        present in the book/queue — the "discard duplicates" resolution).
+        """
         if book_id is None:
             self.logger.error("book_id is required for adding chapters to queue")
             return 0
 
+        skip = {n for n in (skip_numbers or ())}
         added_count = 0
         for chapter in chapters:
+            if chapter.get("number") in skip:
+                continue
             content = chapter["content"]
             content_lines = content.split("\n") if isinstance(content, str) else content
 
@@ -465,8 +472,22 @@ class FB2Processor:
         self.logger.info(f"Added {added_count} chapters to queue")
         return added_count
 
-    def process_fb2(self, fb2_path, book_id=None):
+    def extract_chapter_numbers(self, fb2_path):
+        """Chapter numbers this FB2 would contribute, without queuing anything.
+
+        Lets callers detect collisions with chapters already in the book/queue
+        before deciding whether to add.
+        """
+        root = self.load_fb2(fb2_path)
+        if root is None:
+            return []
+        chapters = self.extract_chapters(root)
+        return [c["number"] for c in chapters if isinstance(c.get("number"), int)]
+
+    def process_fb2(self, fb2_path, book_id=None, skip_numbers=None):
         """Process an FB2 file and add chapters to the queue.
+
+        skip_numbers: optional iterable of chapter numbers to skip (duplicates).
 
         Returns (success, num_chapters, message).
         """
@@ -481,5 +502,5 @@ class FB2Processor:
         if not chapters:
             return False, 0, "No chapters found in FB2"
 
-        num_added = self.add_chapters_to_queue(chapters, book_id, fb2_path)
+        num_added = self.add_chapters_to_queue(chapters, book_id, fb2_path, skip_numbers=skip_numbers)
         return True, num_added, f"Successfully added {num_added} chapters to queue"

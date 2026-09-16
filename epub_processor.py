@@ -490,7 +490,7 @@ class EPUBProcessor:
             pass
         return rel_path
 
-    def add_chapters_to_queue(self, chapters, book_id=None, epub_path=None):
+    def add_chapters_to_queue(self, chapters, book_id=None, epub_path=None, skip_numbers=None):
         """
         Add chapters to the translation queue.
 
@@ -498,6 +498,8 @@ class EPUBProcessor:
             chapters: List of chapter dicts
             book_id: Book ID (required)
             epub_path: EPUB file path for source reference
+            skip_numbers: Optional iterable of chapter numbers to skip (already
+                present in the book/queue — the "discard duplicates" resolution)
 
         Returns:
             int: Number of chapters added to queue
@@ -506,8 +508,11 @@ class EPUBProcessor:
             self.logger.error("book_id is required for adding chapters to queue")
             return 0
 
+        skip = {n for n in (skip_numbers or ())}
         added_count = 0
         for chapter in chapters:
+            if chapter.get('number') in skip:
+                continue
             content = chapter['content']
             content_lines = content.split('\n') if isinstance(content, str) else content
 
@@ -537,14 +542,29 @@ class EPUBProcessor:
         self.logger.info(f"Added {added_count} chapters to queue")
         return added_count
 
-    def process_epub(self, epub_path, book_id=None):
+    def extract_chapter_numbers(self, epub_path):
+        """Chapter numbers this EPUB would contribute, without queuing anything.
+
+        Lets callers detect collisions with chapters already in the book/queue
+        before deciding whether to add. Illustration extraction is skipped (the
+        collector guards are None here), which is fine — we only need numbers.
+        """
+        book = self.load_epub(epub_path)
+        if not book:
+            return []
+        toc = self.extract_toc(book)
+        chapters = self.extract_chapters(book, toc) if toc else self.extract_chapters(book)
+        return [c['number'] for c in chapters if isinstance(c.get('number'), int)]
+
+    def process_epub(self, epub_path, book_id=None, skip_numbers=None):
         """
         Process an EPUB file and add chapters to the translation queue.
-        
+
         Args:
             epub_path: Path to the EPUB file
             book_id: Optional book ID to associate with the chapters
-            
+            skip_numbers: Optional iterable of chapter numbers to skip (duplicates)
+
         Returns:
             tuple: (success, num_chapters, message)
         """
@@ -570,6 +590,6 @@ class EPUBProcessor:
             return False, 0, "No chapters found in EPUB"
         
         # Add to queue with book_id
-        num_added = self.add_chapters_to_queue(chapters, book_id, epub_path)
-        
+        num_added = self.add_chapters_to_queue(chapters, book_id, epub_path, skip_numbers=skip_numbers)
+
         return True, num_added, f"Successfully added {num_added} chapters to queue"
