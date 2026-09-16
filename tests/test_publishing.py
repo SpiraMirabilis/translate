@@ -275,6 +275,10 @@ class TestMigrationBackfill:
         conn = backend.get_connection()
         cur = conn.cursor()
         cur.execute("DROP TABLE schema_migrations")
+        # A real pre-publishing DB has neither the column nor the rollup index
+        # that references it; SQLite refuses the column drop while the index
+        # exists. Migration 17 recreates it after 11 re-adds the column.
+        cur.execute("DROP INDEX IF EXISTS idx_chapters_book_pub_td")
         cur.execute("ALTER TABLE chapters DROP COLUMN published_at")
         cur.execute("INSERT INTO books (title) VALUES ('Legacy')")
         book_id = cur.lastrowid

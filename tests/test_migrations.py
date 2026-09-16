@@ -134,6 +134,24 @@ def test_legacy_db_gains_original_works_schema(backend):
     assert {"content", "kind", "created_at"} <= _columns(backend, "chapter_revisions")
 
 
+def test_legacy_db_gains_entity_note_revisions(backend):
+    """Legacy DB predating m018: no entity_note_revisions table. Without it the
+    translation model's note revisions would have nowhere to be recorded, which
+    is the only thing making them safe to apply."""
+    run_migrations(backend, CapturingLogger())
+    conn = backend.get_connection()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE schema_migrations")
+    cur.execute("DROP TABLE entity_note_revisions")
+    conn.commit()
+    conn.close()
+
+    run_migrations(backend, CapturingLogger())
+
+    assert {"entity_id", "previous_note", "new_note", "author", "chapter_number",
+            "reason", "shrink", "created_at"} <= _columns(backend, "entity_note_revisions")
+
+
 def test_versions_are_unique_and_ordered():
     versions = [m.version for m in MIGRATIONS]
     assert versions == sorted(versions)
