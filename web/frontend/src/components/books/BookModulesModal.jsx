@@ -287,8 +287,20 @@ function ModuleSettingsModal({ book, module, onClose, onSaved }) {
     if (f.type === 'textarea') {
       return (
         <div>
-          <div className="label">{f.label}</div>
-          <textarea className="input mt-1" rows={4} value={value ?? ''} onChange={e => setField(f.key, e.target.value)} />
+          <div className="flex items-center justify-between gap-2">
+            <div className="label">{f.label}</div>
+            {/* Fills the box with the module's built-in text so it can be edited as a
+                copy. Never pre-filled: an untouched field must stay blank so the book
+                keeps following the built-in text as it changes. */}
+            {f.default_text && (
+              <button type="button" onClick={() => setField(f.key, f.default_text)}
+                className="text-xs px-2 py-0.5 rounded border border-slate-700 text-slate-400 hover:border-slate-500">
+                Load built-in prompt
+              </button>
+            )}
+          </div>
+          <textarea className="input mt-1 font-mono text-xs" rows={f.rows || 4} value={value ?? ''}
+            onChange={e => setField(f.key, e.target.value)} />
         </div>
       )
     }

@@ -154,6 +154,50 @@ class UserInterface(ABC):
                                   f"{upd.get('untranslated')}: {e}")
         return applied
 
+    def _store_footnote_candidates(self, chapter_number, chapter_title, chapter_text):
+        """Persist candidates this translation pass collected (scan_mode
+        "translation"), and record the chapter as scanned.
+
+        Runs after save_chapter because ``chapter_number`` is only settled
+        there. Reviewed rows survive: unlike the on-ingest scan this path fires
+        on every retranslation, and a keep/reject decision must outlive one.
+        Every failure is swallowed — a footnote suggestion is never worth losing
+        a translated chapter over.
+        """
+        found = getattr(self, '_pending_footnote_candidates', None)
+        self._pending_footnote_candidates = None  # one-shot, never leak to the next item
+        if found is None or not getattr(self, 'book_id', None):
+            # No channel in this run (book scans on ingest, or the model never
+            # emitted the key). Deliberately leaves NO scan row, so a later
+            # footnote_scan.py sweep still treats the chapter as unscanned.
+            return 0
+        try:
+            from footnote_scan_core import persist_inline_candidates
+            kept = persist_inline_candidates(
+                self.entity_manager, self.book_id, chapter_number, chapter_title,
+                self.entity_manager.config.translation_model,
+                "\n".join(chapter_text or []), found)
+        except Exception as e:  # noqa: BLE001
+            self.logger.error(f"Failed to store footnote candidates for chapter "
+                              f"{chapter_number}: {e}")
+            return 0
+        if kept:
+            self.logger.info(f"footnote_candidates: stored {len(kept)} for chapter "
+                             f"{chapter_number}")
+            try:
+                from modules.activity import log_module_activity
+                book = self.entity_manager.get_book(book_id=self.book_id)
+                terms = ", ".join(c["term_en"] or c["term_zh"] for c in kept)
+                log_module_activity(
+                    self.entity_manager, "info",
+                    f"Footnote scan found {len(kept)} candidate(s) in chapter "
+                    f"{chapter_number} of "
+                    f"{(book or {}).get('title') or f'book {self.book_id}'}: {terms}",
+                    self.book_id)
+            except Exception:  # noqa: BLE001 - an activity line is cosmetic
+                pass
+        return len(kept)
+
     def check_chapter_conflict(self, chapter_text: List[str]) -> bool:
         """
         Pre-translation guard: when an existing chapter has the same
@@ -253,7 +297,8 @@ class UserInterface(ABC):
                     self.logger.info("Two-pass mode: running entity extraction pass before translation")
                     pre_extract_failed = False
                     try:
-                        pre_entities, pre_note_updates = self.translator.extract_entities(
+                        (pre_entities, pre_note_updates,
+                         pre_footnote_candidates) = self.translator.extract_entities(
                             chapter_text,
                             book_id=getattr(self, 'book_id', None),
                             chapter_number=getattr(self, 'chapter_number', None),
@@ -268,6 +313,7 @@ class UserInterface(ABC):
                         self.logger.error(f"Two-pass entity extraction failed: {e}. Falling back to single-pass.")
                         pre_entities = None
                         pre_note_updates = []
+                        pre_footnote_candidates = []
                         pre_extract_failed = True
 
                     if pre_extract_failed:
@@ -290,6 +336,10 @@ class UserInterface(ABC):
                         self._apply_note_updates(getattr(self, 'reviewed_note_updates', []),
                                                  getattr(self, 'chapter_number', None))
                         self.reviewed_note_updates = []
+                        # Pass 2 is translate-only and carries no channel for
+                        # them, so pass 1's candidates are the chapter's.
+                        self._pending_footnote_candidates = list(
+                            pre_footnote_candidates or [])
                         pass2_only = True
 
                 # Perform translation
@@ -370,6 +420,20 @@ class UserInterface(ABC):
                 # after the entity save below.
                 note_updates = translation_results.get("note_updates") or []
                 self.reviewed_note_updates = list(note_updates)
+
+                # Footnote candidates collected by this pass (scan_mode
+                # "translation"). Held until after save_chapter, which is where
+                # the chapter number is finally settled — it can be
+                # model-detected, and these rows are keyed by it. In two-pass
+                # mode pass 1 already produced them.
+                # None is meaningful here and must not be flattened to []:
+                # it means the model never opened the channel, which is not the
+                # same as looking and finding nothing.
+                self._pending_footnote_candidates = (
+                    getattr(self, '_pending_footnote_candidates', None)
+                    if pass2_only else
+                    translation_results.get("footnote_candidates"))
+
                 # Continue with regular entity review (skipped in two-pass mode —
                 # entities were already reviewed and persisted before pass 2 ran).
                 # A chapter that only proposes note changes still opens review.
@@ -663,6 +727,13 @@ class UserInterface(ABC):
                     
                     if chapter_id:
                         print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
+                        self._store_footnote_candidates(
+                            chapter_number, end_object.get('title'), chapter_text)
+                    else:
+                        # The save failed, so there is no chapter to hang them
+                        # on. Drop them rather than let them ride to whatever
+                        # queue item comes next.
+                        self._pending_footnote_candidates = None
                         # (Entity saves — new, edited, and pre-existing — were all
                         # handled by the direct-SQL block above; a second add_entity
                         # loop here used to redundantly re-save a hardcoded category

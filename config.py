@@ -69,6 +69,7 @@ class TranslationConfig:
         # entities (note_updates channel)? Changes are versioned either way
         # (entity_note_revisions / entity_gender_revisions).
         self.entity_note_updates = os.getenv("ENTITY_NOTE_UPDATES", "1").lower() in ("1", "true", "yes")
+        self.footnote_inline_scan = os.getenv("FOOTNOTE_INLINE_SCAN", "1").lower() in ("1", "true", "yes")
 
         # Traditional → Simplified Chinese preprocessing (global default; per-book overrides via books.trad_to_simp)
         self.trad_to_simp = os.getenv("TRAD_TO_SIMP", "0").lower() in ("1", "true", "yes")

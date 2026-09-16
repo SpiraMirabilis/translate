@@ -42,6 +42,11 @@ REGISTRY = {m.id: m for m in [
     TwkanModule(), PartialRepairModule(),
     UnitConverterModule(), BrokenLineModule(), ChapterSpacingModule(),
     MarkdownNotificationsModule(),
+    # footnote_scan last for clarity, though its position cannot matter: it has
+    # no transforms, and its scan worker re-fetches the chapter from the DB, so
+    # it always reads the persisted post-transform source (see
+    # test_scan_input_is_post_transform_source).
+    FootnoteScanModule(),
 ]}
 
 
@@ -210,6 +215,20 @@ def apply_system_prompt(book, prompt, config, logger, **extra):
         except Exception as e:  # noqa: BLE001
             logger.error(f"Module {mod.id}.transform_system_prompt failed: {e}")
     return prompt
+
+
+def fire_new_chapter_saved(book, config, logger, db, chapter_number, source_lines):
+    """Fire ``event_new_chapter_saved`` on every enabled module.
+
+    Called from save_chapter post-commit, for first inserts only. Hooks must
+    be quick (enqueue-and-return); a failing module never breaks the save."""
+    ctx = _ctx(book, config, logger, db=db, chapter_number=chapter_number,
+               source_lines=source_lines)
+    for mod in resolve_modules_for_book(book, ctx):
+        try:
+            mod.event_new_chapter_saved(ctx)
+        except Exception as e:  # noqa: BLE001 - never let a module break the save
+            logger.error(f"Module {mod.id}.event_new_chapter_saved failed: {e}")
 
 
 # --- lifecycle events ------------------------------------------------------

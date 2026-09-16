@@ -435,6 +435,18 @@ class TranslationEngine:
         if note_updates_example is not None:
             template["note_updates"] = note_updates_example
 
+        # Optional footnote_candidates channel (scan_mode "translation"). Shown
+        # as one worked element; the rules that govern it are the FOOTNOTE
+        # CANDIDATES section, which is the book's own scan prompt.
+        if footnote_candidates_enabled and mode != 'translate_only':
+            template["footnote_candidates"] = [{
+                "term_zh": self._placeholder_entity_key("references", source_language),
+                "term_en": "Example Referent",
+                "body": "English Name (中文): one or two sentences saying what "
+                        "the referent points at.",
+                "sentence": "The source sentence containing it, copied verbatim.",
+            }]
+
         return json.dumps(template, ensure_ascii=False, indent=4)
 
     @staticmethod
@@ -452,6 +464,8 @@ class TranslationEngine:
             rf["gendered_categories"] = gendered_categories
         if note_updates:
             rf["note_updates"] = True
+        if footnote_candidates:
+            rf["footnote_candidates"] = True
         return rf
 
     @staticmethod
@@ -691,6 +705,12 @@ class TranslationEngine:
             ) + self._gender_update_section(
                 self._resolved_gendered(list(entities.keys()), gendered_categories))
 
+        # Footnote-candidate collection, for a book that folds the scan into
+        # this pass instead of paying for a second one. Same placement rationale
+        # as ENTITY NOTES: injected from code, and never in translate_only,
+        # where the response carries no channel to put them in.
+        if footnote_section and mode != 'translate_only':
+            prompt = prompt.rstrip() + "\n\n---\n\n" + footnote_section + "\n"
 
         # The response contract itself, rendered for this mode. Gemini gets the
         # prose but not the worked example — its native responseSchema supersedes
@@ -962,6 +982,66 @@ class TranslationEngine:
             self.logger.info(f"note_updates: {len(updates)} update(s) accepted for review/apply")
         return updates
 
+    def _inline_footnote_section(self, book_info, chapter_text, chapter_number):
+        """FOOTNOTE CANDIDATES prompt block for this chapter, or "".
+
+        Non-empty only for a book whose footnote_scan module is on with
+        scan_mode "translation" and with the global switch on. Everything about
+        that decision, and the block itself, lives in footnote_scan_core; this
+        is the seam that keeps the engine from having to know about it.
+        """
+        if not book_info:
+            return ""
+        try:
+            from footnote_scan_core import inline_scan_section
+            return inline_scan_section(
+                self.entity_manager, book_info, self.config,
+                "\n".join(chapter_text or []), chapter_number)
+        except Exception as e:  # noqa: BLE001 - never fail a chapter over this
+            self.logger.warning(f"footnote_candidates: inline section unavailable ({e})")
+            return ""
+
+    def validate_footnote_candidates(self, raw, source_text):
+        """Turn the model's raw footnote_candidates into storable candidates.
+
+        Applies exactly what the standalone scanner applies: the same field
+        normalisation, and the same anchoring filter that discards a referent
+        the chapter does not actually contain. Nothing here raises — a malformed
+        candidate list must not cost a translated chapter, so bad items are
+        logged and dropped.
+        """
+        if raw is None:
+            # The model never opened the channel. Distinct from an empty list,
+            # which is the model saying "this chapter has none" — only the
+            # latter is a scan we can record as having happened.
+            return None
+        if not isinstance(raw, list):
+            self.logger.warning(
+                f"footnote_candidates: expected a list, got "
+                f"{type(raw).__name__} — ignoring")
+            return []
+        try:
+            from footnote_scan_core import parse_model_response, verify_candidates
+            # parse_model_response normalises the four fields and drops items
+            # with no body; feeding it the already-decoded list keeps one
+            # definition of a valid candidate.
+            found = parse_model_response(json.dumps(raw, ensure_ascii=False))
+            kept, dropped = verify_candidates(found, source_text)
+        except Exception as e:  # noqa: BLE001 - never fail a chapter over this
+            self.logger.warning(f"footnote_candidates: could not be read ({e}) — ignoring")
+            return []
+        if dropped:
+            # Unanchorable candidates are the scanner's known failure mode: a
+            # plausible 典故 that simply is not on the page.
+            self.logger.info(
+                f"footnote_candidates: dropped {len(dropped)} unanchored "
+                f"candidate(s): "
+                + ", ".join((d.get('term_zh') or d.get('term_en') or '?')
+                            for d in dropped[:5]))
+        if kept:
+            self.logger.info(f"footnote_candidates: {len(kept)} candidate(s) collected")
+        return kept
+
     def combine_json_chunks(self, chunk1_data, chunk2_data, current_chapter):
         """
         Combine two JSON-like chapter data chunks into one by merging their
@@ -1052,6 +1132,15 @@ class TranslationEngine:
             merged = dict(chunk1_data.get("note_updates") or {})
             merged.update(chunk2_data["note_updates"])
             chunk1_data["note_updates"] = merged
+
+        # Footnote candidates concatenate rather than merge: they are per
+        # occurrence, not per key, and each chunk only ever saw its own slice of
+        # the chapter. Duplicates are collapsed later, once the whole chapter's
+        # list is in hand.
+        if chunk2_data.get("footnote_candidates"):
+            chunk1_data["footnote_candidates"] = (
+                list(chunk1_data.get("footnote_candidates") or [])
+                + list(chunk2_data["footnote_candidates"]))
 
         return chunk1_data
     
@@ -1240,17 +1329,26 @@ class TranslationEngine:
         # Same point-in-time rule as translate_chapter: a retranslation sees the
         # notes as they read at its own chapter, and may not write forward.
         notes_are_historic = self.apply_historic_notes(old_entities, book_id, chapter_number)
+
         book_categories = self.entity_manager.get_book_categories(book_id) if book_id else None
         gendered_categories = self.entity_manager.get_book_gendered_categories(book_id) if book_id else None
+        # In a two-pass book the footnote scan rides pass 1: this call is not
+        # chunked, so the model sees the whole chapter at once — a better scan
+        # input than the translate pass — and pass 2 (translate_only) carries no
+        # channel for the candidates to come back on.
+        footnote_section = self._inline_footnote_section(
+            book_info, chapter_text, chapter_number)
         system_prompt = self.generate_system_prompt(
             chapter_text, old_entities,
             book_prompt_template=book_prompt_template, provider=provider,
             chapter_number=chapter_number, source_language=source_language,
             retranslation_reason=retranslation_reason, mode='entity_only',
             gendered_categories=gendered_categories, book=book_info,
+            footnote_section=footnote_section,
         )
 
         # Save the pass-1 prompt for debugging (mirrors translate_chapter's behavior)
+        self.entity_manager.save_json_file(self._debug_prompt_path(book_id), system_prompt)
 
         chunk_str = "\n".join(chapter_text)
         user_text = "Identify the entities in the following text. Do NOT translate the prose.\n" + chunk_str
@@ -1260,7 +1358,8 @@ class TranslationEngine:
 
         # Pass mode hint to providers (Gemini uses it to pick the right schema)
         response_format = self._entity_response_format("entity_only", book_categories, gendered_categories,
-                                                       note_updates=getattr(self.config, 'entity_note_updates', True))
+                                                       note_updates=getattr(self.config, 'entity_note_updates', True),
+                                                       footnote_candidates=bool(footnote_section))
 
         MAX_RETRIES = 2
         parsed = None
@@ -1347,7 +1446,13 @@ class TranslationEngine:
             note_updates = [] if notes_are_historic else self.validate_note_updates(
                 (parsed or {}).get("note_updates"), book_id, old_entities, ch or chapter_number,
                 gendered_categories=gendered_categories)
-            return new_entities, note_updates
+            # Footnote candidates are unaffected by the note rewind: they
+            # describe what is on the page, not what the glossary said.
+            footnote_candidates = self.validate_footnote_candidates(
+                (parsed or {}).get("footnote_candidates"), "\n".join(chapter_text)
+            ) if footnote_section else None
+            return new_entities, note_updates, footnote_candidates
+
         return new_entities
 
     def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None, pass2_only=False, chapter_title=None, should_cancel=None):
@@ -1458,12 +1563,19 @@ class TranslationEngine:
         _mode = 'translate_only' if pass2_only else 'full'
         book_categories = self.entity_manager.get_book_categories(book_id) if book_id else None
         gendered_categories = self.entity_manager.get_book_gendered_categories(book_id) if book_id else None
+        # Footnote-candidate collection for books that scan inline. Resolved once
+        # for the whole chapter: the prompt is rebuilt per chunk, and the
+        # already-footnoted lookup is two queries. "" when the book scans on
+        # ingest instead, or not at all.
+        footnote_section = "" if pass2_only else self._inline_footnote_section(
+            book_info, chapter_text, chapter_number)
         system_prompt = self.generate_system_prompt(chapter_text, old_entities,
                                                book_prompt_template=book_prompt_template, provider=provider,
                                                chapter_number=chapter_number, source_language=source_language,
                                                retranslation_reason=retranslation_reason, mode=_mode,
                                                chapter_title=chapter_title, gendered_categories=gendered_categories,
-                                               book=book_info, chunk_index=1, total_chunks=len(split_text))
+                                               book=book_info, chunk_index=1, total_chunks=len(split_text),
+                                               footnote_section=footnote_section)
 
         if len(split_text) > 1:
             self.logger.info(f"Input text is {total_char_count} characters. Splitting text into {len(split_text)} chunks.")
@@ -1545,7 +1657,8 @@ class TranslationEngine:
                                 top_p=1,
                                 response_format=self._entity_response_format(
                                     None, book_categories, gendered_categories,
-                                    note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True)),
+                                    note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True),
+                                    footnote_candidates=bool(footnote_section)),
                                 stream=True
                             )
 
@@ -1747,7 +1860,8 @@ class TranslationEngine:
                             top_p=1,
                             response_format=self._entity_response_format(
                                 None, book_categories, gendered_categories,
-                                note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True))
+                                note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True),
+                                footnote_candidates=bool(footnote_section))
                         )
                         response_content = provider.get_response_content(response)
                         usage = response.get("usage", {}) if isinstance(response, dict) else {}
@@ -1855,7 +1969,8 @@ class TranslationEngine:
                                                                mode=_mode, chapter_title=chapter_title,
                                                                gendered_categories=gendered_categories, book=book_info,
                                                                chunk_index=chunk_index + 1, total_chunks=len(split_text),
-                                                               previous_summary=end_object.get('summary', ''))
+                                                               previous_summary=end_object.get('summary', ''),
+                                                               footnote_section=footnote_section)
         
         self.logger.debug("Finished processing all chunks")
 
@@ -1906,6 +2021,11 @@ class TranslationEngine:
             "current_chapter": current_chapter,
             "total_char_count": total_char_count,
             "note_updates": note_updates,
+            # None = the model never opened the channel (so the chapter is not
+            # recorded as scanned); [] = it looked and found nothing.
+            "footnote_candidates": self.validate_footnote_candidates(
+                end_object.get('footnote_candidates'), "\n".join(chapter_text)
+            ) if footnote_section else None,
         }
 
     def reconcile_illustration_markers(self, source_lines, translated_lines):
