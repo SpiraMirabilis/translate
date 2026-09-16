@@ -32,6 +32,7 @@ Usage:
     python strip_queue_confusable_lines.py <book_id> --match "twkan" --show
 """
 
+import functools
 import json
 import os
 import re
@@ -98,33 +99,125 @@ def load_confusables(regen=False):
     return table
 
 
+# Symbol glyphs used as letter lookalikes in scraper spam. These are Unicode
+# *symbols*, not letters, so the TR39 confusables table has no entry for them
+# (₮₩₭₳₦.₵Ø₥ is a real twkan.com banner seen in book 82). The last two entries
+# are TR39 *prototypes* that are themselves non-ASCII: the table maps ᴋ->ĸ and
+# ᴍ->ʍ while leaving ASCII 'k'/'m' alone, so without folding the prototype back
+# down, a pattern and its obfuscated form skeletonize into different alphabets
+# and can never match.
+_GLYPH_LOOKALIKES = {
+    "₮": "T", "₩": "W", "₭": "K", "₳": "A", "₦": "N", "₵": "C", "₥": "M",
+    "₱": "P", "₴": "S", "₲": "G", "₹": "R", "₺": "L", "₽": "P", "₡": "C",
+    "₤": "L", "₣": "F", "₸": "T", "₼": "M", "₾": "L", "₿": "B", "₪": "S",
+    "€": "E", "£": "L", "¥": "Y", "Ø": "O", "ø": "o",
+    "ĸ": "K", "ʍ": "M",
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _glyph_fold(ch):
+    """Fold one decorated glyph to its plain ASCII letter/digit, or None.
+
+    Covers the families NFKD and the TR39 table both miss, by reading the
+    character's Unicode *name*:
+
+        LATIN LETTER SMALL CAPITAL T           (ᴛ)   -> "T"
+        NEGATIVE SQUARED LATIN CAPITAL LETTER T (🆃)  -> "T"
+        NEGATIVE CIRCLED LATIN CAPITAL LETTER T (🅣)  -> "T"
+        DINGBAT NEGATIVE CIRCLED DIGIT SIX      (❻)  -> "6"
+
+        LATIN SMALL LETTER T WITH PALATAL HOOK  (ƚ)  -> "T"
+
+    Only fires when the name names a single LATIN letter — either directly
+    after "LETTER" or as the final token. Multi-letter names (LATIN SMALL
+    LETTER KRA, ARMENIAN SMALL LETTER EH) are left to the confusables table
+    rather than guessed at.
+    """
+    if ch < "\x80":
+        return None
+    hit = _GLYPH_LOOKALIKES.get(ch)
+    if hit:
+        return hit
+    try:
+        name = unicodedata.name(ch)
+    except ValueError:
+        return None
+    parts = name.split()
+    if "LATIN" in parts and "LETTER" in parts:
+        # "…LETTER T WITH PALATAL HOOK" -> the token right after LETTER;
+        # "LATIN LETTER SMALL CAPITAL T" -> the final token.
+        after = parts.index("LETTER") + 1
+        if after < len(parts) and len(parts[after]) == 1 and parts[after].isalpha():
+            return parts[after]
+        if len(parts[-1]) == 1 and parts[-1].isalpha():
+            return parts[-1]
+    digit = unicodedata.digit(ch, None)
+    if digit is not None and "DIGIT" in parts:
+        return str(digit)
+    return None
+
+
+def _is_mark(ch):
+    """True for any combining mark — Mn, Mc *and* Me.
+
+    ``unicodedata.combining()`` reports 0 for enclosing marks such as U+0489
+    COMBINING CYRILLIC MILLION SIGN, which is exactly what the ҉҉t҉҉w҉҉k҉a҉҉n
+    zalgo banners are built from, so testing the category is what actually
+    strips them.
+    """
+    return unicodedata.category(ch)[0] == "M"
+
+
 def make_skeletonizer(table):
     """Return a skeleton(s) function that strips Unicode obfuscation.
 
-    We map confusables first, then casefold (the TR39 order — it keeps the
-    case-dependent shape of letters like Warang Citi U+118BC, which looks like
-    'T' upper but 'y' lower). One wrinkle: the table is case-asymmetric for a
-    few ASCII multi-char confusables (lower 'm' -> 'rn' but upper 'M' -> 'M'),
-    which would make ".COM" and ".com" skeletonize differently. We case-complete
-    those entries so both cases share a mapping; setdefault never clobbers an
-    existing, intentional case-specific entry.
+    We fold decorated glyphs to ASCII, map confusables, then casefold (the TR39
+    order — it keeps the case-dependent shape of letters like Warang Citi
+    U+118BC, which looks like 'T' upper but 'y' lower). One wrinkle: the table
+    is case-asymmetric for a few ASCII multi-char confusables (lower 'm' -> 'rn'
+    but upper 'M' -> 'M'), which would make ".COM" and ".com" skeletonize
+    differently. We case-complete those entries so both cases share a mapping;
+    setdefault never clobbers an existing, intentional case-specific entry.
+
+    Fold-and-map is iterated to a *fixed point* (bounded), because several TR39
+    prototypes are themselves non-ASCII and need a further hop: ᴍ -> "ʍ" -> "M"
+    -> "rn", ᴋ -> "ĸ" -> "k", ₮ -> "T"+U+20EB -> "t". A single pass leaves the
+    pattern and its obfuscated form in different alphabets, so they never meet.
     """
     table = dict(table)
     for key, val in list(table.items()):
         if len(key) == 1 and key.isalpha():
             for variant in (key.upper(), key.lower()):
+                # Only complete genuine case pairs. Some characters uppercase
+                # onto an unrelated ASCII letter — U+017F LATIN SMALL LETTER
+                # LONG S ('ſ', legitimately a confusable of 'f') uppercases to
+                # 'S', which would otherwise register S -> "f" and skeletonize
+                # every capital S in every book as an f ("Springs" -> "fprlngs").
+                if variant.lower() != key.lower():
+                    continue
                 table.setdefault(variant, val)
 
-    def skeleton(s):
-        s = unicodedata.normalize("NFKD", s)
+    def _pass(text):
         out = []
-        for ch in s:
-            if unicodedata.combining(ch):        # zalgo / accents
+        for ch in unicodedata.normalize("NFKD", text):
+            if _is_mark(ch):                      # zalgo / accents / enclosing
                 continue
             if unicodedata.category(ch) == "Cf":  # zero-width / formatting
                 continue
-            out.append(table.get(ch, ch))
-        return unicodedata.normalize("NFKD", "".join(out)).casefold()
+            # The TR39 table is authoritative where it has an opinion; the
+            # name-based fold only fills the gaps it leaves.
+            out.append(table[ch] if ch in table else (_glyph_fold(ch) or ch))
+        return "".join(out)
+
+    def skeleton(s):
+        text = s
+        for _ in range(4):                        # bounded fixed point
+            nxt = _pass(text)
+            if nxt == text:
+                break
+            text = nxt
+        return text.casefold()
     return skeleton
 
 
