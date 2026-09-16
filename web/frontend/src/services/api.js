@@ -55,14 +55,17 @@ export const api = {
   // Translation
   translate:     (body)  => post('/api/translate', body),
   submitReview:  (body)  => post('/api/translate/submit-review', body),
-  skipReview:    ()      => post('/api/translate/skip-review', {}),
+  skipReview:    (bookId) => post('/api/translate/skip-review', { book_id: bookId ?? null }),
   submitJsonFix: (body)  => post('/api/translate/submit-json-fix', body),
   resolveChapterConflict: (body) => post('/api/translate/resolve-chapter-conflict', body),
-  cancelJob:     ()      => post('/api/translate/cancel', {}),
+  cancelJob:     (bookId) => post('/api/translate/cancel', { book_id: bookId ?? null }),
   getJobStatus:  ()      => get('/api/translate/status'),
 
   // Books
   listBooks:     ()           => get('/api/books'),
+  // id + title only — for book pickers. Full metadata is ~60x the payload and
+  // only the admin Books page reads it.
+  listBooksMinimal: ()        => get('/api/books/minimal'),
   createBook:    (body)       => post('/api/books', body),
   getBook:       (id)         => get(`/api/books/${id}`),
   updateBook:    (id, body)   => put(`/api/books/${id}`, body),

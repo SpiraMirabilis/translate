@@ -504,6 +504,36 @@ def _m016_footnote_candidates(conn, cursor, backend, logger):
             pass
 
 
+def _m017_chapters_book_rollup_indexes(conn, cursor, backend, logger):
+    """Covering indexes for the per-book rollups in list_books().
+
+    list_books runs four correlated subqueries per book (chapter count, latest
+    translation_date, and the published-only variants of both). idx_chapters_
+    book_id covers the plain COUNT(*) index-only (~16ms for 57 books), but the
+    MAX(translation_date) and published_at ones had to fall back to row lookups
+    across every chapter of every book — ~2.4s each, which is the whole of the
+    ~3s /api/books and /api/public/books latency.
+
+    (book_id, translation_date) turns the MAX into a backward index seek;
+    (book_id, published_at, translation_date) makes both published-only
+    rollups index-only.
+    """
+    INDEXES = (
+        ("idx_chapters_book_td", "chapters(book_id, translation_date)"),
+        ("idx_chapters_book_pub_td", "chapters(book_id, published_at, translation_date)"),
+    )
+    for name, target in INDEXES:
+        if backend.name == "mysql":
+            cursor.execute(
+                "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chapters' "
+                "AND INDEX_NAME = ?", (name,))
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(f"CREATE INDEX {name} ON {target}")
+        else:
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -521,6 +551,7 @@ MIGRATIONS = [
     Migration(14, "chapters_translation_date_index", _m014_chapters_translation_date_index),
     Migration(15, "queue_claim_status", _m015_queue_claim_status),
     Migration(16, "footnote_candidates", _m016_footnote_candidates),
+    Migration(17, "chapters_book_rollup_indexes", _m017_chapters_book_rollup_indexes),
 ]
 
 

@@ -162,6 +162,17 @@ def list_books():
     return {"books": books or []}
 
 
+@router.get("/minimal")
+def list_books_minimal():
+    """id + title only, for book-picker drop-downs.
+
+    Declared before /{book_id} so "minimal" isn't swallowed by the int path
+    param. Full metadata (descriptions, covers, chapter rollups) lives on
+    GET /api/books and is only needed by the admin Books page.
+    """
+    return {"books": _entity_manager.list_books_minimal() or []}
+
+
 @router.post("")
 def create_book(req: BookCreate):
     source_lang = req.source_language or "zh"

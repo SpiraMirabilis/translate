@@ -28,8 +28,8 @@ export default function ApiLogPage() {
     queryFn: () => api.listAllApiCalls(bookFilter || null),
   })
   const booksQuery = useQuery({
-    queryKey: ['books'],
-    queryFn: () => api.listBooks(),
+    queryKey: ['books', 'minimal'],
+    queryFn: () => api.listBooksMinimal(),
   })
 
   const sessions = callsQuery.data?.sessions || []

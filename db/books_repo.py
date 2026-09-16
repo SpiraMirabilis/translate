@@ -473,6 +473,26 @@ class BooksRepo:
                 raise
             return False
 
+    def list_books_minimal(self):
+        """
+        id + title for every book, ordered by title.
+
+        For the book pickers (Queue / Entities / Dashboard / API-log filters),
+        which render `id: title` options and read nothing else. list_books()
+        carries ~60KB of descriptions and four per-book chapter rollups those
+        callers throw away; this is a single indexed scan of `books` with no
+        touch of the chapters table.
+        """
+        title_clause = 'title COLLATE NOCASE ASC' if self.backend.name == 'sqlite' else 'title ASC'
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'SELECT id, title FROM books ORDER BY {title_clause}')
+                return [{"id": r[0], "title": r[1]} for r in cursor.fetchall()]
+        except Exception as e:
+            self.logger.error(f"Error listing books (minimal): {e}")
+            return []
+
     def list_books(self, order_by: str = 'title'):
         """
         List all books in the database.
