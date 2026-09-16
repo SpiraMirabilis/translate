@@ -14,6 +14,7 @@ from html import escape as _esc
 from typing import Dict, List, Optional, Union, Tuple
 
 from illustrations import parse_marker
+from footnotes import content_to_list, split_prose_and_defs
 
 # Markdown tag/attr allowlist — kept in parity with the frontend renderer
 # (web/frontend/src/lib/chapterMarkdown.js) so the Reader and exported files
@@ -39,6 +40,12 @@ _MD_BLOCK_CSS = '''
     th, td { border: 1px solid #999; padding: 0.4em 0.6em; text-align: left; }
     .illustration { text-align: center; margin: 1.5em 0; }
     .illustration img { max-width: 100%; }
+    .footnote-ref { font-size: 0.75em; }
+    .footnote-ref a { text-decoration: none; }
+    section.footnotes { margin-top: 2.5em; font-size: 0.9em; }
+    section.footnotes hr { width: 30%; margin: 1em 0 1em 0; }
+    section.footnotes p { text-indent: 0; }
+    .footnote-backref { text-decoration: none; }
 '''
 
 
@@ -347,6 +354,96 @@ def _render_markdown(text):
     return _apply_inline_sentinels(html)
 
 
+# Footnotes. Chapters carry them as a rendered convention (footnotes.py owns it):
+# an inline "[n]" marker hugging the term, plus a trailing "[n] body" definition
+# block. EPUB3 has real semantics for that pair — a noteref link and a footnote
+# <aside> — which readers turn into a popup instead of a page jump. The asides are
+# still emitted as a notes section at the end of the chapter, so a reader with no
+# popup support just follows the link down to the same text it shows today.
+#
+# The transformation mirrors the Reader (chapterMarkdown.js): mark markers with a
+# ⟦FN:n⟧ sentinel that rides through markdown + bleach as plain text, then swap it
+# for markup AFTER sanitization (bleach would otherwise strip the class/id/epub:type).
+# Matches either a backtick code span (group 1) or a marker (group 2), so markers
+# inside code stay literal; the (?!\() lookahead spares `[1](url)` link text.
+_FN_INLINE_RE = re.compile(r'(`+)[\s\S]*?\1|\[(\d+)\](?!\()')
+_FN_SENTINEL_RE = re.compile(r'⟦FN:(\d+)⟧')
+
+
+def _mark_footnote_refs(lines, fn_ids):
+    """Swap inline "[n]" markers for ⟦FN:n⟧ sentinels, for the n that have a
+    definition. Returns (marked_lines, used_ids) — used_ids being the numbers a
+    marker was actually found for, so unreferenced definitions don't get a
+    backlink pointing at an id that was never emitted."""
+    used = set()
+    if not fn_ids:
+        return [l if isinstance(l, str) else "" for l in lines], used
+
+    def sub(m):
+        if m.group(1) is not None:
+            return m.group(0)  # code span — leave verbatim
+        n = m.group(2)
+        if n not in fn_ids:
+            return m.group(0)  # no definition — prose, not a footnote
+        used.add(n)
+        return f'⟦FN:{n}⟧'
+
+    marked = [_FN_INLINE_RE.sub(sub, l) if isinstance(l, str) else "" for l in lines]
+    return marked, used
+
+
+def _linkify_footnotes(html):
+    """Swap ⟦FN:n⟧ sentinels in rendered + sanitized HTML for noteref links.
+    Only digits are interpolated, so the markup can't be injected from content."""
+    if not html or '⟦FN:' not in html:
+        return html
+    # The return-anchor id lives on the wrapping <sup>, NOT on the <a>. Kindle's
+    # KF8 converter fails to assign a reading position to an id sitting on a link
+    # element, so a backlink to it resolves to position 0 (the start of the book)
+    # instead of the marker — while the forward link works because its target is a
+    # block <aside>. Anchoring the return id on the <sup> gives it a real position.
+    return _FN_SENTINEL_RE.sub(
+        lambda m: (f'<sup class="footnote-ref" id="fnref{m.group(1)}">'
+                   f'<a epub:type="noteref" href="#fn{m.group(1)}">[{m.group(1)}]</a>'
+                   f'</sup>'),
+        html)
+
+
+def _footnotes_section_html(defs, used_ids):
+    """Render the chapter's definition block as an EPUB3 notes section.
+
+    Referenced notes become <aside epub:type="footnote"> with a backlink to their
+    marker. A definition with no marker in the prose gets a plain paragraph
+    instead: an unreferenced aside is hidden from the flow by popup-capable
+    readers (the text would silently vanish), and a backlink to a nonexistent
+    fnref id is a dangling fragment epubcheck rejects.
+    """
+    if not defs:
+        return ''
+
+    def lead(body, marker):
+        """Put the note's number at the head of its first paragraph, the way the
+        plain-text block read. A body that opens with a block other than <p>
+        (a quote, a list) gets the marker as its own paragraph — prefixing it
+        inline would nest a block tag inside <p> and break XHTML."""
+        if body.startswith('<p>'):
+            return '<p>' + marker + body[3:]
+        return f'<p>{marker}</p>{body}'
+
+    parts = ['<section class="footnotes" epub:type="footnotes">', '<hr />']
+    for n in sorted(defs):
+        body = _render_markdown(defs[n] or '') or f'<p>{_esc(defs[n] or "")}</p>'
+        if str(n) not in used_ids:
+            parts.append(lead(body, f'[{n}] '))
+            continue
+        backref = (f'<a class="footnote-backref" epub:type="backlink" '
+                   f'href="#fnref{n}">[{n}]</a> ')
+        parts.append(f'<aside class="footnote" epub:type="footnote" id="fn{n}">'
+                     f'{lead(body, backref)}</aside>')
+    parts.append('</section>')
+    return '\n'.join(parts)
+
+
 def render_lines_html(content_lines):
     """Render a stored content line array to sanitized HTML.
 
@@ -586,6 +683,13 @@ class OutputFormatter:
                 else:
                     content = []
                 
+                # Lift the footnote convention out of the prose: the trailing
+                # "[n] body" block becomes a notes section of EPUB3 <aside>s
+                # (rendered below), and each inline "[n]" marker becomes a
+                # sentinel that _linkify_footnotes turns into a noteref link.
+                prose, fn_defs = split_prose_and_defs(content_to_list(content))
+                prose, fn_used = _mark_footnote_refs(prose, {str(n) for n in fn_defs})
+
                 # Convert list of content lines to HTML. Lines are split into
                 # runs at illustration markers; each run is rendered as one
                 # Markdown document (block-level), and markers become <img>.
@@ -595,10 +699,10 @@ class OutputFormatter:
                 def _flush():
                     nonlocal html_content, run
                     if run:
-                        html_content += _render_markdown("\n".join(run))
+                        html_content += _linkify_footnotes(_render_markdown("\n".join(run)))
                         run = []
 
-                for line in content:
+                for line in prose:
                     marker_id = parse_marker(line)
                     if marker_id:
                         _flush()
@@ -609,6 +713,7 @@ class OutputFormatter:
                         run.append(line)
 
                 _flush()
+                html_content += _footnotes_section_html(fn_defs, fn_used)
 
                 # Create chapter
                 chapter_id = f"chapter_{chapter_number}"
@@ -926,12 +1031,12 @@ class OutputFormatter:
                             margin-bottom: 1.5em;
                             margin-top: 1em;
                         }
-                        p { 
+                        p {
                             text-indent: 1.5em;
                             margin-top: 0.5em;
                             margin-bottom: 0.5em;
                         }
-                    '''
+                    ''' + _MD_BLOCK_CSS
                 )
                 book.add_item(default_css)
                 
@@ -958,10 +1063,13 @@ class OutputFormatter:
             
             # Convert content lines to HTML via the shared Markdown renderer —
             # same pipeline as book EPUBs, so single-chapter exports keep
-            # renderer parity. Illustration markers have no embedded image on
-            # this legacy path, so they're dropped.
-            html_content = _render_markdown(
-                "\n".join(l for l in content if not parse_marker(l)))
+            # renderer parity (footnotes included). Illustration markers have no
+            # embedded image on this legacy path, so they're dropped.
+            prose, fn_defs = split_prose_and_defs(content_to_list(content))
+            prose, fn_used = _mark_footnote_refs(prose, {str(n) for n in fn_defs})
+            html_content = _linkify_footnotes(_render_markdown(
+                "\n".join(l for l in prose if not parse_marker(l))))
+            html_content += _footnotes_section_html(fn_defs, fn_used)
             
             # Create chapter
             display_title = self._display_title(title, chapter)
