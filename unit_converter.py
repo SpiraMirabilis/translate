@@ -326,6 +326,21 @@ _fraction_phrase = (
 # hyphenated ("twenty-one shichen" is one quantity, not a range).
 _RANGE_SEP = r"(?:\s+(?P<sep>or|to)\s+|\s*(?P<dash>[–—])\s*)"
 
+# Emphasis modifiers the translator puts in front of a duration ("a full
+# half-shichen", "an entire shichen", "a good two ke"). These are consumed INTO
+# the match so the replacement can re-place them grammatically — left outside,
+# "a full" + "half-shichen"→"an hour" collided as "a full an hour" (book 71).
+# Where the word lands depends on the word itself:
+#   lead — before the count: "a full two hours", "a good two hours"
+#   mid  — after the count:  "two whole hours" ("an entire two hours" is wrong)
+_LEAD_ADJ = ("full", "good", "solid", "mere")
+_MID_ADJ = ("whole", "entire", "complete")
+_EMPHASIS_ADJ = _LEAD_ADJ + _MID_ADJ
+# Lead words that also read fine after the count, so a rounding hedge can take
+# the front slot instead: "about ten full minutes". "mere" is not one of them.
+_HEDGE_MID_ADJ = ("full", "good", "solid")
+_adj_alt = "|".join(sorted(_EMPHASIS_ADJ, key=len, reverse=True))
+
 # Main pattern. The quantity prefix is one of three branches:
 #   1. a vague quantifier ("several", "a few")
 #   2. a number / word-number, optionally with a range low bound and/or a
@@ -333,6 +348,10 @@ _RANGE_SEP = r"(?:\s+(?P<sep>or|to)\s+|\s*(?P<dash>[–—])\s*)"
 #   3. a hyphenated/bare fraction directly on the unit ("a quarter-shichen")
 _PATTERN = re.compile(
     r"(?<!['\w])"                       # not preceded by word char or apostrophe
+    # Optional leading emphasis phrase ("a full <qty>", "another <qty>"). Only
+    # matches when a quantity follows; "a full shichen" (no quantity) falls
+    # through to num="a" + more="full", which lands in the same place.
+    r"(?:(?P<det>(?:(?:a|an|the)[\s\-]+)?(?P<detadj>" + _adj_alt + r")|another)[\s\-]+)?"
     r"(?:"
         r"(?P<vague>" + _vague_quantifier + r")[\s\-]+"               # branch 1
         r"|"
@@ -346,11 +365,14 @@ _PATTERN = re.compile(
             # hyphen is only a range separator between two plain numerals.
             r"(?:(?P<lo_d>" + _numeric + r")\s*(?P<hyph>-)\s*(?=\d))"
         r")?"                                                        # optional range low bound
-        r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words + r"|a\s+full|an\s+full|full|a|an)[\s\-]+"
+        # An emphasis word standing in for the count is itself "one"
+        # ("the full shichen" = one shichen), captured so it survives the swap.
+        r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words
+            + r"|(?:(?:a|an|the)[\s\-]+)?(?P<numfill>" + _adj_alt + r")|a|an)[\s\-]+"
         r"|"
         r"(?P<fracunit>" + _fraction_phrase + r")[\s\-]+"            # branch 3
     r")"
-    r"(?:(?P<more>more|whole|full)[\s\-]+)?"  # optional filler ("two more/whole/full shichen")
+    r"(?:(?P<more>more|" + _adj_alt + r")[\s\-]+)?"  # optional filler ("two more/whole/full shichen")
     r"(?P<unit>" + _unit_names + r")"   # unit name
     r"s?"                               # optional plural
     r"(?!\s*\()"                        # negative lookahead: not already annotated
@@ -642,6 +664,30 @@ def _match_case(template: str, text: str) -> str:
     return text
 
 
+def _place_emphasis(art: Optional[str], adj: Optional[str], *,
+                    singular: bool, hedged: bool) -> Tuple[Optional[str], Optional[str]]:
+    """Decide where an emphasis modifier goes in the replacement.
+
+    Returns (lead, mid): `lead` sits in front of the count and keeps its article
+    ("a full two hours"), `mid` sits between count and unit ("two whole hours").
+    A singular value drops the count entirely, so the article carries it ("a
+    full hour"). A hedged plural reads better with the word mid — "about ten
+    full minutes" beats "about a full ten minutes".
+    """
+    if not adj:
+        return None, None
+    lead = f"{art} {adj}" if art else adj
+    if singular:
+        return lead, None                 # "a full hour", "another hour"
+    if adj in _MID_ADJ:
+        return None, adj                  # "two whole hours"
+    if hedged and adj in _HEDGE_MID_ADJ:
+        return None, adj                  # "about ten full minutes"
+    # Words that only work in front of the count keep it, and the hedge moves
+    # ahead of them: "about another ten minutes", never "another about …".
+    return lead, None
+
+
 def _lookup_unit(matched_text: str) -> tuple:
     """Look up a unit by its matched text, normalizing spaces/hyphens."""
     # Normalize the matched text to try different key forms
@@ -669,7 +715,20 @@ def _convert_match(match: re.Match) -> str:
     vague_str = gd.get("vague")
     num_str = (gd.get("num") or "").strip()
     more_str = gd.get("more")
+    det_str = gd.get("det")
+    det_adj = gd.get("detadj")
+    numfill_str = gd.get("numfill")
     unit_text = gd["unit"]
+
+    # A unit word immediately followed by a capitalised word is part of a
+    # personal name, not a measurement. Several Chinese surnames romanise onto
+    # unit names (李 -> li, 张 -> zhang, 梁 -> liang), and the article or numeral
+    # in front of them reads as a quantity, so "a Zhang Juzheng", "one Li
+    # Sancai" and "another Li Zaiting" all match perfectly well and came out
+    # annotated as distances. A genuine measurement is never followed directly
+    # by a capitalised word, so the check costs nothing.
+    if re.match(r"\s+[A-Z][a-z]", match.string[match.end():]):
+        return full
 
     unit_info = _lookup_unit(unit_text)
     if unit_info is None:
@@ -681,7 +740,9 @@ def _convert_match(match: re.Match) -> str:
     # don't misstate magnitude ("several jiazi", "several ke") or try to annotate
     # an uncountable phrase ("several zhang").
     if vague_str:
-        if action != "replace" or base_unit != "hour":
+        # An emphasis word on a vague count ("a full several shichen") is
+        # incoherent phrasing; leave it for a human rather than guess.
+        if det_str or action != "replace" or base_unit != "hour":
             return full
         vague_norm = re.sub(r"\s+", " ", vague_str.strip())
         return _match_case(full, f"{vague_norm} {base_unit}s")
@@ -698,9 +759,9 @@ def _convert_match(match: re.Match) -> str:
         if _VAGUE_BEFORE.search(before):
             return full
 
-        # Handle "a"/"an"/"a full"/"an full"/"a single"/"single" as 1
-        normalized = re.sub(r"\s+", " ", num_str.strip().lower())
-        if normalized in ("a", "an", "a full", "an full", "full", "a single", "single", "another"):
+        # Handle "a"/"an"/"a single"/"single"/"the full" (numfill) as 1
+        normalized = re.sub(r"[\s\-]+", " ", num_str.strip().lower())
+        if normalized in ("a", "an", "a single", "single", "another") or numfill_str:
             number = 1.0
         else:
             number = _word_to_number(num_str)
@@ -714,6 +775,29 @@ def _convert_match(match: re.Match) -> str:
             if frac_mult is None:
                 return full
             number *= frac_mult
+
+    # ── Emphasis modifier ("a full …", "another …", "the whole …") ──
+    # Three ways it reaches us; all reduce to (article, adjective) so the output
+    # assembly can place it where it reads correctly.
+    art = adj = None
+    if det_str:
+        det_words = re.sub(r"[\s\-]+", " ", det_str.strip().lower()).split()
+        if det_adj:
+            adj = det_adj.lower()
+            art = det_words[0] if len(det_words) > 1 else None
+        else:
+            adj = det_words[0]                      # bare "another"
+    elif numfill_str:
+        adj = numfill_str.lower()
+        num_words = re.sub(r"[\s\-]+", " ", num_str.strip().lower()).split()
+        art = num_words[0] if len(num_words) > 1 else None
+    elif (more_str and more_str.lower() in _EMPHASIS_ADJ
+            and re.sub(r"[\s\-]+", " ", num_str.strip().lower()) in ("a", "an")):
+        # "a full shichen": the article carries the count of one, the adjective
+        # the emphasis. Re-emit as a lead phrase ("a full two hours") instead of
+        # stranding the article in front of a plural.
+        art, adj = num_str.strip().lower(), more_str.lower()
+        more_str = None
 
     # ── Range path ("two or three shichen" -> "four or six hours") ──
     # Both endpoints must scale. Handled before the single-value path so the low
@@ -747,8 +831,12 @@ def _convert_match(match: re.Match) -> str:
             unit_label = hi_unit
             if hi_scaled != 1.0 and not unit_label.endswith("s"):
                 unit_label += "s"
-            filler = more_str.lower() if more_str else None
+            lead, mid = _place_emphasis(art, adj, singular=False,
+                                        hedged=bool(lo_rounded or hi_rounded))
+            filler = mid or (more_str.lower() if more_str else None)
             body = f"{span} {filler} {unit_label}" if filler else f"{span} {unit_label}"
+            if lead:
+                body = f"{lead} {body}"
             output = f"about {body}" if (lo_rounded or hi_rounded) else body
             return _match_case(full, output)
         return f"{full} ({lo_fmt}–{hi_fmt} {hi_unit})"
@@ -769,11 +857,19 @@ def _convert_match(match: re.Match) -> str:
         formatted = _format_number(scaled)
 
     if action == "replace":
+        lead, mid = _place_emphasis(art, adj, singular=(scaled == 1.0),
+                                    hedged=was_rounded)
+        filler = mid or (more_str.lower() if more_str else None)
         # Special case: "an hour" reads better than "one hour" — but only when
-        # there's no filler word to preserve ("one more hour", not "an more hour").
+        # nothing else needs the slot in front of the unit ("one more hour", not
+        # "an more hour"; "a full hour", never "a full an hour").
         if (numeral == "english" and scaled == 1.0 and final_unit == "hour"
-                and not is_another and not more_str):
+                and not is_another and not filler and not lead):
             output = "about an hour" if was_rounded else "an hour"
+        elif lead and scaled == 1.0:
+            # The lead phrase's article already says "one" ("a full hour").
+            body = f"{lead} {final_unit}"
+            output = f"about {body}" if was_rounded else body
         else:
             # Pluralize the unit if value != 1
             unit_label = final_unit
@@ -781,8 +877,9 @@ def _convert_match(match: re.Match) -> str:
                 unit_label += "s"
             # Keep the filler word between the number and unit, echoing whatever
             # matched: "four more hours", "four whole hours", "two full hours".
-            filler = more_str.lower() if more_str else None
             body = f"{formatted} {filler} {unit_label}" if filler else f"{formatted} {unit_label}"
+            if lead:
+                body = f"{lead} {body}"      # "a full four hours"
             if is_another:
                 body = f"another {body}"
             output = f"about {body}" if was_rounded else body

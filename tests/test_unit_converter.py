@@ -180,3 +180,39 @@ def test_no_matches_returns_copy():
     out = convert_units(lines)
     assert out == lines
     assert out is not lines
+
+# ---------------------------------------------------------------------------
+# Personal names that romanise onto unit words. 李 -> "li", 张 -> "zhang",
+# 梁 -> "liang"; with an article or numeral in front, "a Zhang Juzheng" parses
+# as a well-formed measurement and was annotated as a distance in book 93.
+# ---------------------------------------------------------------------------
+def test_surname_before_a_given_name_is_not_a_measurement():
+    line = "as for a Zhang Juzheng, there is no need to cut his mourning short."
+    assert convert_units([line]) == [line]
+
+
+def test_numeral_before_a_surname_is_not_a_measurement():
+    line = "a scholar below, one Li Sancai, requests an audience."
+    assert convert_units([line]) == [line]
+
+
+def test_another_before_a_surname_is_not_a_measurement():
+    line = "He simply feared getting another Li Zaiting."
+    assert convert_units([line]) == [line]
+
+
+def test_a_real_distance_still_converts():
+    assert convert_units(["Xuanfu lies no more than four hundred li from the capital."]) == [
+        "Xuanfu lies no more than four hundred li (200 km) from the capital."]
+
+
+def test_a_real_length_with_an_article_still_converts():
+    assert convert_units(["a stone stele nearly a zhang high stood before the arch."]) == [
+        "a stone stele nearly a zhang (3.33 m) high stood before the arch."]
+
+
+def test_a_unit_at_a_sentence_end_still_converts():
+    # The following capital belongs to the next sentence, so the period keeps
+    # the name guard from firing.
+    assert convert_units(["they marched thirty li. Beijing was still far off."]) == [
+        "they marched thirty li (15 km). Beijing was still far off."]
