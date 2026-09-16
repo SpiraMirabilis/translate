@@ -126,6 +126,11 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
 
   const handleKeyDown = (e) => {
     if (e.key === 'Escape') {
+      // Stop the event here: Reader's window-level keydown handler also closes
+      // the modal on Escape, and close() is a history pop (navigate(-1)) — if
+      // both fire we pop twice and land back on the book detail page.
+      e.preventDefault()
+      e.stopPropagation()
       onClose()
     } else if (e.key === 'Enter' && e.shiftKey) {
       e.preventDefault()
@@ -134,8 +139,10 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
       // If results exist and we already searched, navigate to current
       if (results.length > 0 && currentIdx >= 0) {
         const r = results[currentIdx]
+        // onNavigate closes the modal as part of its navigation
+        // (Reader.selectChapter); an extra onClose() would pop history back
+        // to the pre-modal entry and undo the chapter change.
         onNavigate(r.chapter_number)
-        onClose()
       }
     }
   }
@@ -199,7 +206,7 @@ export default function ReaderSearch({ open, onClose, bookId, onNavigate, theme,
               <button
                 key={r.chapter_number}
                 ref={el => resultRefs.current[i] = el}
-                onClick={() => { onNavigate(r.chapter_number); onClose() }}
+                onClick={() => onNavigate(r.chapter_number)}
                 className={`w-full text-left px-4 py-3 border-b ${borderColor} transition-colors
                   ${i === currentIdx
                     ? isDark ? 'bg-indigo-600/20' : 'bg-indigo-50'

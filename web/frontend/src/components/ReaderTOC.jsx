@@ -63,7 +63,10 @@ export default function ReaderTOC({ open, onClose, book, chapters, currentChapte
               <button
                 key={ch.chapter}
                 ref={isActive ? activeRef : null}
-                onClick={() => { onSelect(ch.chapter); onClose() }}
+                // onSelect navigates AND closes the drawer in one history op
+                // (Reader.selectChapter); an extra onClose() would pop back to
+                // the pre-drawer entry and undo the navigation.
+                onClick={() => (isActive ? onClose() : onSelect(ch.chapter))}
                 className={`cv-auto w-full text-left px-4 py-2.5 flex items-center gap-2 transition-colors text-sm
                   ${isActive ? activeBg : `${textPrimary} ${hoverBg}`}`}
               >

@@ -61,7 +61,9 @@ export default function Reader({ isPublic = false }) {
   const readerApi = isPublic ? publicApi : api
   // Detect if we're under the /library prefix so links stay consistent
   const libraryPrefix = location.pathname.startsWith('/library/')
-  const backPath = isPublic ? '/library' : '/books'
+  // List path for error/not-found recovery; title-bar back goes to book detail
+  const listPath = isPublic ? '/library' : '/books'
+  const backPath = isPublic ? `/library/book/${bookId}` : `/books/${bookId}`
 
   const [currentNum, setCurrentNum] = useState(null)
   // Drawer overlays — URL-driven so the browser back button closes them
@@ -305,6 +307,22 @@ export default function Reader({ isPublic = false }) {
       setCurrentNum(prev => (prev === fromRoute ? prev : fromRoute))
     }
   }, [chapterNumParam, bookId])
+
+  // Chapter selection from an open drawer (TOC, search) closes the drawer and
+  // switches chapters in ONE history operation: navigate to the new chapter
+  // path with the modal param stripped, replacing the pushed drawer entry.
+  // Calling setCurrentNum() + modal.close() separately races — close() pops
+  // back to the pre-drawer entry (old chapter path) after the URL-writer
+  // effect has run, and the route-param sync effect snaps the chapter back.
+  const selectChapter = useCallback((n) => {
+    setCurrentNum(n)
+    const sp = new URLSearchParams(window.location.search)
+    sp.delete('modal')
+    sp.delete('ent')
+    const qs = sp.toString()
+    const base = libraryPrefix ? `/library/read/${bookId}` : `/read/${bookId}`
+    navigate(`${base}/${n}${qs ? `?${qs}` : ''}${window.location.hash}`, { replace: true })
+  }, [bookId, libraryPrefix, navigate])
 
   // Scroll to top on chapter change
   useEffect(() => {
@@ -619,6 +637,7 @@ export default function Reader({ isPublic = false }) {
     applyTermHighlights(root, termMatcher,
       (t) => (CATEGORY_COLORS[t.category] || CATEGORY_COLORS.characters).border)
     return () => clearTermHighlights(root)
+  }, [termMatcher, chapterBody])
 
   if (loading) {
     return (
@@ -640,7 +659,7 @@ export default function Reader({ isPublic = false }) {
           buttonClassName={navBtnClass}
         />
         <div className="text-center -mt-24">
-          <Link to={backPath} className="text-indigo-400 hover:underline inline-block">{isPublic ? 'Back to Library' : 'Back to Books'}</Link>
+          <Link to={listPath} className="text-indigo-400 hover:underline inline-block">{isPublic ? 'Back to Library' : 'Back to Books'}</Link>
         </div>
       </div>
     )
@@ -651,7 +670,7 @@ export default function Reader({ isPublic = false }) {
       <div className={`min-h-screen ${theme.bg} flex items-center justify-center`}>
         <div className="text-center">
           <p className={`${theme.text} text-lg`}>Book not found</p>
-          <Link to={backPath} className="text-indigo-400 hover:underline mt-2 inline-block">{isPublic ? 'Back to Library' : 'Back to Books'}</Link>
+          <Link to={listPath} className="text-indigo-400 hover:underline mt-2 inline-block">{isPublic ? 'Back to Library' : 'Back to Books'}</Link>
         </div>
       </div>
     )
@@ -666,7 +685,7 @@ export default function Reader({ isPublic = false }) {
       <div className={`fixed top-0 left-0 right-0 z-30 border-b backdrop-blur-sm transition-transform duration-300
         ${barBg} ${barVisible ? 'translate-y-0' : '-translate-y-full'}`}>
         <div className="max-w-4xl mx-auto px-4 h-12 flex items-center gap-3">
-          <Link to={backPath} className={`${barText} ${barHover} p-1`} title={isPublic ? 'Back to Library' : 'Back to Books'}>
+          <Link to={backPath} className={`${barText} ${barHover} p-1`} title="Back to book">
             <ArrowLeft size={20} />
           </Link>
           <div className="flex-1 min-w-0 text-center">
@@ -831,7 +850,7 @@ export default function Reader({ isPublic = false }) {
         book={book}
         chapters={chapters}
         currentChapter={currentNum}
-        onSelect={setCurrentNum}
+        onSelect={selectChapter}
         isPublic={isPublic}
         theme={prefs.theme}
       />
