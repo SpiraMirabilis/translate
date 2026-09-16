@@ -9,6 +9,11 @@ Strategy:
 - Print summary and details for conflicts so the user can review
 
 Safety: backs up database.db first, uses transactions throughout.
+
+⚠️ This rebuilds the entities table with foreign keys OFF. Rows kept keep their
+ids, so entity_note_revisions still points at them, but revisions belonging to
+a merged-away entity are left dangling — check them before running this on a
+database whose note history you care about.
 """
 
 import sqlite3

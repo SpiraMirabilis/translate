@@ -706,6 +706,44 @@ _COMMON_DDL_SQLITE = [
     )''',
     'CREATE INDEX IF NOT EXISTS idx_chapter_revisions_chapter ON chapter_revisions(book_id, chapter_number)',
 
+    # entity_note_revisions — history of every change to an entity's note
+    # (model note_updates, human edits, script sweeps). previous_note/new_note
+    # are both kept so the audit feed renders and revert is a single write.
+    '''CREATE TABLE IF NOT EXISTS entity_note_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id INTEGER NOT NULL,
+        book_id INTEGER,
+        previous_note TEXT,
+        new_note TEXT,
+        author TEXT NOT NULL DEFAULT 'model',
+        chapter_number INTEGER,
+        reason TEXT,
+        shrink INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_entity_note_revisions_book ON entity_note_revisions(book_id, id)',
+    'CREATE INDEX IF NOT EXISTS idx_entity_note_revisions_entity ON entity_note_revisions(entity_id, id)',
+
+    # entity_gender_revisions — history of every change to an entity's gender
+    # (the note_updates channel may correct one, humans and scripts too). Not a
+    # point-in-time record like notes: only changes are stored, so a wrong flip
+    # can be seen and reverted.
+    '''CREATE TABLE IF NOT EXISTS entity_gender_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id INTEGER NOT NULL,
+        book_id INTEGER,
+        previous_gender TEXT,
+        new_gender TEXT,
+        author TEXT NOT NULL DEFAULT 'model',
+        chapter_number INTEGER,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_entity_gender_revisions_book ON entity_gender_revisions(book_id, id)',
+    'CREATE INDEX IF NOT EXISTS idx_entity_gender_revisions_entity ON entity_gender_revisions(entity_id, id)',
+
     # polish_jobs / polish_suggestions — persisted LLM-polish runs for the
     # write editor. Suggestions carry per-row resolution status so partially
     # worked-through results survive navigation and restarts.
@@ -1107,6 +1145,39 @@ _COMMON_DDL_MYSQL = [
         FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_chapter_revisions_chapter ON chapter_revisions(book_id, chapter_number)',
+
+    # entity_note_revisions — entity note history (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS entity_note_revisions (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        entity_id INTEGER NOT NULL,
+        book_id INTEGER,
+        previous_note TEXT,
+        new_note TEXT,
+        author VARCHAR(16) NOT NULL DEFAULT 'model',
+        chapter_number INTEGER,
+        reason TEXT,
+        shrink TINYINT NOT NULL DEFAULT 0,
+        created_at VARCHAR(50) NOT NULL,
+        FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_entity_note_revisions_book ON entity_note_revisions(book_id, id)',
+    'CREATE INDEX idx_entity_note_revisions_entity ON entity_note_revisions(entity_id, id)',
+
+    # entity_gender_revisions — entity gender history (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS entity_gender_revisions (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        entity_id INTEGER NOT NULL,
+        book_id INTEGER,
+        previous_gender VARCHAR(16),
+        new_gender VARCHAR(16),
+        author VARCHAR(16) NOT NULL DEFAULT 'model',
+        chapter_number INTEGER,
+        reason TEXT,
+        created_at VARCHAR(50) NOT NULL,
+        FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+    'CREATE INDEX idx_entity_gender_revisions_book ON entity_gender_revisions(book_id, id)',
+    'CREATE INDEX idx_entity_gender_revisions_entity ON entity_gender_revisions(entity_id, id)',
 
     # polish_jobs / polish_suggestions — persisted LLM-polish runs (see SQLite note)
     '''CREATE TABLE IF NOT EXISTS polish_jobs (

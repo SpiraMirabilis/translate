@@ -1,4 +1,5 @@
 import re
+import datetime
 import traceback
 import unicodedata
 from itertools import zip_longest
@@ -126,7 +127,11 @@ class EntitiesRepo:
                         incorrect_translation = entity_data.get('incorrect_translation', None)
                         gender = entity_data.get('gender', None)
                         book_id = entity_data.get('book_id', None)  # Include book_id
-                        note = entity_data.get('note', None)
+                        # `note` is deliberately NOT flushed from the cache: every
+                        # note write must go through set_entity_note to land in
+                        # entity_note_revisions, and a bulk executemany can't do
+                        # that. Omitting the column leaves the stored note intact
+                        # (the cache is loaded from it in the first place).
 
                         # Skip duplicates within the snapshot
                         entity_key = (untranslated, book_id)
@@ -137,22 +142,22 @@ class EntitiesRepo:
                         entity_id = id_by_key.get(entity_key)
                         if entity_id is not None:
                             updates.append((category, translation, last_chapter,
-                                            incorrect_translation, gender, note, entity_id))
+                                            incorrect_translation, gender, entity_id))
                         else:
                             inserts.append((category, untranslated, translation, last_chapter,
-                                            incorrect_translation, gender, book_id, note))
+                                            incorrect_translation, gender, book_id))
 
                 if updates:
                     cursor.executemany('''
                         UPDATE entities
-                        SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, note = ?
+                        SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?
                         WHERE id = ?
                         ''', updates)
                 if inserts:
                     cursor.executemany('''
                         INSERT INTO entities
-                        (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, note)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         ''', inserts)
             self.logger.info("Entities saved to database successfully")
         except Exception as e:
@@ -370,7 +375,7 @@ class EntitiesRepo:
         """Normalize text for consistent comparison"""
         return unicodedata.normalize('NFC', text)
 
-    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None, note=None):
+    def add_entity(self, category, untranslated, translation, book_id=None, last_chapter=None, incorrect_translation=None, gender=None, origin_chapter=None, note=None, note_author='human', note_chapter=None, note_reason=None, gender_author='human', gender_chapter=None, gender_reason=None):
         """
         Add a new entity to the database.
         Returns True if successful, False if the entity already exists in a different category.
@@ -382,7 +387,21 @@ class EntitiesRepo:
             book_id: Book ID (optional - if None, entity is global)
             last_chapter: Last chapter where entity was found
             incorrect_translation: Previous incorrect translation
-            gender: Entity gender (for characters)
+            gender: Entity gender (for gender-tracked categories). On an entity
+                that already exists this goes through set_entity_gender, so
+                changing one is recorded in entity_gender_revisions like any
+                other change; on a brand-new row it is simply the row's initial
+                value and no revision is written.
+            note: Translation guidance. Written through set_entity_note, so
+                attaching a note here is recorded in entity_note_revisions like
+                any later change — that is what makes a note's whole life
+                reconstructable at an arbitrary chapter.
+            note_author: 'model' | 'human' | 'script' — who wrote this note.
+            note_chapter: Chapter the note was written at; defaults to
+                last_chapter, then origin_chapter.
+            note_reason: Optional free text stored with the revision.
+            gender_author / gender_chapter / gender_reason: the same three
+                annotations for a gender change.
         """
         try:
             with self._conn() as conn:
@@ -402,29 +421,52 @@ class EntitiesRepo:
 
                 same_cat = cursor.fetchone()
                 if same_cat:
-                    # Update existing — preserve origin_chapter, gender, and note if not explicitly provided
+                    # Update existing — preserve origin_chapter and gender if not explicitly provided.
+                    # `note` and `gender` are deliberately absent from the SET list:
+                    # leaving the columns alone preserves them, and any actual write
+                    # happens below through set_entity_note / set_entity_gender so it
+                    # lands in that column's history.
                     existing_id = same_cat[0]
                     effective_origin = origin_chapter if origin_chapter is not None else (same_cat[1] if same_cat[1] is not None else last_chapter)
-                    if gender is None or note is None:
-                        cursor.execute('SELECT gender, note FROM entities WHERE id = ?', (existing_id,))
-                        existing = cursor.fetchone()
-                        if gender is None and existing:
-                            gender = existing[0]
-                        if note is None and existing:
-                            note = existing[1]
                     cursor.execute('''
                 UPDATE entities
-                SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?, origin_chapter = ?, note = ?
+                SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, origin_chapter = ?
                 WHERE id = ?
-                ''', (category, translation, last_chapter, incorrect_translation, gender, effective_origin, note, existing_id))
+                ''', (category, translation, last_chapter, incorrect_translation, effective_origin, existing_id))
+                    entity_id = existing_id
+                    if gender is not None:
+                        self.set_entity_gender(
+                            entity_id, gender, author=gender_author,
+                            chapter_number=(gender_chapter if gender_chapter is not None
+                                            else (last_chapter if last_chapter is not None else effective_origin)),
+                            reason=gender_reason, cursor=cursor)
+                    else:
+                        # Keep the cache mirror below honest about the untouched gender.
+                        cursor.execute('SELECT gender FROM entities WHERE id = ?', (existing_id,))
+                        existing = cursor.fetchone()
+                        if existing:
+                            gender = existing[0]
                 else:
                     # Insert new entity — fall back to last_chapter if origin_chapter not specified
                     effective_origin = origin_chapter if origin_chapter is not None else last_chapter
                     cursor.execute('''
                 INSERT INTO entities
-                (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, effective_origin, note))
+                (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, origin_chapter)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (category, untranslated, translation, book_id, last_chapter, incorrect_translation, gender, effective_origin))
+                    entity_id = cursor.lastrowid
+
+                if note is not None:
+                    self.set_entity_note(
+                        entity_id, note, author=note_author,
+                        chapter_number=(note_chapter if note_chapter is not None
+                                        else (last_chapter if last_chapter is not None else effective_origin)),
+                        reason=note_reason, cursor=cursor)
+                else:
+                    # Keep the cache mirror below honest about the untouched note.
+                    cursor.execute('SELECT note FROM entities WHERE id = ?', (entity_id,))
+                    row = cursor.fetchone()
+                    note = row[0] if row else None
             
             # Update the in-memory cache
             entity_data = {"translation": translation}
@@ -450,7 +492,8 @@ class EntitiesRepo:
                 raise
             return False
 
-    def update_entity(self, category, untranslated, **kwargs):
+    def update_entity(self, category, untranslated, note_author='human',
+                      note_chapter=None, note_reason=None, **kwargs):
         """
         Update an existing entity with new values.
 
@@ -458,8 +501,37 @@ class EntitiesRepo:
         to update (WHERE clause) while other fields are updated.
         If book_id is the ONLY field being updated, it changes the entity's book assignment.
 
+        A `note` in kwargs is diverted to set_entity_note and a `gender` to
+        set_entity_gender, so each is recorded in that column's revision history
+        — no write anywhere may bypass them. Both revisions are annotated with
+        the note_author/note_chapter/note_reason arguments (this method's callers
+        are human-driven CLI edits, where the two changes share an author).
+
         Returns True if the entity was updated, False if it wasn't found.
         """
+        note_write = kwargs.pop('note', _UNSET)
+        gender_write = kwargs.pop('gender', _UNSET)
+        if note_write is not _UNSET or gender_write is not _UNSET:
+            entity_id = self.get_entity_id(kwargs.get('book_id'), untranslated, category)
+            if entity_id:
+                if note_write is not _UNSET:
+                    self.set_entity_note(entity_id, note_write, author=note_author,
+                                         chapter_number=note_chapter, reason=note_reason)
+                if gender_write is not _UNSET:
+                    self.set_entity_gender(entity_id, gender_write, author=note_author,
+                                           chapter_number=note_chapter, reason=note_reason)
+            else:
+                self.logger.warning(
+                    f"update_entity: '{untranslated}' not found; note/gender not written")
+                if not kwargs:
+                    return False
+            # With the note/gender removed, a lone book_id was an identifier for
+            # the row we just wrote — not a request to move the entity to another
+            # book (which is what book_id-alone means to the SQL below).
+            if not kwargs or set(kwargs) == {'book_id'}:
+                return True
+        if not kwargs:
+            return True
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
@@ -473,7 +545,7 @@ class EntitiesRepo:
                 where_book_id = None
 
                 for key, value in kwargs.items():
-                    if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note', 'category']:
+                    if key in ['translation', 'last_chapter', 'incorrect_translation', 'category']:
                         set_clause.append(f"{key} = ?")
                         values.append(value)
                     elif key == 'book_id':
@@ -520,7 +592,7 @@ class EntitiesRepo:
                 if category in self.entities and untranslated in self.entities[category]:
                     new_category = kwargs.get('category')
                     for key, value in kwargs.items():
-                        if key in ['translation', 'last_chapter', 'incorrect_translation', 'gender', 'note']:
+                        if key in ['translation', 'last_chapter', 'incorrect_translation']:
                             self.entities[category][untranslated][key] = value
                         elif key == 'book_id':
                             if is_only_book_id:
@@ -981,8 +1053,14 @@ class EntitiesRepo:
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def update_entity_by_id(self, entity_id, **fields):
+    def update_entity_by_id(self, entity_id, note_author='human', note_chapter=None,
+                            note_reason=None, gender_author='human', gender_chapter=None,
+                            gender_reason=None, **fields):
         """Update arbitrary entity columns by primary key.
+
+        A `note` field is diverted to set_entity_note and a `gender` field to
+        set_entity_gender (see update_entity), so each change lands in that
+        column's revision history; note_* / gender_* annotate those revisions.
 
         Only known columns are accepted; unknown keyword names raise
         ValueError (catching typos rather than silently dropping them).
@@ -997,8 +1075,19 @@ class EntitiesRepo:
         unknown = set(fields) - set(self._ENTITY_COLUMNS) | ({"id"} & set(fields))
         if unknown:
             raise ValueError(f"Unknown entity column(s): {sorted(unknown)}")
+        wrote_history = False
+        note_write = fields.pop('note', _UNSET)
+        if note_write is not _UNSET:
+            self.set_entity_note(entity_id, note_write, author=note_author,
+                                 chapter_number=note_chapter, reason=note_reason)
+            wrote_history = True
+        gender_write = fields.pop('gender', _UNSET)
+        if gender_write is not _UNSET:
+            self.set_entity_gender(entity_id, gender_write, author=gender_author,
+                                   chapter_number=gender_chapter, reason=gender_reason)
+            wrote_history = True
         if not fields:
-            return False
+            return wrote_history
         with self._conn() as conn:
             cursor = conn.cursor()
             set_clause = ", ".join(f"{k} = ?" for k in fields)
@@ -1007,6 +1096,510 @@ class EntitiesRepo:
                 list(fields.values()) + [entity_id],
             )
             return cursor.rowcount > 0
+
+    def substitute_in_entity_notes(self, book_id, old_translation, new_translation,
+                                   chapter_numbers=None, word_boundary=False,
+                                   dry_run=False, cursor=None):
+        """Apply an entity-translation substitution to entity *notes* as well.
+
+        A note is written at extraction time, so it freezes the terminology that
+        was current then. Renaming an entity therefore leaves the old English
+        stranded inside the notes of the entities extracted alongside it — and
+        those notes are fed back into later translations, re-seeding the very
+        term that was just corrected. Every substitution path (both entity
+        modals via /entities/propagate, correct_entity_translation.py and
+        bulk_correct_entities.py) runs this alongside its chapter sweep.
+
+        ``chapter_numbers`` scopes the rewrite to entities whose ``origin_chapter``
+        is one of the chapters the chapter sweep ran over. ``None`` means the
+        sweep was book-wide, so every note in the book is eligible — including
+        entities with no origin_chapter, which no chapter set can ever match.
+
+        Only book-scoped entities are touched; global entities (book_id IS NULL)
+        are shared across books and are left alone.
+
+        Pass ``cursor`` (from a ``dict_rows`` connection) to join the caller's
+        transaction, so the note writes commit — or roll back — with the chapter
+        writes. ``dry_run`` counts without writing, for the CLIs' --dry-run.
+
+        Returns the number of notes changed.
+        """
+        from chapter_text_ops import substitute_in_lines
+
+        if not old_translation or old_translation == new_translation:
+            return 0
+
+        scope = None
+        if chapter_numbers is not None:
+            scope = set()
+            for n in chapter_numbers:
+                try:
+                    scope.add(int(n))
+                except (TypeError, ValueError):
+                    continue
+
+        def _in_scope(origin_chapter):
+            if scope is None:
+                return True
+            try:
+                return int(origin_chapter) in scope
+            except (TypeError, ValueError):
+                # NULL / unparseable origin_chapter can't match a chapter set.
+                return False
+
+        def _run(cur):
+            cur.execute(
+                "SELECT id, note, origin_chapter FROM entities "
+                "WHERE book_id = ? AND note IS NOT NULL AND note != ''",
+                (book_id,),
+            )
+            rows = cur.fetchall()
+
+            changed = 0
+            for row in rows:
+                if not _in_scope(row["origin_chapter"]):
+                    continue
+                new_note, n = substitute_in_lines(
+                    [row["note"]], old_translation, new_translation, word_boundary
+                )
+                if not n:
+                    continue
+                changed += 1
+                if not dry_run:
+                    # Through the note choke point so a terminology sweep is
+                    # revertible from the same audit trail as everything else.
+                    self.set_entity_note(
+                        row["id"], new_note[0], author='script',
+                        reason=f"Substitution: {old_translation} -> {new_translation}",
+                        cursor=cur,
+                    )
+            return changed
+
+        if cursor is not None:
+            return _run(cursor)
+        with self._conn(dict_rows=True) as conn:
+            return _run(conn.cursor())
+
+    # ------------------------------------------------------------------
+    # Entity notes: single write choke point + revision history
+    # ------------------------------------------------------------------
+
+    def get_entity_id(self, book_id, untranslated, category=None):
+        """Primary key of a book's entity by its untranslated text, or None.
+
+        Book-scoped rows win over global (book_id IS NULL) ones, matching how
+        the glossary resolves an entity during translation.
+        """
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                params = [untranslated, book_id]
+                cat_sql = ""
+                if category:
+                    cat_sql = " AND category = ?"
+                    params.append(category)
+                cursor.execute(
+                    "SELECT id FROM entities WHERE untranslated = ? "
+                    "AND (book_id = ? OR book_id IS NULL)" + cat_sql +
+                    " ORDER BY CASE WHEN book_id IS NULL THEN 1 ELSE 0 END, id LIMIT 1",
+                    params,
+                )
+                row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            self.logger.error(f"Error looking up entity id for '{untranslated}': {e}")
+            return None
+
+    def set_entity_note(self, entity_id, new_note, *, author='model',
+                        chapter_number=None, reason=None, shrink=False,
+                        cursor=None):
+        """Write an entity's note, snapshotting the note it replaces.
+
+        The only sanctioned way to change a note. Nothing about a note is
+        locked — the translation model may revise its own or a human's — so the
+        safety net is that every change is recoverable: the prior value lands in
+        entity_note_revisions and revert_note_revision puts it back.
+
+        author is 'model' (the note_updates channel), 'human' (review panel or
+        the entities page) or 'script' (bulk sweeps).
+
+        Returns the revision id, or None when the note was already identical
+        (a no-op writes nothing and records nothing).
+        """
+        try:
+            # Filled in by _run so the cache mirror below can see them — they are
+            # local to the closure otherwise.
+            touched = {}
+
+            def _run(cur):
+                cur.execute(
+                    "SELECT note, book_id, category, untranslated FROM entities WHERE id = ?",
+                    (entity_id,))
+                row = cur.fetchone()
+                if row is None:
+                    self.logger.warning(f"set_entity_note: no entity with id {entity_id}")
+                    return None
+                # Callers may hand us a dict-row cursor (substitute_in_entity_notes
+                # opens one), where positional access raises KeyError: 0.
+                if isinstance(row, dict):
+                    previous_note, book_id, category, untranslated = (
+                        row['note'], row['book_id'], row['category'], row['untranslated'])
+                else:
+                    previous_note, book_id, category, untranslated = row[0], row[1], row[2], row[3]
+                touched.update(category=category, untranslated=untranslated)
+                if (previous_note or '') == (new_note or ''):
+                    return None
+                cur.execute("UPDATE entities SET note = ? WHERE id = ?", (new_note, entity_id))
+                cur.execute("""
+                INSERT INTO entity_note_revisions
+                (entity_id, book_id, previous_note, new_note, author, chapter_number,
+                 reason, shrink, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (entity_id, book_id, previous_note, new_note, author, chapter_number,
+                      reason, 1 if shrink else 0,
+                      datetime.datetime.now().isoformat()))
+                return cur.lastrowid
+
+            if cursor is not None:
+                revision_id = _run(cursor)
+            else:
+                with self._conn() as conn:
+                    revision_id = _run(conn.cursor())
+
+            if revision_id is not None:
+                # Mirror into the shared cache (keyed by category/untranslated —
+                # cache entries carry no id) so the admin pages don't show a
+                # stale note until the next reload.
+                cached = getattr(self, 'entities', {}).get(touched.get('category'), {})
+                entry = cached.get(touched.get('untranslated'))
+                if isinstance(entry, dict):
+                    if new_note:
+                        entry['note'] = new_note
+                    else:
+                        entry.pop('note', None)
+            return revision_id
+        except Exception as e:
+            self.logger.error(f"Error setting entity note for {entity_id}: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
+            return None
+
+    def list_note_revisions(self, book_id=None, entity_id=None, limit=50):
+        """Note-change history, newest first, joined to the entity it belongs to.
+
+        Scope by entity_id (one entity's timeline) or book_id (the book's recent
+        changes feed). Passing neither returns the newest changes across books.
+        """
+        try:
+            where, params = [], []
+            if entity_id is not None:
+                where.append("r.entity_id = ?")
+                params.append(entity_id)
+            if book_id is not None:
+                where.append("r.book_id = ?")
+                params.append(book_id)
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            with self._conn(dict_rows=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"""
+                SELECT r.id, r.entity_id, r.book_id, r.previous_note, r.new_note,
+                       r.author, r.chapter_number, r.reason, r.shrink, r.created_at,
+                       e.untranslated, e.translation, e.category, e.note AS current_note
+                FROM entity_note_revisions r
+                LEFT JOIN entities e ON e.id = r.entity_id
+                {clause}
+                ORDER BY r.id DESC LIMIT ?
+                """, params + [int(limit)])
+                rows = cursor.fetchall()
+            out = []
+            for row in rows:
+                rev = dict(row)
+                rev["shrink"] = bool(rev.get("shrink"))
+                # True while this revision is still the note's current value —
+                # what the audit panel offers a Revert button for.
+                rev["is_current"] = (rev.get("current_note") or '') == (rev.get("new_note") or '')
+                out.append(rev)
+            return out
+        except Exception as e:
+            self.logger.error(f"Error listing note revisions: {e}")
+            return []
+
+    def revert_note_revision(self, revision_id):
+        """Restore the note this revision replaced.
+
+        The revert itself is recorded as a further revision (author 'human'), so
+        the trail stays complete and a revert can itself be undone.
+        Returns the new revision id, or None if there was nothing to do.
+        """
+        try:
+            with self._conn(dict_rows=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT entity_id, previous_note FROM entity_note_revisions WHERE id = ?",
+                    (revision_id,))
+                row = cursor.fetchone()
+            if row is None:
+                return None
+            row = dict(row)
+            return self.set_entity_note(
+                row["entity_id"], row["previous_note"], author='human',
+                reason=f"Reverted revision {revision_id}")
+        except Exception as e:
+            self.logger.error(f"Error reverting note revision {revision_id}: {e}")
+            if self.strict_writes:
+                raise
+            return None
+
+    # The genders an entity may carry. A blank/None gender means "not recorded",
+    # which is a legitimate state (an unnamed voice, a category that doesn't
+    # track gender) and not the same as neutral.
+    VALID_GENDERS = ('male', 'female', 'neutral')
+
+    def set_entity_gender(self, entity_id, new_gender, *, author='model',
+                          chapter_number=None, reason=None, cursor=None):
+        """Write an entity's gender, snapshotting the value it replaces.
+
+        The sanctioned way to CHANGE a gender that is already recorded. Gender
+        rides into every prompt that mentions the entity and decides its
+        pronouns, so a wrong value quietly corrupts every later chapter — and
+        unlike a mistranslation nobody sees it in the glossary. Each change
+        therefore lands in entity_gender_revisions and revert_gender_revision
+        puts it back.
+
+        Unlike notes this is deliberately NOT point-in-time. There is no
+        genders_as_of: the current gender is the only truth, and a character who
+        genuinely changes gender in the story is handled by correcting the
+        record and saying so in the entity's note — which is versioned per
+        chapter and rewinds on retranslation.
+
+        author is 'model' (the note_updates channel), 'human' (review panel or
+        the entities page) or 'script' (bulk sweeps).
+
+        Returns the revision id, or None when nothing was written (unchanged
+        value, unknown entity, or a gender outside VALID_GENDERS).
+        """
+        normalized = (new_gender or '').strip().lower() or None
+        if normalized is not None and normalized not in self.VALID_GENDERS:
+            self.logger.warning(
+                f"set_entity_gender: '{new_gender}' is not one of "
+                f"{self.VALID_GENDERS} — ignored")
+            return None
+        try:
+            touched = {}
+
+            def _run(cur):
+                cur.execute(
+                    "SELECT gender, book_id, category, untranslated FROM entities WHERE id = ?",
+                    (entity_id,))
+                row = cur.fetchone()
+                if row is None:
+                    self.logger.warning(f"set_entity_gender: no entity with id {entity_id}")
+                    return None
+                if isinstance(row, dict):
+                    previous, book_id, category, untranslated = (
+                        row['gender'], row['book_id'], row['category'], row['untranslated'])
+                else:
+                    previous, book_id, category, untranslated = row[0], row[1], row[2], row[3]
+                touched.update(category=category, untranslated=untranslated)
+                if ((previous or '').strip().lower() or None) == normalized:
+                    return None
+                cur.execute("UPDATE entities SET gender = ? WHERE id = ?", (normalized, entity_id))
+                cur.execute("""
+                INSERT INTO entity_gender_revisions
+                (entity_id, book_id, previous_gender, new_gender, author, chapter_number,
+                 reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (entity_id, book_id, previous, normalized, author, chapter_number,
+                      reason, datetime.datetime.now().isoformat()))
+                return cur.lastrowid
+
+            if cursor is not None:
+                revision_id = _run(cursor)
+            else:
+                with self._conn() as conn:
+                    revision_id = _run(conn.cursor())
+
+            if revision_id is not None:
+                # Mirror into the shared cache (keyed by category/untranslated) so
+                # the admin pages don't show a stale gender until the next reload.
+                cached = getattr(self, 'entities', {}).get(touched.get('category'), {})
+                entry = cached.get(touched.get('untranslated'))
+                if isinstance(entry, dict):
+                    if normalized:
+                        entry['gender'] = normalized
+                    else:
+                        entry.pop('gender', None)
+            return revision_id
+        except Exception as e:
+            self.logger.error(f"Error setting entity gender for {entity_id}: {e}\n{traceback.format_exc()}")
+            if self.strict_writes:
+                raise
+            return None
+
+    def list_gender_revisions(self, book_id=None, entity_id=None, limit=50):
+        """Gender-change history, newest first, joined to the entity it belongs to.
+
+        Same scoping rules as list_note_revisions: entity_id for one entity's
+        timeline, book_id for the book's feed, neither for everything.
+        """
+        try:
+            where, params = [], []
+            if entity_id is not None:
+                where.append("r.entity_id = ?")
+                params.append(entity_id)
+            if book_id is not None:
+                where.append("r.book_id = ?")
+                params.append(book_id)
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            with self._conn(dict_rows=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"""
+                SELECT r.id, r.entity_id, r.book_id, r.previous_gender, r.new_gender,
+                       r.author, r.chapter_number, r.reason, r.created_at,
+                       e.untranslated, e.translation, e.category, e.gender AS current_gender
+                FROM entity_gender_revisions r
+                LEFT JOIN entities e ON e.id = r.entity_id
+                {clause}
+                ORDER BY r.id DESC LIMIT ?
+                """, params + [int(limit)])
+                rows = cursor.fetchall()
+            out = []
+            for row in rows:
+                rev = dict(row)
+                # True while this revision is still the gender's current value —
+                # what the audit panel offers a Revert button for.
+                rev["is_current"] = ((rev.get("current_gender") or '') ==
+                                     (rev.get("new_gender") or ''))
+                out.append(rev)
+            return out
+        except Exception as e:
+            self.logger.error(f"Error listing gender revisions: {e}")
+            return []
+
+    def revert_gender_revision(self, revision_id):
+        """Restore the gender this revision replaced.
+
+        The revert is itself recorded (author 'human'), so the trail stays
+        complete and a revert can be undone. Returns the new revision id, or
+        None if there was nothing to do — including the case where the value it
+        would restore is blank, which is a legitimate "never recorded" state.
+        """
+        try:
+            with self._conn(dict_rows=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT entity_id, previous_gender FROM entity_gender_revisions WHERE id = ?",
+                    (revision_id,))
+                row = cursor.fetchone()
+            if row is None:
+                return None
+            row = dict(row)
+            return self.set_entity_gender(
+                row["entity_id"], row["previous_gender"], author='human',
+                reason=f"Reverted revision {revision_id}")
+        except Exception as e:
+            self.logger.error(f"Error reverting gender revision {revision_id}: {e}")
+            if self.strict_writes:
+                raise
+            return None
+
+    def notes_as_of(self, book_id, chapter, entity_ids=None, key_by='id'):
+        """Every entity's note as it stood at the END of `chapter`.
+
+        Returns {entity_id: note_or_None}, or {untranslated: note_or_None} with
+        key_by='untranslated' (what the prompt builder wants — the glossary it
+        assembles is keyed by source text, not row id). None means the entity
+        carried no note at that point — either it had not been written yet, or
+        the entity itself did not exist.
+
+        A note written *during* chapter C counts as in force at C: asking for
+        chapter 20 gives the glossary as it read once chapter 20 was done, which
+        is what a "notes for chapters 1-20" view wants. (The prompt for chapter C
+        itself was of course built from the state at C-1.)
+
+        How the rewind works: revisions are chronological by id and each row
+        carries both sides of the change, so the note in force at chapter C is
+        `previous_note` of the earliest revision made *after* C. Revisions with
+        no chapter (human edits, script sweeps) are treated as belonging to the
+        present and are not rewound — a correction you made by hand stays applied
+        to the historical view, which is nearly always what you want when the
+        point is to read the book's terminology as of chapter C.
+
+        Where history is missing the answer is the closest note in time rather
+        than a guess: notes written before the revision history existed have no
+        creation row, so the earliest thing known about them is the first
+        revision's `previous_note`, and an entity with no revisions at all
+        reports its current note. The one hard rule that still applies is the
+        `origin_chapter` floor — an entity that did not exist yet had no note.
+        """
+        try:
+            params = [book_id]
+            id_sql = ""
+            if entity_ids:
+                id_sql = " AND id IN (" + ",".join("?" * len(entity_ids)) + ")"
+                params.extend(entity_ids)
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, note, origin_chapter, untranslated FROM entities "
+                    "WHERE (book_id = ? OR book_id IS NULL)" + id_sql,
+                    params)
+                current = {row[0]: (row[1], row[2], row[3]) for row in cursor.fetchall()}
+
+                # Narrow the revision scan to the entities actually asked
+                # about when that is a short list (the reader's per-chapter
+                # glossary asks about ~50 of them). Rows for other entities are
+                # discarded by the `entity_id not in current` guard below
+                # anyway, so this changes cost, not semantics. Long id lists
+                # keep the book-wide scan rather than build a huge IN clause.
+                rev_sql = ("SELECT entity_id, chapter_number, previous_note "
+                           "FROM entity_note_revisions WHERE book_id = ?")
+                rev_params = [book_id]
+                if entity_ids and len(entity_ids) <= 500:
+                    rev_sql += " AND entity_id IN (" + ",".join("?" * len(entity_ids)) + ")"
+                    rev_params.extend(entity_ids)
+                cursor.execute(rev_sql + " ORDER BY id", rev_params)
+                revisions = cursor.fetchall()
+
+            rewound = {}
+            for entity_id, chapter_number, previous_note in revisions:
+                if entity_id in rewound or entity_id not in current:
+                    continue  # earliest post-chapter revision wins
+                if chapter_number is not None and chapter_number > chapter:
+                    rewound[entity_id] = previous_note
+
+            out = {}
+            for entity_id, (note, origin_chapter, untranslated) in current.items():
+                value = rewound.get(entity_id, note)
+                if value and origin_chapter is not None and origin_chapter > chapter:
+                    # The entity itself post-dates the requested point.
+                    value = None
+                out[untranslated if key_by == 'untranslated' else entity_id] = value or None
+            return out
+        except Exception as e:
+            self.logger.error(f"Error building notes as of chapter {chapter}: {e}")
+            return {}
+
+    def has_note_revisions_after(self, book_id, chapter):
+        """True when this book's notes were revised in a LATER chapter.
+
+        Which is to say: translating `chapter` now is a retranslation running
+        behind the glossary's own timeline, so the notes in force at the time
+        are not the notes on the rows today.
+        """
+        if not book_id or not chapter:
+            return False
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT 1 FROM entity_note_revisions "
+                    "WHERE book_id = ? AND chapter_number > ? LIMIT 1",
+                    (book_id, chapter))
+                return cursor.fetchone() is not None
+        except Exception as e:
+            self.logger.error(f"Error checking note revisions after chapter {chapter}: {e}")
+            return False
 
     def delete_entity_by_id(self, entity_id):
         """Delete an entity by primary key. Returns True if a row was deleted."""

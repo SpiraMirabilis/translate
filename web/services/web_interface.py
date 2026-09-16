@@ -100,7 +100,8 @@ class WebInterface(UserInterface):
             self.job_manager.log_activity(type='info', message=f'Synopsis: {summary}')
         self.job_manager.last_result = results
 
-    def review_entities(self, entities: Dict, untranslated_text, phase: str = 'post') -> Dict:
+    def review_entities(self, entities: Dict, untranslated_text, phase: str = 'post',
+                        note_updates: List[Dict] = None) -> Dict:
         """
         Pause translation and send new entities to the frontend for review.
         Filters duplicates and existing entities, optionally auto-cleans generic
@@ -110,8 +111,15 @@ class WebInterface(UserInterface):
         'pre' (two-pass mode — review before translation begins). The phase is
         included in the `entity_review_needed` WebSocket message so the modal
         can show context-appropriate copy.
+
+        `note_updates` are the model's proposed revisions to the note and/or the
+        gender of entities the book already knows. They ride the same handshake but
+        a separate list — the entity filters below exist to drop known entities,
+        which is exactly what such an update is about. Approved ones are left on
+        self.reviewed_note_updates.
         """
-        # Skip review entirely when no_review is set (e.g. auto-process batch jobs)
+        note_updates = list(note_updates or [])
+        # With review off the caller applies them directly; nothing to decide here.
         if getattr(self, 'no_review', False):
             return {}
 
@@ -120,11 +128,14 @@ class WebInterface(UserInterface):
         if has_entities:
             self._filter_existing_entities(entities)
             has_entities = any(entities.get(cat, {}) for cat in entities)
-            if not has_entities:
+            if not has_entities and not note_updates:
+                self.reviewed_note_updates = []
                 return {}
 
         # Auto-clean non-proper nouns before review (unless disabled)
         if has_entities and not getattr(self, 'no_clean', False):
+            # (note updates are never auto-cleaned — they name entities the book
+            # already accepted, so the proper-noun classifier has no say)
             self.job_manager.send_message_sync({
                 "type": "progress",
                 "phase": "cleaning",
@@ -135,14 +146,16 @@ class WebInterface(UserInterface):
             if cleaned_count > 0:
                 self._log_cleaned_entities()
                 has_entities = any(entities.get(cat, {}) for cat in entities)
-                if not has_entities:
+                if not has_entities and not note_updates:
+                    self.reviewed_note_updates = []
                     return {}
 
         serializable = _make_serializable(entities)
 
-        # Final guard: if no entities remain after all filtering, skip review
+        # Final guard: if nothing remains to decide after all filtering, skip review
         count = sum(len(v) for v in serializable.values() if isinstance(v, dict))
-        if count == 0:
+        if count == 0 and not note_updates:
+            self.reviewed_note_updates = []
             return {}
 
         if isinstance(untranslated_text, list):
@@ -154,26 +167,114 @@ class WebInterface(UserInterface):
         gendered_categories = (
             self.entity_manager.get_book_gendered_categories(book_id) if book_id else ['characters']
         )
-        self.job_manager.pending_review = {
+        # Resolve entity ids once, here, so the frontend can send a decision back
+        # without the untranslated key having to survive a round trip.
+        note_payload = []
+        for upd in note_updates:
+            entity_id = upd.get("entity_id") or self.entity_manager.get_entity_id(
+                book_id, upd["untranslated"], upd.get("category"))
+            note_payload.append({**upd, "entity_id": entity_id})
+
+        self.job_manager.await_prompt("review", {
             "entities": serializable, "context": context, "phase": phase,
             "gendered_categories": gendered_categories,
-        }
+            "note_updates": note_payload,
+        })
         self.job_manager.send_message_sync({
             "type": "entity_review_needed",
             "entities": serializable,
             "context": context,
             "phase": phase,
             "gendered_categories": gendered_categories,
+            "note_updates": note_payload,
         })
 
+        bits = []
+        if count:
+            bits.append(f'{count} new entit{"y" if count == 1 else "ies"}')
+        if note_payload:
+            n_gender = sum(1 for u in note_payload if u.get("new_gender"))
+            n_note = sum(1 for u in note_payload if u.get("new_note"))
+            parts = []
+            if n_note:
+                parts.append(f'{n_note} note change{"" if n_note == 1 else "s"}')
+            if n_gender:
+                parts.append(f'{n_gender} gender correction{"" if n_gender == 1 else "s"}')
+            bits.append(" and ".join(parts) if parts else
+                        f'{len(note_payload)} entity change'
+                        f'{"" if len(note_payload) == 1 else "s"}')
         self.job_manager.log_activity(
             type='entity_review',
-            message=f'{count} new entit{"y" if count == 1 else "ies"} found — review required.',
+            message=f'{" and ".join(bits)} found — review required.',
         )
 
         # Block until user submits (or timeout)
-        result = self.job_manager.wait_for_review()
+        result = self.job_manager.wait_for_review() or {}
+
+        # Split the reply: entity edits are the return value (unchanged contract),
+        # note decisions are left for the caller to apply.
+        self.reviewed_note_updates = self._resolve_note_decisions(
+            note_payload, result.get("note_updates") if isinstance(result, dict) else None)
+        if isinstance(result, dict) and "note_updates" in result:
+            result = {k: v for k, v in result.items() if k != "note_updates"}
         return result
+
+    def _resolve_note_decisions(self, proposed: List[Dict], decisions) -> List[Dict]:
+        """Merge the user's note-update decisions with what the model proposed.
+
+        decisions is {entity_id or untranslated: {"note": str, "gender": str,
+        "rejected": bool}}. A proposal the reply doesn't mention is kept (Approve
+        accepts everything on screen, matching how entity rows work); one marked
+        rejected is dropped; one whose note or gender was changed on screen is
+        attributed to the human who changed it.
+
+        A cleared gender is honoured as "don't correct it" rather than as a write
+        of NULL: blanking the field in the panel is how you decline the gender
+        half of an entry while keeping the note half.
+        """
+        if decisions is None:
+            # Skip Review, or a client too old to know about the field: leave the
+            # notes alone rather than applying changes nobody looked at.
+            return []
+        if not isinstance(decisions, dict):
+            return list(proposed)
+
+        approved = []
+        for upd in proposed:
+            decision = decisions.get(str(upd.get("entity_id")))
+            if decision is None:
+                decision = decisions.get(upd.get("untranslated"))
+            if decision is None:
+                approved.append(upd)
+                continue
+            if not isinstance(decision, dict):
+                approved.append(upd)
+                continue
+            if decision.get("rejected") or decision.get("deleted"):
+                continue
+            resolved, human = dict(upd), False
+
+            edited_note = decision.get("note")
+            if isinstance(edited_note, str) and edited_note.strip() and \
+                    edited_note.strip() != (upd.get("new_note") or ""):
+                resolved["new_note"] = edited_note.strip()
+                human = True
+
+            if "gender" in decision:
+                chosen = decision.get("gender")
+                chosen = chosen.strip().lower() if isinstance(chosen, str) else None
+                if chosen != (upd.get("new_gender") or None):
+                    # Blanked on screen (or switched to a different value) — either
+                    # way the human decided it, not the model.
+                    resolved["new_gender"] = chosen or None
+                    human = True
+
+            if not resolved.get("new_note") and not resolved.get("new_gender"):
+                continue  # everything in the entry was declined
+            if human:
+                resolved["author"] = "human"
+            approved.append(resolved)
+        return approved
 
     def _log_cleaned_entities(self):
         """Log cleaned (removed) entities to the activity log with add-entity links."""

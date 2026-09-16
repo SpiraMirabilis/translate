@@ -37,6 +37,11 @@ SCHEMA = {
     "debug_mode":              ("DEBUG",                   False,                     bool),
     "public_library":          ("T9_PUBLIC_LIBRARY",       True,                      bool),
     "trad_to_simp":            ("TRAD_TO_SIMP",            False,                     bool),
+    # May the translation model revise notes — and correct gender — on entities
+    # it already knows? Every change is snapshotted (entity_note_revisions /
+    # entity_gender_revisions) and revertible, so this is a kill switch rather
+    # than the safety mechanism.
+    "entity_note_updates":     ("ENTITY_NOTE_UPDATES",     True,                      bool),
     "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),

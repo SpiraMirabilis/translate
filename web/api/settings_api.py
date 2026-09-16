@@ -103,6 +103,7 @@ def get_settings():
         "email_backend": getattr(_config, "email_backend", "ses"),
         "site_base_url": getattr(_config, "site_base_url", ""),
         "trad_to_simp": getattr(_config, "trad_to_simp", False),
+        "entity_note_updates": getattr(_config, "entity_note_updates", True),
         "disable_content_cache": getattr(_config, "disable_content_cache", False),
         "disable_media_cache": getattr(_config, "disable_media_cache", False),
         "overload_retry_wait_seconds": getattr(
@@ -134,6 +135,7 @@ class SettingsUpdate(BaseModel):
     email_backend: Optional[str] = None
     site_base_url: Optional[str] = None
     trad_to_simp: Optional[bool] = None
+    entity_note_updates: Optional[bool] = None
     disable_content_cache: Optional[bool] = None
     disable_media_cache: Optional[bool] = None
     overload_retry_wait_seconds: Optional[int] = None

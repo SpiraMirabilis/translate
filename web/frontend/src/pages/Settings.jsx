@@ -204,6 +204,42 @@ export default function Settings() {
         </section>
       )}
 
+      {/* Entity notes */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Entity Notes</h2>
+          <div className="card p-4 space-y-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.entity_note_updates !== false}
+                onChange={e => setSettings(s => ({ ...s, entity_note_updates: e.target.checked }))}
+              />
+              Let the translation model revise notes and correct gender on existing entities
+              <span className="text-xs text-slate-500 font-normal">— rare by instruction, capped at 5 entities per chapter; every change is revertible from the Entities page</span>
+            </label>
+          </div>
+        </section>
+      )}
+
+      {/* Footnote candidates */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Footnote Candidates</h2>
+          <div className="card p-4 space-y-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.footnote_inline_scan !== false}
+                onChange={e => setSettings(s => ({ ...s, footnote_inline_scan: e.target.checked }))}
+              />
+              Allow collecting footnote candidates during translation
+              <span className="text-xs text-slate-500 font-normal">— which books do this is set per book, in the Footnote Candidate Scanner module; turning this off sends them all back to a separate scan pass</span>
+            </label>
+          </div>
+        </section>
+      )}
+
       {/* WordPress */}
       <WordPressSection />
 

@@ -165,10 +165,60 @@ class GeminiProvider(ModelProvider):
             },
         }
 
+        # Optional channel for revising notes on already-known entities. Left out
+        # of "required" — the model is told to omit it when nothing changed — but
+        # it must be in the schema at all or structured output makes the channel
+        # unusable on Gemini.
+        note_updates_schema = {
+            "type": "object",
+            "properties": {
+                "example": {
+                    "type": "object",
+                    "properties": {
+                        "note": {"type": "string"},
+                        # The same entry carries a gender correction. Only offered
+                        # when the book tracks gender on some category — a schema
+                        # field the prompt never explains is an invitation to
+                        # invent one.
+                        **({"gender": {"type": "string",
+                                       "enum": ["male", "female", "neutral"]}}
+                           if gendered else {}),
+                        "reason": {"type": "string"},
+                    },
+                },
+            },
+        }
+        want_note_updates = bool(response_format.get("note_updates"))
+
+        # Footnote candidates, for a book that folds the scan into the
+        # translation pass. Same rule as note_updates: optional, so out of
+        # "required", but absent from the schema entirely the model cannot emit
+        # it at all under structured output.
+        footnote_candidates_schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "term_zh": {"type": "string"},
+                    "term_en": {"type": "string"},
+                    "body": {"type": "string"},
+                    "sentence": {"type": "string"},
+                },
+            },
+        }
+        want_footnotes = bool(response_format.get("footnote_candidates"))
+
+        def _optional(props):
+            if want_note_updates:
+                props["note_updates"] = note_updates_schema
+            if want_footnotes:
+                props["footnote_candidates"] = footnote_candidates_schema
+            return props
+
         if mode == "entity_only":
             return {
                 "type": "object",
-                "properties": {"entities": entities_schema},
+                "properties": _optional({"entities": entities_schema}),
                 "required": ["entities"],
             }
         if mode == "translate_only":
@@ -180,7 +230,7 @@ class GeminiProvider(ModelProvider):
         # Default ("full"): everything required
         return {
             "type": "object",
-            "properties": {**text_props, "entities": entities_schema},
+            "properties": _optional({**text_props, "entities": entities_schema}),
             "required": ["title", "chapter", "summary", "content", "entities"],
         }
 

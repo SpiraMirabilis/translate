@@ -218,8 +218,13 @@ def update_entity(entity_id: int, req: EntityUpdate):
         updates["gender"] = req.gender
     if req.incorrect_translation is not None:
         updates["incorrect_translation"] = req.incorrect_translation
+    # The note goes through set_entity_note rather than the generic column
+    # update: every note change — model, human or script — is snapshotted into
+    # entity_note_revisions so the audit feed and Revert work on one timeline.
+    # `gender` below is diverted the same way by update_entity_by_id, into
+    # entity_gender_revisions.
     if req.note is not None:
-        updates["note"] = req.note
+        _entity_manager.set_entity_note(entity_id, req.note, author='human')
 
     if updates:
         _entity_manager.update_entity_by_id(entity_id, **updates)
@@ -599,9 +604,28 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
                     if title_changed:
                         title_affected += 1
 
+            # Entity notes freeze the terminology that was current when they were
+            # extracted, and they are fed back into later translations — so a
+            # rename leaves stale English in the notes of entities born in the
+            # swept chapters, which would re-seed the old term. Same blast radius
+            # as the prose sweep: a restricted sweep (safer / from_chapter) only
+            # touches notes of entities originating in the chapters it ran over;
+            # a book-wide sweep is book-wide here too (chapter_numbers=None).
+            note_scope = None
+            if req.safer or req.from_chapter is not None:
+                note_scope = {ch["chapter_number"] for ch in chapters}
+            notes_affected = _entity_manager.substitute_in_entity_notes(
+                book_id,
+                req.old_translation,
+                req.new_translation,
+                chapter_numbers=note_scope,
+                cursor=cursor,
+            )
+
             if affected or title_affected:
                 # Bump modified_date so cached EPUB/AZW3 (version stamp) and
                 # CDN objects regenerate; same side effect as save_chapter.
+                # Notes never reach the rendered book, so they don't bump it.
                 cursor.execute(
                     "UPDATE books SET modified_date = ? WHERE id = ?",
                     (datetime.datetime.now().isoformat(), book_id),
@@ -611,6 +635,7 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
                 "status": "ok",
                 "affected": affected,
                 "title_affected": title_affected,
+                "notes_affected": notes_affected,
             }
             if candidates is not None:
                 result["candidates"] = candidates
@@ -711,6 +736,10 @@ def propagate_change(req: PropagateRequest, background_tasks: BackgroundTasks):
             _entity_manager.invalidate_epub_cache(book_id)
         except Exception:
             pass
+    if notes_affected:
+        # The in-memory entity dictionary carries the notes that go into
+        # translation prompts — reload it so the rewritten ones take effect.
+        _entity_manager._load_entities()
     return result
 
 
@@ -747,3 +776,60 @@ def _run_pronoun_repair(entity_id: int, target_gender: str, translation: str, bo
             )
         except Exception:
             pass
+
+
+# ------------------------------------------------------------------
+# Entity note history
+# ------------------------------------------------------------------
+
+
+@router.get("/note-revisions")
+def list_note_revisions(book_id: Optional[int] = Query(None),
+                        entity_id: Optional[int] = Query(None),
+                        limit: int = Query(50, ge=1, le=500)):
+    """Recent note changes, newest first.
+
+    Scope with entity_id (one entity's timeline) or book_id (the book's feed).
+    The translation model may revise notes on entities it already knows, and
+    with entity review off it does so unattended — this is where those changes
+    are reviewed after the fact.
+    """
+    return {"revisions": _entity_manager.list_note_revisions(
+        book_id=book_id, entity_id=entity_id, limit=limit)}
+
+
+@router.post("/note-revisions/{revision_id}/revert")
+def revert_note_revision(revision_id: int):
+    """Restore the note a revision replaced (itself recorded as a revision)."""
+    new_revision_id = _entity_manager.revert_note_revision(revision_id)
+    if new_revision_id is None:
+        raise HTTPException(status_code=404,
+                            detail="Revision not found, or the note already matches it.")
+    return {"status": "ok", "revision_id": new_revision_id}
+
+
+@router.get("/gender-revisions")
+def list_gender_revisions(book_id: Optional[int] = Query(None),
+                          entity_id: Optional[int] = Query(None),
+                          limit: int = Query(50, ge=1, le=500)):
+    """Recent gender changes, newest first.
+
+    Gender decides an entity's pronouns in every later chapter and is not shown
+    in the prose the way a translation is, so a wrong flip is invisible until it
+    reads wrong. The model may correct one through the note_updates channel —
+    unattended when entity review is off — and this is the feed where those are
+    checked afterwards. Only changes appear here: an entity that was born with
+    its gender never writes a row.
+    """
+    return {"revisions": _entity_manager.list_gender_revisions(
+        book_id=book_id, entity_id=entity_id, limit=limit)}
+
+
+@router.post("/gender-revisions/{revision_id}/revert")
+def revert_gender_revision(revision_id: int):
+    """Restore the gender a revision replaced (itself recorded as a revision)."""
+    new_revision_id = _entity_manager.revert_gender_revision(revision_id)
+    if new_revision_id is None:
+        raise HTTPException(status_code=404,
+                            detail="Revision not found, or the gender already matches it.")
+    return {"status": "ok", "revision_id": new_revision_id}

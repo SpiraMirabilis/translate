@@ -105,6 +105,79 @@ class TestCountEntitiesByCategory:
         assert counts == {"characters": 3, "places": 1}
 
 
+class TestSubstituteInEntityNotes:
+    """A rename must not leave the old term stranded in entity notes: notes are
+    fed back into later translations, so a stale one re-seeds the corrected term.
+    """
+
+    def test_scoped_to_origin_chapter(self, db, book):
+        inside = _add_entity(db, untranslated="李四", translation="Li Si", book_id=book,
+                             origin_chapter=5, note="Elder of the Azure Sword Sect.")
+        outside = _add_entity(db, untranslated="王五", translation="Wang Wu", book_id=book,
+                              origin_chapter=9, note="Rival from the Azure Sword Sect.")
+
+        changed = db.substitute_in_entity_notes(
+            book, "Azure Sword Sect", "Cyan Blade Sect", chapter_numbers={5},
+        )
+
+        assert changed == 1
+        assert db.get_entity_by_id(inside)["note"] == "Elder of the Cyan Blade Sect."
+        assert db.get_entity_by_id(outside)["note"] == "Rival from the Azure Sword Sect."
+
+    def test_book_wide_sweep_takes_every_note(self, db, book):
+        """chapter_numbers=None mirrors a book-wide prose sweep — including
+        entities whose origin_chapter is NULL, which no chapter set can match."""
+        no_origin = _add_entity(db, untranslated="王五", translation="Wang Wu", book_id=book,
+                                note="Guards the Azure Sword Sect gate.")
+        far = _add_entity(db, untranslated="李四", translation="Li Si", book_id=book,
+                          origin_chapter=900, note="Azure Sword Sect elder.")
+
+        changed = db.substitute_in_entity_notes(book, "Azure Sword Sect", "Cyan Blade Sect")
+
+        assert changed == 2
+        assert "Cyan Blade Sect" in db.get_entity_by_id(no_origin)["note"]
+        assert "Cyan Blade Sect" in db.get_entity_by_id(far)["note"]
+
+    def test_leaves_other_books_and_globals_alone(self, db, book):
+        other_book = db.create_book(title="Other Book")
+        other = _add_entity(db, untranslated="李四", translation="Li Si", book_id=other_book,
+                            origin_chapter=5, note="Azure Sword Sect elder.")
+        glob = _add_entity(db, untranslated="王五", translation="Wang Wu", book_id=None,
+                           origin_chapter=5, note="Azure Sword Sect founder.")
+
+        assert db.substitute_in_entity_notes(book, "Azure Sword Sect", "Cyan Blade Sect") == 0
+        assert db.get_entity_by_id(other)["note"] == "Azure Sword Sect elder."
+        assert db.get_entity_by_id(glob)["note"] == "Azure Sword Sect founder."
+
+    def test_dry_run_counts_without_writing(self, db, book):
+        eid = _add_entity(db, untranslated="李四", translation="Li Si", book_id=book,
+                          origin_chapter=5, note="Azure Sword Sect elder.")
+
+        assert db.substitute_in_entity_notes(
+            book, "Azure Sword Sect", "Cyan Blade Sect", dry_run=True) == 1
+        assert db.get_entity_by_id(eid)["note"] == "Azure Sword Sect elder."
+
+    def test_word_boundary_and_case_preservation(self, db, book):
+        """Same chapter_text_ops semantics as the prose sweep: positional casing
+        is preserved, and -w fences the match to whole words."""
+        eid = _add_entity(db, untranslated="李四", translation="Li Si", book_id=book,
+                          origin_chapter=5, note="Dai leads them; Daiyu does not.")
+
+        changed = db.substitute_in_entity_notes(
+            book, "Dai", "Tai", chapter_numbers={5}, word_boundary=True,
+        )
+
+        assert changed == 1
+        assert db.get_entity_by_id(eid)["note"] == "Tai leads them; Daiyu does not."
+
+    def test_noop_when_translation_unchanged(self, db, book):
+        _add_entity(db, untranslated="李四", translation="Li Si", book_id=book,
+                    origin_chapter=5, note="Azure Sword Sect elder.")
+
+        assert db.substitute_in_entity_notes(book, "Azure Sword Sect", "Azure Sword Sect") == 0
+        assert db.substitute_in_entity_notes(book, "", "Cyan Blade Sect") == 0
+
+
 class TestChapterProofread:
     def _save(self, db, book, num):
         assert db.save_chapter(

@@ -6,14 +6,14 @@
  * On submit, sends edited entity data back to the API.
  */
 import { useState } from 'react'
-import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen, Copy } from 'lucide-react'
+import { CheckCircle, Trash2, Sparkles, ChevronDown, ChevronRight, BookOpen, Copy, StickyNote, AlertTriangle, Undo2 } from 'lucide-react'
 import { api } from '../services/api'
 import { copyToClipboard } from '../utils/clipboard'
 import { useTransientFlag } from '../hooks/useTransientFlag'
 import { DictResult, useDictLookup } from './DictLookup'
 import { DEFAULT_CATEGORIES, getCatBadge, catBadgeProps } from '../utils/categories'
 
-export default function EntityReviewPanel({ entities, context, onDone, phase = 'post', genderedCategories }) {
+export default function EntityReviewPanel({ entities, context, onDone, phase = 'post', genderedCategories, bookId = null, noteUpdates = [] }) {
   // Categories that carry a gender attribute for this book (from the review payload).
   // Falls back to the legacy "characters" default when the backend didn't supply a list.
   const genderedSet = (genderedCategories && genderedCategories.length)
@@ -53,6 +53,27 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
   }
 
   const [rows, setRows] = useState(initialRows)
+  // Proposed revisions to notes on entities the book already knows. Accepted by
+  // default (Approve takes what's on screen, same as entity rows); the note text
+  // is editable, and rejecting leaves the existing note untouched.
+  const [noteRows, setNoteRows] = useState(() => (noteUpdates || []).map((u, i) => ({
+    key: String(u.entity_id ?? u.untranslated ?? i),
+    entityId: u.entity_id ?? null,
+    untranslated: u.untranslated,
+    translation: u.translation || '',
+    oldNote: u.old_note || '',
+    note: u.new_note || '',
+    originalNote: u.new_note || '',
+    // A proposed gender correction on the same entry. hasGender records that the
+    // model actually proposed one, so clearing the picker reads as "decline the
+    // gender half" rather than as a row that never had one.
+    hasGender: !!u.new_gender,
+    oldGender: u.old_gender || '',
+    gender: u.new_gender || '',
+    reason: u.reason || '',
+    shrink: !!u.shrink,
+    rejected: false,
+  })))
   const [showContext, setShowContext] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
@@ -106,7 +127,21 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
           result[row.category][row.untranslated] = entry
         }
       }
-      await api.submitReview({ entities: result })
+      // Note decisions travel in their own map, keyed by entity id — the backend
+      // reads an omitted map as "leave every note alone".
+      const noteResult = {}
+      for (const n of noteRows) {
+        if (n.rejected) {
+          noteResult[n.key] = { rejected: true }
+        } else {
+          const decision = { note: n.note }
+          // Only entries that proposed a gender send one back; null means the
+          // reviewer cleared it, which declines that half and keeps the note.
+          if (n.hasGender) decision.gender = n.gender || null
+          noteResult[n.key] = decision
+        }
+      }
+      await api.submitReview({ entities: result, book_id: bookId, note_updates: noteResult })
       onDone()
     } catch (e) {
       setError(e.message)
@@ -117,7 +152,7 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
   const handleSkip = async () => {
     setSubmitting(true)
     try {
-      await api.skipReview()
+      await api.skipReview(bookId)
       onDone()
     } catch (e) {
       setError(e.message)
@@ -158,9 +193,11 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
               {phase === 'pre' ? 'Entity Review (Two-pass)' : 'Entity Review'}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
+              {`${activeRows.length} new ${activeRows.length === 1 ? 'entity' : 'entities'}`}
+              {noteRows.length > 0 && ` and ${noteRows.length} ${noteRows.length === 1 ? 'change' : 'changes'} to known entities`}
               {phase === 'pre'
-                ? `${activeRows.length} new ${activeRows.length === 1 ? 'entity' : 'entities'} found — review and edit before translation begins`
-                : `${activeRows.length} new ${activeRows.length === 1 ? 'entity' : 'entities'} found — review and edit before saving`}
+                ? ' — review and edit before translation begins'
+                : ' — review and edit before saving'}
             </p>
           </div>
           <div className="flex gap-2">
@@ -188,6 +225,77 @@ export default function EntityReviewPanel({ entities, context, onDone, phase = '
             <pre className="text-xs text-slate-300 whitespace-pre-wrap font-mono leading-relaxed max-h-28 overflow-y-auto">
               {context.slice(0, 800)}{context.length > 800 ? '…' : ''}
             </pre>
+          </div>
+        )}
+
+        {/* Proposed note revisions on entities the book already knows */}
+        {noteRows.length > 0 && (
+          <div className="px-5 py-3 border-b border-slate-700 bg-amber-500/5 shrink-0 max-h-64 overflow-y-auto">
+            <p className="text-xs text-amber-300/90 mb-2 flex items-center gap-1.5">
+              <StickyNote size={13} />
+              Note and gender changes on existing entities ({noteRows.filter(n => !n.rejected).length} of {noteRows.length} accepted)
+            </p>
+            <div className="space-y-2">
+              {noteRows.map(n => (
+                <div
+                  key={n.key}
+                  className={`rounded border border-slate-700 bg-slate-900/60 px-3 py-2 ${n.rejected ? 'opacity-40' : ''}`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-mono text-slate-200">{n.untranslated}</span>
+                    {n.translation && <span className="text-xs text-slate-400">→ {n.translation}</span>}
+                    {n.shrink && (
+                      <span
+                        className="text-[11px] text-amber-400 flex items-center gap-1"
+                        title="Much shorter than the note it replaces"
+                      >
+                        <AlertTriangle size={11} /> shorter
+                      </span>
+                    )}
+                    <button
+                      className="text-xs text-slate-500 hover:text-slate-300 ml-auto flex items-center gap-1"
+                      onClick={() => setNoteRows(prev => prev.map(r =>
+                        r.key === n.key ? { ...r, rejected: !r.rejected } : r))}
+                    >
+                      {n.rejected ? <><Undo2 size={12} /> Keep change</> : <><Trash2 size={12} /> Reject</>}
+                    </button>
+                  </div>
+                  {n.oldNote && (
+                    <p className="text-xs text-slate-500 mb-1">
+                      <span className="text-slate-600">was:</span> {n.oldNote}
+                    </p>
+                  )}
+                  {(n.note || !n.hasGender) && (
+                    <input
+                      className="input text-xs w-full"
+                      value={n.note}
+                      disabled={n.rejected}
+                      onChange={e => setNoteRows(prev => prev.map(r =>
+                        r.key === n.key ? { ...r, note: e.target.value } : r))}
+                    />
+                  )}
+                  {n.hasGender && (
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-[11px] text-slate-500">
+                        gender: <span className="text-slate-400">{n.oldGender || '(unset)'}</span> →
+                      </span>
+                      <GenderPicker
+                        value={n.gender}
+                        disabled={n.rejected}
+                        onChange={g => setNoteRows(prev => prev.map(r =>
+                          r.key === n.key ? { ...r, gender: g } : r))}
+                      />
+                      <span className="text-[11px] text-slate-600">
+                        clear to keep {n.oldGender || 'it unset'}
+                      </span>
+                    </div>
+                  )}
+                  {n.reason && (
+                    <p className="text-[11px] text-slate-500 mt-1 italic">{n.reason}</p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -273,27 +381,10 @@ function EntityRow({ row, categories, gendered, onUpdate, onDelete, onAdvice, on
 
         {/* Gender (for gender-tracked categories) */}
         {gendered && (
-          <div className="flex shrink-0 gap-0.5">
-            {[
-              { value: 'male', symbol: '♂', color: 'text-blue-400 bg-blue-900/60 border-blue-500' },
-              { value: 'female', symbol: '♀', color: 'text-pink-400 bg-pink-900/60 border-pink-500' },
-              { value: 'neutral', symbol: '⚲', color: 'text-slate-300 bg-slate-700/60 border-slate-400' },
-            ].map(g => (
-              <button
-                key={g.value}
-                type="button"
-                title={g.value}
-                className={`w-7 h-7 flex items-center justify-center rounded border text-sm leading-none transition-colors ${
-                  row.gender === g.value
-                    ? g.color
-                    : 'text-slate-500 bg-slate-800/40 border-slate-700 hover:border-slate-500'
-                }`}
-                onClick={() => onUpdate({ gender: row.gender === g.value ? '' : g.value })}
-              >
-                {g.symbol}
-              </button>
-            ))}
-          </div>
+          <GenderPicker
+            value={row.gender}
+            onChange={g => onUpdate({ gender: g })}
+          />
         )}
 
         {/* Note */}
@@ -371,6 +462,41 @@ function EntityRow({ row, categories, gendered, onUpdate, onDelete, onAdvice, on
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * GenderPicker
+ *
+ * Three-way toggle used both on a new entity row and on a proposed correction to
+ * a known entity. Clicking the active value clears it — on a correction row that
+ * is how you decline the gender half while keeping the note.
+ */
+export function GenderPicker({ value, onChange, disabled = false }) {
+  const options = [
+    { value: 'male', symbol: '♂', color: 'text-blue-400 bg-blue-900/60 border-blue-500' },
+    { value: 'female', symbol: '♀', color: 'text-pink-400 bg-pink-900/60 border-pink-500' },
+    { value: 'neutral', symbol: '⚲', color: 'text-slate-300 bg-slate-700/60 border-slate-400' },
+  ]
+  return (
+    <div className="flex shrink-0 gap-0.5">
+      {options.map(g => (
+        <button
+          key={g.value}
+          type="button"
+          title={g.value}
+          disabled={disabled}
+          className={`w-7 h-7 flex items-center justify-center rounded border text-sm leading-none transition-colors ${
+            value === g.value
+              ? g.color
+              : 'text-slate-500 bg-slate-800/40 border-slate-700 hover:border-slate-500'
+          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          onClick={() => onChange(value === g.value ? '' : g.value)}
+        >
+          {g.symbol}
+        </button>
+      ))}
     </div>
   )
 }

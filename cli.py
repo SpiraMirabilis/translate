@@ -1089,13 +1089,13 @@ class CommandLineInterface(UserInterface):
         )
 
         if book_id:
-            # Apply genre preset: prompt template and categories (derived from prompt)
+            # Apply genre preset: prompt template, plus the genre's declared categories
             if genre_obj:
-                from genres import read_genre_prompt, extract_categories_meta_from_prompt
+                from genres import read_genre_prompt, genre_categories
                 prompt = read_genre_prompt(self.entity_manager.config.script_dir, genre_obj)
                 if prompt:
                     self.entity_manager.set_book_prompt_template(book_id, prompt)
-                    cats = extract_categories_meta_from_prompt(prompt)
+                    cats = genre_categories(genre_obj, prompt)
                     if cats:
                         self.entity_manager.set_book_categories(book_id, cats)
 
@@ -1831,7 +1831,44 @@ class CommandLineInterface(UserInterface):
         else:
             print(json.dumps(data, indent=4, ensure_ascii=False))
     
-    def review_entities(self, data, untranslated_text=[], phase='post'):
+    def _review_note_updates(self, note_updates):
+        """Show proposed note/gender revisions and ask once whether to take them.
+
+        Kept deliberately coarse (all or nothing): the CLI's entity review is a
+        long enough prompt chain already, and every change is revertible from the
+        Entities page afterwards.
+        """
+        updates = list(note_updates or [])
+        if not updates:
+            return []
+        if self.no_review:
+            return updates
+
+        print("\n📝 The model proposes revising entities it already knows:")
+        for upd in updates:
+            print(f"\n  {upd['untranslated']} ({upd.get('translation', '')})")
+            if upd.get("new_note"):
+                print(f"    old note: {upd.get('old_note') or '(none)'}")
+                print(f"    new note: {upd['new_note']}")
+            if upd.get("new_gender"):
+                print(f"    gender:   {upd.get('old_gender') or '(unset)'} → {upd['new_gender']}")
+            if upd.get("reason"):
+                print(f"    why: {upd['reason']}")
+            if upd.get("shrink"):
+                print("    ⚠️  much shorter than the note it replaces")
+
+        if not self.has_rich_ui:
+            print("Rich UI components not available — keeping the existing records.")
+            return []
+        try:
+            import questionary
+            if questionary.confirm("Apply these revisions?", default=True).ask():
+                return updates
+        except Exception as e:
+            self.logger.error(f"Note-update prompt failed: {e}")
+        return []
+
+    def review_entities(self, data, untranslated_text=[], phase='post', note_updates=None):
         """
         Using questionary to display interactive prompts.
         Returns a dictionary of edited data.
@@ -1839,7 +1876,13 @@ class CommandLineInterface(UserInterface):
         `phase` is 'post' (default; after translation) or 'pre' (two-pass mode, before
         translation). The CLI ignores the phase for UX — the data shape is identical —
         but accepts the kwarg so the shared two-pass branch in ui.py can pass it.
+
+        `note_updates` are the model's proposed revisions to the notes and genders
+        of known entities; the CLI shows them and asks once, leaving the approved
+        ones on self.reviewed_note_updates for ui.py to apply.
         """
+        self.reviewed_note_updates = self._review_note_updates(note_updates)
+
         # Check if there are any entities to review
         has_entities = any(data.get(category, {}) for category in data)
 

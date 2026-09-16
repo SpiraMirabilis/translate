@@ -22,6 +22,12 @@ from providers.base import (
 )
 
 
+# The genders an entity may carry, mirroring EntitiesRepo.VALID_GENDERS. Kept
+# here as a literal rather than imported so the engine's validation does not
+# depend on a database module (it is exercised with entity_manager=None).
+GENDER_VALUES = frozenset({"male", "female", "neutral"})
+
+
 class TranslationCancelled(Exception):
     """Raised when the user cancels an in-flight translation.
 
@@ -359,6 +365,45 @@ class TranslationEngine:
 
             entities_example[cat] = cat_example
 
+        # Optional note_updates channel — shown as an example so the model knows
+        # the shape, with the "rare, omit when empty" rule carried in the prompt
+        # text. Keyed with a real entity that already has a note when one is
+        # available, so the example is concrete.
+        note_updates_example = None
+        if note_updates_enabled and mode != 'translate_only':
+            # Prefer a gender-tracked entity that already carries a note, so the
+            # one worked entry can show both halves of the channel at once.
+            # Resolve the gender-tracked set the same way the entity entries do,
+            # so a contextless call still renders the legacy "characters" default.
+            gendered_example = set(self._resolved_gendered(list(categories), gendered_categories))
+            sample_key = sample_cat = None
+            for want_gendered in (True, False):
+                for cat in categories:
+                    if want_gendered and cat not in gendered_example:
+                        continue
+                    for key, entry in (entities.get(cat) or {}).items():
+                        if isinstance(entry, dict) and entry.get("note"):
+                            sample_key, sample_cat = key, cat
+                            break
+                    if sample_key:
+                        break
+                if sample_key:
+                    break
+            if sample_key is None:
+                sample_cat = next((c for c in categories if c in gendered_example),
+                                  categories[0] if categories else "characters")
+                sample_key = self._placeholder_entity_key(sample_cat, source_language)
+            example_entry = {
+                "note": "Replacement note, carrying forward everything still true.",
+            }
+            # The gender field only exists for a category the book tracks it on.
+            # Ordered between note and reason, the way the prompt describes them.
+            if sample_cat in gendered_example:
+                example_entry["gender"] = "female"
+            example_entry["reason"] = (
+                "What this chapter established that the old record got wrong.")
+            note_updates_example = {sample_key: example_entry}
+
         # Build the final template, preserving non-entity fields from the base if available
         if mode == 'entity_only':
             template = {"entities": entities_example}
@@ -387,10 +432,13 @@ class TranslationEngine:
             if mode != 'translate_only':
                 template["entities"] = entities_example
 
+        if note_updates_example is not None:
+            template["note_updates"] = note_updates_example
+
         return json.dumps(template, ensure_ascii=False, indent=4)
 
     @staticmethod
-    def _entity_response_format(mode=None, categories=None, gendered_categories=None):
+    def _entity_response_format(mode=None, categories=None, gendered_categories=None, note_updates=False, footnote_candidates=False):
         """Build the OpenAI-style response_format dict, carrying the book's entity
         categories and which of them are gender-tracked so structured-output
         providers (Gemini) can build a matching schema. Non-Gemini providers
@@ -402,8 +450,41 @@ class TranslationEngine:
             rf["categories"] = categories
         if gendered_categories is not None:
             rf["gendered_categories"] = gendered_categories
+        if note_updates:
+            rf["note_updates"] = True
         return rf
 
+    @staticmethod
+    def _gender_update_section(gendered_categories):
+        """The GENDER paragraph appended to ENTITY NOTES, or "".
+
+        Gender rides the same note_updates entry rather than a channel of its
+        own: the two travel together (a reveal that fixes a pronoun usually
+        rewrites the note as well), and one channel means one cap, one review
+        section and one block of prompt. Empty for a book whose categories track
+        no gender — there is nothing for the model to correct.
+        """
+        gendered = [c for c in (gendered_categories or []) if c]
+        if not gendered:
+            return ""
+        which = ", ".join(f'"{c}"' for c in gendered)
+        return (
+            "\nCORRECTING GENDER: the same entry also carries the entity's gender. For an entity "
+            f"in {which}, add a \"gender\" field (\"male\", \"female\" or \"neutral\") when the "
+            "gender recorded in the PRE-TRANSLATED ENTITIES block is wrong:\n"
+            "\"note_updates\": {\"<untranslated entity>\": {\"gender\": \"female\", \"reason\": "
+            "\"why it was wrong\"}}\n"
+            "- \"note\" and \"gender\" are independent — send either one alone, or both in the same "
+            "entry.\n"
+            "- Source-language pronouns are often absent or ambiguous, so an early chapter's guess "
+            "can be wrong, and every later chapter is translated against it. Correct it the chapter "
+            "the text settles it.\n"
+            "- Only correct a gender the text has actually established. A character nobody has "
+            "gendered yet is left alone.\n"
+            "- If the character genuinely changes gender in the story, set the gender to what is "
+            "true from here on and record the change in the note (what they were before, and what "
+            "happened) — the gender field itself keeps no history.\n"
+        )
 
     @staticmethod
     def _resolved_gendered(categories, gendered_categories):
@@ -567,6 +648,49 @@ class TranslationEngine:
                 "'chapter', 'summary', and 'content'.\n"
             )
 
+        # Entity-note maintenance. Delivered from code rather than the prompt
+        # corpus: per-book templates are frozen copies taken at book creation,
+        # so a prompt-file feature would reach only books created afterwards.
+        if mode != 'translate_only' and getattr(self.config, 'entity_note_updates', True):
+            prompt = prompt.rstrip() + (
+                "\n\n---\n\n"
+                "ENTITY NOTES:\n"
+                "An entity in the PRE-TRANSLATED ENTITIES block may carry a \"note\" — standing "
+                "guidance recorded in an earlier chapter (who someone really is, gender, register, "
+                "how a term must be rendered, where they stood at that point in the story). Treat "
+                "existing notes as binding while you translate.\n\n"
+                "NOTES ON NEW ENTITIES: add a \"note\" to any new entity whenever it will help a "
+                "future chapter translate that entity consistently. There is no limit — every new "
+                "entity in this chapter may carry one if each is warranted.\n\n"
+                "KEEPING NOTES CURRENT: a note that has gone stale is worse than no note at all, "
+                "because every later chapter is translated against it. When this chapter moves a "
+                "note's facts on, say so — add a top-level \"note_updates\" object to your JSON (a "
+                "sibling of \"entities\"), keyed by the entity's original untranslated text:\n"
+                "\"note_updates\": {\"<untranslated entity>\": {\"note\": \"the complete replacement "
+                "note\", \"reason\": \"why it changed\"}}\n\n"
+                "Update a note when:\n"
+                "- a fact recorded in it has moved on in the story — a character's age after a time "
+                "skip, a cultivation realm or power level after a breakthrough, a rank, title, sect "
+                "or office after a promotion, expulsion or defection, an allegiance or relationship "
+                "that has changed;\n"
+                "- this chapter established a hard fact the note lacks or contradicts (a gender "
+                "reveal, a true identity, a hidden connection);\n"
+                "- you are correcting an earlier guess of your own that the text has now settled;\n"
+                "- the entity needs rendering or consistency guidance for future chapters.\n\n"
+                "Rules for an update:\n"
+                "- The \"note\" you emit REPLACES the old one entirely — carry forward everything in "
+                "the old note that is still true.\n"
+                "- Keep it to one or two sentences, under 500 characters.\n"
+                "- NEVER use a note for plot summary or a recap of what happened to a character. A "
+                "note records what a translator must know to render this entity correctly from here "
+                "on, not what happened in the story.\n"
+                "- Only name entities that are already in the PRE-TRANSLATED ENTITIES block; this "
+                "channel cannot create entities.\n"
+                "- Many chapters need no updates and some need two or three; a chapter that changes "
+                "nothing standing should omit \"note_updates\" entirely. At most 5 entries.\n"
+            ) + self._gender_update_section(
+                self._resolved_gendered(list(entities.keys()), gendered_categories))
+
 
         # The response contract itself, rendered for this mode. Gemini gets the
         # prose but not the worked example — its native responseSchema supersedes
@@ -661,6 +785,183 @@ class TranslationEngine:
             return True
         return False
 
+    # Guards on the note_updates channel. Nothing here blocks a bad rewrite —
+    # entity_note_revisions does that by making every change revertible — these
+    # only keep the channel from being used for things it isn't for. The
+    # per-chapter cap is sized for a time-skip chapter that ages or promotes
+    # several characters at once, not for a chapter rewriting the glossary.
+    NOTE_UPDATE_MAX_CHARS = 500
+    NOTE_UPDATE_MAX_PER_CHAPTER = 5
+
+    def apply_historic_notes(self, entities, book_id, chapter_number):
+        """Rewind the glossary's notes to how they read at `chapter_number`.
+
+        Notes accumulate as the book advances, so by the time chapter 34 is
+        retranslated its entities carry chapter-300 facts — the protagonist's
+        current cultivation realm, who someone turned out to be. Feeding those
+        back into an early chapter leaks the future into it. Entity
+        *translations* stay current (renderings must stay consistent across the
+        book); only the notes are wound back.
+
+        For a chapter at the head of the book this is a no-op: nothing was
+        revised after it. Returns True when the notes are historic, meaning this
+        run is translating behind the note timeline.
+        """
+        if not book_id or not isinstance(chapter_number, int) or chapter_number <= 0:
+            return False
+        if not self.entity_manager.has_note_revisions_after(book_id, chapter_number):
+            return False
+
+        historic = self.entity_manager.notes_as_of(book_id, chapter_number,
+                                                   key_by='untranslated')
+        if not historic:
+            return False
+
+        changed = 0
+        for ents in entities.values():
+            if not isinstance(ents, dict):
+                continue
+            for key, data in ents.items():
+                if not isinstance(data, dict) or key not in historic:
+                    continue
+                was, now = (data.get("note") or ""), (historic[key] or "")
+                if was == now:
+                    continue
+                if now:
+                    data["note"] = historic[key]
+                else:
+                    data.pop("note", None)
+                changed += 1
+
+        if changed:
+            self.logger.info(
+                f"Notes rewound to chapter {chapter_number} for {changed} entit"
+                f"{'y' if changed == 1 else 'ies'} (retranslating behind the note timeline)")
+        return True
+
+    def validate_note_updates(self, raw, book_id, existing_entities, chapter_number=None,
+                              gendered_categories=None):
+        """Turn the model's raw note_updates object into applicable updates.
+
+        existing_entities is the book's entity snapshot ({category: {key: data}}) —
+        the channel may only touch entities that are already in it, so an update
+        can never create an entity or reach another book's glossary.
+
+        An entry may revise the entity's ``note``, its ``gender``, or both; one
+        carrying neither is dropped. A gender is only accepted for a category the
+        book tracks gender on (``gendered_categories``; None means the legacy
+        "characters" default) and only for one of the three recorded values.
+
+        Returns a list of dicts: {untranslated, category, translation, old_note,
+        new_note, old_gender, new_gender, reason, shrink}. ``new_note`` is None
+        when the entry only changes gender and ``new_gender`` is None when it
+        only changes the note. Rejections are logged, never raised: a malformed
+        update must not cost a translated chapter.
+        """
+        if not raw or not isinstance(raw, dict):
+            return []
+        if not getattr(self.config, 'entity_note_updates', True):
+            self.logger.info("note_updates: channel disabled in settings, ignoring "
+                             f"{len(raw)} proposed update(s)")
+            return []
+
+        gendered = set(self._resolved_gendered(
+            list((existing_entities or {}).keys()), gendered_categories))
+
+        # Flatten the snapshot once: {untranslated: (category, data)}
+        by_key = {}
+        for category, ents in (existing_entities or {}).items():
+            if not isinstance(ents, dict):
+                continue
+            for key, data in ents.items():
+                if isinstance(data, dict):
+                    by_key.setdefault(key, (category, data))
+
+        updates = []
+        for key, payload in raw.items():
+            if len(updates) >= self.NOTE_UPDATE_MAX_PER_CHAPTER:
+                self.logger.warning(
+                    f"note_updates: over the per-chapter cap of "
+                    f"{self.NOTE_UPDATE_MAX_PER_CHAPTER}, dropping update for '{key}'")
+                continue
+
+            new_note = payload.get("note") if isinstance(payload, dict) else payload
+            reason = payload.get("reason") if isinstance(payload, dict) else None
+            raw_gender = payload.get("gender") if isinstance(payload, dict) else None
+            new_note = (new_note or "").strip() if isinstance(new_note, str) else ""
+
+            if key not in by_key:
+                self.logger.warning(
+                    f"note_updates: '{key}' is not an existing entity of this book — dropped "
+                    "(this channel cannot create entities)")
+                continue
+
+            category, data = by_key[key]
+
+            # ── the gender half ──────────────────────────────────────────────
+            new_gender = None
+            if isinstance(raw_gender, str) and raw_gender.strip():
+                candidate = raw_gender.strip().lower()
+                old_gender = (data.get("gender") or "").strip().lower()
+                if category not in gendered:
+                    self.logger.warning(
+                        f"note_updates: gender for '{key}' dropped — category "
+                        f"'{category}' does not track gender in this book")
+                elif candidate not in GENDER_VALUES:
+                    self.logger.warning(
+                        f"note_updates: gender '{raw_gender}' for '{key}' is not one of "
+                        f"{sorted(GENDER_VALUES)} — dropped")
+                elif candidate == old_gender:
+                    self.logger.debug(f"note_updates: gender no-op for '{key}' — dropped")
+                else:
+                    new_gender = candidate
+            elif raw_gender is not None:
+                self.logger.warning(
+                    f"note_updates: unusable gender value for '{key}' — dropped")
+
+            # ── the note half ────────────────────────────────────────────────
+            old_note = (data.get("note") or "").strip()
+            if not new_note:
+                # Clearing a note stays a human action; an empty note here is
+                # almost always the model omitting the field by accident. A
+                # gender-only entry is legitimate, so this is not fatal on its own.
+                if new_gender is None:
+                    self.logger.warning(
+                        f"note_updates: entry for '{key}' changes nothing — dropped")
+                    continue
+                new_note = None
+            elif len(new_note) > self.NOTE_UPDATE_MAX_CHARS:
+                self.logger.warning(
+                    f"note_updates: note for '{key}' is {len(new_note)} chars "
+                    f"(cap {self.NOTE_UPDATE_MAX_CHARS}) — dropped")
+                if new_gender is None:
+                    continue
+                new_note = None
+            elif " ".join(new_note.split()) == " ".join(old_note.split()):
+                if new_gender is None:
+                    self.logger.debug(f"note_updates: no-op for '{key}' — dropped")
+                    continue
+                new_note = None
+
+            updates.append({
+                "untranslated": key,
+                "category": category,
+                "translation": data.get("translation", ""),
+                "old_note": old_note,
+                "new_note": new_note,
+                "old_gender": (data.get("gender") or "").strip().lower() or None,
+                "new_gender": new_gender,
+                "reason": (reason or "").strip() if isinstance(reason, str) else "",
+                # A note that loses more than half its length is the shape a
+                # clobber takes; flagged for the audit panel, not blocked.
+                "shrink": bool(new_note) and bool(old_note) and len(new_note) < len(old_note) * 0.5,
+                "chapter_number": chapter_number,
+            })
+
+        if updates:
+            self.logger.info(f"note_updates: {len(updates)} update(s) accepted for review/apply")
+        return updates
+
     def combine_json_chunks(self, chunk1_data, chunk2_data, current_chapter):
         """
         Combine two JSON-like chapter data chunks into one by merging their
@@ -737,10 +1038,21 @@ class TranslationEngine:
                         chunk1_data["entities"][category][key]["gender"] = data["gender"]
                     if "incorrect_translation" in data:
                         chunk1_data["entities"][category][key]["incorrect_translation"] = data["incorrect_translation"]
+                    if data.get("note"):
+                        # Without this, a note on an entity first seen in chunk 2+
+                        # was silently dropped on the way to the database.
+                        chunk1_data["entities"][category][key]["note"] = data["note"]
                 else:
                     # Update existing entity's last_chapter field
                     chunk1_data["entities"][category][key]["last_chapter"] = current_chapter
-        
+
+        # Merge the note-update channel across chunks; a later chunk saw more of
+        # the chapter, so it wins on a key both chunks touched.
+        if chunk2_data.get("note_updates"):
+            merged = dict(chunk1_data.get("note_updates") or {})
+            merged.update(chunk2_data["note_updates"])
+            chunk1_data["note_updates"] = merged
+
         return chunk1_data
     
     def get_translation_options(self, node, untranslated_text):
@@ -858,7 +1170,8 @@ class TranslationEngine:
         return parsed_response
     
     def extract_entities(self, chapter_text, book_id=None, chapter_number=None,
-                         progress_callback=None, retranslation_reason=None, should_cancel=None):
+                         progress_callback=None, retranslation_reason=None, should_cancel=None,
+                         return_note_updates=False):
         """
         Pass-1 of two-pass mode: identify new entities in the chapter without
         translating any prose. Makes a single non-streaming API call over the
@@ -917,6 +1230,9 @@ class TranslationEngine:
             for cat in DEFAULT_CATEGORIES:
                 old_entities.setdefault(cat, {})
 
+        # Same point-in-time rule as translate_chapter: a retranslation sees the
+        # notes as they read at its own chapter, and may not write forward.
+        notes_are_historic = self.apply_historic_notes(old_entities, book_id, chapter_number)
         book_categories = self.entity_manager.get_book_categories(book_id) if book_id else None
         gendered_categories = self.entity_manager.get_book_gendered_categories(book_id) if book_id else None
         system_prompt = self.generate_system_prompt(
@@ -928,7 +1244,6 @@ class TranslationEngine:
         )
 
         # Save the pass-1 prompt for debugging (mirrors translate_chapter's behavior)
-        self.entity_manager.save_json_file(f"{self.config.script_dir}/prompt.tmp", system_prompt)
 
         chunk_str = "\n".join(chapter_text)
         user_text = "Identify the entities in the following text. Do NOT translate the prose.\n" + chunk_str
@@ -937,7 +1252,8 @@ class TranslationEngine:
             progress_callback({"phase": "entity_extract", "chunk": 1, "total": 1})
 
         # Pass mode hint to providers (Gemini uses it to pick the right schema)
-        response_format = self._entity_response_format("entity_only", book_categories, gendered_categories)
+        response_format = self._entity_response_format("entity_only", book_categories, gendered_categories,
+                                                       note_updates=getattr(self.config, 'entity_note_updates', True))
 
         MAX_RETRIES = 2
         parsed = None
@@ -1012,6 +1328,19 @@ class TranslationEngine:
                 if isinstance(val, dict):
                     val.setdefault("last_chapter", ch)
 
+        if return_note_updates:
+            # Two-pass books do all their entity work here: pass 2 is
+            # translate-only, so this is the pass that can revise notes — and it
+            # runs before pass 2 builds its prompt, so an approved change is
+            # already in the glossary pass 2 is given.
+            if notes_are_historic and (parsed or {}).get("note_updates"):
+                self.logger.info(
+                    "note_updates: ignored — this chapter is being retranslated behind "
+                    "the note timeline, so its view of the notes is out of date")
+            note_updates = [] if notes_are_historic else self.validate_note_updates(
+                (parsed or {}).get("note_updates"), book_id, old_entities, ch or chapter_number,
+                gendered_categories=gendered_categories)
+            return new_entities, note_updates
         return new_entities
 
     def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None, pass2_only=False, chapter_title=None, should_cancel=None):
@@ -1092,9 +1421,12 @@ class TranslationEngine:
             for cat in DEFAULT_CATEGORIES:
                 old_entities.setdefault(cat, {})
 
+        # Point-in-time notes: retranslating chapter N must see the notes as they
+        # read at N, not the ones later chapters wrote. No-op for a new chapter.
+        notes_are_historic = self.apply_historic_notes(old_entities, book_id, chapter_number)
+
         real_old_entities = old_entities
         self.logger.debug(f"translate_chapter: old_entities keys={list(old_entities.keys())}, book_id={book_id}")
-        self.logger.debug(f"translate_chapter: entity_manager.entities keys={list(self.entity_manager.entities.keys())}")
 
         # Calculate chunks count, ensuring at least 1 chunk
         max_chars = self.config.get_max_chars(self.config.translation_model)
@@ -1201,7 +1533,9 @@ class TranslationEngine:
                                 model=model_name,
                                 temperature=1,
                                 top_p=1,
-                                response_format=self._entity_response_format(None, book_categories, gendered_categories),
+                                response_format=self._entity_response_format(
+                                    None, book_categories, gendered_categories,
+                                    note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True)),
                                 stream=True
                             )
 
@@ -1401,7 +1735,9 @@ class TranslationEngine:
                             model=model_name,
                             temperature=1,
                             top_p=1,
-                            response_format=self._entity_response_format(None, book_categories, gendered_categories)
+                            response_format=self._entity_response_format(
+                                None, book_categories, gendered_categories,
+                                note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True))
                         )
                         response_content = provider.get_response_content(response)
                         usage = response.get("usage", {}) if isinstance(response, dict) else {}
@@ -1537,6 +1873,20 @@ class TranslationEngine:
             chapter_text, end_object.get('content', [])
         )
 
+        # Proposed revisions to notes on entities the book already knows. Validated
+        # against the pre-run snapshot, so the model can only touch what it was shown.
+        # Suppressed when the notes were rewound: this run only saw the glossary as
+        # it read back then, so an update from it would regress notes that later
+        # chapters have already moved on, and would land out of order in the
+        # history that makes the rewind possible in the first place.
+        if notes_are_historic and end_object.get('note_updates'):
+            self.logger.info(
+                "note_updates: ignored — this chapter is being retranslated behind "
+                "the note timeline, so its view of the notes is out of date")
+        note_updates = [] if (pass2_only or notes_are_historic) else self.validate_note_updates(
+            end_object.get('note_updates'), book_id, real_old_entities, current_chapter,
+            gendered_categories=gendered_categories)
+
         return {
             "end_object": end_object,
             "new_entities": new_entities,
@@ -1544,7 +1894,8 @@ class TranslationEngine:
             "old_entities": old_entities,
             "real_old_entities": real_old_entities,
             "current_chapter": current_chapter,
-            "total_char_count": total_char_count
+            "total_char_count": total_char_count,
+            "note_updates": note_updates,
         }
 
     def reconcile_illustration_markers(self, source_lines, translated_lines):

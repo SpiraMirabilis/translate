@@ -150,6 +150,10 @@ export const api = {
   propagateChange:  (body)       => post('/api/entities/propagate', body),
   batchEntities:    (body)       => post('/api/entities/batch', body),
   decaseEntity:     (body)       => post('/api/entities/decase', body),
+  listNoteRevisions: (params)    => get('/api/entities/note-revisions?' + new URLSearchParams(params)),
+  revertNoteRevision: (id)       => post(`/api/entities/note-revisions/${id}/revert`, {}),
+  listGenderRevisions: (params)  => get('/api/entities/gender-revisions?' + new URLSearchParams(params)),
+  revertGenderRevision: (id)     => post(`/api/entities/gender-revisions/${id}/revert`, {}),
 
   // Queue
   listQueue:        (bookId)     => get(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),

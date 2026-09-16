@@ -29,14 +29,130 @@ class UserInterface(ABC):
         pass
     
     @abstractmethod
-    def review_entities(self, entities: Dict, untranslated_text: List[str], phase: str = 'post') -> Dict:
+    def review_entities(self, entities: Dict, untranslated_text: List[str], phase: str = 'post',
+                        note_updates: List[Dict] = None) -> Dict:
         """Allow the user to review and edit entities.
 
         `phase` is 'post' (default — review after the chapter is translated, single-pass)
         or 'pre' (review before chapter prose is translated, two-pass mode). Subclasses
         may use phase to label the UI appropriately; the data shape is identical.
+
+        `note_updates` carries the model's proposed revisions to the notes and
+        genders of entities the book already knows (see
+        TranslationEngine.validate_note_updates). The return value stays "edited
+        entities" as it always was; approved updates are left on
+        `self.reviewed_note_updates` for the caller to apply, so this contract and
+        every consumer of the return value are unchanged.
         """
         pass
+
+    def _write_entity_note(self, entity_id, existing_note, incoming_note, *,
+                           human_edited, chapter_number, cursor=None):
+        """Apply the note that came in on the *entities* channel, if it may.
+
+        Precedence (unchanged in behaviour, moved out of SQL so the write can be
+        recorded in entity_note_revisions):
+          - no incoming note        -> nothing happens; omitting one never clears.
+          - human-edited in review  -> the reviewer's note wins outright.
+          - model-volunteered       -> written only when there is no note yet.
+            An existing note is never clobbered here: the model re-emits known
+            entities routinely, and revising a known entity's note is what the
+            separate note_updates channel is for.
+
+        Returns the revision id when a write happened, else None.
+        """
+        if incoming_note is None or not str(incoming_note).strip():
+            return None
+        if not human_edited and (existing_note or "").strip():
+            return None
+        return self.entity_manager.set_entity_note(
+            entity_id, incoming_note,
+            author='human' if human_edited else 'model',
+            chapter_number=chapter_number, cursor=cursor)
+
+    def _write_entity_gender(self, entity_id, existing_gender, incoming_gender, *,
+                             human_edited, chapter_number, cursor=None):
+        """Apply the gender that came in on the *entities* channel, if it may.
+
+        The same precedence as _write_entity_note, for the same reason:
+          - no incoming gender     -> nothing happens; omitting one never clears.
+          - human-edited in review -> the reviewer's choice wins outright.
+          - model-volunteered      -> written only when none is recorded yet.
+            The model re-emits known entities every chapter, so letting it
+            overwrite here would make a single bad guess silently flip a
+            character's pronouns for the rest of the book. Revising a known
+            entity's gender is what the note_updates channel is for, where the
+            change is deliberate, reviewable and recorded.
+
+        Returns the revision id when a write happened, else None.
+        """
+        if incoming_gender is None or not str(incoming_gender).strip():
+            return None
+        if not human_edited and (existing_gender or "").strip():
+            return None
+        return self.entity_manager.set_entity_gender(
+            entity_id, incoming_gender,
+            author='human' if human_edited else 'model',
+            chapter_number=chapter_number, cursor=cursor)
+
+    def _apply_note_updates(self, updates: List[Dict], chapter_number=None, author='model'):
+        """Write approved revisions through the repo's note/gender choke points.
+
+        One update may carry a new note, a corrected gender, or both — they ride
+        the same channel because they usually move together (the chapter that
+        reveals who someone is fixes the pronouns too). Each write snapshots the
+        value it replaces (entity_note_revisions / entity_gender_revisions), so
+        a change that turns out to be wrong is one Revert away on the Entities
+        page. Failures are logged and skipped — neither is worth losing a
+        translated chapter over.
+
+        Returns the number of entities on which something was written.
+        """
+        if not updates:
+            return 0
+        applied = 0
+        for upd in updates:
+            try:
+                entity_id = upd.get("entity_id") or self.entity_manager.get_entity_id(
+                    self.book_id, upd["untranslated"], upd.get("category"))
+                if not entity_id:
+                    self.logger.warning(
+                        f"note update: entity '{upd.get('untranslated')}' not found for "
+                        f"book {self.book_id} — skipped")
+                    continue
+                touched = False
+                if upd.get("new_note"):
+                    revision_id = self.entity_manager.set_entity_note(
+                        entity_id, upd["new_note"],
+                        author=upd.get("author", author),
+                        chapter_number=upd.get("chapter_number", chapter_number),
+                        reason=upd.get("reason") or None,
+                        shrink=bool(upd.get("shrink")),
+                    )
+                    if revision_id:
+                        touched = True
+                        self.logger.info(
+                            f"note updated for '{upd['untranslated']}' "
+                            f"({upd.get('translation', '')}): {upd['new_note'][:80]}")
+                if upd.get("new_gender"):
+                    revision_id = self.entity_manager.set_entity_gender(
+                        entity_id, upd["new_gender"],
+                        author=upd.get("author", author),
+                        chapter_number=upd.get("chapter_number", chapter_number),
+                        reason=upd.get("reason") or None,
+                    )
+                    if revision_id:
+                        touched = True
+                        self.logger.info(
+                            f"gender corrected for '{upd['untranslated']}' "
+                            f"({upd.get('translation', '')}): "
+                            f"{upd.get('old_gender') or '(unset)'} → {upd['new_gender']}")
+                if touched:
+                    applied += 1
+            except Exception as e:
+                self.logger.error(f"Failed to apply note update for "
+                                  f"{upd.get('untranslated')}: {e}")
+        return applied
 
     def check_chapter_conflict(self, chapter_text: List[str]) -> bool:
         """
@@ -137,33 +253,43 @@ class UserInterface(ABC):
                     self.logger.info("Two-pass mode: running entity extraction pass before translation")
                     pre_extract_failed = False
                     try:
-                        pre_entities = self.translator.extract_entities(
+                        pre_entities, pre_note_updates = self.translator.extract_entities(
                             chapter_text,
                             book_id=getattr(self, 'book_id', None),
                             chapter_number=getattr(self, 'chapter_number', None),
                             progress_callback=getattr(self, 'progress_callback', None),
                             retranslation_reason=getattr(self, 'retranslation_reason', None),
                             should_cancel=getattr(self, 'should_cancel', None),
+                            return_note_updates=True,
                         )
                     except TranslationCancelled:
                         raise
                     except Exception as e:
                         self.logger.error(f"Two-pass entity extraction failed: {e}. Falling back to single-pass.")
                         pre_entities = None
+                        pre_note_updates = []
                         pre_extract_failed = True
 
                     if pre_extract_failed:
                         # Fall through to standard single-pass — user still gets post-translation review.
                         pass2_only = False
                     else:
-                        if pre_entities and any(v for v in pre_entities.values()):
-                            edited_pre = self.review_entities(pre_entities, chapter_text, phase='pre')
+                        self.reviewed_note_updates = list(pre_note_updates or [])
+                        if (pre_entities and any(v for v in pre_entities.values())) or pre_note_updates:
+                            edited_pre = self.review_entities(pre_entities or {}, chapter_text,
+                                                              phase='pre',
+                                                              note_updates=pre_note_updates)
                         else:
                             edited_pre = {}
 
                         # Persist approved entities BEFORE pass 2 builds its prompt so the
                         # pre-translated entities block contains the user's chosen names.
                         self._save_reviewed_entities(pre_entities or {}, edited_pre or {})
+                        # Same reason for note revisions: pass 2 must be given the
+                        # corrected note, not the one this pass just superseded.
+                        self._apply_note_updates(getattr(self, 'reviewed_note_updates', []),
+                                                 getattr(self, 'chapter_number', None))
+                        self.reviewed_note_updates = []
                         pass2_only = True
 
                 # Perform translation
@@ -239,10 +365,17 @@ class UserInterface(ABC):
                                 "last_chapter": current_chapter
                             }
                 
+                # Proposed revisions to notes on entities this book already knows.
+                # Approved (or, with review off, simply validated) updates are applied
+                # after the entity save below.
+                note_updates = translation_results.get("note_updates") or []
+                self.reviewed_note_updates = list(note_updates)
                 # Continue with regular entity review (skipped in two-pass mode —
-                # entities were already reviewed and persisted before pass 2 ran)
-                if not pass2_only and any(v for v in totally_new_entities.values()):
-                    edited_entities = self.review_entities(totally_new_entities, chapter_text)
+                # entities were already reviewed and persisted before pass 2 ran).
+                # A chapter that only proposes note changes still opens review.
+                if not pass2_only and (any(v for v in totally_new_entities.values()) or note_updates):
+                    edited_entities = self.review_entities(totally_new_entities, chapter_text,
+                                                            note_updates=note_updates)
                 else:
                     edited_entities = {}
                 
@@ -317,6 +450,8 @@ class UserInterface(ABC):
                                     incorrect_translation=incorrect_translation,
                                     gender=gender,
                                     note=note,
+                                    note_author='human',
+                                    note_chapter=current_chapter,
                                 )
 
                                 # Update end_object so direct SQL save stays consistent
@@ -382,47 +517,59 @@ class UserInterface(ABC):
 
                             # Check if entity exists with this book_id
                             cursor.execute('''
-                            SELECT id FROM entities
+                            SELECT id, note, gender FROM entities
                             WHERE untranslated = ? AND book_id = ?
                             ''', (key, self.book_id))
 
                             existing = cursor.fetchone()
 
                             if existing:
+                                entity_id, existing_note, existing_gender = existing[0], existing[1], existing[2]
                                 if is_new_or_edited:
                                     # New entity from LLM or edited during review — full update.
-                                    # Note handling:
-                                    #   human-edited -> COALESCE(?, note): the reviewer's note wins,
-                                    #                   and omitting one leaves the existing note alone.
-                                    #   model-emitted -> COALESCE(note, ?): an existing note ALWAYS wins.
-                                    # The model re-emits already-known entities routinely, so without
-                                    # this a volunteered note would silently clobber a curated one.
-                                    note_expr = ("COALESCE(?, note)"
-                                                 if (category, key) in human_edited_keys
-                                                 else "COALESCE(note, ?)")
-                                    cursor.execute(f'''
+                                    # Neither the note nor the gender column is written here:
+                                    # both go through their choke points below so the change
+                                    # is recorded (entity_note_revisions / entity_gender_revisions)
+                                    # and a model re-emitting a known entity cannot clobber
+                                    # what is already recorded.
+                                    cursor.execute('''
                                     UPDATE entities
-                                    SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?, gender = ?,
-                                        origin_chapter = COALESCE(origin_chapter, ?), note = {note_expr}
+                                    SET category = ?, translation = ?, last_chapter = ?, incorrect_translation = ?,
+                                        origin_chapter = COALESCE(origin_chapter, ?)
                                     WHERE id = ?
-                                    ''', (category, translation, last_chapter, incorrect_translation, gender, current_chapter, note, existing[0]))
+                                    ''', (category, translation, last_chapter, incorrect_translation, current_chapter, entity_id))
                                     self.logger.debug(f"Updated entity {key} ({translation}) in category {category} with book_id={self.book_id}")
+                                    self._write_entity_note(
+                                        entity_id, existing_note, note,
+                                        human_edited=(category, key) in human_edited_keys,
+                                        chapter_number=current_chapter, cursor=cursor)
+                                    self._write_entity_gender(
+                                        entity_id, existing_gender, gender,
+                                        human_edited=(category, key) in human_edited_keys,
+                                        chapter_number=current_chapter, cursor=cursor)
                                 else:
                                     # Pre-existing entity — only bump last_chapter to avoid
-                                    # overwriting edits made while translation was running
+                                    # overwriting edits made while translation was running.
+                                    # Its note is left alone too; the note_updates channel is
+                                    # the sanctioned way to revise a known entity's note.
                                     cursor.execute('''
                                     UPDATE entities
                                     SET last_chapter = ?
                                     WHERE id = ?
-                                    ''', (last_chapter, existing[0]))
+                                    ''', (last_chapter, entity_id))
                                     self.logger.debug(f"Bumped last_chapter for existing entity {key} in category {category}")
                             else:
-                                # Insert new — record origin_chapter
+                                # Insert new — record origin_chapter. The note follows
+                                # separately so its creation is a revision like any change.
                                 cursor.execute('''
                                 INSERT INTO entities
-                                (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, origin_chapter, note)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id, current_chapter, note))
+                                (category, untranslated, translation, last_chapter, incorrect_translation, gender, book_id, origin_chapter)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (category, key, translation, last_chapter, incorrect_translation, gender, self.book_id, current_chapter))
+                                self._write_entity_note(
+                                    cursor.lastrowid, None, note,
+                                    human_edited=(category, key) in human_edited_keys,
+                                    chapter_number=current_chapter, cursor=cursor)
                                 self.logger.debug(f"Added entity {key} ({translation}) to category {category} with book_id={self.book_id}")
 
                     conn.commit()
@@ -430,9 +577,18 @@ class UserInterface(ABC):
                     self.logger.info("Entities saved to database successfully")
                 except Exception as e:
                     self.logger.error(f"Error saving entities to database: {e}")
-                
-                # Update in-memory cache for consistent state
-                self.entity_manager._load_entities(book_id=self.book_id)
+
+                # Note revisions on entities that already existed. These ride their own
+                # channel (the entity save above still never lets a volunteered note
+                # clobber a curated one) and are applied here, after the entity rows are
+                # settled. With review on, this list is what the user approved; with
+                # review off, it is what validate_note_updates accepted — either way the
+                # replaced note is snapshotted and revertible.
+                applied_notes = self._apply_note_updates(
+                    getattr(self, 'reviewed_note_updates', []), current_chapter)
+                if applied_notes:
+                    self.logger.info(f"Applied {applied_notes} entity note revision(s)")
+                self.reviewed_note_updates = []
                 
                 # Incremental "Append & retranslate" merge: only the new segment was
                 # translated above. Prepend the existing chapter's already-translated
@@ -616,6 +772,8 @@ class UserInterface(ABC):
                         last_chapter=last_chapter,
                         gender=gender,
                         note=note,
+                        note_author='human',
+                        note_chapter=chapter_number or None,
                     )
                     self.logger.debug(f"Two-pass: saved entity {key} -> {translation} ({category})")
         else:
@@ -636,11 +794,14 @@ class UserInterface(ABC):
                         last_chapter=last_chapter,
                         gender=gender,
                         note=note,
+                        note_author='model',
+                        note_chapter=chapter_number or None,
                     )
                     self.logger.debug(f"Two-pass (skip-review): saved entity {key} -> {translation} ({category})")
 
-        # Refresh the in-memory cache so pass-2's prompt picks up the saved entities
-        self.entity_manager._load_entities(book_id=book_id)
+        # No cache refresh needed: translate_chapter() takes its own per-run entity
+        # snapshot at entry (get_entities_snapshot), so pass 2 already sees the
+        # entities pass 1 just wrote.
 
     def _filter_existing_entities(self, data: Dict):
         """

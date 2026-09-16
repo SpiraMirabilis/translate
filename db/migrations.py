@@ -534,6 +534,115 @@ def _m017_chapters_book_rollup_indexes(conn, cursor, backend, logger):
             cursor.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
 
 
+_ENTITY_NOTE_REVISIONS_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS entity_note_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            book_id INTEGER,
+            previous_note TEXT,
+            new_note TEXT,
+            author TEXT NOT NULL DEFAULT 'model',
+            chapter_number INTEGER,
+            reason TEXT,
+            shrink INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS entity_note_revisions (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            entity_id INTEGER NOT NULL,
+            book_id INTEGER,
+            previous_note TEXT,
+            new_note TEXT,
+            author VARCHAR(16) NOT NULL DEFAULT 'model',
+            chapter_number INTEGER,
+            reason TEXT,
+            shrink TINYINT NOT NULL DEFAULT 0,
+            created_at VARCHAR(50) NOT NULL,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m018_entity_note_revisions(conn, cursor, backend, logger):
+    """History of every change to an entity's note, whoever made it.
+
+    The translation model may now revise notes on existing entities
+    (note_updates channel); nothing is locked, so the safety net is that each
+    write snapshots the prior note here and can be reverted one click. Human
+    and script note edits are recorded on the same timeline."""
+    cursor.execute(_ENTITY_NOTE_REVISIONS_DDL[backend.name])
+    for name, target in (
+        ("idx_entity_note_revisions_book", "entity_note_revisions(book_id, id)"),
+        ("idx_entity_note_revisions_entity", "entity_note_revisions(entity_id, id)"),
+    ):
+        try:
+            cursor.execute(f"CREATE INDEX {name} ON {target}")
+        except Exception:
+            # Index already exists (fresh installs create it via baseline DDL)
+            pass
+
+
+_ENTITY_GENDER_REVISIONS_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS entity_gender_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            book_id INTEGER,
+            previous_gender TEXT,
+            new_gender TEXT,
+            author TEXT NOT NULL DEFAULT 'model',
+            chapter_number INTEGER,
+            reason TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS entity_gender_revisions (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            entity_id INTEGER NOT NULL,
+            book_id INTEGER,
+            previous_gender VARCHAR(16),
+            new_gender VARCHAR(16),
+            author VARCHAR(16) NOT NULL DEFAULT 'model',
+            chapter_number INTEGER,
+            reason TEXT,
+            created_at VARCHAR(50) NOT NULL,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m020_entity_gender_revisions(conn, cursor, backend, logger):
+    """History of every change to an entity's gender, whoever made it.
+
+    The translation model may now correct gender on entities it already knows
+    (the same note_updates channel), and a wrong flip is otherwise invisible
+    until pronouns go wrong chapters later. Unlike notes this is NOT a
+    point-in-time record — the current gender is the only truth, and a genuine
+    in-story transformation is recorded by correcting the gender and saying so
+    in the entity's note. These rows exist so a change can be seen and undone.
+
+    Only *changes* are recorded: an entity born with a gender writes no row,
+    which keeps the feed to what somebody might want to disagree with."""
+    cursor.execute(_ENTITY_GENDER_REVISIONS_DDL[backend.name])
+    for name, target in (
+        ("idx_entity_gender_revisions_book", "entity_gender_revisions(book_id, id)"),
+        ("idx_entity_gender_revisions_entity", "entity_gender_revisions(entity_id, id)"),
+    ):
+        try:
+            cursor.execute(f"CREATE INDEX {name} ON {target}")
+        except Exception:
+            # Index already exists (fresh installs create it via baseline DDL)
+            pass
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -552,6 +661,8 @@ MIGRATIONS = [
     Migration(15, "queue_claim_status", _m015_queue_claim_status),
     Migration(16, "footnote_candidates", _m016_footnote_candidates),
     Migration(17, "chapters_book_rollup_indexes", _m017_chapters_book_rollup_indexes),
+    Migration(18, "entity_note_revisions", _m018_entity_note_revisions),
+    Migration(20, "entity_gender_revisions", _m020_entity_gender_revisions),
 ]
 
 

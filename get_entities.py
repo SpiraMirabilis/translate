@@ -8,12 +8,34 @@ Usage:
     python get_entities.py --book 1 --origin-chapter ">15" --output entities.json
     python get_entities.py --book 1 --origin-chapter "<100"
     python get_entities.py --book 1 --origin-chapter 42
+    python get_entities.py --book 1 --as-of-chapter 34
+    python get_entities.py --book 1 --origin-chapter 1-20 --current-notes
 
 Filter syntax for --origin-chapter:
     N         exact chapter
     N-M       inclusive range
     >N, >=N   greater than (or equal)
     <N, <=N   less than (or equal)
+
+NOTES ARE SHOWN AS OF A POINT IN TIME.
+Entity notes accumulate as a book advances, so today's note on the protagonist
+describes the protagonist at the latest chapter. Asking for an early stretch of
+the book and being handed late-book notes is misleading, so an --origin-chapter
+filter with an upper bound (N, N-M, <N, <=N) also winds the notes back to that
+chapter; --as-of-chapter N sets the point explicitly, and --current-notes turns
+the rewind off. Translations are never wound back — a name's rendering is
+supposed to be the same in every chapter.
+
+Where a note's history is incomplete (notes written before the revision log
+existed have no creation record) you get the closest thing known in time rather
+than a guess, and entities that did not exist yet report no note at all.
+
+THE CHAPTER FILTER FOLLOWS NOTES TOO.
+origin_chapter alone answers "what was introduced here", which misses an entity
+that has been around since chapter 1 but whose note was rewritten during the
+range — exactly the entity a review of that range cares about. So --origin-chapter
+also matches entities whose note changed inside it, tagged "note updated chN" in
+the output. --origin-only restores the old origin_chapter-only behaviour.
 
 ------------------------------------------------------------------------
 MIGRATION TEMPLATE — this script (and correct_entity_translation.py) are
@@ -55,7 +77,7 @@ from db import DatabaseManager
 from logger import Logger
 
 
-def parse_chapter_filter(expr):
+def parse_chapter_filter(expr, column="origin_chapter"):
     """Parse an origin_chapter filter expression into (sql_fragment, params).
 
     Returns (None, []) if expr is falsy.
@@ -71,20 +93,47 @@ def parse_chapter_filter(expr):
         lo, hi = int(m.group(1)), int(m.group(2))
         if lo > hi:
             lo, hi = hi, lo
-        return "origin_chapter BETWEEN ? AND ?", [lo, hi]
+        return f"{column} BETWEEN ? AND ?", [lo, hi]
 
     m = re.fullmatch(r"(>=|<=|>|<|=)\s*(\d+)", s)
     if m:
         op, n = m.group(1), int(m.group(2))
         if op == "=":
             op = "="
-        return f"origin_chapter {op} ?", [n]
+        return f"{column} {op} ?", [n]
 
     m = re.fullmatch(r"\d+", s)
     if m:
-        return "origin_chapter = ?", [int(s)]
+        return f"{column} = ?", [int(s)]
 
     raise ValueError(f"Unrecognized chapter filter: {expr!r}")
+
+
+def filter_upper_bound(expr):
+    """The latest chapter an --origin-chapter filter can match, or None.
+
+    This is the point the notes are wound back to when the caller doesn't name
+    one: asking for chapters 1-20 means asking about the book as it stood at 20.
+    An open-ended filter ('>15') has no upper bound, so notes stay current.
+    """
+    if not expr:
+        return None
+    s = expr.strip()
+
+    m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", s)
+    if m:
+        return max(int(m.group(1)), int(m.group(2)))
+
+    m = re.fullmatch(r"(<=|<|=)\s*(\d+)", s)
+    if m:
+        n = int(m.group(2))
+        return n - 1 if m.group(1) == "<" else n
+
+    m = re.fullmatch(r"\d+", s)
+    if m:
+        return int(s)
+
+    return None
 
 
 def resolve_book(db_manager, book_arg):
@@ -96,10 +145,45 @@ def resolve_book(db_manager, book_arg):
     return db_manager.get_book(title=book_arg)
 
 
-def fetch_entities(db_manager, book_id, chapter_clause, chapter_params):
-    """Query entities for the given book with optional origin_chapter filter."""
+def note_update_chapters(db_manager, book_id, chapter_expr):
+    """{entity_id: [chapter, ...]} for notes revised inside the filter's range.
+
+    An entity introduced at chapter 1 whose note was rewritten at chapter 245 is
+    part of what happened in chapters 240-260, even though its origin_chapter
+    says otherwise — this is what lets the chapter filter find it.
+    """
+    if not chapter_expr:
+        return {}
+    clause, params = parse_chapter_filter(chapter_expr, column="chapter_number")
+    if not clause:
+        return {}
+    out = {}
+    with db_manager._conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT entity_id, chapter_number FROM entity_note_revisions "
+            "WHERE (book_id = ? OR book_id IS NULL) AND " + clause + " ORDER BY id",
+            [book_id] + params)
+        for entity_id, chapter_number in cursor.fetchall():
+            out.setdefault(entity_id, []).append(chapter_number)
+    return out
+
+
+def fetch_entities(db_manager, book_id, chapter_clause, chapter_params,
+                   as_of_chapter=None, note_chapters=None):
+    """Query entities for the given book with optional origin_chapter filter.
+
+    With as_of_chapter set, each note is replaced by the note in force at the end
+    of that chapter (db/entities_repo.py::notes_as_of). Entities that carried no
+    note then simply have none here.
+
+    note_chapters ({entity_id: [chapter, ...]}, from note_update_chapters) widens
+    the chapter filter to entities whose *note* changed in the range, and tags
+    them so it is obvious why they are in the list.
+    """
+    note_chapters = note_chapters or {}
     query = """
-        SELECT category, untranslated, translation, last_chapter,
+        SELECT id, category, untranslated, translation, last_chapter,
                incorrect_translation, gender, book_id, origin_chapter, note
         FROM entities
         WHERE (book_id = ? OR book_id IS NULL)
@@ -107,8 +191,14 @@ def fetch_entities(db_manager, book_id, chapter_clause, chapter_params):
     params = [book_id]
 
     if chapter_clause:
-        query += f" AND {chapter_clause}"
-        params.extend(chapter_params)
+        if note_chapters:
+            placeholders = ",".join("?" * len(note_chapters))
+            query += f" AND ({chapter_clause} OR id IN ({placeholders}))"
+            params.extend(chapter_params)
+            params.extend(note_chapters.keys())
+        else:
+            query += f" AND {chapter_clause}"
+            params.extend(chapter_params)
 
     query += " ORDER BY category, COALESCE(origin_chapter, 0), untranslated"
 
@@ -118,6 +208,9 @@ def fetch_entities(db_manager, book_id, chapter_clause, chapter_params):
         cursor = conn.cursor()
         cursor.execute(query, params)
         rows = [dict(r) for r in cursor.fetchall()]
+
+    historic_notes = ({} if as_of_chapter is None
+                      else db_manager.notes_as_of(book_id, as_of_chapter))
 
     grouped = {}
     for row in rows:
@@ -131,8 +224,12 @@ def fetch_entities(db_manager, book_id, chapter_clause, chapter_params):
             entry["incorrect_translation"] = row["incorrect_translation"]
         if row["gender"]:
             entry["gender"] = row["gender"]
-        if row["note"]:
-            entry["note"] = row["note"]
+        note = (historic_notes.get(row["id"]) if as_of_chapter is not None
+                else row["note"])
+        if note:
+            entry["note"] = note
+        if note_chapters.get(row["id"]):
+            entry["note_updated_chapters"] = note_chapters[row["id"]]
         if row["book_id"] is None:
             entry["global"] = True
 
@@ -151,6 +248,9 @@ def main():
             "  --origin-chapter '>15'   chapters after 15\n"
             "  --origin-chapter '<=99'  chapters up to and including 99\n"
             "  --origin-chapter 42      exactly chapter 42\n"
+            "\nMatches entities introduced in the range OR whose note changed in it\n"
+            "(--origin-only for origin_chapter alone). Notes are shown as they read\n"
+            "at the end of the range unless --current-notes is given.\n"
         ),
     )
     parser.add_argument(
@@ -160,6 +260,21 @@ def main():
     parser.add_argument(
         "--origin-chapter", "-c", default=None,
         help="Origin chapter filter (e.g. '1-20', '>15', '<100', '42')."
+    )
+    parser.add_argument(
+        "--as-of-chapter", "-a", type=int, default=None,
+        help=("Show each note as it read at the end of this chapter, rather than "
+              "its latest text. Defaults to the upper bound of --origin-chapter "
+              "when that filter has one.")
+    )
+    parser.add_argument(
+        "--current-notes", action="store_true",
+        help="Show the latest note text even when --origin-chapter implies a point in time."
+    )
+    parser.add_argument(
+        "--origin-only", action="store_true",
+        help=("Match --origin-chapter against origin_chapter alone. By default an "
+              "entity also matches when its NOTE was revised inside the range.")
     )
     parser.add_argument(
         "--output", "-o", default=None,
@@ -187,12 +302,28 @@ def main():
         print(f"error: book not found: {args.book!r}", file=sys.stderr)
         sys.exit(1)
 
-    grouped = fetch_entities(db_manager, book["id"], chapter_clause, chapter_params)
+    # An --origin-chapter range is a question about a period of the book, so the
+    # notes should describe the book as it was then. --as-of-chapter overrides,
+    # --current-notes opts out.
+    as_of = args.as_of_chapter
+    if as_of is None and not args.current_notes:
+        as_of = filter_upper_bound(args.origin_chapter)
+    if args.current_notes:
+        as_of = None
+
+    # An entity whose note was rewritten during the range belongs to that range's
+    # glossary work even if it was introduced hundreds of chapters earlier.
+    note_chapters = ({} if args.origin_only
+                     else note_update_chapters(db_manager, book["id"], args.origin_chapter))
+
+    grouped = fetch_entities(db_manager, book["id"], chapter_clause, chapter_params,
+                             as_of_chapter=as_of, note_chapters=note_chapters)
 
     if args.format == "json":
         payload = {
             "book": {"id": book["id"], "title": book.get("title")},
             "filter": args.origin_chapter,
+            "notes_as_of_chapter": as_of,
             "entities": grouped,
         }
         rendered = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -200,6 +331,8 @@ def main():
         lines = [f"# {book.get('title')} (id={book['id']})"]
         if args.origin_chapter:
             lines.append(f"# origin_chapter filter: {args.origin_chapter}")
+        if as_of is not None:
+            lines.append(f"# notes as of chapter {as_of}")
         for category in sorted(grouped):
             entries = grouped[category]
             lines.append("")
@@ -212,6 +345,9 @@ def main():
                     extra.append(e["gender"])
                 if e.get("global"):
                     extra.append("global")
+                if e.get("note_updated_chapters"):
+                    chs = ",".join(f"ch{c}" for c in e["note_updated_chapters"])
+                    extra.append(f"note updated {chs}")
                 if e.get("note"):
                     extra.append(f"note={e['note']}")
                 suffix = f"  [{', '.join(extra)}]" if extra else ""

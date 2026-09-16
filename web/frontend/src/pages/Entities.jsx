@@ -4,7 +4,8 @@ import { api } from '../services/api'
 import {
   Search, Plus, Trash2, Edit2, AlertTriangle,
   X, ChevronDown, ChevronUp, ChevronsUpDown, Loader2,
-  Pin, CheckSquare, Square, FolderInput, ArrowRightLeft, Download
+  Pin, CheckSquare, Square, FolderInput, ArrowRightLeft, Download,
+  History, Undo2, StickyNote
 } from 'lucide-react'
 import { DEFAULT_CATEGORIES, catBadgeProps, isGenderedCategory } from '../utils/categories'
 import DeleteEntityModal from '../components/DeleteEntityModal'
@@ -185,7 +186,7 @@ export default function Entities() {
     ? entities.find(e => String(e.id) === editEntityModal.id) || null
     : null
 
-  const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
+  const booksQuery = useQuery({ queryKey: ['books', 'minimal'], queryFn: () => api.listBooksMinimal() })
   const books = booksQuery.data?.books || []
 
   // Book-specific categories when a (non-global) book filter is active
@@ -420,6 +421,9 @@ export default function Entities() {
         </div>
       )}
 
+      {/* Note-change audit — where model-written notes get a second look */}
+      {!loading && <NoteChangesPanel bookId={filterBook ? parseInt(filterBook, 10) : null} />}
+
       {/* Batch action bar */}
       {selected.size > 0 && (
         <div className="flex items-center gap-3 mb-4 px-4 py-2.5 rounded-lg bg-indigo-950/40 border border-indigo-800/50 flex-wrap">
@@ -521,6 +525,157 @@ const BASE_SORT_COLS = [
 ]
 
 const GENDER_COL = { key: 'gender', label: 'Gender' }
+
+/**
+ * NoteChangesPanel
+ *
+ * Notes are the translator's standing memory and gender decides its pronouns,
+ * and the translation model may revise either on entities it already knows.
+ * With entity review on you approve each change as it happens; with review off
+ * they apply unattended — this is where they get looked at afterwards. Both
+ * feeds are shown on one timeline because they arrive on one channel, and both
+ * are snapshots, so Revert puts the previous value back (and is itself
+ * recorded).
+ */
+function NoteChangesPanel({ bookId }) {
+  const [open, setOpen] = useState(false)
+  const [revisions, setRevisions] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [reverting, setReverting] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const params = { limit: 50 }
+      if (bookId) params.book_id = bookId
+      // Two tables, one timeline: the model revises a note and corrects a gender
+      // through the same channel, often in the same breath.
+      const [notes, genders] = await Promise.all([
+        api.listNoteRevisions(params),
+        api.listGenderRevisions(params),
+      ])
+      const merged = [
+        ...(notes.revisions || []).map(r => ({ ...r, kind: 'note' })),
+        ...(genders.revisions || []).map(r => ({ ...r, kind: 'gender' })),
+      ].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      setRevisions(merged.slice(0, 50))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [bookId])
+
+  useEffect(() => { if (open) load() }, [open, load])
+
+  const handleRevert = async (rev) => {
+    setReverting(`${rev.kind}:${rev.id}`)
+    try {
+      if (rev.kind === 'gender') await api.revertGenderRevision(rev.id)
+      else await api.revertNoteRevision(rev.id)
+      await load()
+    } catch (e) {
+      alert(`Revert failed: ${e.message}`)
+    } finally {
+      setReverting(null)
+    }
+  }
+
+  const authorBadge = (author) => {
+    const styles = {
+      model: 'bg-indigo-950/60 text-indigo-300',
+      human: 'bg-emerald-950/60 text-emerald-300',
+      script: 'bg-slate-800 text-slate-400',
+    }
+    return `text-[10px] px-1.5 py-0.5 rounded ${styles[author] || styles.script}`
+  }
+
+  return (
+    <div className="card overflow-hidden mb-4">
+      <button
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-750"
+        onClick={() => setOpen(v => !v)}
+      >
+        <div className="flex items-center gap-2">
+          <History size={14} className="text-slate-500" />
+          <span className="text-sm text-slate-300">Recent note &amp; gender changes</span>
+          {open && revisions.length > 0 && (
+            <span className="text-xs text-slate-500">{revisions.length}</span>
+          )}
+        </div>
+        <ChevronDown size={14} className={`text-slate-500 transition-transform ${open ? '' : '-rotate-90'}`} />
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-700 px-4 py-3">
+          {loading && <p className="text-xs text-slate-500">Loading…</p>}
+          {error && <p className="text-xs text-rose-400">{error}</p>}
+          {!loading && !error && revisions.length === 0 && (
+            <p className="text-xs text-slate-500">No note or gender changes recorded yet.</p>
+          )}
+          <div className="space-y-2">
+            {revisions.map(rev => (
+              <div key={`${rev.kind}:${rev.id}`} className="rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {rev.kind === 'gender'
+                    ? <span className="text-[13px] leading-none text-indigo-300" title="Gender change">⚥</span>
+                    : <StickyNote size={11} className="text-amber-500/60" />}
+                  <span className="text-sm font-mono text-slate-200">{rev.untranslated}</span>
+                  {rev.translation && <span className="text-xs text-slate-400">→ {rev.translation}</span>}
+                  <span className={authorBadge(rev.author)}>{rev.author}</span>
+                  {rev.chapter_number ? (
+                    <span className="text-[11px] text-slate-500">ch{rev.chapter_number}</span>
+                  ) : null}
+                  {rev.kind === 'gender' && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                      gender
+                    </span>
+                  )}
+                  {rev.shrink && (
+                    <span className="text-[11px] text-amber-400 flex items-center gap-1"
+                          title="Much shorter than the note it replaced">
+                      <AlertTriangle size={10} /> shorter
+                    </span>
+                  )}
+                  <span className="text-[11px] text-slate-600 ml-auto">
+                    {(rev.created_at || '').replace('T', ' ').slice(0, 16)}
+                  </span>
+                  {rev.is_current && (
+                    <button
+                      className="text-xs text-slate-500 hover:text-slate-200 flex items-center gap-1"
+                      onClick={() => handleRevert(rev)}
+                      disabled={reverting === `${rev.kind}:${rev.id}`}
+                      title={rev.kind === 'gender'
+                        ? 'Restore the gender this change replaced'
+                        : 'Restore the note this change replaced'}
+                    >
+                      <Undo2 size={12} /> Revert
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  <span className="text-slate-600">was:</span>{' '}
+                  {rev.kind === 'gender'
+                    ? (rev.previous_gender || '(unset)')
+                    : (rev.previous_note || '(none)')}
+                </p>
+                <p className="text-xs text-slate-300">
+                  <span className="text-slate-600">now:</span>{' '}
+                  {rev.kind === 'gender'
+                    ? (rev.new_gender || '(unset)')
+                    : (rev.new_note || '(none)')}
+                </p>
+                {rev.reason && <p className="text-[11px] text-slate-500 mt-1 italic">{rev.reason}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function SortIcon({ col, sortCol, sortDir }) {
   if (sortCol !== col) return <ChevronsUpDown size={11} className="text-slate-600 ml-1 inline-block" />
