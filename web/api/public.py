@@ -87,6 +87,17 @@ def _media_cache_headers(max_age: int) -> dict:
         return {"Cache-Control": "no-store, max-age=0"}
     return {"Cache-Control": f"public, max-age={max_age}"}
 
+
+# Belt-and-braces with robots.txt (see web/app_factory.py): a crawler that
+# ignores the Disallow rules, or follows a link from somewhere else, still
+# gets told not to index the ebook. Sent on the CDN redirect too, since the
+# Spaces response carries no header of ours.
+_EBOOK_NO_INDEX = {"X-Robots-Tag": "noindex, nofollow"}
+
+
+def _ebook_headers(max_age: int) -> dict:
+    return {**_media_cache_headers(max_age), **_EBOOK_NO_INDEX}
+
 router = APIRouter(prefix="/api/public")
 
 _db = None
@@ -511,7 +522,8 @@ def download_epub(book_id: int, request: Request):
             key = spaces.epub_key(_db.config, book_id, ver)
             if spaces.exists(_db.config, key):
                 _log_view(book_id, 0, ip)
-                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
+                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302,
+                                        headers=_EBOOK_NO_INDEX)
     except Exception:
         pass
 
@@ -525,7 +537,7 @@ def download_epub(book_id: int, request: Request):
         cached_path,
         media_type="application/epub+zip",
         filename=filename,
-        headers=_media_cache_headers(_CACHE_SHORT),
+        headers=_ebook_headers(_CACHE_SHORT),
     )
 
 
@@ -553,7 +565,8 @@ def download_azw3(book_id: int, request: Request):
             key = spaces.azw3_key(_db.config, book_id, ver)
             if spaces.exists(_db.config, key):
                 _log_view(book_id, -1, ip)  # -1 = AZW3 download (0 = EPUB)
-                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302)
+                return RedirectResponse(spaces.public_url(_db.config, key), status_code=302,
+                                        headers=_EBOOK_NO_INDEX)
     except Exception:
         pass
 
@@ -593,7 +606,7 @@ def download_azw3(book_id: int, request: Request):
         azw3_path,
         media_type="application/x-mobi8-ebook",
         filename=filename,
-        headers=_media_cache_headers(_CACHE_SHORT),
+        headers=_ebook_headers(_CACHE_SHORT),
     )
 
 
