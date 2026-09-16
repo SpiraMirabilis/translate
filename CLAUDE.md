@@ -324,6 +324,14 @@ so dumps cannot run db-side). Cron: `30 3 * * * /home/mdm/t9/backup_mysql.sh`.
 
 - **`backup_mysql.sh`** — dumps → `backups/<db>-<ts>.sql.gz` (atomic `.partial` + `mv`),
   uploads, prunes the bucket, then keeps only the newest dump locally.
+  **`SCHEMA_ONLY_TABLES` (currently `api_calls`) is dumped as structure only** —
+  two mysqldump passes into one gzip stream: everything else with data, then a
+  `--no-data` pass for those tables. `api_calls` is a build-time log of every
+  prompt/response (~68% of the database, ~3 GB) that we would not restore; it is
+  still CREATEd so a restore comes up with a complete schema, just an empty table.
+  The dump went 1.05 GB → 369 MB on 2026-09-12. Concatenated gzip members
+  decompress as one file, and mysqldump's header disables FOREIGN_KEY_CHECKS, so
+  the split ordering restores cleanly through the unchanged `restore_mysql.sh`.
 - **`backup_spaces.py`** — the storage layer (`list` / `upload` / `fetch` / `prune`).
   Standalone boto3: it deliberately imports **no** app modules, so a backup still runs
   on a day when `config`/`settings_store` won't import.
@@ -336,7 +344,8 @@ sent through it is world-readable on the CDN. `backup_spaces.py` uploads `ACL="p
 to a bucket with no CDN attached.
 
 **Retention.** 14 newest dumps, plus the earliest dump of each of the last 6 calendar
-months (~20 GB at ~1.05 GB/dump). The month is derived from the timestamp in the key,
+months (~7 GB at ~370 MB/dump; it was ~20 GB before `api_calls` data left the dump).
+The month is derived from the timestamp in the key,
 not the object's `LastModified`. **Fail-safe ordering is load-bearing**: the local prune
 runs only after a verified upload (the helper HEADs the object and compares byte counts),
 so a failed upload keeps every local copy and exits nonzero. A failed *bucket* prune is

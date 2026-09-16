@@ -6,6 +6,8 @@
 # The dump runs from this VM because the t9 MySQL grant is host-restricted
 # (t9@localhost on the db host is denied).
 #
+# api_calls is dumped as structure only (see SCHEMA_ONLY_TABLES below).
+#
 # Retention:
 #   - backup bucket (BACKUP_BUCKET in .env): 14 daily + 6 monthly
 #   - this VM:                               only the most recent dump
@@ -53,25 +55,55 @@ if [[ -z "${MYSQL_USER:-}" || -z "${MYSQL_PASS:-}" || -z "${MYSQL_HOST:-}" || -z
     fail "missing MYSQL_* values in $ENV_FILE"
 fi
 
+# Tables dumped as structure only (CREATE TABLE, no rows). api_calls is a
+# build-time debugging log of every prompt/response — ~68% of the database and
+# nothing we'd need to recover. It is still CREATEd so a restore comes up with a
+# complete schema; it just comes up empty.
+SCHEMA_ONLY_TABLES=(api_calls)
+
+# Writes the whole dump to stdout: everything-but-the-schema-only-tables with
+# data, then those tables' structure. Two mysqldump passes, one gzip stream
+# (concatenated gzip members decompress as one file). mysqldump's header
+# disables FOREIGN_KEY_CHECKS, so the split ordering is safe to restore.
+dump_database() {
+    local ignore_args=() t
+    for t in "${SCHEMA_ONLY_TABLES[@]}"; do
+        ignore_args+=( "--ignore-table=${MYSQL_DB}.${t}" )
+    done
+
+    MYSQL_PWD="$MYSQL_PASS" mysqldump \
+            -h "$MYSQL_HOST" \
+            -u "$MYSQL_USER" \
+            --single-transaction \
+            --quick \
+            --routines \
+            --triggers \
+            --events \
+            --default-character-set=utf8mb4 \
+            "${ignore_args[@]}" \
+            "$MYSQL_DB" || return 1
+
+    if (( ${#SCHEMA_ONLY_TABLES[@]} )); then
+        MYSQL_PWD="$MYSQL_PASS" mysqldump \
+                -h "$MYSQL_HOST" \
+                -u "$MYSQL_USER" \
+                --single-transaction \
+                --quick \
+                --no-data \
+                --skip-triggers \
+                --default-character-set=utf8mb4 \
+                "$MYSQL_DB" "${SCHEMA_ONLY_TABLES[@]}" || return 1
+    fi
+}
+
 TS=$(date '+%Y%m%d-%H%M%S')
 NAME="${MYSQL_DB}-${TS}.sql.gz"
 OUT="$BACKUP_DIR/$NAME"
 TMP="${OUT}.partial"
 
-log "Starting backup -> $OUT"
+log "Starting backup -> $OUT (structure-only: ${SCHEMA_ONLY_TABLES[*]})"
 
-if MYSQL_PWD="$MYSQL_PASS" mysqldump \
-        -h "$MYSQL_HOST" \
-        -u "$MYSQL_USER" \
-        --single-transaction \
-        --quick \
-        --routines \
-        --triggers \
-        --events \
-        --default-character-set=utf8mb4 \
-        "$MYSQL_DB" \
-        2>>"$LOG_FILE" \
-    | gzip -9 > "$TMP"; then
+if dump_database 2>>"$LOG_FILE" | gzip -9 > "$TMP"; then
     mv "$TMP" "$OUT"
     SIZE=$(du -h "$OUT" | cut -f1)
     log "Backup OK ($SIZE)"
