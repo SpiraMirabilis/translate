@@ -221,3 +221,77 @@ class TestQueueClaim:
         assert db.get_queue_count() == 1
         reclaimed = db.claim_next_queue_item(worker_id="t3")
         assert reclaimed["id"] == first["id"]
+
+    def test_claim_stamps_host_and_pid_by_default(self, db, book):
+        import os
+        from db.queue_repo import worker_identity
+
+        db.add_to_queue(book, ["a"], title="1", chapter_number=1)
+        item = db.claim_next_queue_item()
+        with db._conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT claimed_by FROM queue WHERE id = ?", (item["id"],))
+            claimed_by = cur.fetchone()[0]
+        assert claimed_by == worker_identity()
+        assert claimed_by.endswith(f":{os.getpid()}")
+
+
+class TestDeadWorkerClaims:
+    """A restart during the two-pass review pause used to strand the chapter:
+    the row stayed 'processing' forever, invisible to list_queue and unclaimable."""
+
+    def _set_owner(self, db, queue_id, owner):
+        with db._conn() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE queue SET claimed_by = ? WHERE id = ?", (owner, queue_id))
+
+    def test_dead_pid_claim_is_requeued(self, db, book):
+        import socket
+
+        db.add_to_queue(book, ["a"], title="1", chapter_number=1)
+        item = db.claim_next_queue_item()
+        assert db.get_queue_count() == 0
+        # Worker died holding the claim (PID 2**22 is above /proc/sys/kernel/pid_max).
+        self._set_owner(db, item["id"], f"{socket.gethostname()}:{2**22}")
+
+        assert db.release_dead_worker_claims() == 1
+        assert db.get_queue_count() == 1
+        assert db.claim_next_queue_item()["id"] == item["id"]
+
+    def test_live_worker_claim_is_left_alone(self, db, book):
+        db.add_to_queue(book, ["a"], title="1", chapter_number=1)
+        item = db.claim_next_queue_item()  # stamped with this live PID
+
+        assert db.release_dead_worker_claims() == 0
+        assert db.get_queue_count() == 0
+        assert db.claim_next_queue_item() is None
+        assert item is not None
+
+    def test_foreign_host_and_legacy_claims_are_left_alone(self, db, book):
+        # The public app booting must not reclaim a row the admin app is
+        # translating; a pre-upgrade 'worker' stamp carries no PID to check.
+        db.add_to_queue(book, ["a"], title="1", chapter_number=1)
+        db.add_to_queue(book, ["b"], title="2", chapter_number=2)
+        first = db.claim_next_queue_item()
+        second = db.claim_next_queue_item()
+        self._set_owner(db, first["id"], "some-other-host:1234")
+        self._set_owner(db, second["id"], "worker")
+
+        assert db.release_dead_worker_claims() == 0
+        assert db.get_queue_count() == 0
+
+    def test_list_queue_can_surface_in_flight_rows(self, db, book):
+        db.add_to_queue(book, ["a"], title="1", chapter_number=1)
+        db.add_to_queue(book, ["b"], title="2", chapter_number=2)
+        claimed = db.claim_next_queue_item()
+
+        assert [i["id"] for i in db.list_queue()] != [claimed["id"]]
+        assert claimed["id"] not in {i["id"] for i in db.list_queue()}
+
+        rows = db.list_queue(include_processing=True)
+        by_id = {i["id"]: i for i in rows}
+        assert len(rows) == 2
+        assert by_id[claimed["id"]]["status"] == "processing"
+        assert by_id[claimed["id"]]["claimed_at"]
+        other = next(i for i in rows if i["id"] != claimed["id"])
+        assert other["status"] == "queued"

@@ -1,7 +1,36 @@
 import json
+import os
 import datetime
+import socket
 import traceback
 from modules import apply_source_ingest
+
+
+def worker_identity():
+    """Identity stamped into queue.claimed_by: '<host>:<pid>'.
+
+    Lets a restarting process tell its own dead claims (reclaimable) apart from
+    claims held by a *live* worker — the admin app, a CLI --resume, or the
+    public app booting while a translation runs in the other process.
+    """
+    return f"{socket.gethostname()}:{os.getpid()}"[:64]
+
+
+def _pid_is_alive(pid):
+    """True if some process holds `pid`. Errs toward 'alive' when unsure.
+
+    A false 'alive' only strands the row until the age-based sweep; a false
+    'dead' would let a second worker claim a chapter that is mid-translation.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    except Exception:
+        return True
+    return True
 
 
 class QueueRepo:
@@ -222,9 +251,13 @@ class QueueRepo:
         workers (web + CLI, or two processes) cannot both take the same row.
         On success the caller must either remove_from_queue (done) or
         release_queue_item (failure/cancel). Returns None if empty.
+
+        claimed_by defaults to '<host>:<pid>' so release_dead_worker_claims()
+        can reclaim the row if this process dies holding it (e.g. a restart
+        during the two-pass entity-review pause, which blocks indefinitely).
         """
         now = datetime.datetime.now().isoformat()
-        worker = (worker_id or "worker")[:64]
+        worker = (worker_id or worker_identity())[:64]
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
@@ -299,10 +332,65 @@ class QueueRepo:
                 raise
             return False
 
+    def release_dead_worker_claims(self):
+        """Re-queue items whose claiming process is gone.
+
+        The age-based sweep alone can't do this: it only fires at app start with
+        a 6h cutoff, so a restart within 6h of the claim (the normal case) left
+        the row stuck at 'processing' forever — invisible to list_queue and
+        unclaimable by claim_next_queue_item. Two-pass mode made that routine,
+        since wait_for_review() holds the claim across an indefinite human pause
+        and every release path lives in the worker thread's error handlers,
+        which a restart never runs.
+
+        Only claims from *this host* whose PID is dead are released. Claims from
+        another host, or in the legacy 'worker' format with no PID, are left to
+        release_stale_queue_claims() — reclaiming a live worker's row would let
+        two workers translate the same chapter.
+        """
+        host = socket.gethostname()
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, claimed_by FROM queue WHERE status = 'processing'"
+                )
+                rows = cursor.fetchall()
+
+                dead = []
+                for qid, claimed_by in rows:
+                    if not claimed_by or ":" not in claimed_by:
+                        continue  # legacy/unknown owner — leave to the age sweep
+                    owner_host, _, pid_str = claimed_by.rpartition(":")
+                    if owner_host != host:
+                        continue  # another machine — can't check liveness
+                    try:
+                        pid = int(pid_str)
+                    except ValueError:
+                        continue
+                    if not _pid_is_alive(pid):
+                        dead.append(qid)
+
+                for qid in dead:
+                    cursor.execute(
+                        "UPDATE queue SET status = 'queued', claimed_at = NULL, "
+                        "claimed_by = NULL WHERE id = ? AND status = 'processing'",
+                        (qid,),
+                    )
+            if dead:
+                self.logger.info(
+                    f"Re-queued {len(dead)} claim(s) held by dead worker(s): {dead}"
+                )
+            return len(dead)
+        except Exception as e:
+            self.logger.error(f"Error releasing dead worker claims: {e}")
+            return 0
+
     def release_stale_queue_claims(self, max_age_hours=6):
         """Re-queue items stuck in 'processing' longer than max_age_hours.
 
-        Called on app start so a crashed worker doesn't leave chapters stranded.
+        Backstop for claims release_dead_worker_claims() can't judge: another
+        host, or the legacy PID-less 'worker' stamp.
         """
         try:
             cutoff = (
@@ -359,7 +447,7 @@ class QueueRepo:
                 raise
             return False
 
-    def list_queue(self, book_id=None, include_content=False):
+    def list_queue(self, book_id=None, include_content=False, include_processing=False):
         """
         List all items in the queue.
 
@@ -370,36 +458,44 @@ class QueueRepo:
                 returned as None. List/UI callers never use them; fetching them
                 made the queue page download every queued chapter's full text.
                 Pass True only when the actual chapter content is needed.
+            include_processing: Also list rows claimed by a worker. The admin UI
+                passes True so an in-flight chapter doesn't appear to vanish from
+                the queue the moment it's claimed — which is how a two-pass run
+                stranded mid-review used to look like it had eaten the chapter.
 
         Returns:
-            list: List of queue item dicts ordered by position
+            list: List of queue item dicts ordered by position. Each carries
+                'status' ('queued' or 'processing') and 'claimed_at'.
         """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
 
                 content_cols = "q.content, q.metadata," if include_content else ""
+                status_filter = (
+                    f"({self._QUEUED_STATUS} OR q.status = 'processing')"
+                    if include_processing
+                    else self._QUEUED_STATUS
+                )
 
-                # Only list claimable rows — in-flight claims stay hidden so
-                # the admin UI doesn't offer cancel on something mid-translate.
                 if book_id:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
                        q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason
+                       q.retranslation_reason, q.status, q.claimed_at
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
-                WHERE q.book_id = ? AND {self._QUEUED_STATUS}
+                WHERE q.book_id = ? AND {status_filter}
                 ORDER BY q.position ASC
                 ''', (book_id,))
                 else:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
                        q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason
+                       q.retranslation_reason, q.status, q.claimed_at
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
-                WHERE {self._QUEUED_STATUS}
+                WHERE {status_filter}
                 ORDER BY q.position ASC
                 ''')
 
@@ -441,6 +537,8 @@ class QueueRepo:
                     'created_date': tail[1],
                     'book_title': tail[2],
                     'retranslation_reason': tail[3],
+                    'status': tail[4] or 'queued',
+                    'claimed_at': tail[5],
                 })
 
             return result

@@ -109,6 +109,13 @@ class DatabaseCore:
             os.makedirs(os.path.join(media_base, "illustrations"), exist_ok=True)
 
             # Re-queue items left 'processing' by a crashed worker (web or CLI).
+            # Dead-PID sweep first: it reclaims immediately on restart, where the
+            # age sweep waits 6h. Both are safe to run from either web process —
+            # a live worker's claim is never touched.
+            try:
+                self.release_dead_worker_claims()
+            except Exception as e:
+                self.logger.warning(f"Dead worker claim release skipped: {e}")
             try:
                 self.release_stale_queue_claims()
             except Exception as e:
