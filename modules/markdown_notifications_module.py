@@ -81,12 +81,59 @@ the box too. The label still has to carry no bracket of its own, and the
 remainder still has to be exactly one balanced notification, so a folded line is
 not re-folded and prose mentioning a bracketed term is untouched.
 
+The per-book setting **"Fold the description after the colon"** does the mirror
+image of the speaker fold — it pulls a description *trailing* a bracketed label
+into the box::
+
+    【Food Appraisal】: An excellent chef must master…
+        → 【Food Appraisal: An excellent chef must master…】
+    【財富商城】：財富值達到1000開啟。 → 【財富商城：財富值達到1000開啟。】
+
+No entity gate is needed on this side: the line has to *begin* with a balanced
+bracket group, which narration ending in a colon cannot. A tail that is itself
+bracketed (``【A】: 【B】`` — two notifications) and a numeric ASCII label
+(``[1]: …`` — a footnote marker or a Markdown link reference definition) are
+left alone, and an *empty* tail belongs to the panel rule below.
+
+The per-book setting **"Absorb stat entries under a 【Heading】:"** handles the
+status panels of game-system novels, which bracket their headings but print
+their entries bare::
+
+    【Player: Zhou Yan】
+
+    【Professional Skills】:
+
+    Knife Work (Intermediate): 8604/10000 (Your knife work is up to the demands…)
+
+    Heat Control (Beginner): 668/1000 (Kid, you need more practice)
+
+    【Dishes Mastered】:
+
+    Twice-Cooked Pork (Beginner): 55/1000 (Freshly paved road, nice and flat…)
+
+    ……
+
+    【Main Quest: Become the God of Cookery!】
+
+Without it the panel breaks into a one-row table per bracketed line with loose
+prose between them. With it, a ``【Heading】:`` line claims the entries beneath
+it — a stat entry (``name (level): value``, the level being the first
+parenthesized group before a colon), an elision (``……``), or an unbracketed
+sub-heading such as ``Special Skills:`` when a stat entry follows it — and the
+run-grouping then merges the whole panel, quests included, into one box. The
+section ends at the first line matching none of those, so the prose after the
+panel stays outside, and a ``【Heading】:`` that absorbs no stat entry is left to
+the other matchers. Reversal puts a panel back the way it came, except that an
+unbracketed sub-heading returns bracketed — the table stores the two forms
+identically.
+
 Forward conversion is idempotent: it consumes the bracket markers it matches, so
 a second pass finds nothing to do. Disabling the module reverses the operation —
 single-column tables (as produced here) are turned back into double-spaced
-【…】 paragraphs. Two normalizations are one-way, though, and survive a disable:
-notifications that shared a line come back as two paragraphs rather than one,
-and a folded speaker label stays inside its brackets.
+【…】 paragraphs. Some normalizations are one-way, though, and survive a disable:
+notifications that shared a line come back as two paragraphs rather than one, a
+folded speaker label or trailing description stays inside its brackets, and a
+panel's unbracketed sub-heading comes back bracketed.
 
 Auto-off: never enabled by Source URL or default; turn it on per book via the
 Modules dialog.
@@ -136,6 +183,28 @@ _SPEAKER_RE = re.compile(
 # greedy, so with several colons the one nearest the bracket separates.
 _ANY_LABEL_RE = re.compile(
     r"^\s*([^【】\[\]|]*[^\s:：【】\[\]|])([:：])(\s*)([【\[].*)$")
+# The colon + gap + description trailing a bracketed label, for the
+# "fold_trailing_text" setting: `【Food Appraisal】: An excellent chef…`. The
+# label side is matched by bracket balance (:func:`_leading_span`), not by this
+# pattern — only the tail is a regex.
+_TRAILING_RE = re.compile(r"^([:：])(\s*)(\S.*)$")
+# One entry of a stat panel: `Knife Work (Intermediate): 8604/10000 (…)`.
+# The name may itself carry a colon (`Special Skill: Food Appraisal (Master):
+# …`), so the anchor is the FIRST parenthesized level followed by a colon —
+# hence the lazy name. Brackets and pipes are excluded throughout: a line
+# carrying either is a notification (or a table row), not a stat entry.
+_STAT_RE = re.compile(
+    r"^[^【】\[\]|]{1,80}?[（(][^()（）【】\[\]|]{1,30}[)）]\s*[:：]\s*\S.*$")
+# The elision a panel uses in place of the rest of a long list: `…`, `……`,
+# `...`, `......`.
+_ELLIPSIS_RE = re.compile(r"^[.。．·…]{1,12}$")
+# An unbracketed sub-heading inside a panel: `Special Skills:`. Only honoured
+# when a stat entry follows it (see :func:`_panel_section`) — the shape alone
+# is also that of a narrative clause ending in a colon.
+_BARE_HEADER_RE = re.compile(r"^[^【】\[\]|:：。．!?！？]{1,40}[:：]$")
+# Longest stat-panel section we will scan, in raw lines. With chapter_spacing's
+# double-spacing that is ~100 entries.
+_MAX_PANEL_SPAN = 200
 
 
 def _notif(line):
@@ -279,9 +348,157 @@ def _multiline_notif(lines, i):
     return None
 
 
-def _notif_at(lines, i):
+def _leading_span(line):
+    """Return ``(span, tail)`` when ``line`` starts with a *balanced* bracket
+    group, else None.
+
+    ``span`` includes its brackets and is depth-matched, so ``【A: 【B】】: x``
+    yields the whole outer group; ``tail`` is whatever follows it, stripped of
+    trailing whitespace. A group that never closes on this line (the multi-line
+    block case) returns None.
+    """
+    if not isinstance(line, str):
+        return None
+    s = line.strip()
+    if not s:
+        return None
+    pair = next((p for p in _BRACKETS if s[0] == p[0]), None)
+    if pair is None:
+        return None
+    opener, closer = pair
+    depth = 0
+    for j, ch in enumerate(s):
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return s[:j + 1], s[j + 1:]
+    return None
+
+
+def _fold_trailing_line(line):
+    """Pull the description trailing a bracketed label into the notification.
+
+    ``【Food Appraisal】: An excellent chef must…`` → ``【Food Appraisal: An
+    excellent chef must…】``; ``【財富商城】：財富值達到1000開啟。`` →
+    ``【財富商城：財富值達到1000開啟。】``. The colon and the gap after it are
+    preserved verbatim, so English ``: `` and Chinese ``：`` each keep their own
+    convention — the same rule :func:`_fold_speaker_line` follows for a label on
+    the other side of the brackets.
+
+    This is the inverse of the speaker fold, and needs no entity gate: the line
+    must *begin* with a balanced bracket group, which narration ending in a
+    colon cannot do. Left alone: an empty tail (``【Professional Skills】:`` — a
+    stat-panel heading, see :func:`_panel_section`), a tail that is itself
+    bracketed (``【A】: 【B】`` — two notifications, not a description), and a
+    numeric ASCII label (``[1]: …`` is a footnote marker or a Markdown link
+    reference definition). Idempotent: the result carries no post-closer tail.
+    """
+    got = _leading_span(line)
+    if got is None:
+        return line
+    span, tail = got
+    inner = span[1:-1]
+    if span[0] == "[" and inner.strip().isdigit():
+        return line
+    m = _TRAILING_RE.match(tail)
+    if not m:
+        return line
+    colon, gap, body = m.groups()
+    if _bracket_spans(body) is not None:
+        return line
+    trail = line[len(line.rstrip()):]
+    return span[0] + inner.strip() + colon + gap + body + span[-1] + trail
+
+
+def _fold_trailing_lines(content):
+    """Apply :func:`_fold_trailing_line` to a line array; identity on no-op."""
+    if not isinstance(content, list):
+        return content
+    out = [_fold_trailing_line(l) for l in content]
+    return out if out != content else content
+
+
+def _panel_header(line):
+    """Return a stat panel's heading text when ``line`` is ``【Heading】:`` with
+    nothing after the colon, else None.
+
+    The colon is kept in the returned cell (``Professional Skills:``) so the
+    heading still reads as one inside the box, and so reversal can put the line
+    back the way it was.
+    """
+    got = _leading_span(line)
+    if got is None:
+        return None
+    span, tail = got
+    if tail not in (":", "："):
+        return None
+    inner = span[1:-1].strip()
+    return inner + tail if inner else None
+
+
+def _panel_section(lines, i):
+    """Match a stat-panel section — ``【Heading】:`` plus the unbracketed entries
+    under it — starting at ``i``. Returns ``(cells, last_index)`` or None.
+
+    A "system panel" prints its headings in brackets but its entries bare::
+
+        【Professional Skills】:
+
+        Knife Work (Intermediate): 8604/10000 (…)
+
+        Heat Control (Beginner): 668/1000 (…)
+
+    so the heading alone converts to a one-row table and the entries stay loose
+    prose underneath it. This pulls them in: the heading is the first cell and
+    every following entry is a row, which (via the run-grouping in
+    :func:`_to_tables`) puts the whole panel — the ``【Player: …】`` lines above
+    and the ``【Main Quest: …】`` lines below included — into one box.
+
+    An entry is a stat line (:data:`_STAT_RE`), an elision (``……``), or an
+    unbracketed sub-heading (``Special Skills:``) — the last only when a stat
+    line follows it, since that shape is also an ordinary clause ending in a
+    colon. Blank lines are skipped; the section ends at the first line that is
+    none of those, so the prose after the panel is untouched. Returns None
+    unless at least one stat line was absorbed, so a lone ``【Heading】:`` is
+    left to the other matchers.
+    """
+    header = _panel_header(lines[i])
+    if header is None:
+        return None
+    cells = [header]
+    stats = 0
+    last = i
+    pending = None  # a sub-heading held back until a stat line justifies it
+    limit = min(len(lines), i + 1 + _MAX_PANEL_SPAN)
+    for j in range(i + 1, limit):
+        if not isinstance(lines[j], str):
+            break
+        s = lines[j].strip()
+        if not s:
+            continue
+        if _STAT_RE.match(s):
+            if pending:
+                cells.append(pending)
+                pending = None
+            cells.append(s)
+            stats += 1
+            last = j
+        elif stats and _ELLIPSIS_RE.match(s):
+            cells.append(s)
+            last = j
+        elif pending is None and _BARE_HEADER_RE.match(s):
+            pending = s
+        else:
+            break
+    return (cells, last) if stats else None
+
+
+def _notif_at(lines, i, stat_panel=False):
     """Return ``(cells, last_index)`` for a notification starting at ``i`` —
-    several on one line, one line/one cell, or a multi-line block — else None.
+    several on one line, one line/one cell, a multi-line block, or (with
+    ``stat_panel``) a ``【Heading】:`` panel section — else None.
 
     The multi-span check runs FIRST: ``_notif``'s greedy pattern also matches
     ``[A] [B]``, but as a single cell whose text still carries ``] [``.
@@ -292,6 +509,10 @@ def _notif_at(lines, i):
     cell = _notif(lines[i])
     if cell is not None:
         return [cell], i
+    if stat_panel:
+        panel = _panel_section(lines, i)
+        if panel is not None:
+            return panel
     return _multiline_notif(lines, i)
 
 
@@ -307,13 +528,16 @@ def _make_table(cells):
     return rows
 
 
-def _to_tables(lines):
+def _to_tables(lines, stat_panel=False):
     """Collapse runs of 【…】 / [...] notification lines into single-column tables.
 
     Both bracket styles count as notifications, whether single-line or a
     multi-line block (opener line starts the bracket, a later line closes it —
     each inner paragraph becomes a row). Notifications separated only by blank
-    lines are merged into one table. Idempotent: the bracket markers are
+    lines are merged into one table. With ``stat_panel``, a ``【Heading】:`` and
+    the unbracketed stat entries under it count as one such notification
+    (:func:`_panel_section`), so a system panel boxes up whole rather than
+    breaking at its first heading. Idempotent: the bracket markers are
     consumed, so re-running is a no-op.
     """
     if not isinstance(lines, list):
@@ -323,7 +547,7 @@ def _to_tables(lines):
     i = 0
     changed = False
     while i < n:
-        hit = _notif_at(lines, i)
+        hit = _notif_at(lines, i, stat_panel)
         if hit is None:
             out.append(lines[i])
             i += 1
@@ -333,7 +557,7 @@ def _to_tables(lines):
         cells, last = hit
         j = last + 1
         while j < n:
-            nt = _notif_at(lines, j)
+            nt = _notif_at(lines, j, stat_panel)
             if nt is not None:
                 more, last = nt
                 cells.extend(more)
@@ -342,7 +566,7 @@ def _to_tables(lines):
                 k = j
                 while k < n and isinstance(lines[k], str) and lines[k].strip() == "":
                     k += 1
-                if k < n and _notif_at(lines, k) is not None:
+                if k < n and _notif_at(lines, k, stat_panel) is not None:
                     j = k  # blanks bridge two notifications — keep the group going
                 else:
                     break  # blanks lead to content/EOF — group ends at `last`
@@ -453,7 +677,67 @@ def _cell_text(inner):
     return inner.replace("\\|", "|").strip()
 
 
-def _from_tables(lines):
+def _panel_entry(cells, k):
+    """True when ``cells[k]`` is a stat-panel entry — the reversal-side mirror
+    of the entry test in :func:`_panel_section`.
+
+    A stat line, or a sub-heading immediately followed by one. An elision is
+    deliberately not an entry here: :func:`_panel_section` will not start a
+    section on one either, so treating it as one would revert to something that
+    no longer re-converts.
+    """
+    if k >= len(cells):
+        return False
+    c = cells[k]
+    if _STAT_RE.match(c):
+        return True
+    if _BARE_HEADER_RE.match(c):
+        return k + 1 < len(cells) and bool(_STAT_RE.match(cells[k + 1]))
+    return False
+
+
+def _revert_cells(cells, stat_panel=False):
+    """Render a reverted table's cells as source paragraphs.
+
+    Normally each cell comes back as ``【cell】``. With ``stat_panel`` on, a
+    heading cell that is actually followed by entries comes back as
+    ``【Heading】:`` and its entries come back unbracketed, so a panel is
+    restored the way it came rather than as one notification per row.
+
+    The walk mirrors :func:`_panel_section` exactly, which is what keeps the
+    reversal *stable*: a cell is only un-bracketed when re-converting would
+    absorb it again. A lone ``【Warning:】`` notification, or a stat-shaped cell
+    with no heading above it, therefore keeps its brackets.
+
+    Every heading cell comes back bracketed, so a panel's *unbracketed*
+    sub-heading (``Special Skills:``) gains brackets — the table stores the two
+    forms identically, so they are no longer tellable apart, and the common
+    case is the bracketed one. It re-converts to the same table, so the
+    normalization is stable, in the same one-way way a folded speaker label is.
+    """
+    if not stat_panel:
+        return ["【" + c + "】" for c in cells]
+    out = []
+    i = 0
+    n = len(cells)
+    while i < n:
+        c = cells[i]
+        if not (_BARE_HEADER_RE.match(c) and _panel_entry(cells, i + 1)):
+            out.append("【" + c + "】")
+            i += 1
+            continue
+        out.append("【" + c[:-1].strip() + "】" + c[-1])
+        i += 1
+        while i < n:
+            e = cells[i]
+            if not (_STAT_RE.match(e) or _ELLIPSIS_RE.match(e)):
+                break  # another heading, or the end of the panel
+            out.append(e)
+            i += 1
+    return out
+
+
+def _from_tables(lines, stat_panel=False):
     """Reverse :func:`_to_tables`: single-column tables → double-spaced 【…】.
 
     Only tables carrying this module's exact fingerprint are reverted: every
@@ -462,6 +746,9 @@ def _from_tables(lines):
     (compact `|:---|`, unpadded pipes) is left untouched — previously ANY
     single-column pipe table was reversed on disable.
     Idempotent: reverted blocks no longer match a table run.
+
+    ``stat_panel`` mirrors the setting of the same name on the way back — see
+    :func:`_revert_cell`.
     """
     if not isinstance(lines, list):
         return lines
@@ -489,15 +776,28 @@ def _from_tables(lines):
         # Reconstruct cells from every row except the separator (index 1).
         cells = [_cell_text(s) for idx, s in enumerate(inners) if idx != 1]
         if sep_ok and ours and all(c is not None for c in cells):
-            for idx, c in enumerate(cells):
-                out.append("【" + c + "】")
-                if idx != len(cells) - 1:
+            reverted = _revert_cells(cells, stat_panel)
+            for idx, c in enumerate(reverted):
+                out.append(c)
+                if idx != len(reverted) - 1:
                     out.append("")
             changed = True
         else:
             out.extend(run)  # not one of ours — leave as-is
         i = j
     return out if changed else lines
+
+
+def _convert(lines, names, any_label, fold_trailing=False, stat_panel=False):
+    """The full forward pass: fold labels in, then build the tables.
+
+    Folding runs first on both sides — a folded line is a whole-line
+    notification, so the table conversion then picks it up as a row.
+    """
+    lines = _fold_speaker_lines(lines, names, any_label)
+    if fold_trailing:
+        lines = _fold_trailing_lines(lines)
+    return _to_tables(lines, stat_panel)
 
 
 class MarkdownNotificationsModule(TranslationModule):
@@ -520,6 +820,20 @@ class MarkdownNotificationsModule(TranslationModule):
                   "whatever the label is. Off (default): only a label matching "
                   "one of the book's characters is folded in, so a narrative "
                   "clause ending in a colon stays outside the box.")},
+        {"key": "fold_trailing_text", "type": "bool", "default": False,
+         "label": "Fold the description after the colon into the notification",
+         "help": ("On: `【Food Appraisal】: An excellent chef must…` becomes "
+                  "`【Food Appraisal: An excellent chef must…】`, so the label "
+                  "and its description share one box. Off (default): the "
+                  "bracketed label boxes up alone and the description is left "
+                  "as prose beside it.")},
+        {"key": "stat_panel", "type": "bool", "default": False,
+         "label": "Absorb stat entries under a 【Heading】: into the panel",
+         "help": ("On: a `【Professional Skills】:` heading pulls in the "
+                  "unbracketed `Knife Work (Intermediate): 8604/10000 (…)` "
+                  "entries below it as rows, so a system status panel boxes up "
+                  "whole instead of breaking at its first heading. Off "
+                  "(default): only the bracketed lines are boxed.")},
     ]
 
     def _settings(self, ctx):
@@ -533,6 +847,12 @@ class MarkdownNotificationsModule(TranslationModule):
         names = None if any_label else load_person_names(ctx.get("db"), book_id)
         return names, any_label
 
+    def _convert_args(self, ctx):
+        """``(names, any_label, fold_trailing, stat_panel)`` for this ctx."""
+        s = self._settings(ctx)
+        return self._fold_args(ctx) + (bool(s.get("fold_trailing_text")),
+                                       bool(s.get("stat_panel")))
+
     def transform_source_lines(self, content, ctx):
         """Normalize notification paragraphs before translation.
 
@@ -545,26 +865,23 @@ class MarkdownNotificationsModule(TranslationModule):
         return _split_notif_lines(content)
 
     def transform_translated_lines(self, content, ctx):
-        # Fold first: a folded line is a whole-line notification, so the table
-        # conversion then picks it up as a row.
-        content = _fold_speaker_lines(content, *self._fold_args(ctx))
-        return _to_tables(content)
+        return _convert(content, *self._convert_args(ctx))
 
     def event_add_to_book(self, ctx):
         """Backfill: convert notifications in every existing chapter.
 
         Folding runs first here too, so a chapter translated before the module
-        (or before the label setting) gets the same treatment a new one does.
+        (or before one of the fold settings) gets the same treatment a new one
+        does.
         """
-        names, any_label = self._fold_args(ctx)
-        self._rewrite_all(
-            ctx,
-            lambda lines: _to_tables(_fold_speaker_lines(lines, names, any_label)),
-            "converted")
+        args = self._convert_args(ctx)
+        self._rewrite_all(ctx, lambda lines: _convert(lines, *args), "converted")
 
     def event_removed_from_book(self, ctx):
         """Reverse: turn this module's tables back into 【…】 paragraphs."""
-        self._rewrite_all(ctx, _from_tables, "reverted")
+        stat_panel = bool(self._settings(ctx).get("stat_panel"))
+        self._rewrite_all(
+            ctx, lambda lines: _from_tables(lines, stat_panel), "reverted")
 
     def _rewrite_all(self, ctx, fn, verb):
         db = ctx.get("db")

@@ -1,16 +1,19 @@
 """Tests for the markdown_notifications module's pure transforms — the
 bracket-span scanner, multi-notification lines (several 【…】 / [...] packed into
-one paragraph), single-line and multi-line notifications, the source-side
-splitter, and reversal on disable."""
+one paragraph), single-line and multi-line notifications, the trailing-description
+fold, stat panels, the source-side splitter, and reversal on disable."""
 
 from modules.markdown_notifications_module import (
     MarkdownNotificationsModule,
     _bracket_spans,
     _fold_speaker_line,
     _fold_speaker_lines,
+    _fold_trailing_line,
+    _fold_trailing_lines,
     _from_tables,
     _multi_notif,
     _notif,
+    _panel_section,
     _split_notif_lines,
     _to_tables,
 )
@@ -263,3 +266,238 @@ class TestFoldAnyLabel:
         # Default (setting absent) keeps the entity-gated behaviour: no db in
         # ctx means no gate, so nothing is folded and the line is left as prose.
         assert mod.transform_translated_lines([self.BULLET], {}) == [self.BULLET]
+
+
+class TestFoldTrailingText:
+    """The per-book "fold the description after the colon" setting — the mirror
+    image of the speaker fold, for `【Skill】: description` lines."""
+
+    LINE = ("【Food Appraisal】: An excellent chef must master the ability to "
+            "select ingredients. You have obtained this ability.")
+
+    def test_folds_the_description_in(self):
+        assert _fold_trailing_line(self.LINE) == (
+            "【Food Appraisal: An excellent chef must master the ability to "
+            "select ingredients. You have obtained this ability.】")
+
+    def test_preserves_the_full_width_colon_and_its_spacing(self):
+        assert _fold_trailing_line("【財富商城】：財富值達到1000開啟。") == (
+            "【財富商城：財富值達到1000開啟。】")
+
+    def test_ascii_brackets_fold_too(self):
+        assert _fold_trailing_line("[Skills]: Cooking, haggling.") == (
+            "[Skills: Cooking, haggling.]")
+
+    def test_empty_tail_is_left_for_the_panel_rule(self):
+        assert _fold_trailing_line("【Professional Skills】:") == (
+            "【Professional Skills】:")
+
+    def test_bracketed_tail_is_two_notifications_not_a_description(self):
+        assert _fold_trailing_line("【A】: 【B】") == "【A】: 【B】"
+
+    def test_numeric_ascii_label_is_left_alone(self):
+        # A footnote marker or a Markdown link reference definition.
+        assert _fold_trailing_line("[1]: https://example.com") == (
+            "[1]: https://example.com")
+
+    def test_narration_before_the_bracket_is_untouched(self):
+        line = "Zhou Yan looked: 【A pile of unfresh pork】"
+        assert _fold_trailing_line(line) == line
+
+    def test_prose_mentioning_a_bracketed_term_is_untouched(self):
+        line = "With 【Food Appraisal】 running, every ingredient was laid bare."
+        assert _fold_trailing_line(line) == line
+
+    def test_unclosed_bracket_is_left_to_the_multiline_path(self):
+        line = "【Mission issued: teach her swordsmanship"
+        assert _fold_trailing_line(line) == line
+
+    def test_nested_span_folds_through_the_outer_closer(self):
+        assert _fold_trailing_line("【Li Yu: 【Video】】: watch it.") == (
+            "【Li Yu: 【Video】: watch it.】")
+
+    def test_preserves_trailing_hard_break(self):
+        assert _fold_trailing_line("【財富商城】：開啟。  ") == "【財富商城：開啟。】  "
+
+    def test_idempotent(self):
+        once = _fold_trailing_line(self.LINE)
+        assert _fold_trailing_line(once) == once
+
+    def test_folded_line_becomes_a_table(self):
+        folded = _fold_trailing_lines(["【Wealth Shop】: Unlocks at 1000 Wealth."])
+        assert _to_tables(folded) == [
+            "| Wealth Shop: Unlocks at 1000 Wealth. |", "| --- |"]
+
+    def test_identity_on_no_op(self):
+        lines = ["plain prose", "【Boxed】"]
+        assert _fold_trailing_lines(lines) is lines
+
+    def test_setting_drives_the_transform_hook(self):
+        mod = MarkdownNotificationsModule()
+        ctx = {"module_settings": {mod.id: {"fold_trailing_text": True}}}
+        assert mod.transform_translated_lines([self.LINE], ctx)[0].startswith(
+            "| Food Appraisal: An excellent chef")
+        # Off by default: the label boxes up alone, the description stays prose.
+        assert mod.transform_translated_lines([self.LINE], {}) == [self.LINE]
+
+
+class TestStatPanel:
+    """The per-book "absorb stat entries" setting: a 【Heading】: claims the
+    unbracketed entries printed under it, so a system status panel boxes up
+    whole instead of breaking at its first heading."""
+
+    PANEL = [
+        "【Player: Zhou Yan】",
+        "",
+        "【Profession: Chef】",
+        "",
+        "【Professional Skills】:",
+        "",
+        "Knife Work (Intermediate): 8604/10000 (Up to most dishes)",
+        "",
+        "Heat Control (Beginner): 668/1000 (Kid, you need more practice)",
+        "",
+        "【Dishes Mastered】:",
+        "",
+        "Twice-Cooked Pork (Beginner): 55/1000",
+        "",
+        "……",
+        "",
+        "【Main Quest: Become the God of Cookery!】",
+        "",
+        "The panel had changed noticeably since yesterday.",
+    ]
+
+    def test_whole_panel_becomes_one_table(self):
+        assert _to_tables(self.PANEL, stat_panel=True) == [
+            "| Player: Zhou Yan |",
+            "| --- |",
+            "| Profession: Chef |",
+            "| Professional Skills: |",
+            "| Knife Work (Intermediate): 8604/10000 (Up to most dishes) |",
+            "| Heat Control (Beginner): 668/1000 (Kid, you need more practice) |",
+            "| Dishes Mastered: |",
+            "| Twice-Cooked Pork (Beginner): 55/1000 |",
+            "| …… |",
+            "| Main Quest: Become the God of Cookery! |",
+            "",
+            "The panel had changed noticeably since yesterday.",
+        ]
+
+    def test_off_by_default_the_panel_breaks_at_its_first_heading(self):
+        out = _to_tables(self.PANEL)
+        assert "| Professional Skills: |" not in out
+        assert "【Professional Skills】:" in out
+        assert "Knife Work (Intermediate): 8604/10000 (Up to most dishes)" in out
+
+    def test_prose_after_the_panel_stays_outside(self):
+        out = _to_tables(self.PANEL, stat_panel=True)
+        assert out[-1] == "The panel had changed noticeably since yesterday."
+
+    def test_section_ends_at_the_first_non_entry(self):
+        lines = ["【Skills】:", "", "Knife Work (Intermediate): 8604/10000",
+                 "", "He closed the panel and went back to the stove."]
+        assert _panel_section(lines, 0) == (
+            ["Skills:", "Knife Work (Intermediate): 8604/10000"], 2)
+
+    def test_heading_with_no_entries_is_not_a_panel(self):
+        lines = ["【Skills】:", "", "He closed the panel."]
+        assert _panel_section(lines, 0) is None
+        # …and so is left to the other matchers, which leave it as prose.
+        assert _to_tables(lines, stat_panel=True) == lines
+
+    def test_unbracketed_subheading_is_absorbed_when_an_entry_follows(self):
+        lines = ["【Skills】:", "", "Knife Work (Intermediate): 8604/10000",
+                 "", "Special Skills:", "",
+                 "Food Appraisal (Master): 999999/1000000 (Cannot be upgraded.)"]
+        cells, last = _panel_section(lines, 0)
+        assert cells[2:] == [
+            "Special Skills:",
+            "Food Appraisal (Master): 999999/1000000 (Cannot be upgraded.)"]
+        assert last == 6
+
+    def test_dangling_subheading_is_dropped_and_ends_the_section(self):
+        lines = ["【Skills】:", "", "Knife Work (Intermediate): 8604/10000",
+                 "", "Then he thought:", "", "this was going to be hard."]
+        assert _panel_section(lines, 0) == (
+            ["Skills:", "Knife Work (Intermediate): 8604/10000"], 2)
+
+    def test_entry_name_may_carry_its_own_colon(self):
+        lines = ["【Skills】:", "",
+                 "Special Skill: Food Appraisal (Master): 999999/1000000"]
+        assert _panel_section(lines, 0)[0][1] == (
+            "Special Skill: Food Appraisal (Master): 999999/1000000")
+
+    def test_leading_ellipsis_does_not_start_a_panel(self):
+        lines = ["【Skills】:", "", "……", "", "prose"]
+        assert _panel_section(lines, 0) is None
+
+    def test_entries_need_a_bracketed_heading_to_be_claimed(self):
+        lines = ["Knife Work (Intermediate): 8604/10000", "", "prose"]
+        assert _to_tables(lines, stat_panel=True) == lines
+
+    def test_reversal_restores_the_panel(self):
+        table = _to_tables(self.PANEL, stat_panel=True)
+        assert _from_tables(table, stat_panel=True) == [
+            "【Player: Zhou Yan】",
+            "",
+            "【Profession: Chef】",
+            "",
+            "【Professional Skills】:",
+            "",
+            "Knife Work (Intermediate): 8604/10000 (Up to most dishes)",
+            "",
+            "Heat Control (Beginner): 668/1000 (Kid, you need more practice)",
+            "",
+            "【Dishes Mastered】:",
+            "",
+            "Twice-Cooked Pork (Beginner): 55/1000",
+            "",
+            "……",
+            "",
+            "【Main Quest: Become the God of Cookery!】",
+            "",
+            "The panel had changed noticeably since yesterday.",
+        ]
+
+    def test_reversal_brackets_an_unbracketed_subheading(self):
+        # One-way: the table stores 【Skills】: and a bare "Special Skills:"
+        # identically, so the reversal picks the common (bracketed) form. It
+        # re-converts to the same table, so the normalization is stable.
+        lines = ["【Skills】:", "", "Knife Work (Intermediate): 8604/10000",
+                 "", "Special Skills:", "",
+                 "Food Appraisal (Master): 999999/1000000"]
+        table = _to_tables(lines, stat_panel=True)
+        back = _from_tables(table, stat_panel=True)
+        assert back[4] == "【Special Skills】:"
+        assert _to_tables(back, stat_panel=True) == table
+
+    def test_a_lone_stat_shaped_notification_keeps_its_brackets(self):
+        # No heading above it, so un-bracketing would not re-convert.
+        table = _to_tables(["【Knife Work (Intermediate): 8604/10000】"],
+                           stat_panel=True)
+        back = _from_tables(table, stat_panel=True)
+        assert back == ["【Knife Work (Intermediate): 8604/10000】"]
+        assert _to_tables(back, stat_panel=True) == table
+
+    def test_a_heading_shaped_notification_with_no_entries_keeps_its_brackets(self):
+        table = _to_tables(["【Warning:】"], stat_panel=True)
+        back = _from_tables(table, stat_panel=True)
+        assert back == ["【Warning:】"]
+        assert _to_tables(back, stat_panel=True) == table
+
+    def test_reversal_without_the_setting_brackets_every_row(self):
+        table = _to_tables(self.PANEL, stat_panel=True)
+        assert "【Knife Work (Intermediate): 8604/10000 (Up to most dishes)】" in (
+            _from_tables(table))
+
+    def test_forward_conversion_is_idempotent(self):
+        once = _to_tables(self.PANEL, stat_panel=True)
+        assert _to_tables(once, stat_panel=True) == once
+
+    def test_setting_drives_the_transform_hook(self):
+        mod = MarkdownNotificationsModule()
+        ctx = {"module_settings": {mod.id: {"stat_panel": True}}}
+        out = mod.transform_translated_lines(self.PANEL, ctx)
+        assert "| Knife Work (Intermediate): 8604/10000 (Up to most dishes) |" in out
+        assert "| Professional Skills: |" in out
