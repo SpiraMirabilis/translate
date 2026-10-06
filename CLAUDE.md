@@ -210,8 +210,8 @@ fine once per translation and not fine once per reader click in the public proce
   applies when it rewinds.
   In the admin reader a row opens `EntityFormModal` — by *opening* that modal, not by
   closing this one first: `useUrlModal.close()` is a `navigate(-1)` and would race the push.
-- **Term highlights in the prose** (Reading Settings → Highlight Terms, default off;
-  scope defaults to "Characters only"): terms **carrying a note** get a dotted underline
+- **Term highlights in the prose** (Reading Settings → Highlight Terms, default on
+  since 2026-09-18; scope defaults to "Characters only"): terms **carrying a note** get a dotted underline
   and show the note on hover, pinned on click for touch. `lib/readerHighlights.js` walks
   the rendered DOM's text nodes rather than rewriting the HTML string (the chapter is
   injected with `dangerouslySetInnerHTML`), skipping links, code, and footnote markers.

@@ -7,9 +7,10 @@ const DEFAULTS = {
   lineHeight: 1.8,
   margins: 'medium',
   disableAnnotations: false,
-  // Glossary term highlights: off by default (it marks up the prose), and
-  // scoped to characters when on — the category set most readers lose track of.
-  highlightTerms: false,
+  // Glossary term highlights: on by default, scoped to characters — the
+  // category set most readers lose track of. Only terms carrying a note are
+  // marked, so the prose stays clean.
+  highlightTerms: true,
   highlightCharactersOnly: true,
 }
 
