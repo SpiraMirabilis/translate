@@ -1,0 +1,48 @@
+# T9 read-only MCP server — systemd user service
+#
+# The getters-only half of mcp_server/ (python3 -m mcp_server --read-only),
+# always on so the claudecode translation provider can hand its model lookup
+# tools without starting a server per call (~10s of imports + entity cache
+# and a fresh MySQL pool each time). Streamable HTTP on 127.0.0.1:8766,
+# stateless, loopback only. No write tool exists in this process.
+#
+# Which books use it: the "Claude Code research tools" module (Auto follows
+# Settings → "Let the claudecode model use lookup tools"; On/Off per book win).
+# Every call is logged to logs/mcp_usage.log — summarise with
+#   python3 -m mcp_server.usage [--days N]
+#
+# Install:
+#   cp deploy/t9-mcp-readonly.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now t9-mcp-readonly
+#
+# Health: curl -s http://127.0.0.1:8766/health
+# Restart after changing mcp_server/ or the scripts it imports.
+#
+# Deliberately NOT watched by t9_watchdog.py: that escalates to a VM reboot,
+# and the provider already translates without tools when this is down.
+
+[Unit]
+Description=T9 read-only MCP server (lookup tools for translation)
+After=network.target
+ConditionPathExists=%h/t9/.env
+
+[Service]
+Type=exec
+WorkingDirectory=%h/t9
+# No EnvironmentFile: the app reads .env itself (load_dotenv, which never
+# overrides), so this small pool wins over .env's MYSQL_POOL_SIZE.
+Environment=MYSQL_POOL_SIZE=5
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m mcp_server --read-only --transport streamable-http --host 127.0.0.1 --port 8766
+Restart=on-failure
+RestartSec=5
+# A connected translation call holds its stream open, and uvicorn's graceful
+# shutdown waits on it — so a restart would otherwise sit in stop-sigterm for
+# systemd's 90s default. Stateless: cutting a stream off loses nothing.
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

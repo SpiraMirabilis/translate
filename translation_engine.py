@@ -1082,6 +1082,38 @@ class TranslationEngine:
             self.logger.info(f"note_updates: {len(updates)} update(s) accepted for review/apply")
         return updates
 
+    def _mcp_tools_kwargs(self, provider, book_info, chapter_number):
+        """``{"mcp_tools": {...}}`` for a provider call, or ``{}``.
+
+        Non-empty only when the provider can take MCP tools (claudecode) and the
+        book's claude_code_tools module is on — explicitly, or on Auto with the
+        global ``claude_code_mcp_tools`` setting on. The kwarg is never passed
+        otherwise: OpenAI-compatible providers forward unknown kwargs to the API.
+        """
+        if not book_info or not getattr(provider, "supports_mcp_tools", False):
+            return {}
+        try:
+            from modules import module_config
+            from modules.claude_code_tools_module import DEFAULT_MAX_TURNS, MODULE_ID
+            enabled, settings = module_config(book_info, MODULE_ID, db=self.entity_manager,
+                                              ctx={"config": self.config})
+        except Exception as e:  # noqa: BLE001 - never fail a chapter over this
+            self.logger.warning(f"claude_code_tools: module lookup failed ({e})")
+            return {}
+        if not enabled:
+            return {}
+        try:
+            max_turns = max(2, int(settings.get("max_turns") or DEFAULT_MAX_TURNS))
+        except (TypeError, ValueError):
+            max_turns = DEFAULT_MAX_TURNS
+        return {"mcp_tools": {
+            "url": getattr(self.config, "claude_code_mcp_url", "http://127.0.0.1:8766/mcp"),
+            "book_id": book_info.get("id"),
+            "book_title": book_info.get("title"),
+            "chapter_number": chapter_number,
+            "max_turns": max_turns,
+        }}
+
     def _inline_footnote_section(self, book_info, chapter_text, chapter_number):
         """FOOTNOTE CANDIDATES prompt block for this chapter, or "".
 
@@ -1415,6 +1447,7 @@ class TranslationEngine:
                                            self.config, self.logger)
 
         provider, model_name = self.config.get_client(self.config.translation_model)
+        mcp_kwargs = self._mcp_tools_kwargs(provider, book_info, chapter_number)
         self.logger.debug(f"extract_entities: using {provider.provider_name}/{model_name}")
 
         # Per-run entity snapshot, scoped to this book (see translate_chapter).
@@ -1482,6 +1515,7 @@ class TranslationEngine:
                     temperature=1,
                     top_p=1,
                     response_format=response_format,
+                    **mcp_kwargs,
                 )
                 response_content = provider.get_response_content(response)
                 usage = response.get("usage", {}) if isinstance(response, dict) else {}
@@ -1603,6 +1637,7 @@ class TranslationEngine:
                                            self.config, self.logger)
 
         provider, model_name = self.config.get_client(self.config.translation_model)
+        mcp_kwargs = self._mcp_tools_kwargs(provider, book_info, chapter_number)
         self.logger.debug(f"Using translation model: {self.config.translation_model}")
         self.logger.debug(f"Provider initialized: {provider.provider_name}")
         self.logger.debug(f"translate_chapter called with text of {len(chapter_text)} lines")
@@ -1761,7 +1796,8 @@ class TranslationEngine:
                                     None, book_categories, gendered_categories,
                                     note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True),
                                     footnote_candidates=bool(footnote_section)),
-                                stream=True
+                                stream=True,
+                                **mcp_kwargs,
                             )
 
                             # Process streaming response
@@ -1972,7 +2008,8 @@ class TranslationEngine:
                             response_format=self._entity_response_format(
                                 None, book_categories, gendered_categories,
                                 note_updates=(not pass2_only) and getattr(self.config, 'entity_note_updates', True),
-                                footnote_candidates=bool(footnote_section))
+                                footnote_candidates=bool(footnote_section)),
+                            **mcp_kwargs,
                         )
                         response_content = provider.get_response_content(response)
                         usage = response.get("usage", {}) if isinstance(response, dict) else {}

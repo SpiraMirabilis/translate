@@ -145,7 +145,7 @@ python translator.py --model claude:claude-3-5-sonnet --key sk-ant-api-key --fil
 - **Regex support**: Toggle regex mode for pattern-based search
 - **Replace**: Single match or Replace All (translated text only — source is read-only)
 - **Chapter titles are included.** `replace_in_chapters(..., include_titles=True)` rewrites `chapters.title` as well as `translated_content`, because the title is a separate column that terminology sweeps used to miss (book 69 kept "Pictographic Fist" in the ch74 title and "Cotton-Cloth Town" in the ch142 title long after the prose was fixed). Pass `include_titles=False` for prose only; the API request accepts the same field. The result dict reports `title_replacements` separately, and a chapter whose *title alone* matches still counts as affected.
-- ⚠️ Plain (non-regex) matching is **case-insensitive**, so `"Terracotta warrior"` also matches the lowercase form and any plural containing it. Where casing carries meaning, pass a regex or do a case-sensitive pass of your own.
+- ⚠️ Plain (non-regex) matching is **case-insensitive**, so `"Terracotta warrior"` also matches the lowercase form and any plural containing it. Regex mode is case-insensitive too (`re.IGNORECASE`); where casing carries meaning, wrap the pattern as `(?-i:...)` or do a case-sensitive pass of your own.
 - **Undo**: Book-wide Replace All stores a snapshot of content *and* title; one-level undo per book (in-memory, class-level `DatabaseManager._replace_undo` dict)
 - **Global search modal**: Available from the Books page (`Ctrl+F`), searches across chapters and navigates into the Chapter Editor with search pre-loaded
 - **API endpoints**: `POST /api/books/{id}/search`, `POST /api/books/{id}/replace`, `POST /api/books/{id}/undo-replace`
@@ -372,6 +372,85 @@ book in flight would corrupt it — but different books share nothing.
   `components/jobs/` (one card per running book, reusing `TranslationProgress`),
   and `PromptHost` mounted in `Layout` so a book needing a decision reaches the
   user on any page. Debug prompt dumps are per book: `prompt-book<N>.tmp`.
+
+### MCP server (`mcp_server/`, added 2026-09-29)
+The review / entity-repair / footnote CLIs are also exposed as an MCP server, so Claude
+Code (or any MCP client) calls typed tools instead of shelling out, and the safety rules
+are enforced by the server rather than remembered by the agent.
+
+- **Launch**: only in sessions that ask for it — `./claude-review` (repo root; symlink it
+  into `~/.local/bin`) runs `claude --mcp-config mcp-review.json`, which starts the server
+  over stdio (`python3 -m mcp_server`). There is deliberately **no `.mcp.json`**: Claude Code
+  offers that to every session in the repo. `TranslationRepairTask.md` and
+  `IdentifyingFootnotes.md` each open with a "With the t9 MCP tools" section (tool ↔ script
+  map, what the server enforces) and keep the CLI route as the fallback.
+  `--transport streamable-http --port N` for HTTP (loopback only unless `--allow-remote`
+  — there is no auth). `--read-only` registers only the getters (every tool annotated
+  `readOnlyHint`), for handing to a model mid-translation.
+- **Install**: `mcp==1.12.4`, `pip install --user --break-system-packages` with a
+  constraint pinning `starlette==0.31.1` / `uvicorn==0.27.1` (see requirements.txt).
+  ⚠️ Newer `mcp` pulls starlette 1.x into `~/.local`, which shadows the apt copy the web
+  app runs on. No apt package exists.
+- **Direct library access**: the tools import the scripts' functions (the logic was pulled
+  out of each CLI's `main()` so CLI and MCP share one implementation) and use one
+  `DatabaseManager(strict_writes=True)`, built lazily on the first call. Only job status and
+  queue control go over HTTP to the admin server (`t9_client` cookie, never `/api/auth/login`).
+- ⚠️ **stdio owns fd 1.** `__main__` duplicates it for the transport and points fd 1 at
+  stderr before importing repo code, because `db_backend` and the legacy-queue check
+  `print()`. Never write to the real stdout from tool code.
+- **The guard** (`mcp_server/guard.py::ensure_book_idle`): entity-DB writes
+  (`t9_correct_entity`, `t9_bulk_correct_entities`, `t9_change_entity_category`,
+  `t9_delete_entities`, `t9_set_entity_note`, `t9_set_entity_gender`,
+  `t9_backfill_origin_chapter` apply) are refused while **that book** has a live admin job
+  or `processing` queue rows (a CLI `translator.py --resume`), or when the admin server can't
+  be reached. `force=true` overrides. Prose, footnote, candidate and reindex tools are never
+  guarded. Dry runs are never guarded.
+- **Pause/resume**: `t9_pause_translation` = stop-auto for one book, then poll until the
+  in-flight chapter is saved (returns early with `needs_human` if it parks on a GUI prompt);
+  it returns the run's `run_options` as a `resume_hint` for `t9_resume_translation`. This
+  relies on `/api/translate/status` carrying per-job `run_options` + `auto_remaining`
+  (`Job.run_options`, set in `queue_api.process_next`).
+- **Defaults are dry runs** on every bulk write (`dry_run=true` / `apply=false`).
+- ⚠️ `t9_replace_in_chapters` undo is the class-level one-level snapshot, so it lives in the
+  MCP server's process — the web GUI cannot undo an MCP replace, and vice versa.
+- **Tool ↔ script map**: `t9_list_entities` get_entities · `t9_search_entities`
+  search_entities · `t9_entity_context` get_entity_context · `t9_note_revisions`
+  note_revisions · `t9_grep_book` grep_book · `t9_correct_entity` /
+  `t9_bulk_correct_entities` correct_entity_translation / bulk_correct_entities ·
+  `t9_change_entity_category` change_entity_category · `t9_delete_entities` delete_entity ·
+  `t9_backfill_origin_chapter` backfill_origin_chapter · `t9_add_footnotes` add_footnotes ·
+  `t9_delete_footnotes` delete_footnote · `t9_get_chapter_summaries` get_chapter_summaries · `t9_list_footnotes` / `t9_reanchor_footnote`
+  list_footnotes · `t9_footnote_candidate_report` / `t9_prune_footnote_candidates` /
+  `t9_export_footnote_candidates` / `t9_scan_footnotes` footnote_scan ·
+  `t9_translation_status` / `t9_pause_translation` / `t9_resume_translation`
+  translation_status / stop_auto_process / start_auto_process. The rest sit directly on repo
+  methods (books, chapters, notes_as_of, search/replace/undo, candidate list/decide, reindex).
+- Covered by `tests/test_mcp_server.py` (a `FakeAdmin`; no HTTP, no model calls) plus
+  `tests/test_{entity,read,footnote}_script_libs.py` for the extracted functions.
+- **Translation lookups (claudecode provider)**: `t9-mcp-readonly.service` runs the
+  read-only server always-on at `127.0.0.1:8766/mcp` (stateless streamable HTTP, DB warmed at
+  start, `MYSQL_POOL_SIZE=5`; unit in `deploy/`, deliberately not in the watchdog). A book
+  gets the tools when its **"Claude Code research tools"** module (`claude_code_tools`) is
+  on — *Auto* follows the global `claude_code_mcp_tools` setting (default **off**), *On* /
+  *Off* per book override it. `TranslationEngine._mcp_tools_kwargs` passes
+  `mcp_tools={url, book_id, book_title, chapter_number, max_turns}` only to providers with
+  `supports_mcp_tools` (OpenAI-compatible providers forward unknown kwargs to the API). The
+  provider then attaches the server (`--mcp-config` http + `X-T9-*` headers,
+  `--allowedTools mcp__t9`, `--max-turns`), appends a RESEARCH TOOLS section naming the book
+  and chapter (the frozen per-book prompt only carries the chapter number), and in stream
+  mode holds each assistant message's text until it is known to be the answer, so a lookup
+  turn's "let me check…" never reaches the JSON. The section *encourages* lookups (full
+  glossary search for terms the matched glossary lacks, earlier renderings of recurring
+  phrases, callbacks) — the first, cautious wording drew zero lookups on book 106. Server down → the call goes out without
+  tools (0.5s TCP probe, cached 30s).
+- **Usage log**: `logs/mcp_usage.log`, one JSON line per tool call, both servers (tool,
+  args, book, ms, ok/error, result size). Translation lines carry caller/book/chapter from
+  the `X-T9-*` headers. `python3 -m mcp_server.usage [--days N]` reports calls by caller and
+  tool, and translation lookups per book and per chapter that used them. (A per-connection
+  `connect` line existed briefly on 2026-09-29 to prove the model was using the tools at
+  all; it was dropped once it had — mostly `t9_search_entities` and `t9_grep_book` —
+  and the summary skips the leftover lines.)
+  `MCP_USAGE_LOG` overrides the path (`off` disables); tests point it at tmp.
 
 ### Configuration
 

@@ -284,6 +284,15 @@ export default function Settings() {
               Repair malformed chunk JSON automatically
               <span className="text-xs text-slate-500 font-normal">— for a response that is complete but not valid JSON (an unescaped quote inside a line is the usual cause). A repair is used only when its text is character-for-character identical to the raw output; anything else goes straight to a retry. A truncated stream is always retried and never repaired, whatever this switch says.</span>
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.claude_code_mcp_tools === true}
+                onChange={e => setSettings(s => ({ ...s, claude_code_mcp_tools: e.target.checked }))}
+              />
+              Let the claudecode model use lookup tools
+              <span className="text-xs text-slate-500 font-normal">— read-only T9 MCP tools (glossary, note history, other chapters) while translating. This is the default for books whose "Claude Code research tools" module is on Auto; setting a book to On or Off under Modules overrides it. Only the claudecode provider uses them. Every lookup is logged to logs/mcp_usage.log.</span>
+            </label>
           </div>
         </section>
       )}

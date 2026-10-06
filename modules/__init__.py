@@ -25,6 +25,7 @@ from .broken_line_module import BrokenLineModule
 from .chapter_spacing_module import ChapterSpacingModule
 from .markdown_notifications_module import MarkdownNotificationsModule
 from .footnote_scan_module import FootnoteScanModule
+from .claude_code_tools_module import ClaudeCodeToolsModule
 
 # Registry. Insertion order == apply order when multiple modules are enabled.
 # trad_to_simp runs first so every downstream source transform (e.g. novel543's
@@ -47,6 +48,8 @@ REGISTRY = {m.id: m for m in [
     # it always reads the persisted post-transform source (see
     # test_scan_input_is_post_transform_source).
     FootnoteScanModule(),
+    # No hooks — the engine reads it via module_config (claudecode MCP tools).
+    ClaudeCodeToolsModule(),
 ]}
 
 

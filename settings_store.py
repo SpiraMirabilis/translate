@@ -60,6 +60,11 @@ SCHEMA = {
     # is identical to the raw output (json_recovery.try_repair). Truncated
     # streams are retried regardless of this switch; they are never repaired.
     "json_auto_repair":        ("JSON_AUTO_REPAIR",        True,                      bool),
+    # Default for the claudecode provider's read-only MCP lookup tools: what a
+    # book's claude_code_tools module does on Auto (On/Off per book override it).
+    # The URL is the t9-mcp-readonly.service endpoint.
+    "claude_code_mcp_tools":   ("CLAUDE_CODE_MCP_TOOLS",   False,                     bool),
+    "claude_code_mcp_url":     ("CLAUDE_CODE_MCP_URL",     "http://127.0.0.1:8766/mcp", str),
     "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),

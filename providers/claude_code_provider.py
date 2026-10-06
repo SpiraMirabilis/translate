@@ -20,10 +20,13 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
+import time
 from collections import deque
+from urllib.parse import urlparse
 from typing import Dict, List, Optional, Any, Union
 
 from .base import (
@@ -94,8 +97,85 @@ class _Chunk:
         self.done = done
 
 
+MCP_SERVER_NAME = "t9"
+_REACHABLE_TTL = 30.0
+_reachable_cache: Dict[str, tuple] = {}
+
+
+def _mcp_reachable(url: str) -> bool:
+    """Is the read-only MCP server listening? Cached briefly per URL.
+
+    A dead server must not cost a translation: the CLI would log a failed MCP
+    connection and the model would be told about tools it cannot call, so an
+    unreachable server means the call goes out without tools.
+    """
+    now = time.monotonic()
+    hit = _reachable_cache.get(url)
+    if hit and now - hit[1] < _REACHABLE_TTL:
+        return hit[0]
+    ok = False
+    try:
+        u = urlparse(url)
+        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=0.5):
+            ok = True
+    except OSError:
+        ok = False
+    _reachable_cache[url] = (ok, now)
+    return ok
+
+
+def mcp_tools_section(tools: Dict[str, Any]) -> str:
+    """System-prompt addendum telling the model which book it is on and that it
+    is welcome to look things up. The per-book prompt carries only the chapter
+    number, so without this the model could not pass book_id."""
+    book_id = tools.get("book_id")
+    title = tools.get("book_title") or ""
+    ch = tools.get("chapter_number")
+    where = f"chapter {ch}" if ch else "the current chapter"
+    lookups = max(1, int(tools.get("max_turns") or 8) - 1)
+    notes_hint = (f"pass chapter={ch} so they read as of this chapter" if ch
+                  else "pass the current chapter so they read as of it")
+    try:
+        n = int(ch)
+    except (TypeError, ValueError):
+        n = 0
+    summaries_hint = (f' (chapters="<{n}" for everything so far, or a range such as '
+                      f'"{max(1, n - 20)}-{n - 1}")' if n > 1 else "")
+    return (
+        "\n\nRESEARCH TOOLS (read-only):\n"
+        f'You are translating book_id={book_id} ("{title}"), {where}. You have tools '
+        "that look up this book's own records, and you are encouraged to use them "
+        "whenever they would make the translation more accurate or more consistent "
+        "with earlier chapters. Lookups are quick and cheap; a wrong or inconsistent "
+        "rendering is not.\n"
+        "- t9_search_entities / t9_list_entities: the full glossary. The PRE-TRANSLATED "
+        "ENTITIES above list only terms matched in this text, so search here for a "
+        "name, title, place, technique, rank or item that is not listed there.\n"
+        "- t9_grep_book: how an earlier chapter rendered a recurring phrase, form of "
+        "address, rank or title (field=\"both\" to see source and translation).\n"
+        "- t9_get_chapter_summaries: short plot summaries of earlier chapters"
+        f"{summaries_hint} — the fast way to find who a returning character is, "
+        "where an earlier event happened, or which chapter to open with "
+        "t9_get_chapter.\n"
+        "- t9_get_chapter / t9_entity_context: what happened in an event the text "
+        "refers back to, or how a term was used before.\n"
+        f"- t9_notes_as_of: character and entity notes; {notes_hint}.\n"
+        "Good reasons to look something up: a proper noun or term missing from the "
+        "glossary above, a callback to an earlier scene, a recurring expression whose "
+        "established wording you are unsure of, or ambiguity about who a pronoun or "
+        "title refers to.\n"
+        f"- Always pass book_id={book_id}. Do not read chapters after {where}.\n"
+        f"- At most {lookups} lookups per response.\n"
+        "- Make any lookups BEFORE writing your answer, and write nothing else: your "
+        "final message must be the response in the required format and nothing more."
+    )
+
+
 class ClaudeCodeProvider(ModelProvider):
     """Provider that invokes the local `claude` CLI in print mode."""
+
+    # The engine passes `mcp_tools` only to providers that say they take it.
+    supports_mcp_tools = True
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
         super().__init__(api_key or "", base_url, **kwargs)
@@ -141,8 +221,15 @@ class ClaudeCodeProvider(ModelProvider):
         **kwargs,
     ) -> Union[Dict[str, Any], StreamingResponse]:
         json_mode = bool(response_format and response_format.get("type") == "json_object")
+        mcp_tools = kwargs.pop("mcp_tools", None)
+        if mcp_tools and not _mcp_reachable(mcp_tools.get("url", "")):
+            logger.warning("claude CLI: MCP server %s unreachable — translating without tools",
+                           mcp_tools.get("url"))
+            mcp_tools = None
 
         system_prompt, user_prompt = self._split_messages(messages)
+        if mcp_tools:
+            system_prompt += mcp_tools_section(mcp_tools)
         if json_mode:
             user_prompt += (
                 "\n\nIMPORTANT: You must respond with valid JSON only. "
@@ -169,8 +256,14 @@ class ClaudeCodeProvider(ModelProvider):
             # Drive, etc.) on every call, slowing startup and exposing the
             # translation to unrelated tools in the session init payload.
             "--strict-mcp-config",
-            "--mcp-config", '{"mcpServers":{}}',
+            "--mcp-config", self._mcp_config(mcp_tools),
         ]
+        if mcp_tools:
+            # --tools "" keeps the built-ins off; the t9 server's tools are
+            # allowed wholesale (it is read-only), and the turn cap bounds how
+            # many lookups one chunk can make.
+            cmd += ["--allowedTools", f"mcp__{MCP_SERVER_NAME}",
+                    "--max-turns", str(int(mcp_tools.get("max_turns") or 8))]
         if os.environ.get("CLAUDE_CODE_DEBUG"):
             # --debug writes to its own log destination, not stderr; use
             # --debug-file so we actually capture the output.
@@ -188,8 +281,9 @@ class ClaudeCodeProvider(ModelProvider):
             cmd += ["--system-prompt-file", sys_path]
 
         logger.info(
-            "claude CLI call: model=%s stream=%s json_mode=%s sys_chars=%d user_chars=%d timeout=%ss",
+            "claude CLI call: model=%s stream=%s json_mode=%s sys_chars=%d user_chars=%d timeout=%ss mcp=%s",
             model, stream, json_mode, len(system_prompt), len(user_prompt), self.timeout,
+            "on" if mcp_tools else "off",
         )
 
         self._sweep_orphan_session_files()
@@ -225,7 +319,8 @@ class ClaudeCodeProvider(ModelProvider):
                     raise RuntimeError(f"claude CLI stdin closed unexpectedly: {e}")
                 # Ownership of sys_path passes to the iterator's finally block.
                 handed_off = True
-                return StreamingResponse(self._stream_iter(proc, sys_path, stderr_buf))
+                return StreamingResponse(self._stream_iter(proc, sys_path, stderr_buf,
+                                                           tools=bool(mcp_tools)))
 
             try:
                 try:
@@ -279,8 +374,34 @@ class ClaudeCodeProvider(ModelProvider):
                 self._unlink(sys_path)
             raise
 
-    def _stream_iter(self, proc: subprocess.Popen, sys_path: Optional[str], stderr_buf: Optional[deque] = None):
+    @staticmethod
+    def _mcp_config(mcp_tools: Optional[Dict[str, Any]]) -> str:
+        """--mcp-config JSON: no servers at all, or just the read-only t9 one.
+
+        The X-T9-* headers land in the server's usage log, so each lookup
+        records the book and chapter it was made for.
+        """
+        if not mcp_tools:
+            return '{"mcpServers":{}}'
+        headers = {"X-T9-Caller": "translation"}
+        if mcp_tools.get("book_id") is not None:
+            headers["X-T9-Book"] = str(mcp_tools["book_id"])
+        if mcp_tools.get("chapter_number") is not None:
+            headers["X-T9-Chapter"] = str(mcp_tools["chapter_number"])
+        return json.dumps({"mcpServers": {MCP_SERVER_NAME: {
+            "type": "http", "url": mcp_tools["url"], "headers": headers}}})
+
+    def _stream_iter(self, proc: subprocess.Popen, sys_path: Optional[str],
+                     stderr_buf: Optional[deque] = None, tools: bool = False):
         got_partial = False
+        # With tools a call spans several assistant messages, and one that ends
+        # in a tool call may open with prose ("Let me check the glossary") that
+        # must not reach the JSON. So in tools mode a message's text is held
+        # until it is known to be the answer: it opens with "{" or a fence, or
+        # the message ends without calling a tool. A message that turns out to
+        # be a tool call has its held text dropped.
+        held: List[str] = []
+        live = not tools
         try:
             for line in proc.stdout:
                 line = line.strip()
@@ -295,16 +416,40 @@ class ClaudeCodeProvider(ModelProvider):
 
                 if etype == "stream_event":
                     inner = event.get("event", {})
-                    if inner.get("type") == "content_block_delta":
+                    itype = inner.get("type")
+                    if tools and itype == "message_start":
+                        held, live = [], False
+                    elif tools and itype == "content_block_start" and \
+                            (inner.get("content_block") or {}).get("type") == "tool_use":
+                        held, live = [], False
+                    elif tools and itype == "message_delta":
+                        stop = (inner.get("delta") or {}).get("stop_reason")
+                        if stop == "tool_use":
+                            held = []
+                        elif held:
+                            got_partial = True
+                            yield _Chunk(text="".join(held))
+                            held, live = [], True
+                    elif itype == "content_block_delta":
                         delta = inner.get("delta", {})
                         if delta.get("type") == "text_delta":
                             text = delta.get("text")
-                            if text:
+                            if text and live:
                                 got_partial = True
                                 yield _Chunk(text=text)
+                            elif text:
+                                held.append(text)
+                                head = "".join(held).lstrip()
+                                if head.startswith(("{", "`")) or len(head) > 4000:
+                                    got_partial = True
+                                    yield _Chunk(text="".join(held))
+                                    held, live = [], True
                 elif etype == "assistant" and not got_partial:
                     msg = event.get("message", {})
                     blocks = msg.get("content", [])
+                    if tools and isinstance(blocks, list) and any(
+                            b.get("type") == "tool_use" for b in blocks):
+                        continue  # a lookup turn, not the answer
                     if isinstance(blocks, list):
                         text = "".join(
                             b.get("text", "") for b in blocks
@@ -327,6 +472,10 @@ class ClaudeCodeProvider(ModelProvider):
                                 raise OverloadedError(text.strip()[:200])
                             yield _Chunk(text=text)
                 elif etype == "result":
+                    if held:  # tools mode: the answer's tail was still held
+                        got_partial = True
+                        yield _Chunk(text="".join(held))
+                        held = []
                     # The CLI is done with the system-prompt file by now;
                     # unlink eagerly because the consumer typically breaks out
                     # of the loop on `done=True`, which would leave this
