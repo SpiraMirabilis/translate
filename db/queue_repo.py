@@ -3,7 +3,7 @@ import os
 import datetime
 import socket
 import traceback
-from modules import apply_source_ingest
+from modules import apply_source_ingest, apply_source_module
 
 
 def worker_identity():
@@ -123,6 +123,14 @@ class QueueRepo:
             # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
             content = apply_source_ingest(book, content, self.config, self.logger, db=self,
                                           chapter_number=chapter_number)
+            # The title is source text too. Only trad→simp applies to it — the
+            # other source transforms (ad stripping, chatgroup tables, …) are
+            # for chapter bodies. Without this a traditional raw queued fine-
+            # grained simplified content under a traditional title (book 106).
+            if isinstance(title, str) and title:
+                title = apply_source_module(book, title, "trad_to_simp", self.config,
+                                            self.logger, db=self,
+                                            chapter_number=chapter_number)
             with self._conn() as conn:
                 cursor = conn.cursor()
 
