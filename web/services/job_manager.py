@@ -279,6 +279,10 @@ class Job:
         self._stop_auto = threading.Event()
         self._auto_max = None
         self._auto_done = 0
+        # The options this run was started with (models, no_review, …), so a
+        # caller that pauses the book can restart it the same way. Set by
+        # queue_api.process_next; None for runs started elsewhere.
+        self.run_options: Optional[dict] = None
 
         # Cooperative cancellation — set by the cancel endpoint, polled by the
         # translation engine between (and mid-) chunks via is_cancelled().
@@ -564,6 +568,16 @@ class Job:
         """Signal the loop to stop after the current translation finishes."""
         self.auto_process = False
         self._stop_auto.set()
+
+    @property
+    def auto_remaining(self):
+        """Chapters the auto loop will still start after the current one.
+
+        None when the run is unlimited or not auto-processing.
+        """
+        if not self.auto_process or not self._auto_max:
+            return None
+        return max(self._auto_max - self._auto_done, 0)
 
     def should_continue_auto(self):
         """Check whether the auto-process loop should continue."""

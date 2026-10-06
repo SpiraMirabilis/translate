@@ -850,6 +850,12 @@ def process_next(req: ProcessNextRequest = ProcessNextRequest()):
 
         if req.auto_process:
             job.start_auto_process(max_chapters=req.max_chapters)
+        # Everything needed to restart this run the same way after a pause.
+        job.run_options = {
+            **{k: v for k, v in settings.items() if k != "book_id"},
+            "auto_process": req.auto_process,
+            "max_chapters": req.max_chapters,
+        }
 
         # Log the first item before the worker thread starts
         book_name = None

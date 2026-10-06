@@ -73,6 +73,8 @@ def _job_state(job):
         "is_running": job.is_running,
         "error": job.error,
         "auto_process": job.auto_process,
+        "auto_remaining": job.auto_remaining,
+        "run_options": job.run_options,
     }
     if job.status == "awaiting_review" and job.pending_review:
         state["pending_review"] = job.pending_review

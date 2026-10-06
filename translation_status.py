@@ -170,6 +170,17 @@ def main():
             print(f"  translating:  book {ids}")
             if args.book_id is not None and args.book_id not in live_books:
                 print(f"  (book {args.book_id} is not in transit — sweeps on it are safe)")
+        for bid, job in sorted((data.get("jobs") or {}).items(),
+                               key=lambda kv: int(kv[0])):
+            left = job.get("auto_remaining")
+            if left is not None:
+                print(f"  book {bid}:      ch{job.get('chapter_number')}, "
+                      f"{left} more after this one")
+            opts = job.get("run_options")
+            if opts:
+                shown = ", ".join(f"{k}={v}" for k, v in opts.items()
+                                  if v not in (None, False))
+                print(f"  book {bid} run:  {shown or 'defaults'}")
         if data.get("error"):
             print(f"  error:        {data['error']}")
         for key, label in (
