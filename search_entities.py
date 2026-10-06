@@ -64,7 +64,11 @@ def fetch_entities(db_manager, book_id, category, chapter_clause, chapter_params
 
 
 def build_matcher(pattern, use_regex, ignore_case):
-    """Return a predicate fn(text) -> bool for the given pattern."""
+    """Return a predicate fn(text) -> bool for the given pattern.
+
+    Glob by default (a bare term matches as a substring), regex with use_regex.
+    Raises ValueError on an invalid regex.
+    """
     if not pattern:
         return lambda _text: True
 
@@ -73,8 +77,7 @@ def build_matcher(pattern, use_regex, ignore_case):
         try:
             compiled = re.compile(pattern, flags)
         except re.error as e:
-            print(f"error: invalid regex {pattern!r}: {e}", file=sys.stderr)
-            sys.exit(2)
+            raise ValueError(f"invalid regex {pattern!r}: {e}") from None
         return lambda text: bool(text) and compiled.search(text) is not None
 
     glob_pat = pattern if any(c in pattern for c in "*?[") else f"*{pattern}*"
@@ -191,7 +194,12 @@ def main():
         db_manager, book["id"], args.category, chapter_clause, chapter_params
     )
 
-    matcher = build_matcher(args.pattern, args.regex, ignore_case=not args.case_sensitive)
+    try:
+        matcher = build_matcher(args.pattern, args.regex,
+                                ignore_case=not args.case_sensitive)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
     matches = filter_rows(rows, matcher, args.field)
 
     sys.stdout.write(render(matches, args.category))

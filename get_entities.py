@@ -238,6 +238,85 @@ def fetch_entities(db_manager, book_id, chapter_clause, chapter_params,
     return grouped
 
 
+def resolve_as_of(origin_chapter=None, as_of_chapter=None, current_notes=False):
+    """The chapter the notes are wound back to, or None for current notes.
+
+    An --origin-chapter range is a question about a period of the book, so the
+    notes should describe the book as it was then. as_of_chapter overrides,
+    current_notes opts out.
+    """
+    as_of = as_of_chapter
+    if as_of is None and not current_notes:
+        as_of = filter_upper_bound(origin_chapter)
+    if current_notes:
+        as_of = None
+    return as_of
+
+
+def build_entities_payload(db_manager, book, origin_chapter=None, *,
+                           as_of_chapter=None, current_notes=False,
+                           origin_only=False):
+    """Everything main() dumps: {book, filter, notes_as_of_chapter, entities}.
+
+    `book` is a book dict (see resolve_book) with at least "id" and "title".
+    `entities` is fetch_entities' {category: [entry, ...]} mapping.
+    Raises ValueError on a malformed origin_chapter filter.
+    """
+    chapter_clause, chapter_params = parse_chapter_filter(origin_chapter)
+    as_of = resolve_as_of(origin_chapter, as_of_chapter, current_notes)
+
+    # An entity whose note was rewritten during the range belongs to that range's
+    # glossary work even if it was introduced hundreds of chapters earlier.
+    note_chapters = ({} if origin_only
+                     else note_update_chapters(db_manager, book["id"], origin_chapter))
+
+    grouped = fetch_entities(db_manager, book["id"], chapter_clause, chapter_params,
+                             as_of_chapter=as_of, note_chapters=note_chapters)
+    return {
+        "book": {"id": book["id"], "title": book.get("title")},
+        "filter": origin_chapter,
+        "notes_as_of_chapter": as_of,
+        "entities": grouped,
+    }
+
+
+def render_entities_text(payload):
+    """The --format text rendering of a build_entities_payload() dict.
+
+    Returns the full text, newline-terminated.
+    """
+    book = payload["book"]
+    grouped = payload["entities"]
+    origin_chapter = payload.get("filter")
+    as_of = payload.get("notes_as_of_chapter")
+
+    lines = [f"# {book.get('title')} (id={book['id']})"]
+    if origin_chapter:
+        lines.append(f"# origin_chapter filter: {origin_chapter}")
+    if as_of is not None:
+        lines.append(f"# notes as of chapter {as_of}")
+    for category in sorted(grouped):
+        entries = grouped[category]
+        lines.append("")
+        lines.append(f"== {category} ({len(entries)}) ==")
+        for e in entries:
+            origin = e.get("origin_chapter")
+            origin_str = f"ch{origin}" if origin is not None else "ch?"
+            extra = []
+            if e.get("gender"):
+                extra.append(e["gender"])
+            if e.get("global"):
+                extra.append("global")
+            if e.get("note_updated_chapters"):
+                chs = ",".join(f"ch{c}" for c in e["note_updated_chapters"])
+                extra.append(f"note updated {chs}")
+            if e.get("note"):
+                extra.append(f"note={e['note']}")
+            suffix = f"  [{', '.join(extra)}]" if extra else ""
+            lines.append(f"  {origin_str:>6}  {e['untranslated']} -> {e['translation']}{suffix}")
+    return "\n".join(lines) + "\n"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Dump entities for a book, optionally filtered by origin_chapter.",
@@ -288,7 +367,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        chapter_clause, chapter_params = parse_chapter_filter(args.origin_chapter)
+        parse_chapter_filter(args.origin_chapter)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
@@ -302,57 +381,16 @@ def main():
         print(f"error: book not found: {args.book!r}", file=sys.stderr)
         sys.exit(1)
 
-    # An --origin-chapter range is a question about a period of the book, so the
-    # notes should describe the book as it was then. --as-of-chapter overrides,
-    # --current-notes opts out.
-    as_of = args.as_of_chapter
-    if as_of is None and not args.current_notes:
-        as_of = filter_upper_bound(args.origin_chapter)
-    if args.current_notes:
-        as_of = None
-
-    # An entity whose note was rewritten during the range belongs to that range's
-    # glossary work even if it was introduced hundreds of chapters earlier.
-    note_chapters = ({} if args.origin_only
-                     else note_update_chapters(db_manager, book["id"], args.origin_chapter))
-
-    grouped = fetch_entities(db_manager, book["id"], chapter_clause, chapter_params,
-                             as_of_chapter=as_of, note_chapters=note_chapters)
+    payload = build_entities_payload(
+        db_manager, book, args.origin_chapter,
+        as_of_chapter=args.as_of_chapter, current_notes=args.current_notes,
+        origin_only=args.origin_only)
+    grouped = payload["entities"]
 
     if args.format == "json":
-        payload = {
-            "book": {"id": book["id"], "title": book.get("title")},
-            "filter": args.origin_chapter,
-            "notes_as_of_chapter": as_of,
-            "entities": grouped,
-        }
         rendered = json.dumps(payload, ensure_ascii=False, indent=2)
     else:
-        lines = [f"# {book.get('title')} (id={book['id']})"]
-        if args.origin_chapter:
-            lines.append(f"# origin_chapter filter: {args.origin_chapter}")
-        if as_of is not None:
-            lines.append(f"# notes as of chapter {as_of}")
-        for category in sorted(grouped):
-            entries = grouped[category]
-            lines.append("")
-            lines.append(f"== {category} ({len(entries)}) ==")
-            for e in entries:
-                origin = e.get("origin_chapter")
-                origin_str = f"ch{origin}" if origin is not None else "ch?"
-                extra = []
-                if e.get("gender"):
-                    extra.append(e["gender"])
-                if e.get("global"):
-                    extra.append("global")
-                if e.get("note_updated_chapters"):
-                    chs = ",".join(f"ch{c}" for c in e["note_updated_chapters"])
-                    extra.append(f"note updated {chs}")
-                if e.get("note"):
-                    extra.append(f"note={e['note']}")
-                suffix = f"  [{', '.join(extra)}]" if extra else ""
-                lines.append(f"  {origin_str:>6}  {e['untranslated']} -> {e['translation']}{suffix}")
-        rendered = "\n".join(lines) + "\n"
+        rendered = render_entities_text(payload)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

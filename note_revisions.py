@@ -130,15 +130,17 @@ def fetch_revisions(db_manager, book_id, entity_ids=None, chapter_expr=None,
 
 
 def build_matcher(pattern, use_regex, ignore_case):
-    """fn(text) -> bool. Substring by default, regex with --regex."""
+    """fn(text) -> bool. Substring by default, regex with --regex.
+
+    Returns None for an empty pattern. Raises ValueError on an invalid regex.
+    """
     if not pattern:
         return None
     if use_regex:
         try:
             compiled = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
         except re.error as e:
-            print(f"error: invalid regex {pattern!r}: {e}", file=sys.stderr)
-            sys.exit(2)
+            raise ValueError(f"invalid regex {pattern!r}: {e}") from None
         return lambda text: bool(text) and compiled.search(text) is not None
     if ignore_case:
         needle = pattern.lower()
@@ -175,26 +177,63 @@ def entity_label(row):
     return f"{untranslated} : {translation}" if translation else untranslated
 
 
-def print_revision(row, args, show_entity):
+def filter_revisions(rows, grep=None, introduced=None, dropped=None, *,
+                     regex=False, ignore_case=True, limit=None):
+    """Apply --grep / --introduced / --dropped / --limit to fetch_revisions rows.
+
+    Patterns are substrings (regexes with regex=True), case-insensitive unless
+    ignore_case=False — the CLI default. Filters AND together:
+      grep        the new note matches
+      introduced  the new note matches and the previous note does not
+      dropped     the previous note matches and the new note does not
+    limit keeps the LAST N rows (the most recent). Raises ValueError on an
+    invalid regex. Returns a new list.
+    """
+    grep_m = build_matcher(grep, regex, ignore_case)
+    introduced_m = build_matcher(introduced, regex, ignore_case)
+    dropped_m = build_matcher(dropped, regex, ignore_case)
+
+    rows = list(rows)
+    if grep_m:
+        rows = [r for r in rows if grep_m(r["new_note"])]
+    if introduced_m:
+        rows = [r for r in rows
+                if introduced_m(r["new_note"]) and not introduced_m(r["previous_note"])]
+    if dropped_m:
+        rows = [r for r in rows
+                if dropped_m(r["previous_note"]) and not dropped_m(r["new_note"])]
+    if limit:
+        rows = rows[-limit:]
+    return rows
+
+
+def render_revision(row, diff=False, show_prev=False, show_entity=True):
+    """The text block print_revision prints for one revision row (no trailing
+    newline): a 78-dash rule, the header, then why/note/prev/diff lines."""
     chapter = f"ch{row['chapter_number']}" if row["chapter_number"] else "ch—"
     header = f"[{row['id']}] {chapter}  {row['author']}"
     if row["shrink"]:
         header += "  SHRINK"
     if show_entity:
         header += f"  {entity_label(row)}"
-    print("-" * 78)
-    print(header)
+    lines = ["-" * 78, header]
     if row["reason"]:
-        print(f"  why : {row['reason']}")
-    if args.diff:
+        lines.append(f"  why : {row['reason']}")
+    if diff:
         if row["previous_note"] is None:
-            print(f"  new : {row['new_note']}")
+            lines.append(f"  new : {row['new_note']}")
         else:
-            print(f"  diff: {word_diff(row['previous_note'], row['new_note'])}")
+            lines.append(f"  diff: {word_diff(row['previous_note'], row['new_note'])}")
     else:
-        if args.show_prev and row["previous_note"] is not None:
-            print(f"  prev: {row['previous_note']}")
-        print(f"  note: {row['new_note']}")
+        if show_prev and row["previous_note"] is not None:
+            lines.append(f"  prev: {row['previous_note']}")
+        lines.append(f"  note: {row['new_note']}")
+    return "\n".join(lines)
+
+
+def print_revision(row, args, show_entity):
+    print(render_revision(row, diff=args.diff, show_prev=args.show_prev,
+                          show_entity=show_entity))
 
 
 def main():
@@ -278,22 +317,14 @@ def main():
                            chapter_expr=args.chapters, no_chapter=args.no_chapter,
                            author=args.author, shrink_only=args.shrink)
 
-    ignore_case = not args.case_sensitive
-    grep = build_matcher(args.grep, args.regex, ignore_case)
-    introduced = build_matcher(args.introduced, args.regex, ignore_case)
-    dropped = build_matcher(args.dropped, args.regex, ignore_case)
-
-    if grep:
-        rows = [r for r in rows if grep(r["new_note"])]
-    if introduced:
-        rows = [r for r in rows
-                if introduced(r["new_note"]) and not introduced(r["previous_note"])]
-    if dropped:
-        rows = [r for r in rows
-                if dropped(r["previous_note"]) and not dropped(r["new_note"])]
-
-    if args.limit:
-        rows = rows[-args.limit:]
+    try:
+        rows = filter_revisions(rows, args.grep, args.introduced, args.dropped,
+                                regex=args.regex,
+                                ignore_case=not args.case_sensitive,
+                                limit=args.limit)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.format == "json":
         print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))

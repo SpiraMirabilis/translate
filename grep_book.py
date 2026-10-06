@@ -180,10 +180,17 @@ def collect_chapters(db_manager, book_id, fields, include_queue):
 
 
 def build_matcher(pattern, fixed, ignore_case):
+    """Compile the search pattern (a literal with fixed=True).
+
+    Raises ValueError on an invalid regex.
+    """
     if fixed:
         pattern = re.escape(pattern)
     flags = re.IGNORECASE if ignore_case else 0
-    return re.compile(pattern, flags)
+    try:
+        return re.compile(pattern, flags)
+    except re.error as exc:
+        raise ValueError(f"bad regex {pattern!r}: {exc}") from None
 
 
 MATCH_LABEL_MAXLEN = 40
@@ -210,6 +217,126 @@ def match_labels(matcher, text):
 
 def format_labels(labels):
     return f" [{', '.join(labels)}]" if labels else ""
+
+
+def _sorted_chapter_numbers(chapters):
+    return sorted(chapters, key=lambda n: (n is None, n))
+
+
+def grep_chapters(chapters, matcher, fields, *, chapter_filter=None, titles=False):
+    """Every matching line of a collect_chapters() mapping, in reading order.
+
+    `matcher` is a compiled regex (build_matcher); `fields` a list drawn from
+    "src"/"en"; `chapter_filter` a parse_chapter_filter() predicate or None;
+    `titles` also tests each chapter title (once per field, as the CLI does).
+
+    Returns one dict per hit:
+        chapter_number  int (or None)
+        queued          True when the chapter is a not-yet-translated queue row
+        field           "src" | "en"
+        is_title        True for a title hit (line_index is then None)
+        line_index      0-based index into chapters[n][field], or None
+        text            the whole matching line (or the title)
+        labels          distinct matched substrings, first-appearance order
+        tag             display tag: "" with one field, " src"/" en" with
+                        several, plus " title" for title hits
+    """
+    hits = []
+    multi = len(fields) != 1
+    for num in _sorted_chapter_numbers(chapters):
+        if chapter_filter and not chapter_filter(num):
+            continue
+        entry = chapters[num]
+        for field in fields:
+            lines = entry.get(field) or []
+            tag = f" {field}" if multi else ""
+            for i, line in enumerate(lines):
+                text = str(line)
+                labels = match_labels(matcher, text)
+                if labels or matcher.search(text):
+                    hits.append({
+                        "chapter_number": num, "queued": entry["queued"],
+                        "field": field, "is_title": False, "line_index": i,
+                        "text": text, "labels": labels, "tag": tag,
+                    })
+            if titles and entry["title"]:
+                title = str(entry["title"])
+                labels = match_labels(matcher, title)
+                if labels or matcher.search(title):
+                    hits.append({
+                        "chapter_number": num, "queued": entry["queued"],
+                        "field": field, "is_title": True, "line_index": None,
+                        "text": title, "labels": labels, "tag": f"{tag} title",
+                    })
+    return hits
+
+
+def _group_by_chapter(hits):
+    groups = []
+    for hit in hits:
+        if groups and groups[-1][0] == hit["chapter_number"]:
+            groups[-1][1].append(hit)
+        else:
+            groups.append((hit["chapter_number"], [hit]))
+    return groups
+
+
+def format_hits(hits, chapters, *, context=0, count=False, files_only=False,
+                match_tag=True):
+    """Render grep_chapters() hits exactly as the CLI prints them to stdout.
+
+    files_only (-l): one "chN[ (queued)]" line per matching chapter.
+    count (-c):      "chN[ (queued)]: K[ [label ×n, …]]" per chapter.
+    otherwise:       every hit line, "chN[ (queued)][tag][ [labels]] [i] line";
+                     context=N adds N lines either side ('>' marks the hit)
+                     followed by a 60-dash rule. Title hits print the title.
+    `chapters` (the collect_chapters mapping) supplies context lines and titles.
+    match_tag=False drops the "[labels]" prefix (--no-match-tag).
+    Returns the text, newline-terminated, or "" when there are no hits.
+    """
+    out = []
+    for num, group in _group_by_chapter(hits):
+        entry = chapters[num]
+        label = f"ch{num}" if num is not None else "ch?"
+        queued = " (queued)" if entry["queued"] else ""
+
+        if files_only:
+            out.append(f"{label}{queued}")
+            continue
+        if count:
+            tally = ""
+            if match_tag:
+                counts = {}
+                for hit in group:
+                    for lbl in hit["labels"]:
+                        counts[lbl] = counts.get(lbl, 0) + 1
+                if counts:
+                    tally = " [" + ", ".join(
+                        lbl if n == 1 else f"{lbl} ×{n}"
+                        for lbl, n in counts.items()
+                    ) + "]"
+            out.append(f"{label}{queued}: {len(group)}{tally}")
+            continue
+
+        for hit in group:
+            tag = hit["tag"]
+            shown = format_labels(hit["labels"]) if match_tag else ""
+            i = hit["line_index"]
+            if i is None:
+                out.append(f"{label}{queued}{tag}{shown}: {entry['title']}")
+                continue
+            lines = entry.get(hit["field"]) or []
+            if context:
+                lo = max(0, i - context)
+                hi = min(len(lines), i + context + 1)
+                for j in range(lo, hi):
+                    marker = ">" if j == i else " "
+                    pad = shown if j == i else ""
+                    out.append(f"{marker}{label}{queued}{tag}{pad} [{j}] {lines[j]}")
+                out.append("-" * 60)
+            else:
+                out.append(f"{label}{queued}{tag}{shown} [{i}] {lines[i]}")
+    return "\n".join(out) + "\n" if out else ""
 
 
 def main():
@@ -251,8 +378,8 @@ def main():
 
     try:
         matcher = build_matcher(args.pattern, args.fixed, args.ignore_case)
-    except re.error as exc:
-        print(f"Error: bad regex {args.pattern!r}: {exc}", file=sys.stderr)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         print("(pass -F to search for it as a literal string)", file=sys.stderr)
         sys.exit(1)
 
@@ -269,72 +396,15 @@ def main():
         print(f"No chapters found for book {args.book_id}.", file=sys.stderr)
         sys.exit(1)
 
-    total_matches = 0
-    matched_chapters = 0
-
-    for num in sorted(chapters, key=lambda n: (n is None, n)):
-        if chapter_filter and not chapter_filter(num):
-            continue
-        entry = chapters[num]
-        label = f"ch{num}" if num is not None else "ch?"
-        queued = " (queued)" if entry["queued"] else ""
-
-        hits = []
-        for field in fields:
-            lines = entry.get(field) or []
-            tag = "" if len(fields) == 1 else f" {field}"
-            for i, line in enumerate(lines):
-                text = str(line)
-                labels = match_labels(matcher, text)
-                if labels or matcher.search(text):
-                    hits.append((field, tag, i, lines, labels))
-            if args.titles and entry["title"]:
-                title = str(entry["title"])
-                labels = match_labels(matcher, title)
-                if labels or matcher.search(title):
-                    hits.append((field, f"{tag} title", None, None, labels))
-
-        if not hits:
-            continue
-
-        matched_chapters += 1
-        total_matches += len(hits)
-
-        if args.files_with_matches:
-            print(f"{label}{queued}")
-            continue
-        if args.count:
-            tally = ""
-            if not args.no_match_tag:
-                counts = {}
-                for hit in hits:
-                    for lbl in hit[4]:
-                        counts[lbl] = counts.get(lbl, 0) + 1
-                if counts:
-                    tally = " [" + ", ".join(
-                        lbl if n == 1 else f"{lbl} ×{n}"
-                        for lbl, n in counts.items()
-                    ) + "]"
-            print(f"{label}{queued}: {len(hits)}{tally}")
-            continue
-
-        for field, tag, i, lines, labels in hits:
-            shown = "" if args.no_match_tag else format_labels(labels)
-            if i is None:
-                print(f"{label}{queued}{tag}{shown}: {entry['title']}")
-                continue
-            if args.context:
-                lo = max(0, i - args.context)
-                hi = min(len(lines), i + args.context + 1)
-                for j in range(lo, hi):
-                    marker = ">" if j == i else " "
-                    pad = shown if j == i else ""
-                    print(f"{marker}{label}{queued}{tag}{pad} [{j}] {lines[j]}")
-                print("-" * 60)
-            else:
-                print(f"{label}{queued}{tag}{shown} [{i}] {lines[i]}")
+    hits = grep_chapters(chapters, matcher, fields,
+                         chapter_filter=chapter_filter, titles=args.titles)
+    sys.stdout.write(format_hits(
+        hits, chapters, context=args.context, count=args.count,
+        files_only=args.files_with_matches, match_tag=not args.no_match_tag))
 
     if not args.files_with_matches:
+        total_matches = len(hits)
+        matched_chapters = len(_group_by_chapter(hits))
         print(f"\n{total_matches} match(es) in {matched_chapters} chapter(s).",
               file=sys.stderr)
 

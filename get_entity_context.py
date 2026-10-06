@@ -152,6 +152,7 @@ def parse_mentions(raw):
     """Parse the --mentions argument into a list of occurrence numbers.
 
     Each entry is either a positive int or the string '$' (last occurrence).
+    Raises ValueError on a malformed entry.
     """
     mentions = []
     seen = set()
@@ -167,13 +168,10 @@ def parse_mentions(raw):
         try:
             n = int(s)
         except ValueError:
-            print(f"error: invalid --mentions value {s!r}, must be a positive integer or '$'",
-                  file=sys.stderr)
-            sys.exit(1)
+            raise ValueError(f"invalid --mentions value {s!r}, must be a positive "
+                             f"integer or '$'") from None
         if n < 1:
-            print(f"error: --mentions values must be positive integers (got {n})",
-                  file=sys.stderr)
-            sys.exit(1)
+            raise ValueError(f"--mentions values must be positive integers (got {n})")
         if n not in seen:
             seen.add(n)
             mentions.append(n)
@@ -189,6 +187,7 @@ def parse_chapter_filter(raw):
       - an inclusive range:     1-20
       - a comparison:           >20, >=20, <20, <=20, =20
     A chapter matches if it satisfies any piece (pieces are OR-ed together).
+    Raises ValueError on a malformed piece.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -219,8 +218,7 @@ def parse_chapter_filter(raw):
             else:
                 n = int(s); predicates.append(lambda c, n=n: c == n)
         except ValueError:
-            print(f"error: invalid --chapters value {s!r}", file=sys.stderr)
-            sys.exit(1)
+            raise ValueError(f"invalid --chapters value {s!r}") from None
 
     if not predicates:
         return None
@@ -415,6 +413,10 @@ def render_merged_group(book, entity, group):
 def contexts_for_entity(db_manager, book, entity, separator, occurrences, chapter_filter=None):
     """Resolve contexts for each requested occurrence of an entity.
 
+    `book` is a book dict ({"id", "title", ...}); `occurrences` is a
+    parse_mentions() list; `chapter_filter` a parse_chapter_filter() predicate
+    or None. Read-only; callable standalone with any DatabaseManager.
+
     Returns a list of dicts: {header, body, occurrences: list[int], is_last,
     ok}. Adjacent hits within a chapter whose context windows overlap or
     touch are merged into a single result. Missing higher occurrences are
@@ -531,12 +533,20 @@ def main():
         print("error: no entities provided", file=sys.stderr)
         sys.exit(1)
 
-    occurrences = parse_mentions(args.mentions)
+    try:
+        occurrences = parse_mentions(args.mentions)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
     if not occurrences:
         print("error: --mentions resolved to no occurrences", file=sys.stderr)
         sys.exit(1)
 
-    chapter_filter = parse_chapter_filter(args.chapters)
+    try:
+        chapter_filter = parse_chapter_filter(args.chapters)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     config = TranslationConfig()
     logger = Logger(config)

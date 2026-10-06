@@ -43,32 +43,40 @@ Usage:
 
 import argparse
 import json
+import os
 import unicodedata
+from dataclasses import dataclass, field
+
+from config import TranslationConfig
+from database import DatabaseManager
+from logger import Logger
 
 EXCLUSIONS_FILE = "backfill_origin_exclusions.json"
 
 
-def load_exclusions(book_id, extra=()):
+def load_exclusions(book_id, extra=(), warnings=None):
     """Entity keys --recompute must not re-derive for this book.
 
     A key here matches coincidentally inside a longer word, so recomputing drags
     it to a bogus early chapter and silently reverts any hand-set origin.
+
+    An unreadable exclusions file is not fatal: the problem is appended to
+    `warnings` (a list) when one is given, printed otherwise.
     """
     keys = set(extra)
     try:
-        import os
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), EXCLUSIONS_FILE)
         with open(path, encoding="utf-8") as fh:
             keys |= set(json.load(fh).get(str(book_id), []))
     except FileNotFoundError:
         pass
     except (ValueError, OSError) as exc:
-        print(f"WARNING: could not read {EXCLUSIONS_FILE}: {exc}")
+        msg = f"WARNING: could not read {EXCLUSIONS_FILE}: {exc}"
+        if warnings is None:
+            print(msg)
+        else:
+            warnings.append(msg)
     return {unicodedata.normalize("NFC", k) for k in keys}
-
-from config import TranslationConfig
-from database import DatabaseManager
-from logger import Logger
 
 
 def _norm(text):
@@ -161,6 +169,149 @@ def set_origin_chapter(db, entity_id, chapter_number):
     conn.close()
 
 
+def _entity_row(entity):
+    eid, untr, trans, cat, old = entity
+    return {"entity_id": eid, "untranslated": untr, "translation": trans,
+            "category": cat, "old": old}
+
+
+@dataclass
+class BackfillPlan:
+    """What a backfill run would do. Built by compute_origin_backfill; nothing
+    is written until apply_origin_backfill(db, plan).
+
+    changes           [{entity_id, untranslated, translation, category, old, new}]
+                      in scan order; old is None for a first-time set.
+    unmatched         [{entity_id, untranslated, translation, category, old}] —
+                      key not found in any scanned chapter.
+    kept_later        (recompute only) [{..., old, derived}] where the derived
+                      origin was not earlier than the recorded one, so left alone.
+    skipped_short     (recompute without include_short) single-character
+                      entities not considered, [{..., old}].
+    skipped_excluded  (recompute only) entities whose key is in the exclusions
+                      file or skip_keys, [{..., old}].
+    entities_considered  how many entities were matched against the text.
+    chapters_scanned, first_chapter, last_chapter  the source chapters walked.
+    scope             "recompute" | "all" | "missing".
+    warnings          non-fatal problems (an unreadable exclusions file).
+    """
+    book_id: int
+    category: object = None
+    scope: str = "missing"
+    include_queue: bool = True
+    chapters_scanned: int = 0
+    first_chapter: object = None
+    last_chapter: object = None
+    entities_considered: int = 0
+    changes: list = field(default_factory=list)
+    unmatched: list = field(default_factory=list)
+    kept_later: list = field(default_factory=list)
+    skipped_short: list = field(default_factory=list)
+    skipped_excluded: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
+    # changes and unmatched interleaved in scan order, as ("set"|"unmatched", row);
+    # lets main() print them in the order it always has.
+    ordered: list = field(default_factory=list, repr=False)
+
+    @property
+    def overwrites(self):
+        """How many changes replace an existing (non-NULL) origin_chapter."""
+        return sum(1 for c in self.changes if c["old"] is not None)
+
+
+def compute_origin_backfill(db, book_id, *, category=None, recompute=False,
+                            all_=False, include_short=False, skip_keys=None,
+                            include_queue=True):
+    """Work out each entity's first textual appearance; write nothing.
+
+    Mirrors the CLI flags:
+      category       only entities in this category (--category)
+      recompute      consider every entity, but only ever move an origin
+                     EARLIER (--recompute); skips single-character keys unless
+                     include_short, and keys excluded for the book
+      all_           consider every entity and overwrite in either direction
+                     (--all); without all_/recompute only NULL origins are set
+      include_short  with recompute, also consider 1-char keys (--include-short)
+      skip_keys      extra keys to exclude, IN ADDITION to the book's entries in
+                     backfill_origin_exclusions.json (--skip-key). Like the file,
+                     they only apply under recompute.
+      include_queue  also scan queued (untranslated) chapters; the CLI default
+                     (--no-queue turns it off)
+    Only book-scoped entities (book_id = N) are considered, never globals.
+    """
+    plan = BackfillPlan(book_id=book_id, category=category,
+                        include_queue=include_queue,
+                        scope="recompute" if recompute else ("all" if all_ else "missing"))
+
+    sources = load_sources(db, book_id, include_queue)
+    chapter_numbers = sorted(sources.keys())
+    plan.chapters_scanned = len(chapter_numbers)
+    if chapter_numbers:
+        plan.first_chapter, plan.last_chapter = chapter_numbers[0], chapter_numbers[-1]
+
+    entities = load_entities(db, book_id, category,
+                             only_missing=not (all_ or recompute))
+
+    if recompute and not include_short:
+        keep = [e for e in entities if len(e[1] or "") > 1]
+        plan.skipped_short = [_entity_row(e) for e in entities if len(e[1] or "") <= 1]
+        entities = keep
+    if recompute:
+        excluded = load_exclusions(book_id, skip_keys or (), warnings=plan.warnings)
+        if excluded:
+            keep = [e for e in entities
+                    if unicodedata.normalize("NFC", e[1] or "") not in excluded]
+            plan.skipped_excluded = [_entity_row(e) for e in entities
+                                     if unicodedata.normalize("NFC", e[1] or "") in excluded]
+            entities = keep
+    plan.entities_considered = len(entities)
+
+    # Walk chapters ascending; assign each pending entity the first chapter it
+    # appears in, then drop it from the pending set. Stop early once all matched.
+    pending = {eid: (unicodedata.normalize('NFC', untr), untr, trans, old)
+               for (eid, untr, trans, cat, old) in entities}
+    resolved = {}  # eid -> chapter_number
+
+    for cn in chapter_numbers:
+        if not pending:
+            break
+        text = sources[cn]
+        found = [eid for eid, (key, _, _, _) in pending.items() if key in text]
+        for eid in found:
+            resolved[eid] = cn
+            del pending[eid]
+
+    for entity in entities:
+        eid, untr, trans, cat, old = entity
+        if eid in resolved:
+            cn = resolved[eid]
+            if old == cn:
+                continue
+            # recompute never raises an origin: an entity cannot originate after
+            # its first textual appearance, but it may legitimately predate one.
+            if recompute and old is not None and cn >= old:
+                plan.kept_later.append(dict(_entity_row(entity), derived=cn))
+                continue
+            row = dict(_entity_row(entity), new=cn)
+            plan.changes.append(row)
+            plan.ordered.append(("set", row))
+        else:
+            row = _entity_row(entity)
+            plan.unmatched.append(row)
+            plan.ordered.append(("unmatched", row))
+
+    return plan
+
+
+def apply_origin_backfill(db, plan):
+    """Write every change in `plan`; returns how many origins were set."""
+    n = 0
+    for change in plan.changes:
+        set_origin_chapter(db, change["entity_id"], change["new"])
+        n += 1
+    return n
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Backfill entity origin_chapter by scanning chapter source text.")
@@ -188,100 +339,58 @@ def main():
     logger = Logger(config)
     db = DatabaseManager(config, logger)
 
-    include_queue = not args.no_queue
-    sources = load_sources(db, args.book_id, include_queue)
-    chapter_numbers = sorted(sources.keys())
     recompute = args.recompute
-    entities = load_entities(db, args.book_id, args.category,
-                             only_missing=not (args.all or recompute))
-
-    skipped_short = []
-    skipped_excluded = []
-    if recompute and not args.include_short:
-        keep = [e for e in entities if len(e[1] or "") > 1]
-        skipped_short = [e for e in entities if len(e[1] or "") <= 1]
-        entities = keep
-    if recompute:
-        excluded = load_exclusions(args.book_id, args.skip_key)
-        if excluded:
-            keep = [e for e in entities
-                    if unicodedata.normalize("NFC", e[1] or "") not in excluded]
-            skipped_excluded = [e for e in entities
-                                if unicodedata.normalize("NFC", e[1] or "") in excluded]
-            entities = keep
+    plan = compute_origin_backfill(
+        db, args.book_id, category=args.category, recompute=recompute,
+        all_=args.all, include_short=args.include_short,
+        skip_keys=args.skip_key, include_queue=not args.no_queue)
+    for msg in plan.warnings:
+        print(msg)
 
     print(f"Book ID:    {args.book_id}")
-    print(f"Chapters:   {len(chapter_numbers)} scanned"
-          f" ({chapter_numbers[0]}–{chapter_numbers[-1]})" if chapter_numbers else "Chapters:   none")
-    print(f"Queue:      {'included' if include_queue else 'excluded'}")
+    print(f"Chapters:   {plan.chapters_scanned} scanned"
+          f" ({plan.first_chapter}–{plan.last_chapter})" if plan.chapters_scanned
+          else "Chapters:   none")
+    print(f"Queue:      {'included' if plan.include_queue else 'excluded'}")
     if recompute:
         scope = "recompute (only moves origins earlier)"
     elif args.all:
         scope = "all"
     else:
         scope = "missing origin_chapter only"
-    print(f"Entities:   {len(entities)} ({scope}"
+    print(f"Entities:   {plan.entities_considered} ({scope}"
           f"{', category=' + args.category if args.category else ''})")
-    if skipped_short:
-        print(f"Skipped:    {len(skipped_short)} single-character entities "
+    if plan.skipped_short:
+        print(f"Skipped:    {len(plan.skipped_short)} single-character entities "
               f"(--include-short to recompute them)")
-    if skipped_excluded:
-        names = ", ".join(e[1] for e in skipped_excluded[:8])
-        print(f"Excluded:   {len(skipped_excluded)} known coincidental keys ({names}"
-              f"{'…' if len(skipped_excluded) > 8 else ''})")
+    if plan.skipped_excluded:
+        names = ", ".join(e["untranslated"] for e in plan.skipped_excluded[:8])
+        print(f"Excluded:   {len(plan.skipped_excluded)} known coincidental keys ({names}"
+              f"{'…' if len(plan.skipped_excluded) > 8 else ''})")
     print(f"Mode:       {'DRY RUN' if args.dry_run else 'APPLY'}")
     print("=" * 70)
 
-    # Walk chapters ascending; assign each pending entity the first chapter it
-    # appears in, then drop it from the pending set. Stop early once all matched.
-    pending = {eid: (unicodedata.normalize('NFC', untr), untr, trans, old)
-               for (eid, untr, trans, cat, old) in entities}
-    resolved = {}  # eid -> chapter_number
-
-    for cn in chapter_numbers:
-        if not pending:
-            break
-        text = sources[cn]
-        found = [eid for eid, (key, _, _, _) in pending.items() if key in text]
-        for eid in found:
-            resolved[eid] = cn
-            del pending[eid]
-
-    n_set = 0
-    n_changed = 0
-    n_unmatched = 0
-    n_kept_later = 0
-    for (eid, untr, trans, cat, old) in entities:
-        if eid in resolved:
-            cn = resolved[eid]
-            if old == cn:
-                continue
-            # --recompute never raises an origin: an entity cannot originate after
-            # its first textual appearance, but it may legitimately predate one.
-            if recompute and old is not None and cn >= old:
-                n_kept_later += 1
-                continue
+    action = "WOULD SET" if args.dry_run else "SET"
+    for kind, row in plan.ordered:
+        untr, trans, cat = row["untranslated"], row["translation"], row["category"]
+        if kind == "set":
+            old = row["old"]
             tag = "" if old is None else f" (was {old})"
-            action = "WOULD SET" if args.dry_run else "SET"
-            print(f"  ✅ {action} [{cat}] {untr!r} ({trans!r}) → ch{cn}{tag}")
-            if not args.dry_run:
-                set_origin_chapter(db, eid, cn)
-            n_set += 1
-            if old is not None:
-                n_changed += 1
+            print(f"  ✅ {action} [{cat}] {untr!r} ({trans!r}) → ch{row['new']}{tag}")
         elif not recompute:
             # Under --recompute most entities already have a sane origin; a miss just
             # means the string no longer appears verbatim, which is not news.
             print(f"  ⚠️  NO MATCH [{cat}] {untr!r} ({trans!r}) — not found in any scanned chapter")
-            n_unmatched += 1
-        else:
-            n_unmatched += 1
 
+    if not args.dry_run:
+        apply_origin_backfill(db, plan)
+
+    n_changed = plan.overwrites
     print("=" * 70)
-    print(f"Set:         {n_set}" + (f" (of which {n_changed} overwrote an existing value)" if n_changed else ""))
+    print(f"Set:         {len(plan.changes)}" + (f" (of which {n_changed} overwrote an existing value)" if n_changed else ""))
     if recompute:
-        print(f"Left alone:  {n_kept_later} (derived origin was not earlier than the recorded one)")
-    print(f"Unmatched:   {n_unmatched}")
+        print(f"Left alone:  {len(plan.kept_later)} (derived origin was not earlier than the recorded one)")
+    print(f"Unmatched:   {len(plan.unmatched)}")
 
 
 if __name__ == "__main__":
