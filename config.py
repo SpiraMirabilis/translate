@@ -77,6 +77,11 @@ class TranslationConfig:
         # horizontal rules. See TranslationEngine.repetition_guard.
         self.repetition_guard = os.getenv("REPETITION_GUARD", "0").lower() in ("1", "true", "yes")
 
+        # Repair a complete-but-malformed chunk response instead of parking it
+        # on the JSON Fix modal; a repair is used only when it is lossless.
+        # See TranslationEngine._recover_unparseable_chunk / json_recovery.py.
+        self.json_auto_repair = os.getenv("JSON_AUTO_REPAIR", "1").lower() in ("1", "true", "yes")
+
         # Traditional → Simplified Chinese preprocessing (global default; per-book overrides via books.trad_to_simp)
         self.trad_to_simp = os.getenv("TRAD_TO_SIMP", "0").lower() in ("1", "true", "yes")
 

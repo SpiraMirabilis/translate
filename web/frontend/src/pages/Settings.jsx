@@ -275,6 +275,15 @@ export default function Settings() {
               Abort a streamed translation that looks like a repetition loop
               <span className="text-xs text-slate-500 font-normal">— built for a DeepSeek generation that looped on a phrase until it hit the output cap. It can only abort a stream, never repair one, so a false positive burns the retry budget and fails the chapter with truncated JSON. Leave off unless a model starts looping.</span>
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.json_auto_repair !== false}
+                onChange={e => setSettings(s => ({ ...s, json_auto_repair: e.target.checked }))}
+              />
+              Repair malformed chunk JSON automatically
+              <span className="text-xs text-slate-500 font-normal">— for a response that is complete but not valid JSON (an unescaped quote inside a line is the usual cause). A repair is used only when its text is character-for-character identical to the raw output; anything else goes straight to a retry. A truncated stream is always retried and never repaired, whatever this switch says.</span>
+            </label>
           </div>
         </section>
       )}

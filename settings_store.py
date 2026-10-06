@@ -55,6 +55,11 @@ SCHEMA = {
     # (the footnote_scan module's scan_mode); this only takes it away.
     "footnote_inline_scan":    ("FOOTNOTE_INLINE_SCAN",    True,                      bool),
     "repetition_guard":        ("REPETITION_GUARD",        False,                     bool),
+    # Repair a complete-but-malformed chunk response (unescaped quotes etc.)
+    # in place of the JSON Fix modal -- accepted only when the repaired text
+    # is identical to the raw output (json_recovery.try_repair). Truncated
+    # streams are retried regardless of this switch; they are never repaired.
+    "json_auto_repair":        ("JSON_AUTO_REPAIR",        True,                      bool),
     "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),

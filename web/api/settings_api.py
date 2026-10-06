@@ -106,6 +106,7 @@ def get_settings():
         "entity_note_updates": getattr(_config, "entity_note_updates", True),
         "footnote_inline_scan": getattr(_config, "footnote_inline_scan", True),
         "repetition_guard": getattr(_config, "repetition_guard", False),
+        "json_auto_repair": getattr(_config, "json_auto_repair", True),
         "disable_content_cache": getattr(_config, "disable_content_cache", False),
         "disable_media_cache": getattr(_config, "disable_media_cache", False),
         "overload_retry_wait_seconds": getattr(
@@ -144,6 +145,7 @@ class SettingsUpdate(BaseModel):
     entity_note_updates: Optional[bool] = None
     footnote_inline_scan: Optional[bool] = None
     repetition_guard: Optional[bool] = None
+    json_auto_repair: Optional[bool] = None
     disable_content_cache: Optional[bool] = None
     disable_media_cache: Optional[bool] = None
     overload_retry_wait_seconds: Optional[int] = None

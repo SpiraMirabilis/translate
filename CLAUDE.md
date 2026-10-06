@@ -551,6 +551,34 @@ the output cap. **It is off by default since 2026-09-17** —
   book 99 — 4, book 79 — 2.
 - Covered by `tests/test_repetition_guard.py`.
 
+### JSON auto-repair (on by default)
+A chunk response that is not valid JSON used to park the job on the JSON Fix modal for
+`json_fix_timeout_seconds` (300s) and only then retry — and a parse failure never
+consumed one of the two automatic retries. `TranslationEngine._recover_unparseable_chunk`
+(both the streaming and non-streaming paths) now decides first, using `json_recovery.py`:
+- **Truncated stream** (a bracket or string still open at EOF, `classify()`): **never
+  repaired**, retried at once, no modal. Closing the brackets would parse — and save two
+  thirds of a chapter as if it were whole (the median truncated response was 63% the
+  length of its successful retry). This does not depend on the switch below.
+- **Complete but malformed** (an unescaped `"` inside a line is the usual cause, a stray
+  `"` before `]` the next): `try_repair()` runs the vendored `json_repair`
+  (`vendor/json_repair/`, MIT, 0.63.4 — no apt package exists) and accepts the result
+  only if it is lossless: every word/CJK character survives (`normalize()` equality),
+  the `content` line count equals the raw array's `","` separator count, no line is JSON
+  residue, and every top-level key is an identifier. The text gate alone is not enough —
+  json_repair answers a stray quote by turning `],"entities":{` into two more "lines",
+  and an inner quote around a comma by splitting the line; every character survives both.
+- Anything else retries immediately; the modal (or, on the CLI, `json_fail_debug.txt`
+  and a raise) is reached only on the last attempt.
+- Measured on api_calls 2026-08-01 → 09-22 (11,891 chunks, 116 unparseable = 1%):
+  44 truncated, 40 repaired faithfully, 39 rejected, 0 lossy accepted. The failures were
+  logged `success=1` — the api_calls row is written before the parse — so the way to
+  find them is to replay `json.loads` over stored responses, not to filter on `success`.
+- **Kill switch**: `json_auto_repair` (settings.json, Settings → Translation Safeguards),
+  env `JSON_AUTO_REPAIR`. Log lines: `JSON repaired`, `truncated JSON`, `JSON repair
+  rejected`; progress phases `json_repaired` / `json_truncated` / `json_repair_rejected`.
+- Covered by `tests/test_json_recovery.py`.
+
 ### Supported Providers
 - **OpenAI**: GPT-4, GPT-3.5-turbo, etc. (max_chars: 5000)
 - **DeepSeek**: deepseek-chat (via OpenAI-compatible API) (max_chars: 5000)

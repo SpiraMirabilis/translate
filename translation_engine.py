@@ -823,6 +823,60 @@ class TranslationEngine:
         """
         return bool(getattr(self.config, 'repetition_guard', False))
 
+    @property
+    def json_auto_repair(self) -> bool:
+        """May a complete-but-malformed chunk response be repaired in place?
+
+        On by default. The repair (json_recovery.try_repair) is used only when
+        its text is identical to the raw output; a truncated stream is retried
+        regardless of this switch, never repaired.
+        """
+        return bool(getattr(self.config, 'json_auto_repair', True))
+
+    def _recover_unparseable_chunk(self, response_text, attempt, max_retries,
+                                   chunk_index, total_chunks, progress_callback=None):
+        """Decide what to do with a chunk response that failed to parse.
+
+        Returns ``('parsed', dict)`` when a lossless repair was possible,
+        ``('retry', None)`` when the attempt budget allows another call, and
+        ``('give_up', None)`` on the last attempt -- the caller then falls
+        back to the JSON Fix handshake (or raises, on the CLI).
+
+        A *truncated* stream (bracket or string open at EOF) is never
+        repaired: closing the brackets would save a fraction of the chapter
+        as if it were whole. It goes straight to a retry, no modal, and that
+        does not depend on the json_auto_repair switch.
+        """
+        from json_recovery import classify, describe_error, try_repair, TRUNCATED
+
+        def emit(phase, **extra):
+            if progress_callback:
+                progress_callback({"chunk": chunk_index, "total": total_chunks,
+                                   "phase": phase, "attempt": attempt, **extra})
+
+        err = describe_error(response_text)
+        budget = 'retry' if attempt < max_retries else 'give_up'
+        if classify(response_text) == TRUNCATED:
+            self.logger.warning(
+                f"Chunk {chunk_index} attempt {attempt + 1}: truncated JSON "
+                f"({err}; {len(response_text)} chars) -- retrying, not repairing")
+            print(f"\n⚠️  Truncated response on chunk {chunk_index} ({err}). Retrying...")
+            emit("json_truncated", error=err)
+            return budget, None
+        if not self.json_auto_repair:
+            self.logger.warning(f"Chunk {chunk_index} attempt {attempt + 1}: unparseable JSON ({err}); auto-repair is off")
+            return budget, None
+        repaired, reason = try_repair(response_text)
+        if repaired is not None:
+            self.logger.info(f"Chunk {chunk_index} attempt {attempt + 1}: JSON repaired ({err}; {reason})")
+            print(f"\n🩹 Repaired malformed JSON on chunk {chunk_index} ({err}).")
+            emit("json_repaired", error=err)
+            return 'parsed', repaired
+        self.logger.warning(f"Chunk {chunk_index} attempt {attempt + 1}: JSON repair rejected ({reason}; {err})")
+        print(f"\n⚠️  Malformed JSON on chunk {chunk_index} ({err}); repair rejected ({reason}).")
+        emit("json_repair_rejected", error=err, reason=reason)
+        return budget, None
+
     def _detect_repetition(self, text: str) -> bool:
         """Detect pathological token repetition loops in streamed output."""
         tail = text[-200:]
@@ -1834,7 +1888,14 @@ class TranslationEngine:
                     try:
                         parsed_chunk = provider.validate_json_response(response_text)
                     except json.JSONDecodeError as e:
-                        if json_fix_callback:
+                        outcome, recovered = self._recover_unparseable_chunk(
+                            response_text, attempt, MAX_STREAM_RETRIES,
+                            chunk_index, len(split_text), progress_callback)
+                        if outcome == 'parsed':
+                            parsed_chunk = recovered
+                        elif outcome == 'retry':
+                            continue  # consumes a retry from the outer budget; no modal
+                        elif json_fix_callback:
                             fix_action = None
                             while True:
                                 fix_result = json_fix_callback(
@@ -1918,6 +1979,14 @@ class TranslationEngine:
                         parsed_chunk = provider.validate_json_response(response_content)
                         break
                     except json.JSONDecodeError as e:
+                        outcome, recovered = self._recover_unparseable_chunk(
+                            response_content, attempt, MAX_RETRIES,
+                            chunk_index, len(split_text), progress_callback)
+                        if outcome == 'parsed':
+                            parsed_chunk = recovered
+                            break
+                        if outcome == 'retry':
+                            continue  # consumes a retry from the budget; no modal
                         if json_fix_callback:
                             fix_action = None
                             while True:
