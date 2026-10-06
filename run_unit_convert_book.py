@@ -12,7 +12,11 @@ conversion runs exactly once:
 
 The cleaning model (AI false-positive filtering) is ON by default, using the
 `unit_cleaning_model` setting. Override it with --cleaning-model, or turn it off
-entirely with --no-cleaning-model for a pure-regex run.
+with --no-cleaning-model.
+
+The Jev classifier filters first when `jev_unit_filter` is on and TYPESAFE_KEY
+is set; the cleaning model then sees only the matches Jev was unsure of. Turn
+it off with --no-jev. --no-cleaning-model --no-jev is a pure-regex run.
 
 A book_id (or "all") is required.
 
@@ -20,7 +24,8 @@ Usage:
     python run_unit_convert_book.py <book_id>           # dry run, default cleaning model
     python run_unit_convert_book.py all                 # process every book, dry run
     python run_unit_convert_book.py <book_id> --cleaning-model gemini:gemini-2.0-flash  # override cleaning model
-    python run_unit_convert_book.py <book_id> --no-cleaning-model # pure regex, no AI filtering
+    python run_unit_convert_book.py <book_id> --no-cleaning-model # Jev only (if configured)
+    python run_unit_convert_book.py <book_id> --no-cleaning-model --no-jev # pure regex, no filtering
     python run_unit_convert_book.py <book_id> --apply   # apply the saved plan
 """
 
@@ -31,6 +36,7 @@ import sys
 
 import settings_store
 from db_backend import create_backend
+import unit_converter
 from unit_converter import convert_units
 
 
@@ -51,7 +57,7 @@ def _load_lines(raw_content):
         return raw_content.split("\n")
 
 
-def build_plan(cursor, book_ids, cleaning_model):
+def build_plan(cursor, book_ids, cleaning_model, use_jev=None):
     """Run conversions for the given books and return a plan dict (no DB writes).
 
     Returns (chapters_plan, total_changed_lines) where chapters_plan maps
@@ -61,6 +67,12 @@ def build_plan(cursor, book_ids, cleaning_model):
     total_changes = 0
 
     for book_id in book_ids:
+        cursor.execute("SELECT source_language FROM books WHERE id = ?", (book_id,))
+        row = cursor.fetchone()
+        source_language = row[0] if row else None
+        if unit_converter._unit_set(source_language) is None:
+            print(f"Book {book_id}: source language {source_language!r} has no unit table, skipping.\n")
+            continue
         cursor.execute(
             "SELECT id, chapter_number, translated_content FROM chapters WHERE book_id = ? ORDER BY chapter_number",
             (book_id,),
@@ -75,7 +87,8 @@ def build_plan(cursor, book_ids, cleaning_model):
 
         for chapter_id, chapter_number, raw_content in rows:
             lines = _load_lines(raw_content)
-            converted = convert_units(lines, cleaning_model=cleaning_model)
+            converted = convert_units(lines, cleaning_model=cleaning_model, use_jev=use_jev,
+                                      source_language=source_language)
 
             changed = sum(1 for a, b in zip(lines, converted) if a != b)
             if changed:
@@ -137,6 +150,7 @@ def apply_plan(cursor, plan):
 def main():
     apply_changes = "--apply" in sys.argv
     no_cleaning = "--no-cleaning-model" in sys.argv
+    no_jev = "--no-jev" in sys.argv
 
     # Extract an explicit --cleaning-model override, if given.
     cleaning_override = None
@@ -158,7 +172,7 @@ def main():
 
     if not args:
         print("Error: a book_id (or 'all') is required.")
-        print("Usage: python run_unit_convert_book.py <book_id|all> [--apply] [--cleaning-model SPEC | --no-cleaning-model]")
+        print("Usage: python run_unit_convert_book.py <book_id|all> [--apply] [--cleaning-model SPEC | --no-cleaning-model] [--no-jev]")
         sys.exit(1)
 
     if args[0].lower() == "all":
@@ -178,8 +192,8 @@ def main():
 
     # ── Apply phase: load the saved plan, write it verbatim ──────────────
     if apply_changes:
-        if cleaning_override or no_cleaning:
-            print("Note: cleaning-model flags are ignored with --apply (the saved plan is applied as-is).\n")
+        if cleaning_override or no_cleaning or no_jev:
+            print("Note: filter flags are ignored with --apply (the saved plan is applied as-is).\n")
         if not os.path.exists(plan_path):
             print(f"No saved plan found at {plan_path}.")
             print(f"Run a dry run first:  python run_unit_convert_book.py {book_arg}")
@@ -211,18 +225,25 @@ def main():
     else:
         book_ids = [book_arg]
 
+    use_jev = False if no_jev else unit_converter._jev_unit_filter_enabled()
+    if use_jev:
+        print(f"Jev unit filter: on (confidence >= {unit_converter._jev_unit_threshold():.2f})")
     if cleaning_model:
-        print(f"Cleaning model: {cleaning_model} (AI false-positive filtering on)\n")
+        scope = "matches Jev is unsure of" if use_jev else "all matches"
+        print(f"Cleaning model: {cleaning_model} ({scope})\n")
+    elif use_jev:
+        print("Cleaning model: none (Jev-unsure matches are converted)\n")
     else:
         print("Cleaning model: none (pure regex)\n")
 
-    chapters_plan, total_changes = build_plan(cursor, book_ids, cleaning_model)
+    chapters_plan, total_changes = build_plan(cursor, book_ids, cleaning_model, use_jev)
     conn.close()
 
     plan = {
         "book_arg": book_arg,
         "book_ids": book_ids,
         "cleaning_model": cleaning_model,
+        "jev": use_jev,
         "chapters": chapters_plan,
     }
     with open(plan_path, "w", encoding="utf-8") as f:

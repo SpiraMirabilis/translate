@@ -1,45 +1,120 @@
 """
-Post-translation Chinese unit → metric conversion.
+Post-translation East Asian unit → metric conversion.
 
 Appends metric equivalents in parentheses, e.g. "1000 zhang (3.3 km)".
-Uses regex to find matches, with optional AI-powered false positive filtering.
+Uses regex to find matches, with optional false positive filtering: the Jev
+classifier when it is configured and ``jev_unit_filter`` is on, and/or an LLM
+cleaning model. When both are available Jev decides the matches it is sure of
+and the LLM gets only the rest (and everything, if the Jev call fails).
+
+The unit table is keyed by the book's source language (``units.json``): the
+same romanisation can mean different things (Japanese ri = 3.93 km, Korean
+ri = 393 m), and a language's collision-prone names never enter another
+language's pattern. A language with no table is left untouched.
 """
 
 import json
 import logging
 import os
 import re
-from typing import List, Optional, Set, Tuple
+import threading
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 # ── Unit table ──────────────────────────────────────────────────────
-# Loaded from units.json: each entry has value, unit, type
+# units.json: {"common": {...}, "zh": {...}, "ja": {...}, "ko": {...}}. Each
+# entry has value, unit, type, and optionally action/numeral/strict. "common"
+# holds names no language can misread (tsubo, pyeong) and is merged into every
+# language table, the language's own entry winning a clash. A legacy flat file
+# (entries at the top level) is read as the zh table.
 
-def _load_units() -> dict:
-    """Load unit definitions from units.json."""
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "units.json")
-    with open(json_path, "r") as f:
-        raw = json.load(f)
+UNITS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "units.json")
+
+LANGUAGE_NAMES = {"zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
+_LANGUAGE_ALIASES = {"cn": "zh", "jp": "ja", "kr": "ko"}
+DEFAULT_LANGUAGE = "zh"
+
+
+class Unit(NamedTuple):
+    value: float
+    unit: str
+    type: str
+    action: str = "annotate"   # annotate: "3 jin (1.5 kg)"; replace: "two shichen" -> "four hours"
+    numeral: str = "arabic"
+    # A strict unit is also an ordinary English word ("a ping sounded", "two
+    # ping-pong balls", "next of kin"). It converts only after a real count —
+    # never a bare article, a vague quantifier or a fraction alone — takes no
+    # plural "s", and is skipped when a hyphen follows.
+    strict: bool = False
+
+
+def _parse_entry(lang: str, name: str, entry) -> Unit:
+    where = f"units.json {lang}.{name}"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{where}: expected an object")
+    try:
+        value = float(entry["value"])
+        unit, utype = entry["unit"], entry["type"]
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"{where}: needs numeric value, unit and type ({e})")
+    if value <= 0 or not isinstance(unit, str) or not isinstance(utype, str):
+        raise ValueError(f"{where}: value must be > 0, unit and type strings")
+    action = entry.get("action", "annotate")
+    numeral = entry.get("numeral", "arabic")
+    strict = entry.get("strict", False)
+    if action not in ("annotate", "replace"):
+        raise ValueError(f"{where}: action must be annotate or replace")
+    if numeral not in ("arabic", "english"):
+        raise ValueError(f"{where}: numeral must be arabic or english")
+    if not isinstance(strict, bool):
+        raise ValueError(f"{where}: strict must be true or false")
+    return Unit(value, unit, utype, action, numeral, strict)
+
+
+def parse_units(raw) -> Dict[str, Dict[str, Unit]]:
+    """``{lang: {name: Unit}}`` from units.json's parsed content.
+
+    Raises ValueError on a malformed table (the Settings editor validates with
+    this before saving)."""
+    if not isinstance(raw, dict):
+        raise ValueError("units.json: expected an object")
+    if raw and all(isinstance(v, dict) and "value" in v for v in raw.values()):
+        raw = {DEFAULT_LANGUAGE: raw}   # legacy flat file
+    for lang, entries in raw.items():
+        if not isinstance(entries, dict):
+            raise ValueError(f"units.json {lang}: expected an object of units")
+    common = raw.get("common", {})
     return {
-        name: (entry["value"], entry["unit"], entry["type"],
-               entry.get("action", "annotate"), entry.get("numeral", "arabic"))
-        for name, entry in raw.items()
+        lang: {name.lower(): _parse_entry(lang, name, e)
+               for name, e in {**common, **entries}.items()}
+        for lang, entries in raw.items() if lang != "common"
     }
 
-UNITS = _load_units()
+
+def normalize_language(source_language: Optional[str]) -> str:
+    """'zh-TW' -> 'zh', 'JP' -> 'ja'; empty/None -> the zh default."""
+    if not source_language:
+        return DEFAULT_LANGUAGE
+    base = re.split(r"[-_]", str(source_language).strip().lower())[0]
+    return _LANGUAGE_ALIASES.get(base, base) or DEFAULT_LANGUAGE
+
 
 # ── Smart scaling ───────────────────────────────────────────────────
 # Each entry: (threshold, target_unit, factor). For SCALE_UP, target = value / factor
 # when value >= threshold. For SCALE_DOWN, target = value * factor when value < threshold.
 SCALE_UP = {
     "m":      [(1000.0, "km",   1000.0)],
+    "kg":     [(1000.0, "t",    1000.0)],
+    "m²":     [(10000.0, "ha",  10000.0)],
+    "L":      [(1000.0, "m³",   1000.0)],
     "minute": [(60.0,   "hour", 60.0)],
 }
 
 SCALE_DOWN = {
     "m":    [(1.0, "cm", 100.0)],
     "kg":   [(1.0, "g",  1000.0)],
+    "L":    [(1.0, "mL", 1000.0)],
     "hour": [(1.0, "minute", 60.0)],
 }
 
@@ -270,13 +345,16 @@ def _escape_unit_name(name: str) -> str:
     parts = re.escape(name).split(r"\ ")  # re.escape turns space into "\ "
     return r"[\s\-]".join(parts)
 
-_unit_names = "|".join(
-    _escape_unit_name(name)
-    for name in sorted(UNITS.keys(), key=len, reverse=True)
-)
+def _unit_alternation(names) -> str:
+    return "|".join(_escape_unit_name(n) for n in sorted(names, key=len, reverse=True))
 
 # Number words that can appear before a unit
+# "and" belongs INSIDE a number ("one hundred and twenty"), never at its start:
+# a leading "and" swallowed the conjunction as the count — "long, and an entire
+# shichen" matched num="and an", failed to parse, and the duration was left as
+# pinyin (book 106 ch194, ch209).
 _number_words = (
+    r"(?!and\b)"
     r"(?:(?:one|two|three|four|five|six|seven|eight|nine|ten|"
     r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
     r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
@@ -346,59 +424,111 @@ _adj_alt = "|".join(sorted(_EMPHASIS_ADJ, key=len, reverse=True))
 #   2. a number / word-number, optionally with a range low bound and/or a
 #      fractional prefix ("two or three ke", "a quarter of a ke")
 #   3. a hyphenated/bare fraction directly on the unit ("a quarter-shichen")
-_PATTERN = re.compile(
-    r"(?<!['\w])"                       # not preceded by word char or apostrophe
-    # Optional leading emphasis phrase ("a full <qty>", "another <qty>"). Only
-    # matches when a quantity follows; "a full shichen" (no quantity) falls
-    # through to num="a" + more="full", which lands in the same place.
-    r"(?:(?P<det>(?:(?:a|an|the)[\s\-]+)?(?P<detadj>" + _adj_alt + r")|another)[\s\-]+)?"
-    r"(?:"
-        r"(?P<vague>" + _vague_quantifier + r")[\s\-]+"               # branch 1
-        r"|"
-        r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"          # branch 2
+def _build_pattern(unit_names: str) -> re.Pattern:
+    return re.compile(
+        r"(?<!['\w])"                       # not preceded by word char or apostrophe
+        # Optional leading emphasis phrase ("a full <qty>", "another <qty>"). Only
+        # matches when a quantity follows; "a full shichen" (no quantity) falls
+        # through to num="a" + more="full", which lands in the same place.
+        r"(?:(?P<det>(?:(?:a|an|the)[\s\-]+)?(?P<detadj>" + _adj_alt + r")|another)[\s\-]+)?"
         r"(?:"
-            r"(?:(?P<lo>" + _numeric + r"|" + _number_words + r")"
-                + _RANGE_SEP + r")"                                  # word/dash range low bound
+            r"(?P<vague>" + _vague_quantifier + r")[\s\-]+"               # branch 1
             r"|"
-            # ASCII-hyphen range, DIGITS ONLY on both sides ("3-5 shichen").
-            # Word-numbers are themselves hyphenated ("twenty-one"), so a bare
-            # hyphen is only a range separator between two plain numerals.
-            r"(?:(?P<lo_d>" + _numeric + r")\s*(?P<hyph>-)\s*(?=\d))"
-        r")?"                                                        # optional range low bound
-        # An emphasis word standing in for the count is itself "one"
-        # ("the full shichen" = one shichen), captured so it survives the swap.
-        r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words
-            + r"|(?:(?:a|an|the)[\s\-]+)?(?P<numfill>" + _adj_alt + r")|a|an)[\s\-]+"
-        r"|"
-        r"(?P<fracunit>" + _fraction_phrase + r")[\s\-]+"            # branch 3
-    r")"
-    r"(?:(?P<more>more|" + _adj_alt + r")[\s\-]+)?"  # optional filler ("two more/whole/full shichen")
-    r"(?P<unit>" + _unit_names + r")"   # unit name
-    r"s?"                               # optional plural
-    r"(?!\s*\()"                        # negative lookahead: not already annotated
-    r"(?!['\w])",                       # not followed by word char or apostrophe
-    re.IGNORECASE
-)
+            r"(?:(?P<frac>" + _fraction_phrase + r")\s+of\s+)?"          # branch 2
+            r"(?:"
+                r"(?:(?P<lo>" + _numeric + r"|" + _number_words + r")"
+                    + _RANGE_SEP + r")"                                  # word/dash range low bound
+                r"|"
+                # ASCII-hyphen range, DIGITS ONLY on both sides ("3-5 shichen").
+                # Word-numbers are themselves hyphenated ("twenty-one"), so a bare
+                # hyphen is only a range separator between two plain numerals.
+                r"(?:(?P<lo_d>" + _numeric + r")\s*(?P<hyph>-)\s*(?=\d))"
+            r")?"                                                        # optional range low bound
+            # An emphasis word standing in for the count is itself "one"
+            # ("the full shichen" = one shichen), captured so it survives the swap.
+            r"(?P<num>" + _numeric + r"|a\s+single|single|another|" + _number_words
+                + r"|(?:(?:a|an|the)[\s\-]+)?(?P<numfill>" + _adj_alt + r")|a|an)[\s\-]+"
+            r"|"
+            r"(?P<fracunit>" + _fraction_phrase + r")[\s\-]+"            # branch 3
+        r")"
+        r"(?:(?P<more>more|" + _adj_alt + r")[\s\-]+)?"  # optional filler ("two more/whole/full shichen")
+        r"(?P<unit>" + unit_names + r")"    # unit name
+        r"s?"                               # optional plural
+        r"(?!\s*\()"                        # negative lookahead: not already annotated
+        r"(?!['\w])",                       # not followed by word char or apostrophe
+        re.IGNORECASE
+    )
 
 # Bare unit pattern: a time unit word with no quantity at all, used as a point
 # in time ("at the appointed shichen"). Only hour-based replace units qualify —
 # for those, the bare word maps to the English time word ("hour").
-_BARE_UNIT_NAMES = [
-    name for name, (value, base_unit, _type, action, numeral) in UNITS.items()
-    if action == "replace" and base_unit == "hour"
-]
-_bare_unit_alt = "|".join(
-    _escape_unit_name(name)
-    for name in sorted(_BARE_UNIT_NAMES, key=len, reverse=True)
-)
-_BARE_PATTERN = re.compile(
-    r"(?<!['\w])"
-    r"(?P<unit>" + _bare_unit_alt + r")"
-    r"s?"
-    r"(?!\s*\()"
-    r"(?!['\w])",
-    re.IGNORECASE
-)
+def _build_bare_pattern(unit_names: str) -> re.Pattern:
+    return re.compile(
+        r"(?<!['\w])"
+        r"(?P<unit>" + unit_names + r")"
+        r"s?"
+        r"(?!\s*\()"
+        r"(?!['\w])",
+        re.IGNORECASE
+    )
+
+
+class _UnitSet:
+    """One language's units and the patterns compiled from them."""
+
+    def __init__(self, lang: str, units: Dict[str, Unit]):
+        self.lang = lang
+        self.units = units
+        self.pattern = _build_pattern(_unit_alternation(units))
+        bare = [n for n, u in units.items() if u.action == "replace" and u.unit == "hour"]
+        self.bare_pattern = _build_bare_pattern(_unit_alternation(bare)) if bare else None
+        # The earthly-branch clock ("third ke of the wu hour") and qualified
+        # ke ("every ke") are the Chinese time system; they run only for a
+        # table that carries it.
+        self.chinese_time = "ke" in units and "shichen" in units
+
+    def lookup(self, matched_text: str) -> Optional[Unit]:
+        """Look up a unit by its matched text, normalizing spaces/hyphens."""
+        normalized = matched_text.lower()
+        for key in (normalized, normalized.replace("-", " "), normalized.replace(" ", "-")):
+            if key in self.units:
+                return self.units[key]
+        return None
+
+
+_tables_lock = threading.Lock()
+_tables_state: dict = {"mtime": None, "tables": None, "sets": {}}
+
+
+def _unit_set(source_language: Optional[str]) -> Optional[_UnitSet]:
+    """The language's unit set, or None when units.json has no table for it.
+
+    Re-reads units.json when its mtime changes, so an edit from the Settings
+    page applies without a restart. A reload that fails to parse keeps the
+    previous table (and logs) rather than taking conversion down."""
+    lang = normalize_language(source_language)
+    try:
+        mtime = os.stat(UNITS_PATH).st_mtime_ns
+    except OSError:
+        mtime = None
+    with _tables_lock:
+        st = _tables_state
+        if st["tables"] is None or mtime != st["mtime"]:
+            try:
+                with open(UNITS_PATH, "r", encoding="utf-8") as f:
+                    tables = parse_units(json.load(f))
+            except (OSError, ValueError) as e:   # JSONDecodeError is a ValueError
+                if st["tables"] is None:
+                    raise
+                logger.error(f"units.json reload failed, keeping the previous table: {e}")
+                tables = st["tables"]
+            st.update(mtime=mtime, tables=tables, sets={})
+        if lang not in st["tables"]:
+            return None
+        uset = st["sets"].get(lang)
+        if uset is None:
+            uset = st["sets"][lang] = _UnitSet(lang, st["tables"][lang])
+        return uset
 
 
 # ── Earthly-branch hours (points in time on the traditional 12-hour clock) ──
@@ -493,25 +623,84 @@ _POINT_HOUR = (
     r"(?:"
         r"(?:the\s+)?(?P<pin>" + _BRANCH_PIN_ALT + r")[\s\-](?:hour|shichen)"
         r"|(?:the\s+)?hour\s+of\s+(?:the\s+)?(?P<pin2>" + _BRANCH_PIN_NOYOU + r")\b"
-        r"|(?P<pinj>" + _BRANCH_JOINED_ALT + r")\b"
+        # "hour of You" only when capitalised: the pronoun is lowercase
+        # mid-sentence. Not before a hyphen ("You-know-what") or a capitalised
+        # word ("an hour of You Wei's time" — You is also a surname).
+        r"|(?:the\s+)?hour\s+of\s+(?P<pinyou>(?-i:You))\b(?!-|(?-i:\s+[A-Z]))"
+        # Joined romanisations ("sishi") only in lowercase: capitalised, they
+        # are names — 无始 Wushi, 海石 Haishi, 孟无世 Meng Wushi were all
+        # rewritten into "the hour of the Horse/Pig" before this guard.
+        r"|(?P<pinj>(?-i:" + _BRANCH_JOINED_ALT + r"))\b"
         r"|(?:the\s+)?(?P<ani>" + _BRANCH_ANI_ALT + r"|noon|midnight)[\s\-]hour"
         r"|(?:the\s+)?hour\s+of\s+(?:the\s+)?(?P<ani2>" + _BRANCH_ANI_ALT + r")\b"
         r"|(?P<sp>noon|midnight)\b"
         # Bare branch names ("third quarter of Zi", "first ke of the Snake"):
         # only resolved when a position prefix precedes them (see resolver), since
         # bare "Zi"/"Snake" are far too collision-prone on their own.
-        r"|(?:the\s+)?(?P<pinbare>" + _BRANCH_PIN_NOYOU + r")\b"
+        # …and never when a capitalised word follows: that is a name
+        # ("ten minutes after Chen Yiran").
+        r"|(?:the\s+)?(?P<pinbare>" + _BRANCH_PIN_NOYOU + r")\b(?!(?-i:\s+[A-Z]))"
         r"|(?:the\s+)?(?P<anibare>" + _BRANCH_ANI_ALT + r")\b"
     r")"
+)
+
+# The almanac stamp puts the ke AFTER the hour: "Yuzhong, Si hour, third ke".
+# Lowercase "ke" only — "Ke" is also a surname (柯).
+_POINT_KE_SUFFIX = (
+    r"(?:,\s+(?:the\s+)?(?P<kesuf>" + _KE_NUM + r")(?:st|nd|rd|th)?\s+(?-i:ke))?"
 )
 
 _POINT_RE = re.compile(
     r"(?<![\w'])"
     + r"(?:" + _POINT_PREFIX + r")?"
     + _POINT_HOUR
+    + _POINT_KE_SUFFIX
     + r"(?![\w'])",
     re.IGNORECASE,
 )
+
+# A bare "ke" with a qualifier but no count ("every ke", "the next ke", "per
+# ke", "the first ke" … "the ninth ke") is a quarter hour, as a span or a slot
+# in a countdown. Counted forms ("two ke", "a ke") go through the unit pattern, and
+# "third ke of the wu hour" through _POINT_RE; this catches what both miss.
+_KE_QUALIFIED_RE = re.compile(
+    r"(?<![\w'])(?P<q>(?:every|each|next|last|final|extra|per|another|same|single|whole|entire|"
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\s+)"
+    r"(?-i:ke)(?![\w'(])",
+    re.IGNORECASE,
+)
+
+
+# Text before a point match that means the match opens a sentence: start of line
+# or table cell, or after terminal punctuation — then any opening quotes/brackets.
+_POINT_SENTENCE_START_RE = re.compile(
+    r"(?:^\s*|[.!?…][\"”’')\]】]*\s+|\|\s*)[\"“‘'(\[【]*$"
+)
+# An opening quote starts dialogue ('he said, "Zi hour is near"') — unless an
+# article precedes it, which makes it a quoted term ('the "Mao hour roll call"').
+_POINT_OPEN_QUOTE_RE = re.compile(r"[\"“]$")
+_POINT_QUOTED_TERM_RE = re.compile(r"\b(?:the|an?)\s+[\"“]$", re.IGNORECASE)
+# A definite article right before the match ("the very ", 'the "'). Not
+# "that"/"this": "knew that the hour of the Rat had come" is a conjunction.
+_POINT_DEFINITE_BEFORE_RE = re.compile(
+    r"\bthe(?:\s+very)?\s+[\"“‘']?$", re.IGNORECASE
+)
+# An indefinite article right before the match ("at a Yin hour").
+_POINT_INDEFINITE_BEFORE_RE = re.compile(r"\b(an?)\s+$", re.IGNORECASE)
+
+
+def _drop_indefinite_before_point(prefix: str, replacement: str) -> tuple:
+    """'at a Yin hour' must not become 'at a the hour of the Tiger'. When the
+    canonical label brings its own "the", drop the model's "a"/"an" instead,
+    carrying its capital over to the label. Returns (prefix, replacement)."""
+    if not replacement[:4].lower() == "the ":
+        return prefix, replacement
+    m = _POINT_INDEFINITE_BEFORE_RE.search(prefix)
+    if not m:
+        return prefix, replacement
+    if m.group(1)[:1].isupper():
+        replacement = replacement[:1].upper() + replacement[1:]
+    return prefix[:m.start()], replacement
 
 
 def _minutes_phrase(minutes: int) -> str:
@@ -542,10 +731,16 @@ def _convert_point_match(match: re.Match) -> str:
     #    noon/midnight idiom we should preserve. ──
     idx = None
     special_word = None
+    # Lowercase "yin" is yin/yang: 阴年阴月阴时 = "a yin year, a yin month, a yin
+    # hour". The branch 寅 is a proper noun and comes capitalised ("Yin hour").
+    if gd.get("pin") == "yin" or gd.get("pin2") == "yin" or gd.get("pinbare") == "yin":
+        return full
     if gd.get("pin"):
         idx = _BRANCH_PINYIN[gd["pin"].lower()]
     elif gd.get("pin2"):
         idx = _BRANCH_PINYIN[gd["pin2"].lower()]
+    elif gd.get("pinyou"):
+        idx = _BRANCH_PINYIN["you"]
     elif gd.get("pinj"):
         idx = _BRANCH_PINYIN[gd["pinj"].lower()[:-3]]  # strip trailing "shi"
     elif gd.get("ani") or gd.get("ani2"):
@@ -567,6 +762,10 @@ def _convert_point_match(match: re.Match) -> str:
         # safe to resolve when a position prefix precedes it.
         if not has_prefix:
             return full
+        # "the start of Wei" is a dynasty far more often than an hour; only a
+        # quarter/ke/minute prefix makes a bare branch name a clock position.
+        if gd.get("st"):
+            return full
         if gd.get("pinbare"):
             idx = _BRANCH_PINYIN[gd["pinbare"].lower()]
         else:
@@ -578,6 +777,13 @@ def _convert_point_match(match: re.Match) -> str:
                 idx = _BRANCH_ANIMAL_WORDS[word]
 
     if idx is None:
+        return full
+
+    # A hyphenated "X-hour" in front of a lowercase noun is a compound name,
+    # not a time: 午时草 "Wu-hour grass" had become "the hour of the Horse grass".
+    if (not has_prefix and (gd.get("pin") or gd.get("ani"))
+            and re.search(r"-hour$", full, re.IGNORECASE)
+            and re.match(r"\s+[a-z]", match.string[match.end():])):
         return full
 
     # ── Determine the position within the hour. ──
@@ -597,6 +803,8 @@ def _convert_point_match(match: re.Match) -> str:
         minutes = int(round(val))
     elif gd.get("st"):
         start = True
+    if gd.get("kesuf") and minutes is None and not start:
+        minutes = 15 * _KE_VALUES[gd["kesuf"].lower()]
 
     # ── Build the canonical labels. ──
     animal = _BRANCH_ANIMALS[idx]
@@ -614,8 +822,29 @@ def _convert_point_match(match: re.Match) -> str:
     else:
         out = bare_label
 
-    # Mirror the original phrase's leading casing (sentence-initial -> capital).
-    return _match_case(full, out)
+    # Casing. A branch name is capitalised as a proper noun wherever it stands
+    # ("Yuzhong, Si hour"), so its capital says nothing about the sentence —
+    # copying it produced "Yuzhong, The hour of the Snake". Capitalise only a
+    # phrase that opens its sentence; ALL-CAPS still mirrors.
+    before = match.string[:match.start()]
+    if len(full) > 1 and full.isupper():
+        out = out.upper()
+    elif full[:1].isupper() and (
+        _POINT_SENTENCE_START_RE.search(before)
+        or (_POINT_OPEN_QUOTE_RE.search(before)
+            and not _POINT_QUOTED_TERM_RE.search(before))
+    ):
+        out = out[:1].upper() + out[1:]
+
+    # Article collisions. Every canonical label starts with "the", and the
+    # model's own determiner sits just outside the match: "at the very start of
+    # Xu hour" became "the very the start", 'the "Mao hour roll call"' became
+    # 'the "the hour…'. After "the" the label drops its own "the"; an
+    # indefinite "a Yin hour" (any Yin hour) is handled by the caller, which
+    # drops the "a" itself (see _drop_indefinite_before_point).
+    if out.startswith("the ") and _POINT_DEFINITE_BEFORE_RE.search(before):
+        out = out[4:]
+    return out
 
 
 def _parse_fraction_phrase(text: str) -> Optional[float]:
@@ -688,26 +917,8 @@ def _place_emphasis(art: Optional[str], adj: Optional[str], *,
     return lead, None
 
 
-def _lookup_unit(matched_text: str) -> tuple:
-    """Look up a unit by its matched text, normalizing spaces/hyphens."""
-    # Normalize the matched text to try different key forms
-    normalized = matched_text.lower()
-    # Try exact match first
-    if normalized in UNITS:
-        return UNITS[normalized]
-    # Try with hyphens replaced by spaces
-    alt = normalized.replace("-", " ")
-    if alt in UNITS:
-        return UNITS[alt]
-    # Try with spaces replaced by hyphens
-    alt = normalized.replace(" ", "-")
-    if alt in UNITS:
-        return UNITS[alt]
-    return None
-
-
-def _convert_match(match: re.Match) -> str:
-    """Replace callback for unit matches (from _PATTERN)."""
+def _convert_match(match: re.Match, uset: _UnitSet) -> str:
+    """Replace callback for unit matches (from the unit set's pattern)."""
     full = match.group(0)
     gd = match.groupdict()
     fraction_str = gd.get("frac")
@@ -727,13 +938,20 @@ def _convert_match(match: re.Match) -> str:
     # Sancai" and "another Li Zaiting" all match perfectly well and came out
     # annotated as distances. A genuine measurement is never followed directly
     # by a capitalised word, so the check costs nothing.
-    if re.match(r"\s+[A-Z][a-z]", match.string[match.end():]):
+    #
+    # Only a CAPITALISED unit word can be that surname. A lowercase one is the
+    # unit, whatever follows it: "in less than two ke Zhao Xing saw a city" and
+    # "the two shichen Zhao Xing spent with them" are durations followed by the
+    # sentence's subject, and the unconditional check left them as pinyin
+    # (book 106). "Twelve Shichen Grass" still stands — its unit is capitalised.
+    if unit_text[:1].isupper() and re.match(r"\s+[A-Z][a-z]", match.string[match.end():]):
         return full
 
-    unit_info = _lookup_unit(unit_text)
+    unit_info = uset.lookup(unit_text)
     if unit_info is None:
         return full
-    base_value, base_unit, _, action, numeral = unit_info
+    base_value, base_unit, action, numeral = (
+        unit_info.value, unit_info.unit, unit_info.action, unit_info.numeral)
 
     # ── Vague quantifier path ("several shichen" -> "several hours") ──
     # Only for hour-based replace units; anything else is left untouched so we
@@ -742,10 +960,17 @@ def _convert_match(match: re.Match) -> str:
     if vague_str:
         # An emphasis word on a vague count ("a full several shichen") is
         # incoherent phrasing; leave it for a human rather than guess.
-        if det_str or action != "replace" or base_unit != "hour":
+        if det_str or action != "replace":
             return full
         vague_norm = re.sub(r"\s+", " ", vague_str.strip())
-        return _match_case(full, f"{vague_norm} {base_unit}s")
+        if base_unit == "hour":
+            return _match_case(full, f"{vague_norm} {base_unit}s")
+        # The ke is a quarter hour, so a vague count of them is a vague count
+        # of quarter hours ("how many ke" -> "how many quarter hours"); the
+        # magnitude needs no scaling. Before this they were left as pinyin.
+        if base_unit == "minute" and base_value == 15:
+            return _match_case(full, f"{vague_norm} quarter hours")
+        return full
 
     # ── Determine the numeric quantity ──
     if fracunit_str:
@@ -891,8 +1116,8 @@ def _convert_match(match: re.Match) -> str:
         return f"{full} ({formatted} {final_unit})"
 
 
-def _convert_bare_match(match: re.Match) -> str:
-    """Replace callback for bare unit matches (from _BARE_PATTERN).
+def _convert_bare_match(match: re.Match, uset: _UnitSet) -> str:
+    """Replace callback for bare unit matches (from the unit set's bare_pattern).
 
     A bare time unit with no quantity is a point in time ("the appointed
     shichen") rather than a span, so it maps to the English time word with no
@@ -901,10 +1126,10 @@ def _convert_bare_match(match: re.Match) -> str:
     full = match.group(0)
     unit_text = match.group("unit")
 
-    unit_info = _lookup_unit(unit_text)
+    unit_info = uset.lookup(unit_text)
     if unit_info is None:
         return full
-    _value, base_unit, _type, action, _numeral = unit_info
+    base_unit, action = unit_info.unit, unit_info.action
     if action != "replace" or base_unit != "hour":
         return full
 
@@ -934,8 +1159,11 @@ def _extract_sentence_context(line: str, match_start: int, match_end: int,
             sent_end = i + 1
             break
 
-    context = line[sent_start:sent_end].strip()
-    ctx_offset = sent_start
+    # Offset past the whitespace strip() removes, or every match after the first
+    # sentence of a line is highlighted one character late ("t>>>hree jin.<<<").
+    raw = line[sent_start:sent_end]
+    context = raw.strip()
+    ctx_offset = sent_start + (len(raw) - len(raw.lstrip()))
 
     # Cap at max_len centered on match if sentence is very long
     if len(context) > max_len:
@@ -957,43 +1185,155 @@ def _load_cleaning_prompt() -> str:
         return f.read()
 
 
-def _filter_false_positives(lines: List[str], all_matches: list,
-                            cleaning_model: str) -> Set[int]:
+def _match_contexts(lines: List[str], matches: list) -> dict:
+    """``{str(match_id): sentence}`` with each match wrapped in >>> <<< markers."""
+    context = {}
+    for line_idx, match, match_id in matches:
+        line = lines[line_idx]
+        sentence, ctx_offset = _extract_sentence_context(
+            line, match.start(), match.end()
+        )
+        # Calculate match position within the context string
+        rel_start = match.start() - ctx_offset
+        rel_end = match.end() - ctx_offset
+        # Highlight the match
+        context[str(match_id)] = (sentence[:rel_start] + ">>>" +
+                                  sentence[rel_start:rel_end] + "<<<" +
+                                  sentence[rel_end:])
+    return context
+
+
+# ── Jev false-positive filter ───────────────────────────────────────
+# The same rules as unit_cleaning_prompt.txt, as a Jev choice question. Each
+# match is its own question with the sentence in its instructions, so a whole
+# chapter goes in one request (~0.3s) rather than one request per match.
+def _unit_examples(uset: _UnitSet, limit: int = 10) -> str:
+    """'li, jin, zhang, …' — the language's own unit names, for the prompts."""
+    names = [n for n in uset.units if " " not in n and "-" not in n]
+    return ", ".join(names[:limit])
+
+
+def _jev_instructions(uset: _UnitSet) -> str:
+    lang = LANGUAGE_NAMES.get(uset.lang, uset.lang)
+    return (
+        f"In the sentence below, from an English translation of a {lang} novel, the "
+        f"word between >>> and <<< was matched as a possible {lang} measurement unit "
+        f"({_unit_examples(uset)}, etc.). Is it being used as a measurement unit?"
+    )
+
+
+JEV_UNIT_CRITERIA = {
+    "unit": (
+        "Used as a measurement of distance, length, weight, area, volume or time, "
+        "usually after a number or quantity: 'thirty li', 'three jin', 'a hundred "
+        "zhang', 'two liang of silver', 'ten mu of land', 'a thirty-ping flat', "
+        "'a ke later'. Exaggerated quantities still count: 'a force of a thousand "
+        "jun', 'ten thousand zhang tall'."
+    ),
+    "not_unit": (
+        "Not a measurement: a surname or given name ('Elder Jin', 'Old Zhang', "
+        "'Zhang Wei'), part of a place name ('Li Village', 'Nine Li Town'), a number "
+        "beside a name ('Chapter 3 Zhang Wei'), part of an English word, a different "
+        "meaning (jin as gold or money, chi as qi/tai chi, liang as bright, ping as "
+        "a sound or network ping, dan as a pill or elixir, kin as relatives), or "
+        "figurative use where a metric conversion would be nonsensical."
+    ),
+}
+# The state cap is 32k tokens including the longest question; sentences are
+# capped at 200 chars, so this is about request size, not that limit.
+JEV_UNIT_BATCH = 40
+DEFAULT_JEV_UNIT_CONFIDENCE = 0.9
+
+
+def _jev_unit_filter_enabled() -> bool:
+    """``jev_unit_filter`` on and a TypeSafe key configured."""
+    import jev_client
+    import settings_store
+    if not jev_client.is_configured():
+        return False
+    return bool(settings_store.get("jev_unit_filter", True))
+
+
+def _jev_unit_threshold() -> float:
+    import settings_store
+    try:
+        t = float(settings_store.get("jev_unit_confidence", DEFAULT_JEV_UNIT_CONFIDENCE))
+    except (TypeError, ValueError):
+        return DEFAULT_JEV_UNIT_CONFIDENCE
+    return t if 0.0 < t <= 1.0 else DEFAULT_JEV_UNIT_CONFIDENCE
+
+
+def _jev_false_positives(context: dict, uset: _UnitSet) -> Tuple[Set[int], Set[int]]:
+    """Classify each highlighted match with Jev.
+
+    Returns ``(false_positive_ids, unsure_ids)``: a confident ``not_unit`` is a
+    false positive, a confident ``unit`` is converted, and anything below the
+    threshold (or missing from the answer) is unsure. Raises ``JevError``.
+    """
+    import jev_client
+    threshold = _jev_unit_threshold()
+    false_positives: Set[int] = set()
+    unsure: Set[int] = set()
+    ids = list(context)
+    instructions = _jev_instructions(uset)
+    lang = LANGUAGE_NAMES.get(uset.lang, uset.lang)
+    for i in range(0, len(ids), JEV_UNIT_BATCH):
+        batch = ids[i:i + JEV_UNIT_BATCH]
+        questions = {
+            f"m{mid}": {
+                "type": "choice",
+                "instructions": f"{instructions}\n\nSentence: {context[mid]}",
+                "criteria": JEV_UNIT_CRITERIA,
+            }
+            for mid in batch
+        }
+        answers = jev_client.system_one({"task": f"{lang} measurement unit filter"}, questions)
+        for mid in batch:
+            ans = answers.get(f"m{mid}")
+            try:
+                confidence = float(ans.get("confidence"))
+                label = ans.get("choice")
+            except (AttributeError, TypeError, ValueError):
+                unsure.add(int(mid))
+                continue
+            if label not in JEV_UNIT_CRITERIA or confidence < threshold:
+                unsure.add(int(mid))
+            elif label == "not_unit":
+                false_positives.add(int(mid))
+    logger.info(f"Jev unit filter: {len(context)} match(es), "
+                f"{len(false_positives)} false positive(s), {len(unsure)} unsure")
+    return false_positives, unsure
+
+
+# ── LLM false-positive filter ───────────────────────────────────────
+
+def _filter_false_positives(context: dict, cleaning_model: str,
+                            uset: Optional[_UnitSet] = None) -> Set[int]:
     """Call cleaning model to identify false positive unit matches.
 
     Args:
-        lines: Original text lines.
-        all_matches: List of (line_idx, match_obj, match_id) tuples.
+        context: ``{str(match_id): highlighted sentence}`` (``_match_contexts``).
         cleaning_model: Model spec string (e.g. "gemini:gemini-2.0-flash").
+        uset: The book's unit set. The prompt file is written for Chinese; for
+            any language, a closing paragraph names it and its units.
 
     Returns:
         Set of match IDs that should NOT be converted (false positives).
     """
+    if not context:
+        return set()
     try:
         from providers import create_provider
         from config import TranslationConfig
         config = TranslationConfig()
 
-        # Build context dict with highlighted matches
-        context = {}
-        for line_idx, match, match_id in all_matches:
-            line = lines[line_idx]
-            sentence, ctx_offset = _extract_sentence_context(
-                line, match.start(), match.end()
-            )
-            # Calculate match position within the context string
-            rel_start = match.start() - ctx_offset
-            rel_end = match.end() - ctx_offset
-            # Highlight the match
-            highlighted = (sentence[:rel_start] + ">>>" +
-                          sentence[rel_start:rel_end] + "<<<" +
-                          sentence[rel_end:])
-            context[str(match_id)] = highlighted
-
-        if not context:
-            return set()
-
         system_prompt = _load_cleaning_prompt()
+        if uset is not None:
+            lang = LANGUAGE_NAMES.get(uset.lang, uset.lang)
+            system_prompt += (
+                f"\n\nSOURCE LANGUAGE: this novel was translated from {lang}. The "
+                f"highlighted words are candidates for its units: {_unit_examples(uset, 40)}."
+            )
         user_prompt = json.dumps(context, ensure_ascii=False, indent=2)
 
         provider_name, model_name = config.parse_model_spec(cleaning_model)
@@ -1035,28 +1375,89 @@ def _filter_false_positives(lines: List[str], all_matches: list,
         return set()
 
 
-def convert_units(lines: List[str], cleaning_model: Optional[str] = None) -> List[str]:
-    """Convert Chinese units in translated text to include metric equivalents.
+def _find_false_positives(lines: List[str], matches: list,
+                          cleaning_model: Optional[str], use_jev: bool,
+                          uset: _UnitSet) -> Set[int]:
+    """Jev first (if on), then the LLM for whatever Jev left undecided.
+
+    With neither filter able to decide a match, it is converted -- the same
+    default as running with no filter at all.
+    """
+    context = _match_contexts(lines, matches)
+    pending = context
+    false_positives: Set[int] = set()
+    if use_jev:
+        try:
+            fps, unsure = _jev_false_positives(context, uset)
+            false_positives |= fps
+            pending = {mid: context[mid] for mid in context if int(mid) in unsure}
+        except Exception as e:  # JevError, or anything unexpected: fall back
+            logger.warning(f"Jev unit filter failed, "
+                           f"{'falling back to ' + cleaning_model if cleaning_model else 'converting all matches'}: {e}")
+            pending = context
+    if pending and cleaning_model:
+        false_positives |= _filter_false_positives(pending, cleaning_model, uset=uset)
+    return false_positives
+
+
+_ARTICLE_COUNTS = ("a", "an", "a single", "single", "another")
+
+
+def _strict_rejects(match: re.Match, uset: _UnitSet) -> bool:
+    """True when a strict unit's match is the English word, not the unit.
+
+    "two ping-pong balls", "a ping sounded", "pings": a strict unit needs a
+    real count, no plural and no hyphenated continuation (see ``Unit.strict``).
+    """
+    gd = match.groupdict()
+    info = uset.lookup(gd["unit"])
+    if info is None or not info.strict:
+        return False
+    if match.end() != match.end("unit"):            # took the plural "s"
+        return True
+    if match.string[match.end():match.end() + 1] == "-":
+        return True
+    if gd.get("vague") or gd.get("fracunit") or gd.get("numfill"):
+        return True
+    count = re.sub(r"[\s\-]+", " ", (gd.get("num") or "").strip().lower())
+    return count in _ARTICLE_COUNTS
+
+
+def convert_units(lines: List[str], cleaning_model: Optional[str] = None,
+                  use_jev: Optional[bool] = None,
+                  source_language: Optional[str] = DEFAULT_LANGUAGE) -> List[str]:
+    """Convert East Asian units in translated text to include metric equivalents.
 
     Args:
         lines: List of translated text lines.
-        cleaning_model: Optional model spec (provider:model) for AI-powered
-            false positive filtering. If None, all regex matches are converted.
+        cleaning_model: Optional model spec (provider:model) for LLM false
+            positive filtering. With Jev on, it only sees the matches Jev was
+            unsure of (or all of them, if the Jev call failed).
+        use_jev: Filter with Jev first. None follows the ``jev_unit_filter``
+            setting; either way Jev needs ``TYPESAFE_KEY``. With no cleaning
+            model and Jev off, all regex matches are converted.
+        source_language: The book's source language. Picks the unit table;
+            None/empty means zh, and a language units.json has no table for
+            (ru, en, …) returns the lines unchanged.
 
     Returns:
         Lines with metric annotations appended where units were found.
     """
+    uset = _unit_set(source_language)
+    if uset is None:
+        return list(lines)
+
     # Pass 1: Collect all matches across all lines. Precedence (highest first):
     #   1. point-in-time expressions (_POINT_RE) — "third ke of the wu hour"
-    #   2. quantity-bearing spans (_PATTERN)      — "two shichen"
-    #   3. bare units (_BARE_PATTERN)             — "the appointed shichen"
+    #   2. quantity-bearing spans (uset.pattern)  — "two shichen"
+    #   3. bare units (uset.bare_pattern)         — "the appointed shichen"
     # Lower-precedence matches are dropped where they overlap a higher one, so a
     # phrase is handled exactly once.
     all_matches = []  # List of (line_idx, match_obj, match_id)
     match_kind: dict = {}  # match_id -> "point" | "main" | "bare"
     for line_idx, line in enumerate(lines):
         point_spans = []
-        for match in _POINT_RE.finditer(line):
+        for match in (_POINT_RE.finditer(line) if uset.chinese_time else ()):
             # Skip no-ops (bare "noon", already-canonical hours) so they neither
             # clutter the plan nor needlessly suppress overlapping span matches.
             if _convert_point_match(match) == match.group(0):
@@ -1066,31 +1467,58 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None) -> Lis
             all_matches.append((line_idx, match, len(all_matches)))
 
         main_spans = []
-        for match in _PATTERN.finditer(line):
+        for match in uset.pattern.finditer(line):
             if any(s < match.end() and match.start() < e for s, e in point_spans):
                 continue  # part of a point-in-time expression; skip
+            if _strict_rejects(match, uset):
+                continue  # the English word ("a ping", "ping-pong"), not the unit
             main_spans.append((match.start(), match.end()))
             match_kind[len(all_matches)] = "main"
             all_matches.append((line_idx, match, len(all_matches)))
-        for match in _BARE_PATTERN.finditer(line):
+        for match in (uset.bare_pattern.finditer(line) if uset.bare_pattern else ()):
             if any(s < match.end() and match.start() < e
                    for s, e in point_spans + main_spans):
                 continue  # overlaps a higher-precedence match; skip
             match_kind[len(all_matches)] = "bare"
             all_matches.append((line_idx, match, len(all_matches)))
+        for match in (_KE_QUALIFIED_RE.finditer(line) if uset.chinese_time else ()):
+            if any(s < match.end() and match.start() < e
+                   for s, e in point_spans + main_spans):
+                continue
+            match_kind[len(all_matches)] = "keq"
+            all_matches.append((line_idx, match, len(all_matches)))
 
     if not all_matches:
         return list(lines)
 
-    # Pass 2: Optionally filter false positives via cleaning model. Point-in-time
-    # matches are deterministic and don't fit the unit classifier's prompt, so
-    # they bypass it (they're always applied).
+    # Pass 2: Optionally filter false positives via Jev and/or the cleaning model.
+    # Point-in-time matches are deterministic and don't fit the unit classifier's
+    # prompt, so they bypass it (they're always applied).
+    if use_jev is None:
+        use_jev = _jev_unit_filter_enabled()
+    elif use_jev:
+        import jev_client
+        use_jev = jev_client.is_configured()
     false_positive_ids: Set[int] = set()
-    if cleaning_model:
-        cleanable = [m for m in all_matches if match_kind.get(m[2]) != "point"]
+    if cleaning_model or use_jev:
+        # Lowercase time units skip the classifier too. "shichen", "ke" and
+        # "double-hour" have no English or surname reading in lowercase (the
+        # surname Ke is capitalised and caught by _convert_match's name check),
+        # so there is nothing for the model to filter — yet it vetoed them,
+        # leaving ~30 durations as pinyin across book 106 even after
+        # unit_cleaning_prompt.txt was told 'ke' is genuine.
+        def _needs_classifier(m):
+            if match_kind.get(m[2]) in ("point", "keq"):
+                return False
+            unit_text = m[1].groupdict().get("unit") or ""
+            info = uset.lookup(unit_text)
+            if unit_text.islower() and info and info.type == "time":
+                return False
+            return True
+        cleanable = [m for m in all_matches if _needs_classifier(m)]
         if cleanable:
-            false_positive_ids = _filter_false_positives(
-                lines, cleanable, cleaning_model
+            false_positive_ids = _find_false_positives(
+                lines, cleanable, cleaning_model, use_jev, uset
             )
 
     # Pass 3: Apply conversions, skipping false positives
@@ -1106,13 +1534,19 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None) -> Lis
             if match_id in false_positive_ids:
                 continue
             kind = match_kind.get(match_id)
+            prefix = line[:match.start()]
             if kind == "point":
                 replacement = _convert_point_match(match)
+                # Only text before this match changes, and matches are applied
+                # right to left, so earlier offsets stay valid.
+                prefix, replacement = _drop_indefinite_before_point(prefix, replacement)
             elif kind == "bare":
-                replacement = _convert_bare_match(match)
+                replacement = _convert_bare_match(match, uset)
+            elif kind == "keq":
+                replacement = match.group("q") + "quarter hour"
             else:
-                replacement = _convert_match(match)
-            line = line[:match.start()] + replacement + line[match.end():]
+                replacement = _convert_match(match, uset)
+            line = prefix + replacement + line[match.end():]
         result[line_idx] = line
 
     return result

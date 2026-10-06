@@ -466,7 +466,9 @@ export default function Settings() {
             <p className="text-xs text-slate-500">
               Cheap, fast classification — never translation. Used to triage chapter conflicts:
               when one side is confidently nothing but an author's note or ad and the other is story,
-              the conflict resolves itself; otherwise the conflict panel shows Jev's verdict.
+              the conflict resolves itself; otherwise the conflict panel shows Jev's verdict. Also
+              filters unit-converter false positives ("Elder Jin", "Li Village"): the run's cleaning
+              model, if one is set, only sees the matches Jev is unsure of.
             </p>
             <JevKeyRow
               hasKey={settings.has_typesafe_key}
@@ -501,6 +503,26 @@ export default function Settings() {
                   className="input text-sm"
                   value={settings.jev_conflict_confidence ?? 0.9}
                   onChange={e => setSettings(s => ({ ...s, jev_conflict_confidence: parseFloat(e.target.value) }))}
+                />
+              </div>
+              <div>
+                <label className="label">Unit converter filter</label>
+                <select
+                  className="input text-sm"
+                  value={settings.jev_unit_filter === false ? 'off' : 'on'}
+                  onChange={e => setSettings(s => ({ ...s, jev_unit_filter: e.target.value === 'on' }))}
+                >
+                  <option value="on">On</option>
+                  <option value="off">Off (cleaning model only)</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Unit filter confidence</label>
+                <input
+                  type="number" min="0.5" max="1" step="0.01"
+                  className="input text-sm"
+                  value={settings.jev_unit_confidence ?? 0.9}
+                  onChange={e => setSettings(s => ({ ...s, jev_unit_confidence: parseFloat(e.target.value) }))}
                 />
               </div>
             </div>

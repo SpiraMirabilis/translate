@@ -13,9 +13,16 @@ Common false positive patterns:
 - "li" as part of English words: "literally", "glistening", "military", "delicate"
 - "li" as a politeness/grammar particle, not the distance unit (里)
 - "mu" as a name or sound, not the area unit (亩)
+- "ping" as a sound ("two pings from the console"), a network ping, or a name ("Ping"), not the floor-area unit (坪)
+- "dan" as a pill or elixir (丹), not the grain measure (石)
+- "kin" as relatives ("next of kin"), not the Japanese weight unit (斤)
 - "liang" meaning bright, cool, or as a name, not the weight unit (两)
 - "zhang" meaning a chapter, a sheet, or as a surname, not the length unit (丈)
 - Figurative or idiomatic usage where literal conversion would be nonsensical
+
+NOT false positives:
+- Exaggerated quantities are still units: "a force of a thousand jun", "ten thousand zhang tall", "three sheng of blood" convert like any other.
+- "ke" (刻) is a genuine time unit, a quarter of an hour: "a ke later", "for two ke", "half a ke" are legitimate and should be converted. The surname Ke is capitalized ("Ke Zhen") and never appears here in lowercase.
 
 Return a JSON array of the ID numbers (as integers) of the matches that are false positives and should NOT be converted. If ALL matches are legitimate units that should be converted, return an empty array [].
 

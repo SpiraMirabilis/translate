@@ -1,4 +1,4 @@
-"""unit_converter module — append metric equivalents to Chinese measurement units.
+"""unit_converter module — append metric equivalents to East Asian measurement units.
 
 Wraps the existing ``unit_converter.convert_units`` post-translation transform.
 ``convert_units`` is idempotent (the annotate path uses a negative lookahead so it
@@ -9,7 +9,8 @@ inline call (runs once per fresh translation, with the per-run cleaning model) a
 avoids invoking the optional AI false-positive filter on every manual chapter edit.
 
 Enabled for every book by default (``default_enabled = True``); turn it off
-per book via the book's Modules dialog.
+per book via the book's Modules dialog. The unit table follows the book's
+``source_language`` (zh/ja/ko); a language with no table (ru, en) is a no-op.
 """
 from .base import TranslationModule
 
@@ -17,12 +18,15 @@ from .base import TranslationModule
 class UnitConverterModule(TranslationModule):
     id = "unit_converter"
     name = "Unit Converter"
-    description = ("Append metric equivalents to Chinese measurement units in the "
-                   "translation, e.g. \"1000 zhang (3.3 km)\".")
+    description = ("Append metric equivalents to Chinese, Japanese and Korean "
+                   "measurement units in the translation, e.g. \"1000 zhang (3.33 km)\".")
     default_enabled = True
 
     def transform_translated_lines(self, content, ctx):
         if not isinstance(content, list):
             return content
         from unit_converter import convert_units
-        return convert_units(content, cleaning_model=ctx.get("cleaning_model"))
+        book = ctx.get("book") or {}
+        lang = book.get("source_language") if hasattr(book, "get") else None
+        return convert_units(content, cleaning_model=ctx.get("cleaning_model"),
+                             source_language=lang)

@@ -114,6 +114,26 @@ def test_annotate_decimal_quantity():
     ]
 
 
+def test_annotate_ping_floor_area():
+    assert convert_units(["The flat was only thirty ping."]) == [
+        "The flat was only thirty ping (99.18 m²)."
+    ]
+
+
+def test_ping_scales_to_hectares():
+    assert convert_units(["a 5,000 ping estate"]) == [
+        "a 5,000 ping (1.65 ha) estate"
+    ]
+
+
+def test_ping_needs_an_explicit_count():
+    # "ping" is also an English word; a bare article is the sound, not 3.3 m².
+    for line in ["There was a ping from the console.",
+                 "Another ping sounded.",
+                 "a single ping echoed"]:
+        assert convert_units([line]) == [line]
+
+
 def test_already_annotated_left_alone():
     line = "already annotated 10 zhang (33.3 m) here"
     assert convert_units([line]) == [line]
@@ -175,6 +195,126 @@ def test_point_in_time_earthly_branch():
     ]
 
 
+# ---------------------------------------------------------------------------
+# Earthly-branch hours in running prose (book 106 glitches). The branch name is
+# capitalised as a proper noun, so its capital must not become "The"; and the
+# canonical label's own "the" must not stack on the model's determiner.
+# ---------------------------------------------------------------------------
+def test_point_mid_sentence_proper_noun_capital_is_not_copied():
+    assert convert_units(["Yuzhong, Si hour."]) == [
+        "Yuzhong, the hour of the Snake."
+    ]
+
+
+def test_point_sentence_initial_keeps_capital():
+    assert convert_units(["He left. Si hour came."]) == [
+        "He left. The hour of the Snake came."
+    ]
+    assert convert_units(['"Si hour," he said.']) == [
+        '"The hour of the Snake," he said.'
+    ]
+    assert convert_units(['Yu Sheng said, "Zi hour is almost here."']) == [
+        'Yu Sheng said, "The hour of the Rat is almost here."'
+    ]
+
+
+def test_point_after_the_very_drops_duplicate_article():
+    assert convert_units(["at the very start of the Xu hour, which"]) == [
+        "at the very start of the hour of the Dog, which"
+    ]
+
+
+def test_point_after_quoted_the_drops_duplicate_article():
+    assert convert_units(['Emperor Jing demanded the "Mao hour roll call."']) == [
+        'Emperor Jing demanded the "hour of the Rabbit roll call."'
+    ]
+
+
+def test_point_after_indefinite_article_replaces_it():
+    assert convert_units(["expelled at a Yin hour on a yin day"]) == [
+        "expelled at the hour of the Tiger on a yin day"
+    ]
+    assert convert_units(["A Yin hour passed."]) == [
+        "The hour of the Tiger passed."
+    ]
+
+
+def test_point_after_conjunction_that_keeps_article():
+    assert convert_units(["He knew that the Wu hour had come."]) == [
+        "He knew that the hour of the Horse had come."
+    ]
+
+
+def test_point_capitalised_hour_of_you():
+    assert convert_units(["the end of the hour of You that it grew dark"]) == [
+        "the end of the hour of the Rooster that it grew dark"
+    ]
+
+
+def test_point_hour_of_you_pronoun_and_surname_untouched():
+    for line in ["an hour of you", "the hour of You-know-what",
+                 "spent an hour of You Wei's time"]:
+        assert convert_units([line]) == [line]
+
+
+def test_point_ke_after_the_hour():
+    assert convert_units(["Yuzhong, Si hour, third ke."]) == [
+        "Yuzhong, forty-five minutes past the hour of the Snake."
+    ]
+
+
+def test_qualified_bare_ke_is_a_quarter_hour():
+    cases = {
+        "In the first ke of the evaluation, birds came.":
+            "In the first quarter hour of the evaluation, birds came.",
+        "As the ninth ke arrived, bells rang.":
+            "As the ninth quarter hour arrived, bells rang.",
+        "Nearly every ke it grew two nodes.":
+            "Nearly every quarter hour it grew two nodes.",
+        "Over the next ke, he ran.": "Over the next quarter hour, he ran.",
+        "Two strokes per ke.": "Two strokes per quarter hour.",
+    }
+    for src, want in cases.items():
+        assert convert_units([src]) == [want]
+
+
+def test_surname_ke_is_not_a_unit():
+    for line in ["He met Ke Zhen at noon.", "the first Ke family elder"]:
+        assert convert_units([line]) == [line]
+
+
+def test_joined_romanisation_names_are_not_hours():
+    # 无始 Wushi, 海石 Haishi, 裘審勢 Qiu Shenshi, 子实 Zishi were all rewritten
+    # into "the hour of the X" by the joined-romanisation form.
+    for line in ["followed the Wushi Great Emperor", "Old Ancestor Haishi nodded",
+                 "Qiu Shenshi laughed", "Zishi Venerable bowed",
+                 "the ritual sword 【Xushi Hour】"]:
+        assert convert_units([line]) == [line]
+
+
+def test_lowercase_yin_hour_is_yin_yang_not_tiger():
+    line = "born in a yin year, a yin month, a yin hour"
+    assert convert_units([line]) == [line]
+    assert convert_units(["at the Yin hour"]) == ["at the hour of the Tiger"]
+
+
+def test_hyphenated_hour_before_a_noun_is_a_name():
+    # 午时草 / 巳时草: plant names in book 106's Twelve Shichen Grass.
+    for line in ["kept his eyes on the Wu-hour grass.", "the Si-hour grass had climbed"]:
+        assert convert_units([line]) == [line]
+    assert convert_units(["It was the Wu-hour."]) == ["It was the hour of the Horse."]
+
+
+def test_start_of_bare_branch_is_not_an_hour():
+    line = "at the start of the Wei dynasty"
+    assert convert_units([line]) == [line]
+
+
+def test_bare_branch_before_a_name_is_not_an_hour():
+    line = "ten minutes after Chen Yiran read them"
+    assert convert_units([line]) == [line]
+
+
 def test_no_matches_returns_copy():
     lines = ["Nothing to convert here."]
     out = convert_units(lines)
@@ -216,3 +356,58 @@ def test_a_unit_at_a_sentence_end_still_converts():
     # the name guard from firing.
     assert convert_units(["they marched thirty li. Beijing was still far off."]) == [
         "they marched thirty li (15 km). Beijing was still far off."]
+
+
+# ── Book 106 (2026-10-03): lowercase time units before a capitalised word ──
+# Only a capitalised unit word can be a romanised surname; a lowercase one is
+# the unit even when the sentence's subject follows it.
+
+def test_lowercase_ke_before_a_name_still_converts():
+    assert convert_units(["in less than two ke Zhao Xing saw a city ahead."]) == [
+        "in less than thirty minutes Zhao Xing saw a city ahead."]
+
+
+def test_lowercase_shichen_before_a_name_still_converts():
+    assert convert_units(["in the two shichen Zhao Xing spent with them"]) == [
+        "in the four hours Zhao Xing spent with them"]
+
+
+def test_capitalised_unit_before_a_name_is_still_a_name():
+    for line in ("He met a Zhang Juzheng there.", "Twelve Shichen Grass grows here.",
+                 "two Ke Zhen arrived."):
+        assert convert_units([line]) == [line]
+
+
+def test_vague_count_of_ke_becomes_quarter_hours():
+    assert convert_units(["how many ke will it take?"]) == ["how many quarter hours will it take?"]
+    assert convert_units(["after a few ke he left"]) == ["after a few quarter hours he left"]
+
+
+def test_final_ke_is_a_quarter_hour():
+    assert convert_units(["The final ke."]) == ["The final quarter hour."]
+
+
+def test_time_units_bypass_the_cleaning_model(monkeypatch):
+    # The AI false-positive filter vetoed genuine shichen/ke durations; lowercase
+    # time units must never be sent to it.
+    import unit_converter
+    seen = []
+    def fake_filter(context, model, **kw):
+        seen.extend(context.values())
+        return {int(k) for k in context}   # veto everything it is shown
+    monkeypatch.setattr(unit_converter, "_filter_false_positives", fake_filter)
+    out = convert_units(["After waiting a ke, he walked two shichen and three li."],
+                        cleaning_model="fake:model")
+    assert out == ["After waiting fifteen minutes, he walked four hours and three li."]
+    assert len(seen) == 1 and seen[0].endswith(">>>three li<<<.")   # only the li went to the model
+
+
+def test_a_leading_and_is_not_part_of_the_count():
+    assert convert_units(["fifty kilometers long, and an entire shichen after entering"]) == [
+        "fifty kilometers long, and two entire hours after entering"]
+    assert convert_units(["both direction and shichen settled back"]) == [
+        "both direction and hour settled back"]
+
+
+def test_and_inside_a_number_still_counts():
+    assert convert_units(["one hundred and twenty li"]) == ["one hundred and twenty li (60 km)"]

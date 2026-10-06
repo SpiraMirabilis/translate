@@ -162,6 +162,8 @@ def get_settings():
         "jev_model": settings_store.get("jev_model", "jev-latest"),
         "jev_chapter_conflict": settings_store.get("jev_chapter_conflict", "auto"),
         "jev_conflict_confidence": settings_store.get("jev_conflict_confidence", 0.9),
+        "jev_unit_filter": settings_store.get("jev_unit_filter", True),
+        "jev_unit_confidence": settings_store.get("jev_unit_confidence", 0.9),
         "has_typesafe_key": bool(os.getenv("TYPESAFE_KEY", "").strip()),
     }
 
@@ -198,7 +200,8 @@ class SettingsUpdate(BaseModel):
     jev_model: Optional[str] = None
     jev_chapter_conflict: Optional[str] = None
     jev_conflict_confidence: Optional[float] = None
-
+    jev_unit_filter: Optional[bool] = None
+    jev_unit_confidence: Optional[float] = None
 
 
 @router.put("")
@@ -208,7 +211,7 @@ def update_settings(req: SettingsUpdate):
     updates = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
     if "jev_chapter_conflict" in updates and updates["jev_chapter_conflict"] not in ("off", "suggest", "auto"):
         raise HTTPException(status_code=400, detail="jev_chapter_conflict must be off, suggest or auto")
-    for key in ("jev_conflict_confidence", "comment_automod_jev_confidence"):
+    for key in ("jev_conflict_confidence", "comment_automod_jev_confidence", "jev_unit_confidence"):
         if key in updates and not 0 < updates[key] <= 1:
             raise HTTPException(status_code=400, detail=f"{key} must be in (0, 1]")
     if updates:
@@ -257,9 +260,16 @@ def update_units(req: UnitsUpdate):
     import json
     # Validate JSON before saving
     try:
-        json.loads(req.content)
+        parsed = json.loads(req.content)
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+    # The converter re-reads units.json on change, so a structurally bad table
+    # must be refused here rather than discovered mid-translation.
+    from unit_converter import parse_units
+    try:
+        parse_units(parsed)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # Atomic write: truncate-then-write would leave a corrupt units.json if
     # the process died mid-write.
     tmp = _UNITS_PATH + ".tmp"

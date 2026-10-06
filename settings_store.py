@@ -75,6 +75,11 @@ SCHEMA = {
     "jev_model":               ("JEV_MODEL",               "jev-latest",              str),
     "jev_chapter_conflict":    ("JEV_CHAPTER_CONFLICT",    "auto",                    str),
     "jev_conflict_confidence": ("JEV_CONFLICT_CONFIDENCE", 0.9,                       float),
+    # Unit-converter false-positive filter. With a key and this on, Jev decides
+    # each match it is confident about; the per-run cleaning model (if any) gets
+    # only the ones below jev_unit_confidence.
+    "jev_unit_filter":         ("JEV_UNIT_FILTER",         True,                      bool),
+    "jev_unit_confidence":     ("JEV_UNIT_CONFIDENCE",     0.9,                       float),
     "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),

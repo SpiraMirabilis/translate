@@ -496,8 +496,20 @@ inside the app, never translation.
   **system**" came back `genuine` at confidence 0.02. Threshold on `confidence`.
   Calibration 2026-09-29: 49 human-approved comments → 43 genuine, 6 unsure (all
   site-test/admin posts), 0 spam; 8 synthetic spam → 7 spam at ≥0.99, 1 unsure (0.89).
+- **Unit-converter false-positive filter** (`unit_converter.py`, added 2026-10-03):
+  `jev_unit_filter` (default on) + `jev_unit_confidence` (0.9), Settings → Jev
+  Classification. Its own setting, **not** a `cleaning_model` spec: the per-run
+  cleaning model also drives entity cleaning and partial-translation repair, which
+  Jev can't do. Each match is one `unit`/`not_unit` choice question carrying its
+  `>>> <<<` sentence; a chapter is one request (`JEV_UNIT_BATCH` 40, ~0.3s). A
+  confident `not_unit` is skipped, a confident `unit` converted; the *unsure* ones go
+  to the run's cleaning model if it has one, else they're converted (the no-filter
+  default). A Jev failure hands every match to the cleaning model. Jev runs even when
+  the run has no cleaning model, so books translated without one are filtered now too.
+  `convert_units(..., use_jev=None)` follows the setting; `run_unit_convert_book.py
+  --no-jev` turns it off (`--no-cleaning-model --no-jev` = pure regex).
 - Tests: `tests/test_jev_client.py`, `tests/test_chapter_triage.py`,
-  `tests/test_automod_jev.py`. conftest's
+  `tests/test_automod_jev.py`, `tests/test_unit_converter_jev.py`. conftest's
   autouse `no_live_jev` drops `TYPESAFE_KEY`, so the suite never calls the live API.
 
 ### Configuration
@@ -532,6 +544,27 @@ Reply-notification emails have two pluggable backends (`web/services/email_sende
 - `EMAIL_FROM`: Sender address for reply notifications (e.g. `editor@boondollars.com`). For SES it must be a verified SES identity (domain or address); for Postfix a domain it's authorized to send from. If unset, notifications are sent from `noreply@localhost` and won't deliver — explicitly set this before turning the feature live.
 - `SITE_BASE_URL`: Public base URL of the reader site (e.g. `https://reader.boondollars.com`), used to build absolute links to chapters and the unsubscribe endpoint in outgoing emails. Must be set or email links will be relative and break in many mail clients.
 - **Amazon SES secrets/infra (`.env` only, not in settings SCHEMA — same convention as the Spaces `BUCKET_*` vars):** `SES_REGION` (default `us-east-2`), `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY` (IAM user with `ses:SendRawEmail`). The sending identity must be verified in that region and the account out of the SES sandbox to reach arbitrary recipients.
+
+### Unit converter tables (`units.json`, language-keyed since 2026-10-05)
+`units.json` is `{"common": {...}, "zh": {...}, "ja": {...}, "ko": {...}}`, picked by
+`books.source_language` (the `unit_converter` module passes it; `run_unit_convert_book.py`
+reads it per book). One romanisation can mean different things — Japanese ri 3.93 km,
+Korean ri 393 m, Chinese li 500 m — and each language's collision-prone names stay out of
+the other languages' patterns.
+- `common` (tsubo, pyeong) merges into every table; the language's own entry wins a clash.
+  A language with **no table (ru, en) is a no-op**; a missing language means zh. A legacy
+  flat file still reads as zh.
+- Korean `li` is the Chinese 500 m li (murim usage, book 36); the Korean 리 is `ri`. The
+  earthly-branch clock and qualified-ke handling run only for a table carrying ke+shichen.
+- **`"strict": true`** marks a unit that is also an English word (ping, sheng, dan, kin,
+  ken, …): it needs a real count (no bare article/vague/fraction), takes no plural `s`, and
+  is skipped before a hyphen ("two ping-pong balls"). Rejected matches never reach Jev.
+  Left out entirely because the plural is an English word: bu (bus), doe (does), sun,
+  hop; and currency, not measures: fen, jiao, hao, ryō, nyang.
+- Scales: kg → t ≥1000, m² → ha ≥10,000, L → m³ ≥1000 and → mL <1.
+- `units.json` is re-read on mtime change (a broken edit keeps the previous table and
+  logs); the Settings editor validates with `parse_units` before saving.
+- Covered by `tests/test_unit_converter_languages.py`.
 
 ### Traditional → Simplified Chinese preprocessing
 Optional pre-translation step that converts traditional Chinese characters to simplified using OpenCC (`t2s` config, in `trad_simp.py`). Useful when a mirror serves a mainland novel in traditional glyphs (張羽 instead of 张羽), which breaks entity matching and prompt consistency.
