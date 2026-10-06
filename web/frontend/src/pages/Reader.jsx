@@ -524,18 +524,40 @@ export default function Reader({ isPublic = false }) {
 
   // Hover opens the note, leaving closes it; a click pins it so touch devices
   // (which get no hover) and anyone wanting to read a long note can keep it up.
+  //
+  // Closing is deferred by a beat and cancelled if the pointer lands on the
+  // popover itself: a note placed over its own term (no room below near the
+  // foot of the page) would otherwise close the instant it appeared, put the
+  // pointer back on the term, and flicker open/closed forever.
+  const termCloseTimer = useRef(null)
+  const cancelTermClose = useCallback(() => {
+    if (termCloseTimer.current) {
+      clearTimeout(termCloseTimer.current)
+      termCloseTimer.current = null
+    }
+  }, [])
+  const closeTermSoon = useCallback(() => {
+    cancelTermClose()
+    termCloseTimer.current = setTimeout(() => {
+      termCloseTimer.current = null
+      setActiveTerm(prev => (prev && !prev.pinned ? null : prev))
+    }, 150)
+  }, [cancelTermClose])
+  useEffect(() => cancelTermClose, [cancelTermClose])
+
   const onTermOver = useCallback((e) => {
     const el = e.target.closest?.('.term-note')
     if (!el) return
+    cancelTermClose()
     setActiveTerm(prev => (prev?.pinned ? prev : {
       label: el.dataset.term, text: el.dataset.note,
       rect: el.getBoundingClientRect(), pinned: false,
     }))
-  }, [])
+  }, [cancelTermClose])
   const onTermOut = useCallback((e) => {
     if (!e.target.closest?.('.term-note')) return
-    setActiveTerm(prev => (prev && !prev.pinned ? null : prev))
-  }, [])
+    closeTermSoon()
+  }, [closeTermSoon])
 
   const [activeFootnote, setActiveFootnote] = useState(null)
   // Turning annotations off removes the popover's anchor — close it too.
@@ -937,7 +959,9 @@ export default function Reader({ isPublic = false }) {
       <FootnotePopover
         footnote={activeTerm}
         theme={prefs.theme}
-        onClose={() => setActiveTerm(null)}
+        onClose={() => { cancelTermClose(); setActiveTerm(null) }}
+        onMouseEnter={cancelTermClose}
+        onMouseLeave={closeTermSoon}
       />
 
       {/* Entity edit modal */}
