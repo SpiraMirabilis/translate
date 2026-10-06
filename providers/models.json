@@ -74,7 +74,7 @@
       "default_model": "kimi-k3",
       "models": ["kimi-k3"],
       "max_chars": 8000,
-      "max_output_tokens": 56384,
+      "max_output_tokens": 156384,
       "connect_timeout_seconds": 15,
       "request_timeout_seconds": 600,
       "max_retries": 2
@@ -135,7 +135,7 @@
         "claude-opus-4-6",
         "claude-haiku-4-5"
       ],
-      "max_chars": 8000,
+      "max_chars": 16000,
       "timeout": 1800
     }
   },
