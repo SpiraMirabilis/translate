@@ -167,24 +167,52 @@ def list_orphans(db, book_id, fmt):
 
 
 def reanchor_footnote(db, book_id, footnote_id, new_anchor):
-    """Point an orphaned footnote at a new anchor term and re-render its chapter."""
+    """Point an orphaned footnote at a new anchor term and re-render its chapter.
+
+    Returns a dict:
+      ok          True when the anchor was updated and the chapter re-rendered
+      footnote_id the id asked for
+      chapter     the footnote's chapter number (None if not found)
+      old_anchor  anchor before the change (None if not found)
+      new_anchor  the anchor asked for
+      status      the row's status after re-render ('active' | 'orphaned'),
+                  None when nothing was changed
+      error       message when ok is False, else None
+    """
+    result = {"ok": False, "footnote_id": footnote_id, "chapter": None,
+              "old_anchor": None, "new_anchor": new_anchor, "status": None,
+              "error": None}
     if not new_anchor:
-        print("--reanchor requires --anchor \"<new term>\".")
-        return
+        result["error"] = "--reanchor requires --anchor \"<new term>\"."
+        return result
     rows = db.get_book_footnotes(book_id)
     row = next((r for r in rows if r["id"] == footnote_id), None)
     if not row:
-        print(f"Footnote {footnote_id} not found in book {book_id}.")
-        return
+        result["error"] = f"Footnote {footnote_id} not found in book {book_id}."
+        return result
+    result["chapter"] = row["chapter_number"]
+    result["old_anchor"] = row.get("anchor")
     if not db.update_footnote(footnote_id, anchor=new_anchor):
-        print(f"Failed to update footnote {footnote_id}.")
-        return
-    db.rerender_chapter_footnotes(row["chapter_id"])
+        result["error"] = f"Failed to update footnote {footnote_id}."
+        return result
+    if not db.rerender_chapter_footnotes(row["chapter_id"]):
+        result["error"] = (f"Footnote {footnote_id} updated but ch"
+                           f"{row['chapter_number']} failed to re-render.")
+        return result
     updated = next((r for r in db.get_book_footnotes(book_id) if r["id"] == footnote_id), None)
-    status = updated["status"] if updated else "?"
-    print(f"Footnote {footnote_id} re-anchored to {new_anchor!r} "
-          f"(ch{row['chapter_number']}) — status now '{status}'.")
-    if status == "orphaned":
+    result["status"] = updated["status"] if updated else "?"
+    result["ok"] = True
+    return result
+
+
+def print_reanchor_result(res):
+    """CLI rendering of a reanchor_footnote() result."""
+    if not res["ok"]:
+        print(res["error"])
+        return
+    print(f"Footnote {res['footnote_id']} re-anchored to {res['new_anchor']!r} "
+          f"(ch{res['chapter']}) — status now '{res['status']}'.")
+    if res["status"] == "orphaned":
         print("  Still orphaned: the new term wasn't found in the chapter either.")
 
 
@@ -215,7 +243,8 @@ def main():
         return
 
     if args.reanchor is not None:
-        reanchor_footnote(db, args.book_id, args.reanchor, args.anchor)
+        print_reanchor_result(
+            reanchor_footnote(db, args.book_id, args.reanchor, args.anchor))
         return
 
     if args.orphans:

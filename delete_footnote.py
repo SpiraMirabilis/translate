@@ -42,27 +42,48 @@ from footnotes import content_to_list, render_footnotes, split_prose_and_defs
 from logger import Logger
 
 
-def resolve_targets(rows, chapter, args, is_source):
-    """Return the subset of `rows` selected by the CLI selectors (or [] / error)."""
-    if args.all:
+def resolve_targets(rows, chapter, is_source, *, number=None, anchor=None,
+                    body_contains=None, footnote_id=None, all_=False):
+    """Return the subset of a chapter's footnote `rows` picked by ONE selector.
+
+    Selectors (exactly one is required, else ValueError):
+      number        the rendered [n] in `chapter`'s content (translated, or
+                    source when `is_source`), mapped back to the table row via
+                    its definition body
+      anchor        exact anchor match
+      body_contains case-insensitive substring of the body
+      footnote_id   footnotes table row id
+      all_          every row
+
+    Returns a list (possibly empty) of the matching row dicts.
+    """
+    given = [name for name, val in (("number", number), ("anchor", anchor),
+                                    ("body_contains", body_contains),
+                                    ("footnote_id", footnote_id))
+             if val is not None]
+    if all_:
+        given.append("all_")
+    if len(given) != 1:
+        raise ValueError("Exactly one selector is required (number, anchor, "
+                         "body_contains, footnote_id or all_); got "
+                         + (", ".join(given) if given else "none") + ".")
+    if all_:
         return list(rows)
-    if args.id is not None:
-        return [r for r in rows if r["id"] == args.id]
-    if args.anchor is not None:
-        return [r for r in rows if (r.get("anchor") or "") == args.anchor]
-    if args.body_contains is not None:
-        needle = args.body_contains.lower()
+    if footnote_id is not None:
+        return [r for r in rows if r["id"] == footnote_id]
+    if anchor is not None:
+        return [r for r in rows if (r.get("anchor") or "") == anchor]
+    if body_contains is not None:
+        needle = body_contains.lower()
         return [r for r in rows if needle in (r.get("body") or "").lower()]
-    if args.number is not None:
-        # The rendered number is a content notion; map it back to a table row via
-        # the definition body it renders to.
-        key = "untranslated" if is_source else "content"
-        _prose, defs = split_prose_and_defs(content_to_list(chapter.get(key)))
-        body = defs.get(args.number)
-        if body is None:
-            return []
-        return [r for r in rows if (r.get("body") or "").strip() == body.strip()]
-    return []
+    # The rendered number is a content notion; map it back to a table row via
+    # the definition body it renders to.
+    key = "untranslated" if is_source else "content"
+    _prose, defs = split_prose_and_defs(content_to_list((chapter or {}).get(key)))
+    body = defs.get(number)
+    if body is None:
+        return []
+    return [r for r in rows if (r.get("body") or "").strip() == body.strip()]
 
 
 def rerender_side(db, chapter_id, book_id, is_source):
@@ -117,7 +138,9 @@ def main():
     chapter = db.get_chapter(chapter_id=chapter_id)
     rows = db.get_chapter_footnotes(chapter_id, is_source=is_source)
 
-    targets = resolve_targets(rows, chapter, args, is_source)
+    targets = resolve_targets(rows, chapter, is_source, number=args.number,
+                              anchor=args.anchor, body_contains=args.body_contains,
+                              footnote_id=args.id, all_=args.all)
 
     print(f"Book ID:  {args.book_id}")
     print(f"Chapter:  {args.chapter}")

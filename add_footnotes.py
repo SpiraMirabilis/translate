@@ -58,12 +58,153 @@ Usage:
 import argparse
 import json
 
-from config import TranslationConfig
-from db import DatabaseManager
 from footnotes import (content_to_list, marker_position, prose_end_index,
                        renumber_chapter)
-from logger import Logger
 
+
+# ── importable library (no printing, no exits) ────────────────────────────────
+
+def load_book_text(db, book_id, source=False):
+    """Load a book's chapter text for first-mention placement.
+
+    Returns a dict:
+      chapters:          chapter numbers, ascending (None sorts last)
+      content:           {chapter_number: [line, ...]} — translated, or source
+                         (untranslated) text when `source` is true
+      full_text:         {chapter_number: "\n".join(lines)} — for the
+                         idempotency (exact-body) check
+      chapter_id_by_num: {chapter_number: chapter_id}
+    """
+    chapter_rows = db.list_chapters(book_id)
+    chapter_id_by_num = {c["chapter"]: c["id"] for c in chapter_rows}
+    chapters = sorted(
+        (c["chapter"] for c in chapter_rows),
+        key=lambda n: (n is None, n),
+    )
+    content_key = "untranslated" if source else "content"
+    content = {}
+    for cn in chapters:
+        ch = db.get_chapter(book_id=book_id, chapter_number=cn)
+        content[cn] = content_to_list(ch.get(content_key) if ch else None)
+    full_text = {cn: "\n".join(content[cn]) for cn in chapters}
+    return {
+        "chapters": chapters,
+        "content": content,
+        "full_text": full_text,
+        "chapter_id_by_num": chapter_id_by_num,
+    }
+
+
+HEADING_WARNING = ("first occurrence is in the chapter heading (line 0) — the "
+                   "marker will land in the title")
+
+
+def plan_footnotes(footnotes, chapters, content, full_text, *, chapter=None):
+    """Decide where each {term: body} footnote goes.
+
+    Placement rules:
+      - a footnote whose exact body already appears anywhere in `full_text` is
+        skipped (idempotent re-runs);
+      - otherwise the first prose occurrence book-wide wins: chapters in the
+        order given, then earliest line; the trailing definition block is never
+        searched, so a marker can't land inside an existing footnote body;
+      - `chapter` forces placement into that one chapter (ValueError if it is
+        not in `content`).
+
+    Returns (plan, skipped, not_found):
+      plan:      list of dicts ordered by (chapter, line_idx, insert_at), each
+                 {chapter, anchor, body, line_idx, insert_at, number,
+                  renumbers_existing, warning}. `number` is the previewed [n]
+                 after the chapter is renumbered; `renumbers_existing` is true
+                 when existing markers in that chapter shift; `warning` is a
+                 string when the anchor's first occurrence is the heading line
+                 (content[0]), else None.
+      skipped:   terms whose body is already in the book
+      not_found: terms with no prose occurrence in the searched chapters
+    """
+    if not isinstance(footnotes, dict) or not footnotes:
+        raise ValueError("footnotes must be a non-empty {term: body} mapping.")
+    if chapter is not None and chapter not in content:
+        raise ValueError(f"Chapter {chapter} is not a translated chapter of this book.")
+
+    by_ch = {}  # chapter -> list of (term, body, line_idx, insert_at)
+    skipped = []
+    not_found = []
+    for term, body in footnotes.items():
+        if any(body in t for t in full_text.values()):
+            skipped.append(term)
+            continue
+        placed = False
+        search_chapters = [chapter] if chapter is not None else chapters
+        for cn in search_chapters:
+            prose_end = prose_end_index(content[cn])
+            for li, line in enumerate(content[cn][:prose_end]):
+                idx = line.find(term)
+                if idx != -1:
+                    # Shared with render_footnotes so the marker the table
+                    # re-renders lands exactly where this preview puts it.
+                    pos = marker_position(line, idx, idx + len(term))
+                    by_ch.setdefault(cn, []).append((term, body, li, pos))
+                    placed = True
+                    break
+            if placed:
+                break
+        if not placed:
+            not_found.append(term)
+
+    plan = []
+    for cn in sorted(by_ch, key=lambda n: (n is None, n)):
+        items = sorted(by_ch[cn], key=lambda x: (x[2], x[3]))
+        # Preview the resulting numbering (the table-driven render reproduces it).
+        _new_lines, final_for_item, changed = renumber_chapter(content[cn], items)
+        for k, (term, body, li, pos) in enumerate(items):
+            plan.append({
+                "chapter": cn,
+                "anchor": term,
+                "body": body,
+                "line_idx": li,
+                "insert_at": pos,
+                "number": final_for_item.get(k),
+                "renumbers_existing": bool(changed),
+                "warning": HEADING_WARNING if li == 0 else None,
+            })
+    return plan, skipped, not_found
+
+
+def apply_footnote_plan(db, book_id, plan, chapter_id_by_num, is_source):
+    """Persist a plan from plan_footnotes to the footnotes table (the source of
+    truth), then re-render each touched chapter's markers + definition block.
+
+    Returns the number of footnotes written. Raises ValueError for a plan
+    chapter with no chapter id, RuntimeError when a DB write fails.
+    """
+    is_source = 1 if is_source else 0
+    by_ch = {}
+    for item in plan:
+        by_ch.setdefault(item["chapter"], []).append(item)
+    for cn in by_ch:
+        if chapter_id_by_num.get(cn) is None:
+            raise ValueError(f"Chapter {cn} has no chapter id in this book.")
+
+    total = 0
+    for cn, items in by_ch.items():
+        chapter_id = chapter_id_by_num[cn]
+        for item in items:
+            fid = db.add_footnote(
+                book_id, chapter_id, item["anchor"], item["body"],
+                source_term=(item["anchor"] if is_source else None),
+                occurrence=1, is_source=is_source,
+            )
+            if fid is None:
+                raise RuntimeError(
+                    f"Failed to write footnote {item['anchor']!r} to ch{cn}.")
+            total += 1
+        if not db.rerender_chapter_footnotes(chapter_id):
+            raise RuntimeError(f"Failed to re-render footnotes for ch{cn}.")
+    return total
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -102,20 +243,16 @@ def main():
         print("Provide either --file or --term with --footnote.")
         return
 
+    from config import TranslationConfig
+    from db import DatabaseManager
+    from logger import Logger
+
     config = TranslationConfig()
     # strict_writes: a failed footnote insert / re-render raises instead of being swallowed.
     db = DatabaseManager(config, Logger(config), strict_writes=True)
 
-    chapter_rows = db.list_chapters(args.book_id)
-    chapter_id_by_num = {c["chapter"]: c["id"] for c in chapter_rows}
-    chapters = sorted(
-        (c["chapter"] for c in chapter_rows),
-        key=lambda n: (n is None, n),
-    )
-    content_key = "untranslated" if args.source else "content"
-    content = {cn: content_to_list(db.get_chapter(book_id=args.book_id, chapter_number=cn)[content_key])
-               for cn in chapters}
-    full_text = {cn: "\n".join(content[cn]) for cn in chapters}
+    text = load_book_text(db, args.book_id, source=args.source)
+    chapters, content = text["chapters"], text["content"]
 
     print(f"Book ID:   {args.book_id}")
     print(f"Footnotes: {len(footnotes)} in map")
@@ -131,57 +268,30 @@ def main():
         return
 
     # Find first prose occurrence per term; skip already-footnoted (idempotent).
-    plan = {}  # chapter -> list of (term, body, line_idx, insert_at)
-    skipped = []
-    not_found = []
-    for term, body in footnotes.items():
-        if any(body in t for t in full_text.values()):
-            skipped.append(term)
-            continue
-        placed = False
-        search_chapters = [args.chapter] if args.chapter is not None else chapters
-        for cn in search_chapters:
-            prose_end = prose_end_index(content[cn])
-            for li, line in enumerate(content[cn][:prose_end]):
-                idx = line.find(term)
-                if idx != -1:
-                    # Shared with render_footnotes so the marker the table
-                    # re-renders lands exactly where this preview puts it.
-                    pos = marker_position(line, idx, idx + len(term))
-                    plan.setdefault(cn, []).append((term, body, li, pos))
-                    placed = True
-                    break
-            if placed:
-                break
-        if not placed:
-            not_found.append(term)
+    plan, skipped, not_found = plan_footnotes(
+        footnotes, chapters, content, text["full_text"], chapter=args.chapter)
 
-    is_source = 1 if args.source else 0
-    total = 0
-    for cn in sorted(plan):
-        items = sorted(plan[cn], key=lambda x: (x[2], x[3]))
-        # Preview the resulting numbering (the table-driven render reproduces it).
-        new_lines, final_for_item, changed = renumber_chapter(content[cn], items)
-        total += len(items)
-        note = "  (renumbered existing markers)" if changed else ""
+    by_ch = {}
+    for item in plan:
+        by_ch.setdefault(item["chapter"], []).append(item)
+    for cn, items in by_ch.items():
+        note = "  (renumbered existing markers)" if items[0]["renumbers_existing"] else ""
         print(f"ch{cn}: +{len(items)} footnote(s){note}")
-        for k, (term, body, li, pos) in enumerate(items):
-            print(f"    [{final_for_item.get(k, '?')}] {term}")
-        if not args.dry_run:
-            # Persist each footnote to the table (source of truth), then re-render
-            # the inline markers + definition block from the table so they survive
-            # any later retranslation.
-            chapter_id = chapter_id_by_num.get(cn)
-            for term, body, li, pos in items:
-                db.add_footnote(
-                    args.book_id, chapter_id, term, body,
-                    source_term=(term if is_source else None),
-                    occurrence=1, is_source=is_source,
-                )
-            db.rerender_chapter_footnotes(chapter_id)
+        for item in items:
+            num = item["number"] if item["number"] is not None else "?"
+            print(f"    [{num}] {item['anchor']}")
+            if item["warning"]:
+                print(f"        WARNING: {item['warning']}")
+
+    if not args.dry_run and plan:
+        # Persist each footnote to the table (source of truth), then re-render
+        # the inline markers + definition block from the table so they survive
+        # any later retranslation.
+        apply_footnote_plan(db, args.book_id, plan, text["chapter_id_by_num"],
+                            1 if args.source else 0)
 
     print("=" * 70)
-    print(f"Added: {total} footnote(s) across {len(plan)} chapter(s)")
+    print(f"Added: {len(plan)} footnote(s) across {len(by_ch)} chapter(s)")
     if skipped:
         print(f"Skipped (already footnoted): {len(skipped)} -> {', '.join(skipped)}")
     if not_found:

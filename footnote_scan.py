@@ -192,31 +192,43 @@ def scan_chapter(job, provider_name, model_name, book_title, max_chars,
     return verify_candidates(found, source)
 
 
+def _as_pred(spec):
+    """Accept a predicate, None, or a --chapters string (parsed with
+    parse_chapter_spec, which raises ValueError on malformed input)."""
+    if spec is None or callable(spec):
+        return spec
+    return parse_chapter_spec(spec)
+
+
 def load_candidates(db, book_id, pred=None):
+    pred = _as_pred(pred)
     rows = db.list_footnote_candidates(book_id)
     if pred is not None:
         rows = [r for r in rows if pred(r["chapter_number"])]
     return rows
 
 
-# ── modes ─────────────────────────────────────────────────────────────────────
+# ── importable library (no printing, no exits) ────────────────────────────────
 
-def cmd_collect(args, config, db, book):
-    book_id, book_title = book["id"], book.get("title") or f"book {book['id']}"
-    pred = parse_chapter_spec(args.chapters)
-
+def scan_targets(db, book_id, pred=None):
+    """list_chapters rows (numbered chapters only) matching `pred`."""
+    pred = _as_pred(pred)
     chap_rows = [c for c in db.list_chapters(book_id) if c["chapter"] is not None]
-    targets = [c for c in chap_rows if pred is None or pred(c["chapter"])]
-    if not targets:
-        print("No chapters match the spec.")
-        return 0
+    return [c for c in chap_rows if pred is None or pred(c["chapter"])]
 
-    # Entities loaded once, matched per chapter; never saved back.
-    entities_by_cat = db.reload_entities(book_id)
 
+def build_scan_jobs(db, book_id, pred=None, *, targets=None):
+    """The chapters a collect run would consider, before plan_scan.
+
+    Returns (jobs, no_source): jobs are dicts {chapter, title, lines,
+    content_hash} for every matching chapter with source text; no_source lists
+    the matching chapter numbers whose source is empty. `targets` (rows from
+    scan_targets) skips the chapter lookup when the caller already has them.
+    """
     from footnotes import content_to_list
 
-    print(f"Fetching source text for {len(targets)} chapter(s)...", flush=True)
+    if targets is None:
+        targets = scan_targets(db, book_id, pred)
     jobs, no_source = [], []
     for c in targets:
         ch = db.get_chapter(book_id=book_id, chapter_number=c["chapter"])
@@ -231,6 +243,172 @@ def cmd_collect(args, config, db, book):
             "lines": lines,
             "content_hash": source_hash(text),
         })
+    return jobs, no_source
+
+
+def build_candidate_report(db, book_id, pred=None, all_=False):
+    """The --report data.
+
+    Returns a dict:
+      text:     the rendered report (what --report prints), or
+                "No candidates collected yet." when there are none
+      rows:     the rows shown (first mentions unless all_), each
+                {id, chapter, chapter_title, term_zh, term_en, body, status,
+                 already_footnoted, also_chapters}
+      total:    candidate rows matching pred
+      shown:    len(rows)
+      rejected: rejected rows among total
+    """
+    rows = load_candidates(db, book_id, pred)
+    if not rows:
+        return {"text": "No candidates collected yet.", "rows": [],
+                "total": 0, "shown": 0, "rejected": 0}
+    already = footnoted_anchors(db, book_id)
+
+    def is_already(r):
+        return (r.get("term_en") or "").strip().lower() in already
+
+    def flags(r, extra=""):
+        out = []
+        if r["status"] == "accepted":
+            out.append("KEEP")
+        elif r["status"] == "rejected":
+            out.append("REJECTED")
+        if is_already(r):
+            out.append("already footnoted")
+        if extra:
+            out.append(extra)
+        return f"  [{', '.join(out)}]" if out else ""
+
+    if all_:
+        shown, repeats = rows, {}
+    else:
+        shown, repeats = dedupe_first_mention(rows)
+
+    by_ch = {}
+    for r in shown:
+        by_ch.setdefault(r["chapter_number"], []).append(r)
+    lines, out_rows = [], []
+    for cn in sorted(by_ch):
+        first = by_ch[cn][0]
+        title = f" — {first['chapter_title']}" if first.get("chapter_title") else ""
+        lines.append(f"\nch{cn}{title}")
+        for r in by_ch[cn]:
+            also_chs = [d["chapter_number"] for d in repeats.get(r["id"], [])]
+            also = ("also ch" + ", ch".join(str(c) for c in also_chs)) if also_chs else ""
+            lines.append(f"  #{r['id']} {r['term_zh']} -> {r['term_en']}{flags(r, also)}")
+            lines.append(f"      {r['body']}")
+            out_rows.append({
+                "id": r["id"], "chapter": cn,
+                "chapter_title": r.get("chapter_title"),
+                "term_zh": r.get("term_zh"), "term_en": r.get("term_en"),
+                "body": r.get("body"), "status": r["status"],
+                "already_footnoted": is_already(r),
+                "also_chapters": also_chs,
+            })
+    n_rej = sum(1 for r in rows if r["status"] == "rejected")
+    lines.append(f"\n{len(rows)} candidate row(s), {len(shown)} shown"
+                 + ("" if all_ else " (first mentions; --all for every row)")
+                 + f", {n_rej} rejected.")
+    return {"text": "\n".join(lines), "rows": out_rows, "total": len(rows),
+            "shown": len(shown), "rejected": n_rej}
+
+
+def find_unverified_candidates(db, book_id, pred=None):
+    """What --prune-unverified would delete: stored candidates whose referent
+    is not in their chapter's source text (the hallucination filter re-run).
+
+    Returns a dict:
+      checked:   candidate rows examined
+      chapters:  distinct chapters those rows span
+      doomed:    candidate rows that fail verification (delete these)
+      by_status: {status: count} over doomed
+      no_source: chapter numbers skipped because they have no source text
+                 (their rows can't be verified and are left alone)
+    """
+    from footnotes import content_to_list
+
+    rows = load_candidates(db, book_id, pred)
+    by_ch = {}
+    for r in rows:
+        by_ch.setdefault(r["chapter_number"], []).append(r)
+
+    doomed, by_status, no_source = [], {}, []
+    for cn in sorted(by_ch):
+        ch = db.get_chapter(book_id=book_id, chapter_number=cn)
+        source = "\n".join(content_to_list(ch.get("untranslated"))) if ch else ""
+        if not source.strip():
+            no_source.append(cn)          # can't verify — leave the rows alone
+            continue
+        _, bad = verify_candidates(by_ch[cn], source)
+        for r in bad:
+            doomed.append(r)
+            by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+    return {"checked": len(rows), "chapters": len(by_ch), "doomed": doomed,
+            "by_status": by_status, "no_source": no_source}
+
+
+def prune_candidates(db, book_id, rows):
+    """Delete candidate `rows` and refresh the touched chapters' scan counts.
+    Returns the number of rows passed for deletion."""
+    if not rows:
+        return 0
+    db.delete_footnote_candidates([r["id"] for r in rows])
+    # Keep the scan rows' n_found honest for the chapters we touched.
+    for cn in {r["chapter_number"] for r in rows}:
+        db.update_footnote_scan_count(book_id, cn)
+    return len(rows)
+
+
+def build_export_map(db, book_id, pred=None):
+    """The --export {term_en: body} map for add_footnotes.py.
+
+    Every non-rejected candidate's first mention, minus terms already in the
+    book's real footnotes and rows with no English term.
+
+    Returns (mapping, warnings); warnings is a dict of lists:
+      skipped_already:    terms already footnoted in the book
+      no_term:            labels (term_zh or "#id") of rows with no term_en
+      not_in_translation: mapping keys not found in the translated text (the
+                          scan ran on source, so term_en is the model's
+                          rendering — edit these before add_footnotes.py)
+    """
+    rows = [r for r in load_candidates(db, book_id, pred)
+            if r["status"] != "rejected"]
+    firsts, _ = dedupe_first_mention(rows)
+    already = footnoted_anchors(db, book_id)
+
+    out, skipped_already, no_term = {}, [], []
+    for r in firsts:
+        term = (r.get("term_en") or "").strip()
+        if not term:
+            no_term.append(r["term_zh"] or f"#{r['id']}")
+            continue
+        if term.lower() in already:
+            skipped_already.append(term)
+            continue
+        out.setdefault(term, r["body"])
+    missing = [t for t in out if not term_in_translation(db, book_id, t)]
+    return out, {"skipped_already": skipped_already, "no_term": no_term,
+                 "not_in_translation": missing}
+
+
+# ── modes ─────────────────────────────────────────────────────────────────────
+
+def cmd_collect(args, config, db, book):
+    book_id, book_title = book["id"], book.get("title") or f"book {book['id']}"
+    pred = parse_chapter_spec(args.chapters)
+
+    targets = scan_targets(db, book_id, pred)
+    if not targets:
+        print("No chapters match the spec.")
+        return 0
+
+    # Entities loaded once, matched per chapter; never saved back.
+    entities_by_cat = db.reload_entities(book_id)
+
+    print(f"Fetching source text for {len(targets)} chapter(s)...", flush=True)
+    jobs, no_source = build_scan_jobs(db, book_id, pred, targets=targets)
 
     to_scan, skipped, stale = plan_scan(jobs, db.get_footnote_scans(book_id),
                                         args.force)
@@ -388,49 +566,10 @@ def cmd_review(args, db, book):
 
 
 def cmd_report(args, db, book):
-    pred = parse_chapter_spec(args.chapters)
-    rows = load_candidates(db, book["id"], pred)
-    if not rows:
-        print("No candidates collected yet.")
-        return 1
-    already = footnoted_anchors(db, book["id"])
-
-    def flags(r, extra=""):
-        out = []
-        if r["status"] == "accepted":
-            out.append("KEEP")
-        elif r["status"] == "rejected":
-            out.append("REJECTED")
-        if (r.get("term_en") or "").strip().lower() in already:
-            out.append("already footnoted")
-        if extra:
-            out.append(extra)
-        return f"  [{', '.join(out)}]" if out else ""
-
-    if args.all:
-        shown, repeats = rows, {}
-    else:
-        shown, repeats = dedupe_first_mention(rows)
-
-    by_ch = {}
-    for r in shown:
-        by_ch.setdefault(r["chapter_number"], []).append(r)
-    for cn in sorted(by_ch):
-        first = by_ch[cn][0]
-        title = f" — {first['chapter_title']}" if first.get("chapter_title") else ""
-        print(f"\nch{cn}{title}")
-        for r in by_ch[cn]:
-            also = ""
-            if r["id"] in repeats:
-                also = "also ch" + ", ch".join(
-                    str(d["chapter_number"]) for d in repeats[r["id"]])
-            print(f"  #{r['id']} {r['term_zh']} -> {r['term_en']}{flags(r, also)}")
-            print(f"      {r['body']}")
-    n_rej = sum(1 for r in rows if r["status"] == "rejected")
-    print(f"\n{len(rows)} candidate row(s), {len(shown)} shown"
-          + ("" if args.all else " (first mentions; --all for every row)")
-          + f", {n_rej} rejected.")
-    return 0
+    report = build_candidate_report(db, book["id"],
+                                    parse_chapter_spec(args.chapters), args.all)
+    print(report["text"])
+    return 0 if report["total"] else 1
 
 
 def cmd_prune(args, db, book):
@@ -438,44 +577,23 @@ def cmd_prune(args, db, book):
     rows collected before the filter existed, or by a model that was swapped
     out. Deletes anything whose referent isn't in the chapter's source."""
     book_id = book["id"]
-    pred = parse_chapter_spec(args.chapters)
-    rows = load_candidates(db, book_id, pred)
-    if not rows:
+    res = find_unverified_candidates(db, book_id, parse_chapter_spec(args.chapters))
+    if not res["checked"]:
         print("No candidates collected yet for this book.")
         return 1
 
-    from footnotes import content_to_list
-
-    by_ch = {}
-    for r in rows:
-        by_ch.setdefault(r["chapter_number"], []).append(r)
-
-    doomed, by_status, no_source = [], {}, []
-    for cn in sorted(by_ch):
-        ch = db.get_chapter(book_id=book_id, chapter_number=cn)
-        source = "\n".join(content_to_list(ch.get("untranslated"))) if ch else ""
-        if not source.strip():
-            no_source.append(cn)          # can't verify — leave the rows alone
-            continue
-        _, bad = verify_candidates(by_ch[cn], source)
-        for r in bad:
-            doomed.append(r)
-            by_status[r["status"]] = by_status.get(r["status"], 0) + 1
-
-    print(f"Checked {len(rows)} candidate(s) across {len(by_ch)} chapter(s).")
-    if no_source:
-        print(f"Skipped {len(no_source)} chapter(s) with no source text.")
+    print(f"Checked {res['checked']} candidate(s) across {res['chapters']} chapter(s).")
+    if res["no_source"]:
+        print(f"Skipped {len(res['no_source'])} chapter(s) with no source text.")
+    doomed = res["doomed"]
     if not doomed:
         print("All candidates are present in their chapter's source. Nothing to prune.")
         return 0
 
-    breakdown = ", ".join(f"{n} {st}" for st, n in sorted(by_status.items()))
+    breakdown = ", ".join(f"{n} {st}" for st, n in sorted(res["by_status"].items()))
     verb = "Would delete" if args.dry_run else "Deleted"
     if not args.dry_run:
-        db.delete_footnote_candidates([r["id"] for r in doomed])
-        # Keep the scan rows' n_found honest for the chapters we touched.
-        for cn in {r["chapter_number"] for r in doomed}:
-            db.update_footnote_scan_count(book_id, cn)
+        prune_candidates(db, book_id, doomed)
     print(f"{verb} {len(doomed)} candidate(s) not present in the source "
           f"({breakdown}).")
     return 0
@@ -483,35 +601,19 @@ def cmd_prune(args, db, book):
 
 def cmd_export(args, db, book):
     book_id = book["id"]
-    pred = parse_chapter_spec(args.chapters)
-    rows = [r for r in load_candidates(db, book_id, pred)
-            if r["status"] != "rejected"]
-    firsts, _ = dedupe_first_mention(rows)
-    already = footnoted_anchors(db, book_id)
-
-    out, skipped_already, no_term = {}, [], []
-    for r in firsts:
-        term = (r.get("term_en") or "").strip()
-        if not term:
-            no_term.append(r)
-            continue
-        if term.lower() in already:
-            skipped_already.append(term)
-            continue
-        out.setdefault(term, r["body"])
+    out, warn = build_export_map(db, book_id, parse_chapter_spec(args.chapters))
 
     with open(args.export, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=2)
     print(f"Wrote {len(out)} footnote(s) to {args.export}")
-    if skipped_already:
-        print(f"Skipped (already footnoted in book): {', '.join(skipped_already)}")
-    if no_term:
-        print(f"Skipped (no English term): "
-              + ", ".join(r["term_zh"] or f"#{r['id']}" for r in no_term))
+    if warn["skipped_already"]:
+        print(f"Skipped (already footnoted in book): {', '.join(warn['skipped_already'])}")
+    if warn["no_term"]:
+        print(f"Skipped (no English term): " + ", ".join(warn["no_term"]))
 
     # The scan ran on SOURCE text, so term_en is the model's rendering — warn
     # about keys add_footnotes.py won't find in the translated text.
-    missing = [t for t in out if not term_in_translation(db, book_id, t)]
+    missing = warn["not_in_translation"]
     if missing:
         print(f"\n⚠ {len(missing)}/{len(out)} term(s) NOT found in the "
               f"translated text — edit these keys before running add_footnotes.py:")
