@@ -556,8 +556,10 @@ function NoteChangesPanel({ bookId }) {
       if (bookId) params.book_id = bookId
       // Two tables, one timeline: the model revises a note and corrects a gender
       // through the same channel, often in the same breath.
+      // A first note on an entity that had none isn't a change to review, so
+      // the server drops those before the limit applies.
       const [notes, genders] = await Promise.all([
-        api.listNoteRevisions(params),
+        api.listNoteRevisions({ ...params, exclude_creations: true }),
         api.listGenderRevisions(params),
       ])
       const merged = [

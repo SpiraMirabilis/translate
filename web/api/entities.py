@@ -786,16 +786,19 @@ def _run_pronoun_repair(entity_id: int, target_gender: str, translation: str, bo
 @router.get("/note-revisions")
 def list_note_revisions(book_id: Optional[int] = Query(None),
                         entity_id: Optional[int] = Query(None),
-                        limit: int = Query(50, ge=1, le=500)):
+                        limit: int = Query(50, ge=1, le=500),
+                        exclude_creations: bool = Query(False)):
     """Recent note changes, newest first.
 
     Scope with entity_id (one entity's timeline) or book_id (the book's feed).
     The translation model may revise notes on entities it already knows, and
     with entity review off it does so unattended — this is where those changes
-    are reviewed after the fact.
+    are reviewed after the fact. exclude_creations drops first notes written
+    onto an entity that had none.
     """
     return {"revisions": _entity_manager.list_note_revisions(
-        book_id=book_id, entity_id=entity_id, limit=limit)}
+        book_id=book_id, entity_id=entity_id, limit=limit,
+        exclude_creations=exclude_creations)}
 
 
 @router.post("/note-revisions/{revision_id}/revert")

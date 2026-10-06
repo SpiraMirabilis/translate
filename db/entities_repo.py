@@ -1308,14 +1308,21 @@ class EntitiesRepo:
                 raise
             return None
 
-    def list_note_revisions(self, book_id=None, entity_id=None, limit=50):
+    def list_note_revisions(self, book_id=None, entity_id=None, limit=50,
+                            exclude_creations=False):
         """Note-change history, newest first, joined to the entity it belongs to.
 
         Scope by entity_id (one entity's timeline) or book_id (the book's recent
         changes feed). Passing neither returns the newest changes across books.
+        exclude_creations drops revisions that wrote a note onto an entity with
+        none (previous_note NULL or empty) — the audit feed is for changes to
+        guidance that already existed, and first notes would otherwise crowd
+        them out of the limit.
         """
         try:
             where, params = [], []
+            if exclude_creations:
+                where.append("r.previous_note IS NOT NULL AND r.previous_note <> ''")
             if entity_id is not None:
                 where.append("r.entity_id = ?")
                 params.append(entity_id)
