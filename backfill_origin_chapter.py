@@ -23,6 +23,12 @@ Single-character entities are skipped — a 1-char substring matches coincidenta
 almost immediately and would be dragged to a bogus early chapter (--include-short
 to override).
 
+Longer keys can collide just as badly: a 2-char name that is also half of a
+reduplication or a chengyu (花花 in 白花花, 小黑 in 小黑屋, 浩浩 in 浩浩蕩蕩) gets
+dragged to the coincidence every run, undoing any manual correction. Record those
+per book in backfill_origin_exclusions.json — {"<book_id>": ["花花", "小黑"]} — and
+--recompute will leave them alone. --skip-key adds one for a single run.
+
 Matching mirrors the translation engine: NFC-normalized substring on the
 untranslated source. Queued chapters are included by default because for books
 mid-translation most entities first appear in still-queued chapters.
@@ -38,6 +44,27 @@ Usage:
 import argparse
 import json
 import unicodedata
+
+EXCLUSIONS_FILE = "backfill_origin_exclusions.json"
+
+
+def load_exclusions(book_id, extra=()):
+    """Entity keys --recompute must not re-derive for this book.
+
+    A key here matches coincidentally inside a longer word, so recomputing drags
+    it to a bogus early chapter and silently reverts any hand-set origin.
+    """
+    keys = set(extra)
+    try:
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), EXCLUSIONS_FILE)
+        with open(path, encoding="utf-8") as fh:
+            keys |= set(json.load(fh).get(str(book_id), []))
+    except FileNotFoundError:
+        pass
+    except (ValueError, OSError) as exc:
+        print(f"WARNING: could not read {EXCLUSIONS_FILE}: {exc}")
+    return {unicodedata.normalize("NFC", k) for k in keys}
 
 from config import TranslationConfig
 from database import DatabaseManager
@@ -145,6 +172,9 @@ def main():
                         help="Re-derive every entity but only move an origin EARLIER, never "
                              "later (fixes entities filed late by extraction). Skips "
                              "single-character entities unless --include-short.")
+    parser.add_argument("--skip-key", action="append", default=[], metavar="KEY",
+                        help="Entity key --recompute must not re-derive (repeatable); "
+                             f"permanent entries live in {EXCLUSIONS_FILE}.")
     parser.add_argument("--include-short", action="store_true",
                         help="With --recompute, also recompute single-character entities "
                              "(risky: a 1-char substring matches coincidentally very early).")
@@ -166,10 +196,19 @@ def main():
                              only_missing=not (args.all or recompute))
 
     skipped_short = []
+    skipped_excluded = []
     if recompute and not args.include_short:
         keep = [e for e in entities if len(e[1] or "") > 1]
         skipped_short = [e for e in entities if len(e[1] or "") <= 1]
         entities = keep
+    if recompute:
+        excluded = load_exclusions(args.book_id, args.skip_key)
+        if excluded:
+            keep = [e for e in entities
+                    if unicodedata.normalize("NFC", e[1] or "") not in excluded]
+            skipped_excluded = [e for e in entities
+                                if unicodedata.normalize("NFC", e[1] or "") in excluded]
+            entities = keep
 
     print(f"Book ID:    {args.book_id}")
     print(f"Chapters:   {len(chapter_numbers)} scanned"
@@ -186,6 +225,10 @@ def main():
     if skipped_short:
         print(f"Skipped:    {len(skipped_short)} single-character entities "
               f"(--include-short to recompute them)")
+    if skipped_excluded:
+        names = ", ".join(e[1] for e in skipped_excluded[:8])
+        print(f"Excluded:   {len(skipped_excluded)} known coincidental keys ({names}"
+              f"{'…' if len(skipped_excluded) > 8 else ''})")
     print(f"Mode:       {'DRY RUN' if args.dry_run else 'APPLY'}")
     print("=" * 70)
 
