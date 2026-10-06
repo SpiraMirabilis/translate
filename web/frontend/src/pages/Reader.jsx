@@ -51,6 +51,20 @@ const illustrationId = (line) => {
   return m ? m[1] : null
 }
 
+// The admin chapter endpoints return a chapter as stored, heading line and
+// all; the public API strips it (web/api/public.py::_shape_public_chapter) and
+// the reader renders its own title bar. Mirror that strip for the admin reader
+// — only a LEADING line, so the 1:1 source/translated pairing "Both" mode
+// relies on stays aligned.
+function stripHeadingLines(ch) {
+  const out = { ...ch }
+  const content = ch.content || []
+  if (content.length && /^Chapter\s+\d+/i.test(content[0])) out.content = content.slice(1)
+  const src = ch.untranslated || []
+  if (src.length && (src[0].startsWith('#') || /^第\d/.test(src[0]))) out.untranslated = src.slice(1)
+  return out
+}
+
 export default function Reader({ isPublic = false }) {
   const { bookId, chapterNum: chapterNumParam } = useParams()
   const [searchParams] = useSearchParams()
@@ -67,6 +81,11 @@ export default function Reader({ isPublic = false }) {
   // List path for error/not-found recovery; title-bar back goes to book detail
   const listPath = isPublic ? '/library' : '/books'
   const backPath = isPublic ? `/library/book/${bookId}` : `/books/${bookId}`
+  // Where chapter URLs live. The admin reader has its own route behind the
+  // login gate — the public one only serves public books and published
+  // chapters, so a private book or a draft 404s there.
+  const readBase = !isPublic ? `/books/${bookId}/read`
+    : libraryPrefix ? `/library/read/${bookId}` : `/read/${bookId}`
 
   const [currentNum, setCurrentNum] = useState(null)
   // Drawer overlays — URL-driven so the browser back button closes them
@@ -204,7 +223,7 @@ export default function Reader({ isPublic = false }) {
     queryFn: async () => {
       const data = await readerApi.getChapter(bookId, currentNum)
       if (!data) throw new Error('Empty response')
-      return data
+      return isPublic ? data : stripHeadingLines(data)
     },
     enabled: currentNum != null,
     retry: 1,
@@ -227,11 +246,12 @@ export default function Reader({ isPublic = false }) {
     readerApi.getChaptersBatch(bookId, missing)
       .then(data => {
         for (const ch of data?.chapters || []) {
-          queryClient.setQueryData([scope, 'chapter', bookId, ch.chapter], ch)
+          queryClient.setQueryData([scope, 'chapter', bookId, ch.chapter],
+                                   isPublic ? ch : stripHeadingLines(ch))
         }
       })
       .catch(() => { /* ignore — prefetch is best-effort */ })
-  }, [bookId, currentNum, chapterQuery.data, chapters, readerApi, queryClient, scope])
+  }, [bookId, currentNum, chapterQuery.data, chapters, readerApi, queryClient, scope, isPublic])
 
   // Count a view once the reader has actually settled on a visible chapter.
   // Deliberately decoupled from fetching: the prefetch above pulls chapters
@@ -298,13 +318,12 @@ export default function Reader({ isPublic = false }) {
         const scrollRatio = progressChapter(old) === currentNum ? progressScrollRatio(old) : 0
         return { ...prev, [bookId]: { chapter: currentNum, scrollRatio } }
       })
-      const base = libraryPrefix ? `/library/read/${bookId}` : `/read/${bookId}`
-      const path = `${base}/${currentNum}${window.location.search}${window.location.hash}`
+      const path = `${readBase}/${currentNum}${window.location.search}${window.location.hash}`
       if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== path) {
         navigate(path, { replace: true })
       }
     }
-  }, [currentNum, bookId, setProgress, libraryPrefix, navigate])
+  }, [currentNum, bookId, setProgress, readBase, navigate])
 
   // External URL changes (back/forward through a search deep link, a Link to
   // another chapter of the same book) flow route-param → state. Internal navs
@@ -330,9 +349,8 @@ export default function Reader({ isPublic = false }) {
     sp.delete('modal')
     sp.delete('ent')
     const qs = sp.toString()
-    const base = libraryPrefix ? `/library/read/${bookId}` : `/read/${bookId}`
-    navigate(`${base}/${n}${qs ? `?${qs}` : ''}${window.location.hash}`, { replace: true })
-  }, [bookId, libraryPrefix, navigate])
+    navigate(`${readBase}/${n}${qs ? `?${qs}` : ''}${window.location.hash}`, { replace: true })
+  }, [readBase, navigate])
 
   // Scroll to top on chapter change
   useEffect(() => {

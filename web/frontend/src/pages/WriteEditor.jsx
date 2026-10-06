@@ -657,7 +657,7 @@ export default function WriteEditor() {
           beforePublish={() => (dirtyRef.current ? doSave({ snapshot: true }) : Promise.resolve(true))}
         />
         <Link
-          to={`/read/${bookId}?chapter=${chapterNum}`}
+          to={`/books/${bookId}/read?chapter=${chapterNum}`}
           className="btn-ghost p-1.5" title="Read in the public reader"
         ><BookOpen size={14} /></Link>
         {book && (

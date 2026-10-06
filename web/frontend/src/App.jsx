@@ -208,6 +208,11 @@ const router = createBrowserRouter(createRoutesFromElements(
         unknown URIs fall through to the catch-all below rather than
         resolving to the Dashboard. */}
     <Route element={<AdminGate />}>
+      {/* Admin reader — full-screen like the public one (outside Layout), but
+          on the authenticated API, so private books and drafts are readable.
+          The public /read routes only ever serve what a reader could see. */}
+      <Route path="/books/:bookId/read/:chapterNum" element={<Reader />} />
+      <Route path="/books/:bookId/read" element={<Reader />} />
       <Route path="/" element={<Layout />}>
         <Route index element={lazyEl(<Dashboard />)} />
         <Route path="books" element={lazyEl(<Books />)} />

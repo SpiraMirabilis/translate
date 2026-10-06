@@ -379,7 +379,7 @@ export default function Books() {
                 </div>
                 <div className="flex items-center gap-1.5">
                   {/* Read */}
-                  <Link to={`/read/${book.id}`} className="btn-ghost p-1.5" title="Read">
+                  <Link to={`/books/${book.id}/read`} className="btn-ghost p-1.5" title="Read">
                     <BookOpen size={14} />
                   </Link>
                   {/* Public visibility toggle */}
@@ -673,7 +673,7 @@ const ChapterRow = memo(function ChapterRow({ bookId, isOriginal, ch, isChecked,
       <td className="py-2">
         <div className="flex gap-1 justify-end">
           <Link
-            to={`/read/${bookId}?chapter=${ch.chapter}`}
+            to={`/books/${bookId}/read?chapter=${ch.chapter}`}
             className="btn-ghost p-1"
             title="Read from here"
           >
