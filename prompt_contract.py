@@ -49,80 +49,65 @@ GENRE_EXAMPLES = {
                 "characters": {
                         "钟岳": {
                                 "translation": "Zhong Yue",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         },
                         "夏儿": {
                                 "translation": "Xia'er",
-                                "gender": "female",
-                                "last_chapter": 3
+                                "gender": "female"
                         },
                         "方剑": {
                                 "translation": "Fang Jian",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         }
                 },
                 "places": {
                         "剑门山": {
-                                "translation": "Jianmen Mountain",
-                                "last_chapter": 3
+                                "translation": "Jianmen Mountain"
                         },
                         "大荒": {
-                                "translation": "Great Wilderness",
-                                "last_chapter": 3
+                                "translation": "Great Wilderness"
                         },
                         "染霜城": {
-                                "translation": "Frostveil City",
-                                "last_chapter": 3
+                                "translation": "Frostveil City"
                         }
                 },
                 "organizations": {
                         "风氏": {
-                                "translation": "Feng Clan",
-                                "last_chapter": 3
+                                "translation": "Feng Clan"
                         }
                 },
                 "abilities": {
                         "太极拳": {
-                                "translation": "Supreme Ultimate Fist",
-                                "last_chapter": 3
+                                "translation": "Supreme Ultimate Fist"
                         },
                         "天级上品武技·星陨斩": {
-                                "translation": "Heaven Rank Martial Skill: Starfall Slash",
-                                "last_chapter": 3
+                                "translation": "Heaven Rank Martial Skill: Starfall Slash"
                         }
                 },
                 "titles": {
                         "鉴宝师": {
-                                "translation": "Treasure Appraiser",
-                                "last_chapter": 3
+                                "translation": "Treasure Appraiser"
                         },
                         "真君": {
-                                "translation": "True Sovereign",
-                                "last_chapter": 3
+                                "translation": "True Sovereign"
                         }
                 },
                 "equipment": {
                         "蓝龙药鼎": {
-                                "translation": "Azure Dragon Medicinal Cauldron",
-                                "last_chapter": 3
+                                "translation": "Azure Dragon Medicinal Cauldron"
                         },
                         "血魔九影剑": {
-                                "translation": "Blood Demon Nine Shadows Sword",
-                                "last_chapter": 3
+                                "translation": "Blood Demon Nine Shadows Sword"
                         }
                 },
                 "creatures": {
                         "渊狼": {
-                                "translation": "Abyssal Wolf",
-                                "last_chapter": 3
+                                "translation": "Abyssal Wolf"
                         }
                 },
                 "cultivation terms": {
                         "筑基": {
-                                "translation": "Foundation Establishment",
-                                "last_chapter": 3
+                                "translation": "Foundation Establishment"
                         }
                 }
         },
@@ -141,68 +126,55 @@ GENRE_EXAMPLES = {
                 "characters": {
                         "高橋蓮": {
                                 "translation": "Takahashi Ren",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         },
                         "桜": {
                                 "translation": "Sakura",
-                                "gender": "female",
-                                "last_chapter": 3
+                                "gender": "female"
                         },
                         "魔王ゼノス": {
                                 "translation": "Demon King Xenos",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         }
                 },
                 "places": {
                         "東京タワー": {
-                                "translation": "Tokyo Tower",
-                                "last_chapter": 3
+                                "translation": "Tokyo Tower"
                         },
                         "黒の森": {
-                                "translation": "Black Forest",
-                                "last_chapter": 3
+                                "translation": "Black Forest"
                         },
                         "魔王城": {
-                                "translation": "Demon King's Castle",
-                                "last_chapter": 3
+                                "translation": "Demon King's Castle"
                         }
                 },
                 "organizations": {
                         "冒険者ギルド": {
-                                "translation": "Adventurer's Guild",
-                                "last_chapter": 3
+                                "translation": "Adventurer's Guild"
                         }
                 },
                 "abilities": {
                         "聖剣術": {
-                                "translation": "Holy Sword Art",
-                                "last_chapter": 3
+                                "translation": "Holy Sword Art"
                         },
                         "炎魔法・紅蓮": {
-                                "translation": "Fire Magic: Crimson Lotus",
-                                "last_chapter": 3
+                                "translation": "Fire Magic: Crimson Lotus"
                         }
                 },
                 "titles": {
                         "勇者": {
-                                "translation": "Hero",
-                                "last_chapter": 3
+                                "translation": "Hero"
                         },
                         "Sランク": {
-                                "translation": "S-Rank",
-                                "last_chapter": 3
+                                "translation": "S-Rank"
                         }
                 },
                 "items": {
                         "聖剣エクスカリバー": {
-                                "translation": "Holy Blade Excalibur",
-                                "last_chapter": 3
+                                "translation": "Holy Blade Excalibur"
                         },
                         "回復ポーション": {
-                                "translation": "Recovery Potion",
-                                "last_chapter": 3
+                                "translation": "Recovery Potion"
                         }
                 }
         },
@@ -221,78 +193,63 @@ GENRE_EXAMPLES = {
                 "characters": {
                         "김진우": {
                                 "translation": "Kim Jinwoo",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         },
                         "박소연": {
                                 "translation": "Park Soyeon",
-                                "gender": "female",
-                                "last_chapter": 3
+                                "gender": "female"
                         },
                         "마왕 제노스": {
                                 "translation": "Demon King Xenos",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         }
                 },
                 "places": {
                         "서울": {
-                                "translation": "Seoul",
-                                "last_chapter": 3
+                                "translation": "Seoul"
                         },
                         "마왕의 성": {
-                                "translation": "Demon King's Fortress",
-                                "last_chapter": 3
+                                "translation": "Demon King's Fortress"
                         },
                         "붉은 사막": {
-                                "translation": "Red Desert",
-                                "last_chapter": 3
+                                "translation": "Red Desert"
                         }
                 },
                 "organizations": {
                         "헌터 협회": {
-                                "translation": "Hunter Association",
-                                "last_chapter": 3
+                                "translation": "Hunter Association"
                         },
                         "적월 길드": {
-                                "translation": "Red Moon Guild",
-                                "last_chapter": 3
+                                "translation": "Red Moon Guild"
                         }
                 },
                 "abilities": {
                         "그림자 이동": {
-                                "translation": "Shadow Step",
-                                "last_chapter": 3
+                                "translation": "Shadow Step"
                         },
                         "용의 숨결": {
-                                "translation": "Dragon's Breath",
-                                "last_chapter": 3
+                                "translation": "Dragon's Breath"
                         }
                 },
                 "titles": {
                         "S급 헌터": {
-                                "translation": "S-Rank Hunter",
-                                "last_chapter": 3
+                                "translation": "S-Rank Hunter"
                         },
                         "검성": {
-                                "translation": "Sword Saint",
-                                "last_chapter": 3
+                                "translation": "Sword Saint"
                         }
                 },
                 "equipment": {
                         "그림자 송곳니": {
-                                "translation": "Shadowfang Blade",
-                                "last_chapter": 3
+                                "translation": "Shadowfang Blade"
                         },
                         "불사의 반지": {
-                                "translation": "Ring of Immortality",
-                                "last_chapter": 3
+                                "translation": "Ring of Immortality"
                         }
                 },
                 "creatures": {
                         "레드 드래곤": {
-                                "translation": "Red Dragon",
-                                "last_chapter": 3
+                                "translation": "Red Dragon"
                         }
                 }
         },
@@ -311,78 +268,63 @@ GENRE_EXAMPLES = {
                 "characters": {
                         "Алексей": {
                                 "translation": "Alexey",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         },
                         "Екатерина": {
                                 "translation": "Ekaterina",
-                                "gender": "female",
-                                "last_chapter": 3
+                                "gender": "female"
                         },
                         "князь Олег": {
                                 "translation": "Prince Oleg",
-                                "gender": "male",
-                                "last_chapter": 3
+                                "gender": "male"
                         }
                 },
                 "places": {
                         "Москва": {
-                                "translation": "Moscow",
-                                "last_chapter": 3
+                                "translation": "Moscow"
                         },
                         "Багровая Пустошь": {
-                                "translation": "Crimson Wastes",
-                                "last_chapter": 3
+                                "translation": "Crimson Wastes"
                         },
                         "Красная Пустыня": {
-                                "translation": "Red Desert",
-                                "last_chapter": 3
+                                "translation": "Red Desert"
                         }
                 },
                 "organizations": {
                         "Гильдия Охотников": {
-                                "translation": "Hunter Guild",
-                                "last_chapter": 3
+                                "translation": "Hunter Guild"
                         },
                         "Гильдия Алого Месяца": {
-                                "translation": "Red Moon Guild",
-                                "last_chapter": 3
+                                "translation": "Red Moon Guild"
                         }
                 },
                 "abilities": {
                         "Теневой Шаг": {
-                                "translation": "Shadow Step",
-                                "last_chapter": 3
+                                "translation": "Shadow Step"
                         },
                         "Дыхание Дракона": {
-                                "translation": "Dragon's Breath",
-                                "last_chapter": 3
+                                "translation": "Dragon's Breath"
                         }
                 },
                 "titles": {
                         "Охотник ранга S": {
-                                "translation": "S-Rank Hunter",
-                                "last_chapter": 3
+                                "translation": "S-Rank Hunter"
                         },
                         "Мечник": {
-                                "translation": "Sword Saint",
-                                "last_chapter": 3
+                                "translation": "Sword Saint"
                         }
                 },
                 "equipment": {
                         "Теневой Клык": {
-                                "translation": "Shadowfang Blade",
-                                "last_chapter": 3
+                                "translation": "Shadowfang Blade"
                         },
                         "Кольцо Бессмертия": {
-                                "translation": "Ring of Immortality",
-                                "last_chapter": 3
+                                "translation": "Ring of Immortality"
                         }
                 },
                 "creatures": {
                         "Красный Дракон": {
-                                "translation": "Red Dragon",
-                                "last_chapter": 3
+                                "translation": "Red Dragon"
                         }
                 }
         },
@@ -434,7 +376,15 @@ _EXACT_SIMILAR = (
 def _entry_fields(gendered_categories=None):
     """The per-entity field list. ``gender`` is described against the book's own
     gender-tracked categories rather than the corpus prompts' hardcoded
-    "For characters only" — the book column is the real answer."""
+    "For characters only" — the book column is the real answer.
+
+    ``last_chapter`` is deliberately absent: the contract used to ask for it on
+    every entity ("always set to the current chapter number"), which is a field
+    the model can only copy from what it was already told, paid for in output
+    tokens on every entity of every chunk — and got wrong whenever it echoed the
+    template's example value instead. It is stamped in code now, from the chapter
+    number the run settled on (``translate_chapter`` / ``extract_entities``), and
+    a value the model volunteers anyway is overwritten rather than trusted."""
     gendered = [c for c in (gendered_categories or []) if c]
     if gendered:
         which = ", ".join(f'"{c}"' for c in gendered)
@@ -449,7 +399,6 @@ def _entry_fields(gendered_categories=None):
     lines = [
         "Each entity entry must include:",
         "- \"translation\": the translated English name.",
-        "- \"last_chapter\": always set to the current chapter number.",
     ]
     if gender_line:
         lines.append(gender_line)

@@ -110,7 +110,10 @@ class GeminiProvider(ModelProvider):
         mode = response_format.get("mode", "full")
 
         def _cat(extra_props=None):
-            inner = {"translation": {"type": "string"}, "last_chapter": {"type": "integer"}}
+            # No "last_chapter": the response contract stopped asking for it
+            # (it is stamped in code from the run's chapter number), and leaving
+            # it in the schema would keep Gemini paying output tokens for it.
+            inner = {"translation": {"type": "string"}}
             if extra_props:
                 inner.update(extra_props)
             return {

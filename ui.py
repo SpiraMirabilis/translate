@@ -499,7 +499,7 @@ class UserInterface(ABC):
                                 # Update the entity in the SQLite database
                                 # Update existing entity or add a new one
                                 translation = node.get("translation", "")
-                                last_chapter = node.get("last_chapter", current_chapter)
+                                last_chapter = current_chapter
                                 incorrect_translation = node.get("incorrect_translation", None)
                                 gender = node.get("gender", None)
                                 note = node.get("note", None)
@@ -529,15 +529,17 @@ class UserInterface(ABC):
                                 if not result:
                                     self.logger.warning(f"Failed to add entity '{key}' to '{category}' - may already exist elsewhere")
                 
-                # Convert any "THIS CHAPTER" placeholder to the actual chapter number
-                for category in new_entities:
-                    try:
-                        for entity_key, entity_value in end_object['entities'][category].items():
-                            if entity_value["last_chapter"] == "THIS CHAPTER":
-                                end_object['entities'][category][entity_key]["last_chapter"] = current_chapter
-                    except KeyError:
-                        # Skip this iteration if the key is missing
-                        continue
+                # last_chapter is stamped from the chapter we resolved, never taken
+                # from the response: the contract stopped asking for it (it was a
+                # field the model could only copy back), and review edits don't
+                # carry it either. Covers entities added by duplicate resolution
+                # and by the review handshake, both of which bypass the engine's
+                # own stamping pass.
+                for _cat_entities in end_object['entities'].values():
+                    if isinstance(_cat_entities, dict):
+                        for _entity_value in _cat_entities.values():
+                            if isinstance(_entity_value, dict):
+                                _entity_value["last_chapter"] = current_chapter
                 
 
                 # Save updated entities
@@ -573,7 +575,7 @@ class UserInterface(ABC):
 
                         for key, entity_data in end_object['entities'][category].items():
                             translation = entity_data.get("translation", "")
-                            last_chapter = entity_data.get("last_chapter", current_chapter)
+                            last_chapter = entity_data.get("last_chapter") or current_chapter
                             incorrect_translation = entity_data.get("incorrect_translation", None)
                             gender = entity_data.get("gender", None)
                             note = entity_data.get("note", None)
@@ -843,7 +845,7 @@ class UserInterface(ABC):
                     translation = val.get("translation", "")
                     gender = val.get("gender")
                     note = val.get("note")
-                    last_chapter = val.get("last_chapter", chapter_number)
+                    last_chapter = chapter_number
                     self.entity_manager.add_entity(
                         category, key, translation,
                         book_id=book_id,
@@ -865,7 +867,7 @@ class UserInterface(ABC):
                     translation = val.get("translation", "")
                     gender = val.get("gender")
                     note = val.get("note")
-                    last_chapter = val.get("last_chapter", chapter_number)
+                    last_chapter = chapter_number
                     self.entity_manager.add_entity(
                         category, key, translation,
                         book_id=book_id,

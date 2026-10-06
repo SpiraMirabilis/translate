@@ -330,7 +330,6 @@ class TranslationEngine:
                 entry = cat_entities[key]
                 example_entry = {
                     "translation": entry.get("translation", "Example Translation"),
-                    "last_chapter": ch,
                 }
                 # Carry over extra fields from the base template (e.g. gender for characters).
                 # A category is gender-tracked if the book says so (gendered set), if the
@@ -350,7 +349,7 @@ class TranslationEngine:
                     # Re-use the original prompt's example entities for this category
                     for orig_key, orig_val in base_template["entities"][cat].items():
                         patched = dict(orig_val)
-                        patched["last_chapter"] = ch
+                        patched.pop("last_chapter", None)   # code-stamped, never asked for
                         cat_example[orig_key] = patched
                 else:
                     # Generate a placeholder keyed in the source language
@@ -358,7 +357,7 @@ class TranslationEngine:
                     singular = cat[:-1] if cat.endswith('s') and not cat.endswith('ss') else cat
                     if singular.endswith('ie'):
                         singular = singular[:-2] + 'y'
-                    placeholder = {"translation": f"Example {singular.title()}", "last_chapter": ch}
+                    placeholder = {"translation": f"Example {singular.title()}"}
                     if "gender" in base_entity_fields.get(cat, set()) or cat in gendered or (gendered_categories is None and cat == "characters"):
                         placeholder["gender"] = "male"
                     cat_example[placeholder_key] = placeholder
@@ -1427,12 +1426,14 @@ class TranslationEngine:
         # Filter to only newly-seen entities (same logic translate_chapter uses on each chunk)
         new_entities = self.entity_manager.find_new_entities(old_entities, raw_entities)
 
-        # Apply the chapter_number to last_chapter so downstream code can use it directly
+        # last_chapter is stamped here, not asked of the model: the response
+        # contract no longer carries the field, and a value a model volunteers
+        # anyway is its copy of the example, not an observation.
         ch = chapter_number if isinstance(chapter_number, int) and chapter_number > 0 else 0
         for cat in new_entities:
             for key, val in new_entities[cat].items():
                 if isinstance(val, dict):
-                    val.setdefault("last_chapter", ch)
+                    val["last_chapter"] = ch
 
         if return_note_updates:
             # Two-pass books do all their entity work here: pass 2 is
@@ -1973,6 +1974,16 @@ class TranslationEngine:
                                                                footnote_section=footnote_section)
         
         self.logger.debug("Finished processing all chunks")
+
+        # last_chapter is code-owned. The model is no longer asked for it, and
+        # chunk 1's entities never went through combine_json_chunks' stamping —
+        # so settle every entity on the chapter number this run ended up with
+        # (it can be model-detected from chunk 1, after that chunk parsed).
+        for _cat_entities in (end_object.get('entities') or {}).values():
+            if isinstance(_cat_entities, dict):
+                for _val in _cat_entities.values():
+                    if isinstance(_val, dict):
+                        _val["last_chapter"] = current_chapter
 
         if total_input_chars > 0:
             ratio = total_output_tokens / total_input_chars

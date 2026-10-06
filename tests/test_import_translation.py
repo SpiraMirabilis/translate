@@ -95,6 +95,22 @@ class TestImport:
         assert int(by_key["张羽"]["last_chapter"]) == 1
         assert by_key["青云城"]["translation"] == "Azure Cloud City"
 
+    def test_last_chapter_is_stamped_not_read_from_the_file(
+            self, db, queued_book, payload_file, run_cli):
+        """The field is code-owned everywhere, so a stale value in the file —
+        the shape an old hand-written payload has — must not reach the row."""
+        book_id, _ = queued_book
+        stale = json.loads(json.dumps(PAYLOAD))
+        stale["entities"]["characters"]["张羽"]["last_chapter"] = 3
+        run_cli("--book", str(book_id), "--chapter", "1",
+                "--file", payload_file(stale), "--yes")
+
+        with db._conn(dict_rows=True) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT last_chapter FROM entities "
+                        "WHERE book_id = ? AND untranslated = ?", (book_id, "张羽"))
+            assert int(cur.fetchone()["last_chapter"]) == 1
+
     def test_dry_run_changes_nothing(self, db, queued_book, payload_file, run_cli):
         book_id, _ = queued_book
         assert run_cli("--book", str(book_id), "--chapter", "1",

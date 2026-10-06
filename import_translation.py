@@ -17,8 +17,11 @@ The file must be the same JSON object the translation API is asked to produce:
     }
 
 Only "content" is required. "entities" is optional (each entry needs a
-"translation"; "gender"/"incorrect_translation"/"note"/"last_chapter" are
-optional). The source text comes from the queue row, never from the file.
+"translation"; "gender"/"incorrect_translation"/"note" are optional, and
+"last_chapter" is stamped from the chapter number, not read from the file).
+The sibling channels "note_updates" and "footnote_candidates" are honoured too,
+through the same validation a real reply goes through. The source text comes
+from the queue row, never from the file.
 
 The chapter then goes through the exact post-translation pipeline a real run
 uses (ui.UserInterface.run_translation): per-book translated-ingest modules,
@@ -130,11 +133,11 @@ def make_import_translate_chapter(engine, payload, forced_chapter):
         current_chapter = forced_chapter or end_object.get('chapter') or chapter_number or 0
         end_object['chapter'] = current_chapter
 
-        # combine_json_chunks stamps last_chapter on every entity; do the same.
+        # last_chapter is code-owned (translate_chapter stamps it after its
+        # chunk loop); do the same rather than honour whatever the file says.
         for ents in end_object['entities'].values():
             for data in ents.values():
-                if not data.get('last_chapter'):
-                    data['last_chapter'] = current_chapter
+                data['last_chapter'] = current_chapter
 
         totally_new_entities = em.find_new_entities(real_old_entities, end_object['entities'])
         old_entities = em.combine_json_entities(old_entities, end_object['entities'])
@@ -150,6 +153,21 @@ def make_import_translate_chapter(engine, payload, forced_chapter):
             chapter_text, end_object.get('content', [])
         )
 
+        # The two sibling channels an API reply may carry, validated exactly as
+        # the real method validates them — the file is standing in for the
+        # model's response, so anything it opened has to reach the same places.
+        gendered_categories = (em.get_book_gendered_categories(book_id)
+                               if book_id else None)
+        note_updates = engine.validate_note_updates(
+            end_object.get('note_updates'), book_id, real_old_entities,
+            current_chapter, gendered_categories=gendered_categories)
+        # None = the channel was never opened (the chapter is then not recorded
+        # as scanned); [] = the reply looked and found nothing.
+        footnote_candidates = (
+            engine.validate_footnote_candidates(
+                end_object.get('footnote_candidates'), "\n".join(chapter_text))
+            if end_object.get('footnote_candidates') is not None else None)
+
         # No token accounting: nothing was generated, so the book's token ratio
         # is deliberately left untouched.
         return {
@@ -160,6 +178,8 @@ def make_import_translate_chapter(engine, payload, forced_chapter):
             "real_old_entities": real_old_entities,
             "current_chapter": current_chapter,
             "total_char_count": sum(len(line) for line in chapter_text),
+            "note_updates": note_updates,
+            "footnote_candidates": footnote_candidates,
         }
 
     return translate_chapter

@@ -243,9 +243,12 @@ class EntitiesRepo:
             if occurrence_count > 0:
                 self.logger.debug(f"'{key}' ({value['translation']}) was found {occurrence_count} times.")
                 if key not in exact:
+                    # No "last_chapter" here either: it was only ever the current
+                    # chapter restated on every entity — the field existed to feed
+                    # the response field of the same name, which the model no
+                    # longer returns (it is stamped in code).
                     exact[key] = {
                         "translation": value["translation"],
-                        "last_chapter": current_chapter,
                     }
                     if value.get("note"):
                         exact[key]["note"] = value["note"]
@@ -316,7 +319,6 @@ class EntitiesRepo:
 
             similar[key] = {
                 "translation": value["translation"],
-                "last_chapter": value.get("last_chapter", ""),
                 "match": match_kind,
             }
             if value.get("note"):
