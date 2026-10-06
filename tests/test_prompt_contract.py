@@ -299,3 +299,30 @@ def test_footnote_section_sits_between_entity_notes_and_the_contract():
     out = _prompt(footnote_section="FOOTNOTE CANDIDATES:\n\nTHE RULES")
     assert out.index("ENTITY NOTES:") < out.index("FOOTNOTE CANDIDATES:") \
         < out.index("RESPONSE FORMAT:")
+
+
+# The prompt editor seeds a book with no template from this endpoint. It used
+# to serve an assembled prompt, which froze ENTITY NOTES / RESPONSE FORMAT and
+# an empty entities block into book 100 (2026-09-24).
+def test_default_prompt_endpoint_serves_the_raw_template():
+    import web.api.books as books
+    from tests.conftest import FakeLogger
+    from translation_engine import TranslationEngine
+
+    class _Cfg(_FootnoteConfig):
+        script_dir = SCRIPT_DIR
+
+    class _EM:
+        entities = {}
+
+    eng = TranslationEngine(_Cfg(), FakeLogger(), _EM())
+    old, books._translator = books._translator, eng
+    try:
+        tpl = books.get_default_prompt()["template"]
+    finally:
+        books._translator = old
+    for placeholder in ("{{ENTITIES_JSON}}", "{{ENTITY_CATEGORIES}}", "{{CHAPTER_NUMBER}}"):
+        assert placeholder in tpl
+    assert '"exact"' not in tpl
+    assert "ENTITY NOTES:" not in tpl
+    assert "RESPONSE FORMAT:" not in tpl

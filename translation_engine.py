@@ -522,6 +522,32 @@ class TranslationEngine:
         }
         return placeholders.get(source_language, f"示例{category}")
 
+    def load_default_prompt(self):
+        """The raw default prompt file, placeholders and // comments intact.
+
+        This is the editable template, not a prompt: ``generate_system_prompt``
+        fills its placeholders and appends the code-owned sections. The prompt
+        editor seeds from this, so a book's stored template never bakes those in.
+        """
+        # prompts/ first, then the legacy location
+        prompt_file_path = os.path.join(self.config.script_dir, "prompts", "chinese_xianxia.txt")
+        if not os.path.exists(prompt_file_path):
+            prompt_file_path = os.path.join(self.config.script_dir, "system_prompt.txt")
+
+        try:
+            if os.path.exists(prompt_file_path):
+                with open(prompt_file_path, 'r', encoding='utf-8') as file:
+                    prompt = file.read()
+                self.logger.info(f"Loaded system prompt from {prompt_file_path}")
+                return prompt
+            self.logger.error(f"No system prompt found at {prompt_file_path}. Place a prompt file in prompts/ or create a book with a genre preset.")
+            raise FileNotFoundError(f"System prompt not found: {prompt_file_path}")
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error loading system prompt from file: {e}")
+            raise
+
     def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None, mode='full', chapter_title=None, gendered_categories=None, book=None, chunk_index=None, total_chunks=None, previous_summary=None, footnote_section=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
@@ -565,25 +591,7 @@ class TranslationEngine:
             # Use the custom template for this book
             prompt = book_prompt_template
         else:
-            # Try to load prompt from file (check prompts/ directory first, then legacy location)
-            prompt_file_path = os.path.join(self.config.script_dir, "prompts", "chinese_xianxia.txt")
-            if not os.path.exists(prompt_file_path):
-                # Legacy fallback
-                prompt_file_path = os.path.join(self.config.script_dir, "system_prompt.txt")
-
-            try:
-                if os.path.exists(prompt_file_path):
-                    with open(prompt_file_path, 'r', encoding='utf-8') as file:
-                        prompt = file.read()
-                    self.logger.info(f"Loaded system prompt from {prompt_file_path}")
-                else:
-                    self.logger.error(f"No system prompt found at {prompt_file_path}. Place a prompt file in prompts/ or create a book with a genre preset.")
-                    raise FileNotFoundError(f"System prompt not found: {prompt_file_path}")
-            except FileNotFoundError:
-                raise
-            except Exception as e:
-                self.logger.error(f"Error loading system prompt from file: {e}")
-                raise
+            prompt = self.load_default_prompt()
 
         # Strip out comment lines (lines whose first non-whitespace chars are //).
         # Applied uniformly so book-stored templates (saved raw from genre prompt

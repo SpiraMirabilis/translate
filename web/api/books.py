@@ -11,7 +11,6 @@ from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from PIL import Image
-from database import DEFAULT_CATEGORIES
 from web.api import deps
 from web.api.deps import get_book_or_404
 from web.services import media_urls
@@ -298,28 +297,15 @@ def get_module_task(book_id: int):
 
 @router.get("/default-prompt")
 def get_default_prompt():
-    """Return the default system prompt template with {{ENTITIES_JSON}} and {{CHAPTER_NUMBER}} placeholders."""
-    import json
+    """Return the default prompt template exactly as the editor should seed it.
 
-    entities_json = {cat: {} for cat in DEFAULT_CATEGORIES}
-    default = _translator.generate_system_prompt([], entities_json, do_count=False)
-    # Replace the empty entities JSON with the placeholder
-    default = default.replace(
-        json.dumps(entities_json, ensure_ascii=False, indent=4),
-        "{{ENTITIES_JSON}}"
-    )
-    # Restore the entity categories placeholder
-    default = default.replace(
-        ", ".join(DEFAULT_CATEGORIES),
-        "{{ENTITY_CATEGORIES}}"
-    )
-    # Restore the chapter number placeholder (generate_system_prompt strips it when chapter_number is None)
-    if "{{CHAPTER_NUMBER}}" not in default:
-        default = default.replace(
-            "You are a Chinese-to-English literary translator.",
-            "You are a Chinese-to-English literary translator.\n\nYou are translating chapter {{CHAPTER_NUMBER}}.",
-        )
-    return {"template": default}
+    The raw prompt file — placeholders unresolved, // comments intact — and never
+    an assembled prompt. This used to run generate_system_prompt and try to undo
+    it, which broke twice over: the entities block no longer round-trips to
+    {{ENTITIES_JSON}}, and the code-owned ENTITY NOTES / RESPONSE FORMAT sections
+    got saved into the book and were then appended a second time on every chunk.
+    """
+    return {"template": _translator.load_default_prompt()}
 
 
 # ------------------------------------------------------------------
