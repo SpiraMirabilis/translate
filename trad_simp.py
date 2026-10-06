@@ -43,10 +43,22 @@ PROTECTED_TERMS = {
     # zero for 干清宫. t2s folds it to 干清宫 without this.
     "乾清宮": "乾清宫",
     "乾清宫": "乾清宫",
+    # …and every other 乾清 name: book 106's Taiwanese-sourced chapters lost
+    # 乾清园 (a garden) and 乾清郡 (a commandery) to 干清. 乾清 is never gān-qīng
+    # in these raws. Only the pair is masked, so a trailing 園/門/郡 still
+    # simplifies through OpenCC.
+    "乾清": "乾清",
+    # 乾天古道 (book 106, ch294) came through as 干天古道: 乾天 is the Qian
+    # trigram's heaven, never gān "dry sky".
+    "乾天": "乾天",
     # 旋乾轉坤 "turn heaven and earth about": 乾 is the trigram, as in 乾坤,
     # but OpenCC's phrase dictionary only protects the bare pair.
     "旋乾轉坤": "旋乾转坤",
     "旋乾转坤": "旋乾转坤",
+    # 乾綱獨斷 "to decide by the ruler's sole authority": same case as 旋乾轉坤 —
+    # 乾 is the trigram (the sovereign/heaven), not 乾 gān "dry".
+    "乾綱": "乾纲",
+    "乾纲": "乾纲",
     # Given names built on the Qian hexagram's 元亨利貞.
     "乾亨": "乾亨",
     "徐乾學": "徐乾学",
@@ -79,9 +91,20 @@ _ZHU_BEFORE_BRACKET = re.compile("著(?=》)")
 _PARTICLE_VERBS = (
     "划写论编笑说讲念想拿带看跟随靠沿顺朝举指喊叫哭忙等望盯坐站躺趴走跑"
     "抱握提挂穿戴摸摆摇睁闭张闻听数捧扛背拖拉推顶托捏抓踩踏骑抬瞧搂拽"
+    "理挥奔"
 )
+# The verb list can never be complete, so the other side of the boundary is
+# checked too: 着 + 名单/名额/名字 and 着 + 作用/作业/作战 are common word
+# pairs that read as 著名/著作 only by straddling. (梳理着名单, 发挥着作用,
+# 奔着名额 — book 106's Taiwanese-sourced ch265/281.) 著名单位 / 著名单曲
+# ("a famous unit/single") are real zhù uses, hence the inner lookahead.
+_ZHU_NOT_FOLLOWED = {
+    "著名": "(?!单(?![位曲])|额|字)",
+    "著作": "(?!用|业|战)",
+}
 _ZHU_INITIAL_RE = re.compile(
-    "(?<![" + _PARTICLE_VERBS + "])(" + "|".join(ZHU_INITIAL) + ")"
+    "(?<![" + _PARTICLE_VERBS + "])("
+    + "|".join(w + _ZHU_NOT_FOLLOWED.get(w, "") for w in ZHU_INITIAL) + ")"
 )
 
 # Private-use codepoints: OpenCC passes them through untouched.
