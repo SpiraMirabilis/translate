@@ -112,6 +112,43 @@ def count_note_substitutions(db_manager: DatabaseManager, book_id: int,
     )
 
 
+def chapters_that_would_change(db_manager: DatabaseManager, book_id: int,
+                                old_translation: str, new_translation: str,
+                                chapter_ids=None,
+                                word_boundary: bool = False) -> list:
+    """Chapter numbers whose prose or title the substitution would alter.
+
+    The read-only predicate behind count_substitutions (which see); the same
+    rule substitute_in_chapters applies when it writes.
+    """
+    if not old_translation or old_translation == new_translation:
+        return []
+    pattern = build_substitution_pattern(old_translation, word_boundary)
+    match_case = build_case_preserving_replacer(old_translation, new_translation)
+    with db_manager._conn(dict_rows=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, chapter_number, translated_content, title FROM chapters "
+            "WHERE book_id = ?",
+            (book_id,),
+        )
+        numbers = []
+        for r in cursor.fetchall():
+            if chapter_ids is not None and r["id"] not in chapter_ids:
+                continue
+            title = r["title"] or ""
+            if pattern.sub(match_case, title) != title:
+                numbers.append(r["chapter_number"])
+                continue
+            try:
+                content = json.loads(r["translated_content"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if any(pattern.sub(match_case, line) != line for line in content):
+                numbers.append(r["chapter_number"])
+    return numbers
+
+
 def count_substitutions(db_manager: DatabaseManager, book_id: int,
                         old_translation: str, new_translation: str,
                         chapter_ids: set = None,
@@ -127,37 +164,16 @@ def count_substitutions(db_manager: DatabaseManager, book_id: int,
     chapters that already contain the corrected text are not counted. A chapter
     whose *title alone* matches still counts.
     """
-    if not old_translation or old_translation == new_translation:
-        return 0
-    pattern = build_substitution_pattern(old_translation, word_boundary)
-    match_case = build_case_preserving_replacer(old_translation, new_translation)
-    with db_manager._conn(dict_rows=True) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, translated_content, title FROM chapters WHERE book_id = ?",
-            (book_id,),
-        )
-        n = 0
-        for r in cursor.fetchall():
-            if chapter_ids is not None and r["id"] not in chapter_ids:
-                continue
-            title = r["title"] or ""
-            if pattern.sub(match_case, title) != title:
-                n += 1
-                continue
-            try:
-                content = json.loads(r["translated_content"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if any(pattern.sub(match_case, line) != line for line in content):
-                n += 1
-    return n
+    return len(chapters_that_would_change(
+        db_manager, book_id, old_translation, new_translation,
+        chapter_ids, word_boundary))
 
 
 def substitute_in_chapters(db_manager: DatabaseManager, book_id: int,
                            old_translation: str, new_translation: str,
                            chapter_ids: dict = None,
-                           word_boundary: bool = False) -> tuple:
+                           word_boundary: bool = False,
+                           affected_chapters: list = None) -> tuple:
     """
     Replace `old_translation` with `new_translation` in every chapter's
     translated_content AND title for `book_id`, using the same chapter_text_ops
@@ -186,6 +202,9 @@ def substitute_in_chapters(db_manager: DatabaseManager, book_id: int,
     Returns ``(chapters_modified, notes_modified)``. A chapter counts as
     modified if its prose or its title changed. All updates commit as a
     single transaction — an error mid-sweep rolls the whole run back.
+
+    If `affected_chapters` is a list, the chapter number of every modified
+    chapter is appended to it.
     """
     if not old_translation or old_translation == new_translation:
         return 0, 0
@@ -197,7 +216,8 @@ def substitute_in_chapters(db_manager: DatabaseManager, book_id: int,
     with db_manager._conn(dict_rows=True) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, translated_content, title FROM chapters WHERE book_id = ?",
+            "SELECT id, chapter_number, translated_content, title FROM chapters "
+            "WHERE book_id = ?",
             (book_id,),
         )
         rows = cursor.fetchall()
@@ -247,6 +267,8 @@ def substitute_in_chapters(db_manager: DatabaseManager, book_id: int,
 
             if changed or title_changed:
                 affected += 1
+                if affected_chapters is not None:
+                    affected_chapters.append(r["chapter_number"])
 
         notes_affected = db_manager.substitute_in_entity_notes(
             book_id, old_translation, new_translation,
@@ -256,6 +278,122 @@ def substitute_in_chapters(db_manager: DatabaseManager, book_id: int,
         )
 
     return affected, notes_affected
+
+
+SUBSTITUTE_MODES = ("none", "substitute", "safer")
+
+
+def correct_entity(db_manager: DatabaseManager, book_id: int, untranslated: str,
+                   translation: str, *, category: str = None, mode: str = "none",
+                   word_boundary: bool = False, dry_run: bool = False) -> dict:
+    """Correct one entity's translation, optionally sweeping the book's prose.
+
+    `mode` is ``"none"`` (entity record only), ``"substitute"`` (book-wide
+    prose/title/note sweep) or ``"safer"`` (the sweep restricted to chapters
+    whose *source* mentions `untranslated` — the CLI's --safer-substitute).
+    With `dry_run` nothing is written; the counts are what an apply run would
+    report.
+
+    Never prints and never raises for user errors — a missing entity, an
+    ambiguous key (several categories and no `category`) or a bad mode come
+    back as ``ok=False`` with ``error`` set and ``status`` naming the case:
+    ``not_found`` | ``ambiguous`` | ``invalid_mode`` | ``invalid_translation``. A successful call has
+    ``status`` ``updated`` | ``would_update`` | ``unchanged`` (the new
+    translation already matches; nothing written, ``changed`` False).
+
+    Keys: ok, error, status, entity_id, category, untranslated,
+    old_translation, new_translation, mode, word_boundary, dry_run, changed,
+    matches ([{id, category, translation}] of the candidate rows),
+    chapters_scanned (chapters in the safer scope, None when book-wide or not
+    substituting), chapter_substitutions, note_substitutions,
+    chapters_affected (sorted chapter numbers changed / that would change).
+    """
+    result = {
+        "ok": False, "error": None, "status": None,
+        "entity_id": None, "category": category,
+        "untranslated": untranslated,
+        "old_translation": None, "new_translation": translation,
+        "mode": mode, "word_boundary": word_boundary, "dry_run": dry_run,
+        "changed": False, "matches": [],
+        "chapters_scanned": None,
+        "chapter_substitutions": 0, "note_substitutions": 0,
+        "chapters_affected": [],
+    }
+
+    if mode not in SUBSTITUTE_MODES:
+        result.update(status="invalid_mode",
+                      error=f"Invalid mode {mode!r}; expected one of {list(SUBSTITUTE_MODES)}.")
+        return result
+
+    if not isinstance(translation, str) or not translation.strip():
+        result.update(status="invalid_translation",
+                      error="The new translation must be a non-empty string.")
+        return result
+
+    matches = find_entity(db_manager, book_id, untranslated)
+    if category:
+        matches = [m for m in matches if m[1] == category]
+    result["matches"] = [{"id": eid, "category": cat, "translation": trans}
+                         for eid, cat, trans in matches]
+
+    if not matches:
+        scope = f" in category '{category}'" if category else ""
+        result.update(status="not_found",
+                      error=f"No entity found for book_id={book_id}, "
+                            f"untranslated={untranslated!r}{scope}.")
+        return result
+
+    if len(matches) > 1:
+        cats = [m[1] for m in matches]
+        result.update(status="ambiguous",
+                      error=f"Found {len(matches)} entities matching {untranslated!r} "
+                            f"in book {book_id} (categories: {cats}). "
+                            f"Pass a category to disambiguate.")
+        return result
+
+    entity_id, found_category, old_translation = matches[0]
+    result.update(entity_id=entity_id, category=found_category,
+                  old_translation=old_translation)
+
+    if old_translation == translation:
+        result.update(ok=True, status="unchanged")
+        return result
+
+    result.update(ok=True, changed=True,
+                  status="would_update" if dry_run else "updated")
+
+    chapter_ids = None
+    if mode == "safer":
+        chapter_ids = find_chapters_with_untranslated(db_manager, book_id, untranslated)
+        result["chapters_scanned"] = len(chapter_ids)
+
+    if dry_run:
+        if mode != "none":
+            numbers = chapters_that_would_change(
+                db_manager, book_id, old_translation, translation,
+                chapter_ids, word_boundary)
+            result["chapter_substitutions"] = len(numbers)
+            result["chapters_affected"] = sorted(numbers)
+            result["note_substitutions"] = count_note_substitutions(
+                db_manager, book_id, old_translation, translation,
+                chapter_ids, word_boundary)
+        return result
+
+    update_entity_translation(db_manager, entity_id, translation, old_translation)
+
+    if mode != "none":
+        numbers = []
+        affected, notes_affected = substitute_in_chapters(
+            db_manager, book_id, old_translation, translation,
+            chapter_ids, word_boundary, affected_chapters=numbers)
+        result["chapter_substitutions"] = affected
+        result["note_substitutions"] = notes_affected
+        result["chapters_affected"] = sorted(numbers)
+        if affected:
+            # The cached EPUB/AZW3 were built from the old prose.
+            db_manager.invalidate_epub_cache(book_id)
+
+    return result
 
 
 def main():
@@ -294,80 +432,60 @@ def main():
     )
     args = parser.parse_args()
 
+    mode = ("safer" if args.safer_substitute
+            else "substitute" if args.substitute else "none")
+
     config = TranslationConfig()
     logger = Logger(config)
     # strict_writes: a failed UPDATE raises loudly instead of returning None.
     db_manager = DatabaseManager(config, logger, strict_writes=True)
 
-    matches = find_entity(db_manager, args.book_id, args.untranslated)
-    if args.category:
-        matches = [m for m in matches if m[1] == args.category]
+    r = correct_entity(
+        db_manager, args.book_id, args.untranslated, args.translation,
+        category=args.category, mode=mode,
+        word_boundary=args.word_boundary, dry_run=args.dry_run,
+    )
 
-    if not matches:
-        scope = f" in category '{args.category}'" if args.category else ""
-        print(f"No entity found for book_id={args.book_id}, untranslated={args.untranslated!r}{scope}.")
-        sys.exit(1)
-
-    if len(matches) > 1:
-        print(f"Found {len(matches)} entities matching {args.untranslated!r} in book {args.book_id}:")
-        for eid, cat, trans in matches:
-            print(f"  id={eid}  category={cat}  translation={trans!r}")
+    if r["status"] == "ambiguous":
+        print(f"Found {len(r['matches'])} entities matching {args.untranslated!r} "
+              f"in book {args.book_id}:")
+        for m in r["matches"]:
+            print(f"  id={m['id']}  category={m['category']}  translation={m['translation']!r}")
         print("Pass --category to disambiguate.")
         sys.exit(1)
+    if not r["ok"]:
+        print(r["error"])
+        sys.exit(1)
 
-    entity_id, category, old_translation = matches[0]
-    print(f"Entity id={entity_id} category={category}")
-    print(f"  Old translation: {old_translation!r}")
+    print(f"Entity id={r['entity_id']} category={r['category']}")
+    print(f"  Old translation: {r['old_translation']!r}")
     print(f"  New translation: {args.translation!r}")
 
-    if old_translation == args.translation:
+    if r["status"] == "unchanged":
         print("New translation matches existing — nothing to update.")
         return
 
-    do_substitute = args.substitute or args.safer_substitute
-
     if args.dry_run:
         print("[dry-run] Would update entity row.")
-        if do_substitute:
-            chapter_ids = (
-                find_chapters_with_untranslated(db_manager, args.book_id, args.untranslated)
-                if args.safer_substitute else None
-            )
-            would_change = count_substitutions(
-                db_manager, args.book_id, old_translation, args.translation,
-                chapter_ids, args.word_boundary
-            )
-            would_note = count_note_substitutions(
-                db_manager, args.book_id, old_translation, args.translation,
-                chapter_ids, args.word_boundary
-            )
-            if args.safer_substitute:
-                print(f"[dry-run] {len(chapter_ids)} chapter(s) contain {args.untranslated!r} "
-                      f"in their source; would substitute in {would_change} of them.")
+        if mode != "none":
+            if mode == "safer":
+                print(f"[dry-run] {r['chapters_scanned']} chapter(s) contain "
+                      f"{args.untranslated!r} in their source; would substitute in "
+                      f"{r['chapter_substitutions']} of them.")
             else:
-                print(f"[dry-run] Would substitute in {would_change} chapter(s).")
-            print(f"[dry-run] Would rewrite {would_note} entity note(s).")
+                print(f"[dry-run] Would substitute in {r['chapter_substitutions']} chapter(s).")
+            print(f"[dry-run] Would rewrite {r['note_substitutions']} entity note(s).")
         return
 
-    update_entity_translation(db_manager, entity_id, args.translation, old_translation)
     print("✅ Entity translation updated.")
-
-    if do_substitute:
-        chapter_ids = (
-            find_chapters_with_untranslated(db_manager, args.book_id, args.untranslated)
-            if args.safer_substitute else None
-        )
-        affected, notes_affected = substitute_in_chapters(
-            db_manager, args.book_id, old_translation, args.translation,
-            chapter_ids, args.word_boundary
-        )
-        if args.safer_substitute:
-            print(f"✅ Substituted across {affected} chapter(s) "
-                  f"(restricted to {len(chapter_ids)} chapter(s) with "
+    if mode != "none":
+        if mode == "safer":
+            print(f"✅ Substituted across {r['chapter_substitutions']} chapter(s) "
+                  f"(restricted to {r['chapters_scanned']} chapter(s) with "
                   f"{args.untranslated!r} in their source).")
         else:
-            print(f"✅ Substituted across {affected} chapter(s).")
-        print(f"✅ Rewrote {notes_affected} entity note(s).")
+            print(f"✅ Substituted across {r['chapter_substitutions']} chapter(s).")
+        print(f"✅ Rewrote {r['note_substitutions']} entity note(s).")
 
 
 if __name__ == "__main__":

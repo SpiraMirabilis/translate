@@ -4,6 +4,12 @@ Apply translation corrections from entities.json to a single book,
 optionally substituting across the book's translated chapters.
 
 entities.json format: {"<untranslated>": "<new translation>", ...}
+An entry's value may instead be an object naming the category, for a key that
+exists in more than one category:
+    {"<untranslated>": {"translation": "<new translation>", "category": "<category>"}}
+
+Corrections apply in file order (a cascade: a later entry sees the chapters as
+the earlier ones left them).
 
 Usage:
     python3 bulk_correct_entities.py --book-id 15 --substitute --dry-run
@@ -13,20 +19,44 @@ Usage:
 
 import argparse
 import json
-import sys
 
 from config import TranslationConfig
 from db import DatabaseManager
 from logger import Logger
 
-from correct_entity_translation import (
-    find_entity,
-    update_entity_translation,
-    substitute_in_chapters,
-    find_chapters_with_untranslated,
-    count_substitutions,
-    count_note_substitutions,
-)
+from correct_entity_translation import correct_entity
+
+
+def parse_correction(value):
+    """Split an entities.json value into ``(translation, category_or_None)``."""
+    if isinstance(value, dict):
+        return value.get("translation"), value.get("category") or None
+    return value, None
+
+
+def iter_bulk_correct(db_manager, book_id: int, corrections: dict, *, mode: str = "none",
+                      word_boundary: bool = False, dry_run: bool = False):
+    """Yield correct_entity's result dict for each correction, in input order.
+
+    Order matters when substituting: each correction sweeps the chapters as
+    the previous ones left them (a cascade). Values are parsed by
+    parse_correction, so an entry may name its category. Never prints. A
+    generator so the CLI can report each entry as it lands.
+    """
+    for untranslated, value in corrections.items():
+        new_translation, category = parse_correction(value)
+        yield correct_entity(
+            db_manager, book_id, untranslated, new_translation,
+            category=category, mode=mode,
+            word_boundary=word_boundary, dry_run=dry_run,
+        )
+
+
+def bulk_correct(db_manager, book_id: int, corrections: dict, *, mode: str = "none",
+                 word_boundary: bool = False, dry_run: bool = False) -> list:
+    """iter_bulk_correct, collected into a list."""
+    return list(iter_bulk_correct(db_manager, book_id, corrections, mode=mode,
+                                  word_boundary=word_boundary, dry_run=dry_run))
 
 
 def main():
@@ -66,71 +96,63 @@ def main():
     print(f"Mode:     {'DRY RUN' if args.dry_run else 'APPLY'}{sub_label}")
     print("=" * 70)
 
+    mode = ("safer" if args.safer_substitute
+            else "substitute" if args.substitute else "none")
+
     not_found = []
     ambiguous = []
     no_change = []
+    errors = []
     updated = []
     total_chapters_changed = 0
     total_notes_changed = 0
 
-    for untranslated, new_translation in corrections.items():
-        matches = find_entity(db_manager, args.book_id, untranslated)
-        if not matches:
-            print(f"  ❌ NOT FOUND: {untranslated!r}")
+    for r in iter_bulk_correct(db_manager, args.book_id, corrections, mode=mode,
+                               word_boundary=args.word_boundary, dry_run=args.dry_run):
+        untranslated = r["untranslated"]
+        new_translation = r["new_translation"]
+        category = r["category"]
+        status = r["status"]
+        if status == "not_found":
+            print(f"  ❌ NOT FOUND: {untranslated!r}"
+                  + (f" in category {category!r}" if category else ""))
             not_found.append(untranslated)
             continue
-        if len(matches) > 1:
-            cats = [m[1] for m in matches]
-            print(f"  ⚠️  AMBIGUOUS ({len(matches)} categories: {cats}): {untranslated!r}")
+        if status == "ambiguous":
+            cats = [m["category"] for m in r["matches"]]
+            print(f"  ⚠️  AMBIGUOUS ({len(cats)} categories: {cats}): {untranslated!r}")
             ambiguous.append(untranslated)
             continue
-
-        entity_id, category, old_translation = matches[0]
-        if old_translation == new_translation:
-            print(f"  ⏭️  UNCHANGED [{category}] {untranslated!r} → {new_translation!r}")
+        if not r["ok"]:
+            print(f"  ❌ ERROR: {untranslated!r}: {r['error']}")
+            errors.append(untranslated)
+            continue
+        if status == "unchanged":
+            print(f"  ⏭️  UNCHANGED [{r['category']}] {untranslated!r} → {new_translation!r}")
             no_change.append(untranslated)
             continue
 
-        chapter_ids = None
-        sub_count = 0
-        note_count = 0
-        if do_substitute:
-            if args.safer_substitute:
-                chapter_ids = find_chapters_with_untranslated(
-                    db_manager, args.book_id, untranslated
-                )
-            sub_count = count_substitutions(
-                db_manager, args.book_id, old_translation, new_translation,
-                chapter_ids, args.word_boundary
-            )
-            note_count = count_note_substitutions(
-                db_manager, args.book_id, old_translation, new_translation,
-                chapter_ids, args.word_boundary
-            )
-
+        sub_count = r["chapter_substitutions"]
+        note_count = r["note_substitutions"]
         action = "WOULD UPDATE" if args.dry_run else "UPDATE"
-        print(f"  ✅ {action} [{category}] {untranslated!r}: "
-              f"{old_translation!r} → {new_translation!r}"
+        print(f"  ✅ {action} [{r['category']}] {untranslated!r}: "
+              f"{r['old_translation']!r} → {new_translation!r}"
               + (f"  (substitute in {sub_count} chapters, {note_count} notes)"
                  if do_substitute else ""))
 
-        updated.append((untranslated, old_translation, new_translation, sub_count, note_count))
-
+        updated.append((untranslated, r["old_translation"], new_translation,
+                        sub_count, note_count))
         if not args.dry_run:
-            update_entity_translation(db_manager, entity_id, new_translation, old_translation)
-            if do_substitute:
-                affected, notes_affected = substitute_in_chapters(
-                    db_manager, args.book_id, old_translation, new_translation,
-                    chapter_ids, args.word_boundary
-                )
-                total_chapters_changed += affected
-                total_notes_changed += notes_affected
+            total_chapters_changed += sub_count
+            total_notes_changed += note_count
 
     print("=" * 70)
     print(f"Updates:     {len(updated)}")
     print(f"Unchanged:   {len(no_change)}")
     print(f"Not found:   {len(not_found)}")
     print(f"Ambiguous:   {len(ambiguous)}")
+    if errors:
+        print(f"Errors:      {len(errors)}")
     if do_substitute:
         if args.dry_run:
             total = sum(c for _, _, _, c, _ in updated)

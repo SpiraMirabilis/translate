@@ -40,12 +40,84 @@ def known_categories(db_manager, book_id):
         row = cursor.fetchone()
     template = row["prompt_template"] if row else None
     template_cats = extract_categories_from_prompt(template) if template else []
-    return sorted(set(c for c in used if c) | set(template_cats or []))
+    # books.categories governs a book's category list since the categories left
+    # the prompt corpus; the template parse only helps legacy hand-written prompts.
+    book_cats = db_manager.get_book_categories(book_id) if row else []
+    return sorted(set(c for c in used if c) | set(template_cats or [])
+                  | set(c for c in book_cats if c))
 
 
 def update_category(db_manager, entity_id, new_category):
     """Update an entity's category via the repo method (single transaction)."""
     db_manager.update_entity_by_id(entity_id, category=new_category)
+
+
+def change_entity_categories(db_manager, book_id, keys, new_category,
+                             current_category=None, force=False, dry_run=False) -> dict:
+    """Move each entity in `keys` to `new_category`. Never prints or exits.
+
+    Returns a dict:
+      ok               False only when `new_category` was refused
+      error            why it was refused (else None)
+      new_category, dry_run, force
+      known_categories the book's known categories (in use, template, books.categories)
+      results          one dict per key, in order:
+                       {untranslated, status, entity_id, old_category,
+                        translation, categories}
+                       status: "updated" | "would_update" | "unchanged"
+                       (already in new_category) | "not_found" | "ambiguous"
+                       (categories lists the candidates; narrow with
+                       `current_category`)
+      counts           {updated, unchanged, not_found, ambiguous} — "updated"
+                       counts would-be updates on a dry run, as the CLI did.
+
+    An unknown `new_category` is refused unless `force` — nothing is looked
+    up or written in that case.
+    """
+    valid = known_categories(db_manager, book_id)
+    report = {
+        "ok": True, "error": None, "new_category": new_category,
+        "dry_run": dry_run, "force": force, "known_categories": valid,
+        "results": [],
+        "counts": {"updated": 0, "unchanged": 0, "not_found": 0, "ambiguous": 0},
+    }
+    if new_category not in valid and not force:
+        report.update(ok=False,
+                      error=f"Category {new_category!r} is not among known categories "
+                            f"for book {book_id}; pass force to use it anyway.")
+        return report
+
+    counts = report["counts"]
+    for u in keys:
+        matches = find_entities(db_manager, book_id, u)
+        if current_category:
+            matches = [m for m in matches if m[1] == current_category]
+        entry = {"untranslated": u, "status": None, "entity_id": None,
+                 "old_category": None, "translation": None,
+                 "categories": [m[1] for m in matches]}
+        report["results"].append(entry)
+
+        if not matches:
+            entry["status"] = "not_found"
+            counts["not_found"] += 1
+            continue
+        if len(matches) > 1:
+            entry["status"] = "ambiguous"
+            counts["ambiguous"] += 1
+            continue
+
+        eid, old_cat, trans = matches[0]
+        entry.update(entity_id=eid, old_category=old_cat, translation=trans)
+        if old_cat == new_category:
+            entry["status"] = "unchanged"
+            counts["unchanged"] += 1
+            continue
+
+        if not dry_run:
+            update_category(db_manager, eid, new_category)
+        entry["status"] = "would_update" if dry_run else "updated"
+        counts["updated"] += 1
+    return report
 
 
 def main():
@@ -66,10 +138,13 @@ def main():
     # strict_writes: a failed category update raises loudly instead of silently no-op'ing.
     db_manager = DatabaseManager(config, logger, strict_writes=True)
 
-    valid_cats = known_categories(db_manager, args.book_id)
-    if args.new_category not in valid_cats and not args.force:
+    report = change_entity_categories(
+        db_manager, args.book_id, args.untranslated, args.new_category,
+        current_category=args.current_category, force=args.force, dry_run=args.dry_run,
+    )
+    if not report["ok"]:
         print(f"Category {args.new_category!r} is not among known categories for book {args.book_id}:")
-        for c in valid_cats:
+        for c in report["known_categories"]:
             print(f"  {c}")
         print("Pass --force to use it anyway.")
         sys.exit(1)
@@ -79,43 +154,26 @@ def main():
     print(f"Mode:         {'DRY RUN' if args.dry_run else 'APPLY'}")
     print("=" * 70)
 
-    n_updated = 0
-    n_unchanged = 0
-    n_missing = 0
-    n_ambiguous = 0
-
-    for u in args.untranslated:
-        matches = find_entities(db_manager, args.book_id, u)
-        if args.current_category:
-            matches = [m for m in matches if m[1] == args.current_category]
-
-        if not matches:
+    for e in report["results"]:
+        u = e["untranslated"]
+        if e["status"] == "not_found":
             print(f"  ❌ NOT FOUND: {u!r}")
-            n_missing += 1
-            continue
-        if len(matches) > 1:
-            cats = [m[1] for m in matches]
-            print(f"  ⚠️  AMBIGUOUS ({len(matches)} categories: {cats}): {u!r} — pass --current-category")
-            n_ambiguous += 1
-            continue
-
-        eid, old_cat, trans = matches[0]
-        if old_cat == args.new_category:
+        elif e["status"] == "ambiguous":
+            cats = e["categories"]
+            print(f"  ⚠️  AMBIGUOUS ({len(cats)} categories: {cats}): {u!r} — pass --current-category")
+        elif e["status"] == "unchanged":
             print(f"  ⏭️  UNCHANGED: {u!r} already in {args.new_category!r}")
-            n_unchanged += 1
-            continue
+        else:
+            action = "WOULD UPDATE" if args.dry_run else "UPDATE"
+            print(f"  ✅ {action}: {u!r}  [{e['old_category']}] → [{args.new_category}]  "
+                  f"(translation: {e['translation']!r})")
 
-        action = "WOULD UPDATE" if args.dry_run else "UPDATE"
-        print(f"  ✅ {action}: {u!r}  [{old_cat}] → [{args.new_category}]  (translation: {trans!r})")
-        if not args.dry_run:
-            update_category(db_manager, eid, args.new_category)
-        n_updated += 1
-
+    counts = report["counts"]
     print("=" * 70)
-    print(f"Updated:    {n_updated}")
-    print(f"Unchanged:  {n_unchanged}")
-    print(f"Not found:  {n_missing}")
-    print(f"Ambiguous:  {n_ambiguous}")
+    print(f"Updated:    {counts['updated']}")
+    print(f"Unchanged:  {counts['unchanged']}")
+    print(f"Not found:  {counts['not_found']}")
+    print(f"Ambiguous:  {counts['ambiguous']}")
 
 
 if __name__ == "__main__":
