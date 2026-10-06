@@ -71,6 +71,27 @@ Read the actual translated line. If an English reader gets the full meaning with
 - ✅ "slippers-on-backwards welcome", "Steamed goose heart!", "he's certainly a 'material'" — baffling as they stand.
 - ❌ 沧海一粟 → "a drop in the ocean"; 青梅竹马 → "childhood sweethearts"; 山寨 → "knockoffs"; 东山再起 → "make a comeback". All perfectly clear English. The footnote would teach the reader about Su Shi or Li Bai without helping them *read the sentence*. **Reject.**
 
+> ⚠️ **This question is deliberately NOT in the scanner's prompt any more.** It was cut because it
+> killed too many candidates at collection time: the scanner reads the *source*, so it can only guess
+> at our English, and guessing wrong meant discarding good referents before a human ever saw them.
+> Recall is the scanner's job; judgement is ours. **So question 2 now lives entirely in this review,
+> and it is not optional — apply it to every survivor.** A real, nameable, genuinely interesting
+> referent still gets rejected when the English already says it:
+>
+> | Anchor as translated | Chinese | Verdict |
+> |---|---|---|
+> | group owner | 群主 | plain English — reject |
+> | haste makes waste | 欲速则不达 | an English proverb — reject |
+> | going from luxury to thrift is hard | 由俭入奢易 | Sima Guang, and completely clear — reject |
+> | bottom-fished a blue-chip stock | 抄底 | "bottom-fishing" is English market slang — reject |
+> | grow the pie together | 把蛋糕做大 | so is "grow the pie" — reject |
+> | performance review · direct PhD · university town | 绩效考核 · 直博 · 大学城 | say themselves — reject |
+>
+> The test is **opacity, not interest**. "This referent is real and I enjoyed learning it" is not a
+> reason to keep a note; "an English reader cannot get this off the page" is. Book 15's wide-bar
+> rescan placed 297 notes and then had to pull **71 of them** for failing exactly this test —
+> cheaper to apply it before the dry-run than after.
+
 **3. Is it Chinese?**
 Non-Chinese referents are out of scope even when the source treats them as memes: Bleach's Espada, Gundam, Naruto, One Piece, Neon Genesis Evangelion, Pokémon, *Game of Thrones*, "Make X Great Again", the Nobel Prize, the Oscars, La Fontaine's chestnuts. The English reader either recognizes them or is meant not to.
 
