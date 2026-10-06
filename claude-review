@@ -1,0 +1,9 @@
+#!/bin/sh
+# Start Claude Code with the full T9 MCP server attached (review / entity repair /
+# footnote tools). Plain `claude` sessions don't get it: the server definition lives
+# in mcp-review.json, which Claude Code does not auto-discover the way it does
+# .mcp.json. Extra arguments pass through to claude (e.g. a first prompt, --resume).
+#
+# Put it on your PATH once:  ln -s /home/mdm/t9/claude-review ~/.local/bin/claude-review
+cd /home/mdm/t9 || exit 1
+exec claude --mcp-config /home/mdm/t9/mcp-review.json "$@"

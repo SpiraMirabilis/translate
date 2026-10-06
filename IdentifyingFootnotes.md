@@ -10,6 +10,36 @@ Add **first-mention footnotes** for Chinese cultural referents an English reader
 
 ---
 
+## With the t9 MCP tools (preferred)
+
+A session started with `claude-review` has the **`t9_*` tools**. Use them in place of the
+scripts. They run the same code, and **footnote writes are never blocked by a running
+translation**, so this whole workflow can run while the book translates. Without the tools,
+the CLI instructions in this doc apply unchanged.
+
+| Step | Tool | Script it replaces |
+|---|---|---|
+| Entity pull | `t9_list_entities(book_id, origin_chapter="<range>")` | `get_entities.py --format text` |
+| Scan (model calls) | `t9_scan_footnotes(book_id, chapters)`. Dry run by default; ≤200 chapters per call; skips chapters already scanned with unchanged source | `footnote_scan.py -b N --chapters …` |
+| What's collected | `t9_footnote_candidate_report(book_id, chapters)` | `footnote_scan.py --report` |
+| Review queue | `t9_list_footnote_candidates(status="pending", first_mentions_only=true)` + `t9_decide_footnote_candidates(ids, "accepted"\|"rejected")` | the `--review` TUI (or the admin GUI, same queue) |
+| Hallucination prune | `t9_prune_footnote_candidates` (`apply=true` to delete) | `footnote_scan.py --prune-unverified` |
+| Export | `t9_export_footnote_candidates` returns a `footnotes` list ready for `t9_add_footnotes`, plus `not_in_translation` (terms to fix first: the anchor pass) | `footnote_scan.py --export map.json` |
+| Anchor pass | `t9_grep_book(field="en", …)` prints whole lines with the matched substring bracketed; `t9_get_chapter(side="both")` gives both line arrays with indices | ad-hoc greps, `db.get_chapter(...)` |
+| Place | `t9_add_footnotes(footnotes=[{term, body}], chapter=?)`. The dry run shows each note's chapter, line and `[n]`, and **warns when an anchor lands in the heading** | `add_footnotes.py` |
+| Audit / fix | `t9_list_footnotes(chapters)` (with the `↳` sentence), `orphans_only=true`, `t9_reanchor_footnote`, `t9_delete_footnotes(chapter, number=…)` | `list_footnotes.py`, `delete_footnote.py` |
+
+Differences worth knowing:
+- **Every write defaults to a dry run** (`dry_run=true` / `apply=false`).
+- **The heading audit is built in.** A plan whose anchor falls on `content[0]` comes back with
+  a warning, so check `warnings` before applying rather than grepping for `^Chapter …[n]`
+  afterwards. Still audit the rendered `↳` lines for plural artifacts.
+- **No map files.** Candidates flow export → edit the list → `t9_add_footnotes` in context.
+- **The `db.get_chapter` argument-order trap** (see *DB gotcha*) cannot happen through
+  `t9_get_chapter`, which takes `book_id` and `chapter_number` by name.
+
+---
+
 ## Two sources of candidates — you need both
 
 ### 1. The entity pull (per review batch)
@@ -221,6 +251,9 @@ The `footnotes` table is the source of truth; the inline `[n]` marker and the tr
 
 ## Tools
 
+The CLI route, used when the `t9_*` tools are not attached. The MCP equivalents are
+listed under *With the t9 MCP tools*.
+
 | Script | Purpose |
 |---|---|
 | `footnote_scan.py -b N` | LLM-scan the source for candidates → `footnote_candidates` in the main DB; `--report`, `--review` TUI, `--export`, `--prune-unverified`, `--workers`/`--delay`, `--force`. **Takes `-b`, not `--book-id`.** |
@@ -240,16 +273,16 @@ To fix a bad placement: `delete_footnote.py` then re-add with a better anchor.
 
 ## Workflow
 
-0. **Before the first pull** — make sure `origin_chapter` has been refreshed for this batch (owned by `TranslationRepairTask.md` → **Refreshing `origin_chapter`**), or the entity pull's `--origin-chapter` ranges will be incomplete. Then `footnote_scan.py -b N --report` to see what the on-ingest module has already collected, and sweep only the chapters it missed.
-1. **Collect** — entity pull for the batch, plus `footnote_scan.py --report`.
-2. **Triage** with the three questions. Most candidates die here.
-3. **Verify** the source context of every survivor (coincidence trap).
-4. **Anchor** in the *translated* text; drop the paraphrased-away and the title-only. Print full lines — greps lie.
-5. **Dedupe** against footnotes already placed in earlier ranges.
+0. **Before the first pull** — make sure `origin_chapter` has been refreshed for this batch (owned by `TranslationRepairTask.md` → **Refreshing `origin_chapter`**), or the entity pull's `--origin-chapter` ranges will be incomplete. Then `footnote_scan.py -b N --report` (tools: `t9_footnote_candidate_report`) to see what the on-ingest module has already collected, and sweep only the chapters it missed (`t9_scan_footnotes`, dry run first).
+1. **Collect** — entity pull for the batch (`t9_list_entities`), plus the candidate report.
+2. **Triage** with the three questions. Most candidates die here. With the tools, record verdicts as you go (`t9_decide_footnote_candidates`), so they survive a retranslation's rescan.
+3. **Verify** the source context of every survivor (coincidence trap). Tools: `t9_entity_context` / `t9_get_chapter(side="src")`.
+4. **Anchor** in the *translated* text; drop the paraphrased-away and the title-only. Print full lines — greps lie. Tools: `t9_grep_book(field="en")`.
+5. **Dedupe** against footnotes already placed in earlier ranges (`t9_list_footnotes`; the export already drops terms that are footnoted).
 6. **Present** the curated set for approval (`AskUserQuestion`, grouped strong vs optional).
-7. **Verify anchors programmatically** — for each term, confirm the book-wide first occurrence is the chapter you intend, and eyeball any that land earlier than expected.
-8. **Dry-run**, then apply.
-9. **Audit**: rendered `↳` lines from `list_footnotes.py` (the plural artifact is invisible in a dry-run); no markers in `^Chapter ` heading lines; no chapter over 4.
+7. **Verify anchors programmatically** — for each term, confirm the book-wide first occurrence is the chapter you intend, and eyeball any that land earlier than expected. The `t9_add_footnotes` dry run reports each note's chapter and line, which covers this step.
+8. **Dry-run**, then apply (`t9_add_footnotes`, then again with `dry_run=false`).
+9. **Audit**: rendered `↳` lines from `list_footnotes.py` / `t9_list_footnotes` (the plural artifact is invisible in a dry-run); no markers in `^Chapter ` heading lines; no chapter over 4.
    - A `↳` can *look* mangled when the sentence-extractor splits on `?`, `!` or a quote. Check the raw chapter line before "fixing" a non-problem.
 
 **File hygiene:** maps live in `/tmp`, named `footnotes_b<id>_<range>.json`.

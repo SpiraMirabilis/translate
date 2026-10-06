@@ -17,9 +17,60 @@ A guide to reviewing and repairing AI-generated translations of a book stored in
 
 Work in batches of **10 chapters at a time** unless told otherwise.
 
+## With the t9 MCP tools (preferred)
+
+A session started with `claude-review` (repo root; it attaches `mcp-review.json`) has the
+**`t9_*` tools**. When they are present, use them instead of the scripts below. They run the
+same code (the scripts' logic was extracted into shared functions), but take typed
+arguments and return compact text or JSON. The server also **enforces** rules this
+document otherwise asks you to remember. When no `t9_*` tools are listed, the scripts
+remain the way to work, and everything below still applies as written.
+
+| Step | Tool | Script it replaces |
+|---|---|---|
+| Book details / notes | `t9_get_book` (categories, gendered categories, progress), `t9_get_book_notes` | `translator.py --list-books`, `get_book_notes.py` |
+| Plot summaries | `t9_get_chapter_summaries(chapters=…)` — what happens in a stretch, without reading whole chapters (paginated) | `get_chapter_summaries.py` |
+| Batch pull | `t9_list_entities(origin_chapter=…)` (point-in-time notes, `note updated chN` tags, paginated) | `get_entities.py --format text` |
+| Context | `t9_entity_context(entities=[…], mentions="1,$", chapters=…)`. Source paragraphs only; read the English with `t9_get_chapter` / `t9_grep_book(field="en")` | `get_entity_context.py` |
+| Entity search | `t9_search_entities(pattern, field=…)` | `search_entities.py` |
+| Prose search | `t9_grep_book(pattern, field="src"\|"en"\|"both", mode="lines"\|"count"\|"chapters")` | `grep_book.py` |
+| Note history | `t9_note_revisions(introduced=…, dropped=…)`, `t9_notes_as_of(chapter)` | `note_revisions.py` (`--as-of` → `t9_notes_as_of`) |
+| Origin refresh | `t9_backfill_origin_chapter(mode="recompute")`. The dry run returns each change with its drift `window` `[new, old)` | `backfill_origin_chapter.py --recompute` |
+| Fix one / many | `t9_correct_entity`, `t9_bulk_correct_entities(corrections=[…])`, `mode="none"\|"substitute"\|"safer"` | `correct_entity_translation.py`, `bulk_correct_entities.py` |
+| Category / delete | `t9_change_entity_category(untranslated=[…])`, `t9_delete_entities(untranslated=[…])` | `(bulk_)change_entity_category.py`, `delete_entity.py` |
+| Notes / gender | `t9_set_entity_note`, `t9_set_entity_gender` (recorded as `human` revisions) | ad-hoc `set_entity_note` calls |
+| Queue control | `t9_translation_status`, `t9_pause_translation`, `t9_resume_translation` | `translation_status.py`, `stop_auto_process.py`, `start_auto_process.py` |
+| Prose replace | `t9_replace_in_chapters`, `t9_undo_replace` | `db.replace_in_chapters(...)` |
+
+What changes when you work through the tools:
+
+- **The idle-queue rule is enforced.** Every entity-DB write (correct, bulk correct, category,
+  delete, note, gender, origin apply) is **refused while that book is translating**, and also
+  when the admin server can't be reached to check. You don't run `translation_status.py`
+  first. You get a refusal naming the chapter in flight, and you answer it with
+  `t9_pause_translation`. `force=true` exists for a stale claim only. Prose, footnote and
+  reindex tools are never blocked.
+- **Pause/resume remembers the run.** `t9_pause_translation(book_id)` stops auto-process for
+  that book only and waits for the in-flight chapter to save (it never cancels one). It
+  returns the run's models and flags as a `resume_hint`. Pass that straight to
+  `t9_resume_translation` afterwards. If it comes back with `needs_human`, the run is
+  parked on a GUI decision and the user has to answer it there.
+- **Writes default to a dry run** (`dry_run=true` / `apply=false`). Read the counts, then
+  call again with `dry_run=false`. The bulk dry run evaluates every entry against the
+  *current* text, so counts for cascade entries that overlap overstate what the real run
+  will do.
+- **Lists go inline.** Corrections, keys and footnote maps are tool arguments, so no
+  `/tmp/*.json` files. The one thing still worth keeping is the **origin dry-run
+  output**: applying overwrites the `(was N)` values the drift audit needs.
+- **Replace undo is per process.** `t9_undo_replace` can only undo a replace made through
+  this session's server. The web GUI's undo is separate.
+- Chapter specs are comma lists of `N`, `N-M`, `>N`, `<=N`… (`"1-20,45"`), except
+  `origin_chapter` filters, which take a single term.
+
 ## Core scripts
 
-All scripts run from the repo root and take `--book-id <N>` (or `-b <N>`).
+The CLI route, used when the `t9_*` tools are not attached. All scripts run from the repo
+root and take `--book-id <N>` (or `-b <N>`).
 
 ### Before you start (book context)
 
@@ -100,14 +151,16 @@ The bulk JSON maps `{"<source-term>": "<new-category>"}`. The new category must 
 
 This is the agreed loop. Do **not** batch-apply without surfacing decisions to the user first.
 
-0. **Orient (once per book).** Pull the book details and notes before the first batch — see [Before you start](#before-you-start-book-context): `translator.py --list-books | grep -A5 "ID: <N>"` and `get_book_notes.py <N>`.
+0. **Orient (once per book).** Pull the book details and notes before the first batch. With the tools, that's `t9_get_book` + `t9_get_book_notes`. On the CLI, see [Before you start](#before-you-start-book-context): `translator.py --list-books | grep -A5 "ID: <N>"` and `get_book_notes.py <N>`.
 
 1. **Refresh `origin_chapter` — every batch, not once per book.** Dry-run it, audit the drift windows it reports, *then* apply. This both completes the pull and hands you a worklist of spans that were translated blind. See [Refreshing origin_chapter](#refreshing-origin_chapter-every-batch) — skipping the audit is the most commonly skipped step in this workflow.
+   - Tools: `t9_backfill_origin_chapter(book_id, mode="recompute")`. The result lists each change with its `window`. Audit from it, then apply with `apply=true`, which is guarded.
+   - CLI:
    ```
    python3 backfill_origin_chapter.py --book-id <id> --recompute --dry-run > /tmp/<book>_backfill_b<n>.txt
    ```
 
-2. **Pull the batch.**
+2. **Pull the batch.** Tools: `t9_list_entities(book_id, origin_chapter="<range>")`. CLI:
    ```
    python3 get_entities.py -b <id> --origin-chapter <range> --format text
    ```
@@ -117,7 +170,7 @@ This is the agreed loop. Do **not** batch-apply without surfacing decisions to t
    - **Definitely wrong** — clear mismatches, format/spelling, internal inconsistency, clunky calques.
    - **Needs context** — ambiguous transliterations, possible canon refs, terms that could map multiple ways.
 
-4. **Get context on BOTH the "needs context" AND the "definitely wrong" buckets** in one batched call:
+4. **Get context on BOTH the "needs context" AND the "definitely wrong" buckets** in one batched call (tools: `t9_entity_context(entities=[…])`, up to 50 terms):
    ```
    python3 get_entity_context.py -b <id> --entities "t1,t2,t3,..."
    ```
@@ -127,7 +180,7 @@ This is the agreed loop. Do **not** batch-apply without surfacing decisions to t
    - **Substantive decisions** → one `AskUserQuestion` per correction, offering **1–3 options** with your recommendation first. The tool auto-adds a custom-input choice. Give the source term, current rendering, the reasoning, and the trade-offs in each option's description.
    - **Trivial / standardization fixes** (pure capitalization, applying an already-established naming pattern like "No. X", "X Family", surname-first ordinals, an already-decided convention) → bundle them all into **one yes/no batch** question listing each `源 "old" → "new"`. Don't make the user click through these individually.
 
-6. **Apply** the approved changes (see Applying).
+6. **Apply** the approved changes (see Applying). With the tools: `t9_pause_translation` → entity writes → `t9_resume_translation(**resume_hint)` → footnotes and prose edits.
 
 7. **Propagate** any approved change whose error pattern recurs in later chapters — *now*, not later. See Propagation.
 
@@ -293,11 +346,22 @@ So the per-batch order is: **find the corrections → stop → drain → apply e
 restart → then do the footnotes and any prose edits** while translation is running again.
 Footnotes are a large part of a batch and there is no reason to hold the queue for them.
 
+**With the tools** the whole dance is three calls, and the guard makes the unsafe order
+impossible rather than merely discouraged:
+
+1. `t9_pause_translation(book_id)`: stops this book's auto-process, waits for the chapter in
+   flight to save, and returns `resume_hint`. On `needs_human`, stop and tell the user.
+2. Apply every entity change. A write that finds the book running again is refused, so a
+   restart in the meantime can't slip a chapter past you.
+3. `t9_resume_translation(**resume_hint)`, then the footnotes and prose edits.
+
+**On the CLI:**
+
 ⚠️ **Check `translation_status.py` immediately before an entity write, not after.** A queue that
 was idle when the batch started may have been restarted while you were reading context.
 
 ```bash
-python3 stop_auto_process.py                       # NOTE: takes no -b; it stops the run
+python3 stop_auto_process.py -b <N>                # stops this book's run only
 until python3 translation_status.py -b <N> --quiet; do sleep 20; done
 python3 translation_status.py -b <N>               # confirm: "idle", auto-process off
 #   ... apply substitutions here ...
@@ -310,11 +374,14 @@ prints DRAINED even when the stop failed outright. Substitutions once ran agains
 queue this way. Chain the whole thing with `&&`, and read the status back.
 
 ⚠️ **The restart does not remember the run's options.** `start_auto_process.py` must be
-given `--no-review`, `--max-chapters`, the model flags and anything else the run had; the
-server keeps none of it.
+given `--no-review`, `--max-chapters`, the model flags and anything else the run had. Read
+them off `translation_status.py` *before* stopping — it prints each running book's
+`run options` and how many chapters its budget has left (the status payload's `run_options`
+/ `auto_remaining`, since 2026-09-29). The MCP server's `t9_pause_translation` captures
+them for you and returns a `resume_hint` for `t9_resume_translation`.
 
-⚠️ **`stop_auto_process.py` rejects `-b`** — passing one is an argparse error, and it stops
-whatever run is active rather than one book's.
+`stop_auto_process.py -b <N>` stops only that book's run; without `-b` it stops every
+auto-processing run.
 
 **The block is per book.** A sweep on book A is safe while book B translates. If the book
 under review is absent from the `jobs` map on `GET /api/translate/status`, it is safe to
@@ -323,6 +390,11 @@ server-wide "BUSY — do not run repair sweeps" banner predates concurrent per-b
 translation and is not authoritative on its own.
 
 ## Applying
+
+With the tools, steps 1–4 below are `t9_bulk_correct_entities(corrections=[{untranslated,
+translation, category?}, …], mode=…)`, first as the default dry run and then with
+`dry_run=false`. The list order is the cascade order. Collision-handled entities go in
+their own `t9_correct_entity(mode="safer")` or `mode="none"` calls. The same checks apply.
 
 1. Write the correction JSON to **`/tmp`**, named descriptively: `<book>_ch<range>_corrections.json`.
 2. **Dry-run** the bulk op and read the per-entity substitution counts.
@@ -353,6 +425,7 @@ the triage questions, the anchor pass, and the tool reference.
 
 ## File hygiene
 
+- With the tools there are no correction files: lists are passed inline.
 - Correction JSONs and scratch artifacts live in `/tmp`, not the project root.
 - Name them `<book>_ch<range>_corrections.json` or `<book>_<topic>_correction.json`.
 - `--substitute` rewrites chapter rows but does **not** re-render HTML/EPUB exports — re-export downstream if needed.

@@ -39,3 +39,8 @@ boto3>=1.28.0
 # Optional: Traditional → Simplified Chinese preprocessing (only needed if TRAD_TO_SIMP=1 or any book has trad_to_simp=1)
 # Requires system libopencc (Debian/Ubuntu: sudo apt install libopencc1.1 libopencc-data)
 OpenCC>=1.1.6
+
+# MCP server (mcp_server/). 1.12.x is the newest that keeps the apt
+# starlette 0.31 / uvicorn 0.27 the web app runs on; install with
+#   pip install --user --break-system-packages -c <(printf "starlette==0.31.1\nuvicorn==0.27.1\n") "mcp==1.12.4"
+mcp==1.12.4
