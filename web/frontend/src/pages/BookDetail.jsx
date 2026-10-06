@@ -202,6 +202,11 @@ export default function BookDetail() {
   // First real chapter to open when there's no saved progress. Skips the
   // book-discussion sentinel and doesn't assume chapters start at 1.
   const firstChapter = chapters.find(ch => ch.chapter > BOOK_DISCUSSION_CH)?.chapter ?? 1
+  // Highest-numbered published chapter (the list is already published-only).
+  const latestChapter = chapters.reduce(
+    (best, ch) => (ch.chapter > BOOK_DISCUSSION_CH && (!best || ch.chapter > best.chapter) ? ch : best),
+    null,
+  )
 
   const displayedChapters = showAll ? chapters : chapters.slice(0, INITIAL_CHAPTERS)
 
@@ -273,7 +278,7 @@ export default function BookDetail() {
           </div>
 
           {/* Metadata */}
-          <div className="flex flex-col justify-center text-center sm:text-left">
+          <div className="flex flex-col justify-center text-center sm:text-left min-w-0">
             <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
               <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} leading-tight`}>{book.title}</h1>
               <ProtagonistBadge tags={book.tags} size="md" theme={prefs.theme} />
@@ -302,6 +307,18 @@ export default function BookDetail() {
                 }`}>{book.status}</span>
               )}
             </p>
+            {latestChapter && (
+              <Link
+                to={`/library/read/${bookId}/${latestChapter.chapter}`}
+                title={`Chapter ${latestChapter.chapter}${latestChapter.title ? `: ${latestChapter.title}` : ''}`}
+                className={`mt-1 text-sm ${t.link} flex min-w-0 max-w-full gap-1 justify-center sm:justify-start transition-colors`}
+              >
+                <span className="shrink-0">Latest: Ch. {latestChapter.chapter}</span>
+                {latestChapter.title && (
+                  <span className="truncate">&middot; {latestChapter.title}</span>
+                )}
+              </Link>
+            )}
             {book.tags && book.tags.length > 0 && (
               <div className="mt-2 flex justify-center sm:justify-start">
                 <TagChips

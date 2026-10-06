@@ -324,6 +324,20 @@ export default function Library() {
                     </p>
                   </div>
                 </Link>
+                {/* Latest chapter — its own link, outside the card's <Link>
+                    (anchors can't nest). The number never truncates; the title does. */}
+                {book.latest_chapter != null && (
+                  <Link
+                    to={`/library/read/${book.id}/${book.latest_chapter}`}
+                    title={`Chapter ${book.latest_chapter}${book.latest_chapter_title ? `: ${book.latest_chapter_title}` : ''}`}
+                    className={`mt-0.5 flex min-w-0 gap-1 text-xs ${t.chapters} hover:text-indigo-500 transition-colors`}
+                  >
+                    <span className="shrink-0">Latest: Ch. {book.latest_chapter}</span>
+                    {book.latest_chapter_title && (
+                      <span className="truncate">&middot; {book.latest_chapter_title}</span>
+                    )}
+                  </Link>
+                )}
                 {tags.length > 0 && (
                   <div className="mt-1.5">
                     <TagChips tags={tags} size="sm" theme={prefs.theme} onTagClick={setTag} />

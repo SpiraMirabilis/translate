@@ -184,12 +184,14 @@ def list_books(request: Request, response: Response, sort: str = 'popular'):
     if sort not in _VALID_SORTS:
         sort = 'popular'
     books = _db.list_books(order_by=sort)
+    latest = _db.latest_published_chapters()
     # Return only public-facing fields, filtered to public books
     out = []
     for b in books:
         if not b.get("is_public", True):
             continue
         cover_url, cover_medium_url, cover_thumb_url = _cover_urls(b)
+        latest_ch = latest.get(b["id"])
         out.append({
             "id": b["id"],
             "title": b["title"],
@@ -207,6 +209,8 @@ def list_books(request: Request, response: Response, sort: str = 'popular'):
             "tags": b.get("tags") or [],
             "created_date": b.get("created_date"),
             "last_chapter_date": b.get("last_published_date"),
+            "latest_chapter": latest_ch["chapter"] if latest_ch else None,
+            "latest_chapter_title": latest_ch["title"] if latest_ch else None,
         })
     return {"books": out}
 

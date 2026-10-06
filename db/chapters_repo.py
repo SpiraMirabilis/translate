@@ -428,13 +428,20 @@ class ChaptersRepo:
         """
         try:
             pub_clause, pub_param = self._published_filter("c.")
+            # Site-wide, MySQL's planner drives from `books` (tiny), gathers
+            # every public chapter into a temp table and filesorts ~30k rows to
+            # keep `limit` — 5.7s per /feed.rss hit. STRAIGHT_JOIN makes it
+            # walk idx_chapters_translation_date DESC and stop early (5ms).
+            # A per-book query already plans well off the book_id indexes.
+            join = ('STRAIGHT_JOIN' if book_id is None and self.backend.name == 'mysql'
+                    else 'JOIN')
             with self._conn() as conn:
                 cursor = conn.cursor()
                 sql = f'''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.summary,
                        c.translation_date, b.title AS book_title, b.author AS book_author
                 FROM chapters c
-                JOIN books b ON c.book_id = b.id
+                {join} books b ON c.book_id = b.id
                 WHERE b.is_public = 1
                   AND c.translation_date IS NOT NULL
                   AND {pub_clause}
@@ -1048,3 +1055,29 @@ class ChaptersRepo:
         except Exception as e:
             self.logger.error(f"Error getting latest published time: {e}")
             return None
+
+    def latest_published_chapters(self):
+        """{book_id: {"chapter": n, "title": str}} — each book's highest-numbered
+        publicly-visible chapter. By number, not translation_date: retranslating
+        an early chapter restamps its date but doesn't make it the latest."""
+        try:
+            # Correlated per book so each lookup walks uq_chapter(book_id,
+            # chapter_number) backwards from the top — a GROUP BY over the
+            # published filter scanned every chapter row (~5.5s vs ~10ms).
+            pub_clause, pub_param = self._published_filter("c2.")
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    SELECT b.id, c.chapter_number, c.title
+                    FROM books b
+                    JOIN chapters c ON c.book_id = b.id AND c.chapter_number = (
+                        SELECT c2.chapter_number FROM chapters c2
+                        WHERE c2.book_id = b.id AND {pub_clause}
+                        ORDER BY c2.chapter_number DESC LIMIT 1)
+                ''', (pub_param,))
+                rows = cursor.fetchall()
+            return {book_id: {"chapter": num, "title": title}
+                    for book_id, num, title in rows}
+        except Exception as e:
+            self.logger.error(f"Error getting latest published chapters: {e}")
+            return {}
