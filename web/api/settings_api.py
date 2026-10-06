@@ -125,6 +125,8 @@ def get_settings():
         "advice_model": _config.advice_model,
         "debug_mode": _config.debug_mode,
         "public_library": is_public_library(),
+        # Read from the store: the public process reads it live per request.
+        "error_reports_enabled": bool(settings_store.get("error_reports_enabled", True)),
         "site_name": _config.site_name,
         "public_site_name": _config.public_site_name,
         "comment_automod_enabled": getattr(_config, "comment_automod_enabled", False),
@@ -173,6 +175,7 @@ class SettingsUpdate(BaseModel):
     advice_model: Optional[str] = None
     debug_mode: Optional[bool] = None
     public_library: Optional[bool] = None
+    error_reports_enabled: Optional[bool] = None
     site_name: Optional[str] = None
     public_site_name: Optional[str] = None
     comment_automod_enabled: Optional[bool] = None

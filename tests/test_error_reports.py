@@ -267,3 +267,22 @@ def test_admin_routes_absent_from_public_process(public_web_app):
     paths = {getattr(r, "path", "") for r in public_web_app.routes}
     assert not any(p.startswith("/api/error-reports") for p in paths)
     assert "/api/public/error-reports" in paths
+
+
+def test_kill_switch_round_trips_through_the_settings_api(admin_client, tmp_path, monkeypatch):
+    """The Settings checkbox has to persist: GET must report the switch and PUT
+    must accept it, or the box always reads checked and an untick is dropped."""
+    import settings_store
+    # web_app doesn't redirect the store; never write the real settings.json.
+    monkeypatch.setattr(settings_store, "_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(settings_store, "_data", None)
+    monkeypatch.setattr(settings_store, "_mtime_ns", None)
+    monkeypatch.setenv("ERROR_REPORTS_ENABLED", "1")  # restored after update() syncs env
+
+    assert admin_client.get("/api/settings").json()["error_reports_enabled"] is True
+
+    resp = admin_client.put("/api/settings", json={"error_reports_enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert settings_store.get("error_reports_enabled") is False
+    assert admin_client.get("/api/settings").json()["error_reports_enabled"] is False
+    assert admin_client.get("/api/public/error-reports/enabled").json()["enabled"] is False
