@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { useTransientFlag } from '../hooks/useTransientFlag'
+import BookPicker from '../components/BookPicker'
 import {
   ChevronDown, ChevronRight, Clock, Loader2, Save, Check,
   AlertTriangle, Cpu, Hash, BookOpen, Filter
@@ -140,16 +141,14 @@ export default function ApiLogPage() {
       {books.length > 0 && (
         <div className="flex items-center gap-2 mb-4">
           <Filter size={12} className="text-slate-500" />
-          <select
-            className="input text-xs py-1 px-2 w-48"
+          <BookPicker
+            className="w-72"
+            inputClassName="input text-xs py-1 px-2"
+            books={books}
             value={bookFilter}
-            onChange={(e) => setBookFilter(e.target.value)}
-          >
-            <option value="">All books</option>
-            {books.map(b => (
-              <option key={b.id} value={b.id}>{b.title}</option>
-            ))}
-          </select>
+            onChange={setBookFilter}
+            extraOptions={[{ value: '', label: 'All books' }]}
+          />
         </div>
       )}
 

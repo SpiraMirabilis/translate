@@ -18,6 +18,7 @@ import JobList from '../components/jobs/JobList'
 import ComboBox from '../components/ComboBox'
 import { useJobs } from '../hooks/useJobs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import BookPicker from '../components/BookPicker'
 import {
   Play, Info, Trash2, ListPlus
 } from 'lucide-react'
@@ -236,16 +237,12 @@ export default function Dashboard() {
               {/* Book selector */}
               <div>
                 <label className="label">Book</label>
-                <select
-                  className="input"
+                <BookPicker
+                  books={books}
                   value={selectedBook}
-                  onChange={e => setSelectedBook(e.target.value)}
-                >
-                  <option value="">No book / Default</option>
-                  {books.map(b => (
-                    <option key={b.id} value={b.id}>{b.id}: {b.title}</option>
-                  ))}
-                </select>
+                  onChange={setSelectedBook}
+                  extraOptions={[{ value: '', label: 'No book / Default' }]}
+                />
               </div>
               {/* Chapter */}
               <div>

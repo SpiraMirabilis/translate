@@ -5,6 +5,7 @@ import { DictResult, useDictLookup } from './DictLookup'
 import { copyToClipboard } from '../utils/clipboard'
 import { useTransientFlag } from '../hooks/useTransientFlag'
 import DeleteEntityModal from './DeleteEntityModal'
+import BookPicker from './BookPicker'
 import {
   X, Check, Loader2, Sparkles, BookOpen, Copy, Replace, RotateCcw, AlertCircle, Trash2
 } from 'lucide-react'
@@ -489,10 +490,12 @@ export default function EntityFormModal({ entity, books = [], categories: parent
           </div>
           {showBooks && (
             <div><label className="label">Book (optional)</label>
-              <select className="input" value={form.book_id} onChange={e => setForm(f => ({...f, book_id: e.target.value}))}>
-                <option value="">Global (all books)</option>
-                {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
-              </select>
+              <BookPicker
+                books={books}
+                value={form.book_id}
+                onChange={v => setForm(f => ({...f, book_id: v}))}
+                extraOptions={[{ value: '', label: 'Global (all books)' }]}
+              />
             </div>
           )}
           {!showBooks && entity?.book_id && (

@@ -12,6 +12,7 @@ import DeleteEntityModal from '../components/DeleteEntityModal'
 import EntityFormModal from '../components/EntityFormModal'
 import { useUrlState, useUrlModal } from '../hooks/useUrlState'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import BookPicker from '../components/BookPicker'
 
 const TRUNCATE_LIMIT = 25
 
@@ -377,13 +378,16 @@ export default function Entities() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <select className="input w-full sm:w-52" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
-          <option value="">All Books</option>
-          <option value="global">Global Entities</option>
-          {books.map(b => (
-            <option key={b.id} value={b.id}>{b.id}: {b.title}</option>
-          ))}
-        </select>
+        <BookPicker
+          className="w-full sm:w-64"
+          books={books}
+          value={filterBook}
+          onChange={setFilterBook}
+          extraOptions={[
+            { value: '', label: 'All Books' },
+            { value: 'global', label: 'Global Entities' },
+          ]}
+        />
         <select className="input w-full sm:w-44" value={filterCat} onChange={e => setFilterCat(e.target.value)}>
           <option value="">All categories</option>
           {activeCategories.map(c => <option key={c} value={c}>{c}</option>)}
@@ -880,10 +884,12 @@ function BatchBookModal({ count, books, onClose, onConfirm }) {
         </div>
         <div>
           <label className="label">Target book</label>
-          <select className="input" value={bookId} onChange={e => setBookId(e.target.value)}>
-            <option value="">Global (no book)</option>
-            {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
-          </select>
+          <BookPicker
+            books={books}
+            value={bookId}
+            onChange={setBookId}
+            extraOptions={[{ value: '', label: 'Global (no book)' }]}
+          />
         </div>
         <div className="flex justify-end gap-2">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>

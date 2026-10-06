@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import JobList from '../components/jobs/JobList'
 import ComboBox from '../components/ComboBox'
+import BookPicker from '../components/BookPicker'
 
 export default function Queue() {
   const queryClient = useQueryClient()
@@ -396,20 +397,26 @@ export default function Queue() {
 
       {/* Filter */}
       <div className="mb-4 flex items-center gap-3">
-        <select className="input w-48" value={filterBook} onChange={e => setFilterBook(e.target.value)}>
-          <option value="">All books</option>
-          {books.filter(b => queuedBookIds.includes(b.id)).map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
-          {/* A saved filter whose book has since drained out of the queue is no
-              longer in the options above — without this the <select> renders as
-              "All books" while still filtering to an empty book. */}
-          {filterBook && !books.some(b => queuedBookIds.includes(b.id) && String(b.id) === String(filterBook)) && (
-            <option value={filterBook}>
-              {books.find(b => String(b.id) === String(filterBook))?.title
-                ? `${filterBook}: ${books.find(b => String(b.id) === String(filterBook)).title} (no queued chapters)`
-                : `Book ${filterBook} (no queued chapters)`}
-            </option>
-          )}
-        </select>
+        <BookPicker
+          className="w-72"
+          books={books.filter(b => queuedBookIds.includes(b.id))}
+          value={filterBook}
+          onChange={setFilterBook}
+          extraOptions={[
+            { value: '', label: 'All books' },
+            /* A saved filter whose book has since drained out of the queue is no
+               longer among the books above — without this the picker would show
+               a bare "Book N" with no hint of why the list is empty. */
+            ...(filterBook && !books.some(b => queuedBookIds.includes(b.id) && String(b.id) === String(filterBook))
+              ? [{
+                  value: filterBook,
+                  label: books.find(b => String(b.id) === String(filterBook))?.title
+                    ? `${filterBook}: ${books.find(b => String(b.id) === String(filterBook)).title} (no queued chapters)`
+                    : `Book ${filterBook} (no queued chapters)`,
+                }]
+              : []),
+          ]}
+        />
         {booksQuery.isPending && (
           <span className="text-xs text-slate-500 flex items-center gap-1">
             <Loader2 size={12} className="animate-spin" /> loading books…
@@ -596,23 +603,23 @@ function UploadModal({ books, onClose, onDone }) {
 
           <div>
             <label className="label">Book {isBook ? '' : '*'}</label>
-            <select
-              className="input"
+            <BookPicker
+              books={books}
               value={createBook ? '__create__' : bookId}
-              onChange={e => {
-                if (e.target.value === '__create__') {
+              onChange={v => {
+                if (v === '__create__') {
                   setCreateBook(true)
                   setBookId('')
                 } else {
                   setCreateBook(false)
-                  setBookId(e.target.value)
+                  setBookId(v)
                 }
               }}
-            >
-              <option value="">Select…</option>
-              {isBook && <option value="__create__">Create book from this {isJson ? 'JSON' : isFb2 ? 'FB2' : 'EPUB'}</option>}
-              {books.map(b => <option key={b.id} value={b.id}>{b.id}: {b.title}</option>)}
-            </select>
+              placeholder="Select…"
+              extraOptions={isBook
+                ? [{ value: '__create__', label: `Create book from this ${isJson ? 'JSON' : isFb2 ? 'FB2' : 'EPUB'}` }]
+                : []}
+            />
           </div>
           {!isBook && (
             <div>

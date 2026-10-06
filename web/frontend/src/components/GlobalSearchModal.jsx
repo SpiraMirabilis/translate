@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../services/api'
 import { Search, X, Loader2, ChevronRight } from 'lucide-react'
+import BookPicker from './BookPicker'
 
 export default function GlobalSearchModal({ books, onClose }) {
   var [query, setQuery] = useState('')
@@ -113,17 +114,15 @@ export default function GlobalSearchModal({ books, onClose }) {
         <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-800 text-xs shrink-0">
           {/* Book selector */}
           {books.length > 1 && (
-            <select
+            <BookPicker
+              className="w-64"
+              inputClassName="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300
+                              focus:outline-none focus:border-indigo-500/50"
+              books={books}
               value={selectedBook || ''}
-              onChange={function onBook(e) { setSelectedBook(parseInt(e.target.value) || null) }}
-              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300
-                         focus:outline-none focus:border-indigo-500/50"
-            >
-              <option value="">Select book...</option>
-              {books.map(function renderOpt(b) {
-                return <option key={b.id} value={b.id}>{b.title}</option>
-              })}
-            </select>
+              onChange={function onBook(v) { setSelectedBook(parseInt(v) || null) }}
+              placeholder="Select book..."
+            />
           )}
 
           {/* Scope */}
