@@ -429,9 +429,80 @@ export default function Settings() {
                 className="input font-mono text-sm"
                 value={settings.comment_automod_model || ''}
                 onChange={e => setSettings(s => ({ ...s, comment_automod_model: e.target.value }))}
-                placeholder="e.g. claude:claude-haiku-4-5"
+                placeholder="e.g. claude:claude-haiku-4-5, or jev"
               />
-              <p className="text-xs text-slate-500 mt-1">A fast/cheap model is recommended since every new comment is scanned.</p>
+              <p className="text-xs text-slate-500 mt-1">
+                A fast/cheap model is recommended since every new comment is scanned.
+                <code className="mx-1">jev</code>(or <code>jev:&lt;model&gt;</code>) uses the Jev classifier below instead — much cheaper, needs a TypeSafe key.
+              </p>
+            </div>
+            {/^jev(:|$)/i.test((settings.comment_automod_model || '').trim()) && (
+              <div className="max-w-xs">
+                <label className="label">Jev confidence threshold</label>
+                <input
+                  type="number" min="0.5" max="1" step="0.01"
+                  className="input text-sm"
+                  value={settings.comment_automod_jev_confidence ?? 0.9}
+                  onChange={e => setSettings(s => ({ ...s, comment_automod_jev_confidence: parseFloat(e.target.value) }))}
+                />
+                <p className="text-xs text-slate-500 mt-1">Below this, the comment stays pending as &quot;unsure&quot; for you to review.</p>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                <Check size={13} />
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Jev classification */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Jev Classification (TypeSafe)</h2>
+          <div className="card p-4 space-y-4">
+            <p className="text-xs text-slate-500">
+              Cheap, fast classification — never translation. Used to triage chapter conflicts:
+              when one side is confidently nothing but an author's note or ad and the other is story,
+              the conflict resolves itself; otherwise the conflict panel shows Jev's verdict.
+            </p>
+            <JevKeyRow
+              hasKey={settings.has_typesafe_key}
+              onSaved={() => setSettings(s => ({ ...s, has_typesafe_key: true }))}
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="label">Model</label>
+                <input
+                  className="input font-mono text-sm"
+                  value={settings.jev_model || ''}
+                  onChange={e => setSettings(s => ({ ...s, jev_model: e.target.value }))}
+                  placeholder="jev-latest"
+                />
+              </div>
+              <div>
+                <label className="label">Chapter conflicts</label>
+                <select
+                  className="input text-sm"
+                  value={settings.jev_chapter_conflict || 'auto'}
+                  onChange={e => setSettings(s => ({ ...s, jev_chapter_conflict: e.target.value }))}
+                >
+                  <option value="auto">Auto-resolve when confident</option>
+                  <option value="suggest">Suggest only (show in panel)</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Confidence threshold</label>
+                <input
+                  type="number" min="0.5" max="1" step="0.01"
+                  className="input text-sm"
+                  value={settings.jev_conflict_confidence ?? 0.9}
+                  onChange={e => setSettings(s => ({ ...s, jev_conflict_confidence: parseFloat(e.target.value) }))}
+                />
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
@@ -462,6 +533,61 @@ export default function Settings() {
           </button>
         </div>
       </section>
+    </div>
+  )
+}
+
+
+function JevKeyRow({ hasKey, onSaved }) {
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(null)   // 'save' | 'test'
+  const [result, setResult] = useState(null)   // { ok, text }
+
+  const save = async () => {
+    setBusy('save'); setResult(null)
+    try {
+      await api.setTypesafeKey({ api_key: key })
+      setKey('')
+      onSaved()
+      setResult({ ok: true, text: 'Key saved to .env' })
+    } catch (e) {
+      setResult({ ok: false, text: e.message })
+    } finally { setBusy(null) }
+  }
+
+  const test = async () => {
+    setBusy('test'); setResult(null)
+    try {
+      const r = await api.testTypesafe()
+      setResult({ ok: true, text: r.response })
+    } catch (e) {
+      setResult({ ok: false, text: e.message })
+    } finally { setBusy(null) }
+  }
+
+  return (
+    <div>
+      <label className="label">
+        API key <span className="text-slate-500 font-normal">(TYPESAFE_KEY — {hasKey ? 'set' : 'not set'})</span>
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          type="password"
+          className="input font-mono text-sm flex-1"
+          value={key}
+          onChange={e => setKey(e.target.value)}
+          placeholder={hasKey ? '••••••••  (enter a new key to replace)' : 'TYPESAFE_KEY'}
+        />
+        <button className="btn-secondary" disabled={!key.trim() || busy} onClick={save}>
+          {busy === 'save' ? 'Saving…' : 'Save key'}
+        </button>
+        <button className="btn-secondary" disabled={!hasKey || busy} onClick={test}>
+          {busy === 'test' ? 'Testing…' : 'Test'}
+        </button>
+      </div>
+      {result && (
+        <p className={`text-xs mt-1 ${result.ok ? 'text-emerald-400' : 'text-red-400'}`}>{result.text}</p>
+      )}
     </div>
   )
 }

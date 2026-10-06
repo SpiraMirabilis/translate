@@ -452,6 +452,54 @@ are enforced by the server rather than remembered by the agent.
   and the summary skips the leftover lines.)
   `MCP_USAGE_LOG` overrides the path (`off` disables); tests point it at tmp.
 
+### Jev classification (TypeSafe System One, added 2026-09-29)
+Jev is a decision model, not a chat model: each request is a `state` plus typed
+questions, and each answer is a `choice` with `confidence` + per-option
+`probabilities` (or a `score`, or a yes/no `noul` probability, which carries **no**
+confidence). $0.042/M input tokens, output free, ~0.2s. Use it for classification
+inside the app, never translation.
+
+- **`jev_client.py`** — `system_one(state, questions)` → answers map, `choice(state,
+  instructions, criteria)` → `{choice, confidence, probabilities}`. Retries 429/529
+  (honours `retry-after`, capped 10s), raises `JevError` otherwise. Deliberately
+  **not** a `ModelProvider` / not in `models.json` (the factory, provider-card `/test`
+  and model pickers all assume chat). Plain `requests`, deliberately **not**
+  `typesafe-sdk`: its httpcore2 dependency needs `h11>=0.16` and would shadow the apt
+  h11 0.14 uvicorn runs on — the starlette/mcp trap again.
+- **Config**: `TYPESAFE_KEY` in `.env` (Settings → Jev Classification writes it via
+  `persist_env`); `jev_model` (`jev-latest`), `jev_chapter_conflict`
+  (`off`|`suggest`|`auto`, default `auto`), `jev_conflict_confidence` (0.9) in
+  settings.json, read live by `chapter_triage`.
+- **Chapter-conflict triage** (`chapter_triage.py`, hooked into
+  `WebInterface.check_chapter_conflict` before the prompt): each side is classified
+  `story` vs `filler` (solely an author's note, leave notice, vote plea, promo, …; a
+  chapter with story *plus* a note is `story`).
+  - existing filler + incoming story, both ≥ threshold → **overwrite** (`proceed`)
+  - existing story + incoming filler, both ≥ threshold → **skip** the queue item (`cancel`)
+  - anything else, `suggest` mode, or a Jev error → the conflict panel as before, with
+    a Jev badge on each pane and a "Jev suggests …" line (payload field `jev`).
+  - Auto-resolutions write an activity-log line and a `chapter_conflict_auto_resolved`
+    WS event (the jobs reducer ignores it). Every verdict is logged
+    (`Jev triage book N chM: …`) for threshold calibration. Not run on a re-prompt
+    after a bad renumber, and the CLI path (which never prompts) is unchanged.
+  - Calibration 2026-09-29 on 22 stored author's-note chapters and 11 story chapters:
+    21/22 notes `filler` ≥0.98 (the 22nd, a short "got a site message" note, 0.55 →
+    modal), every story chapter `story` 1.00.
+- **Comment automod** (`web/services/automod.py`): set `COMMENT_AUTOMOD_MODEL` to
+  `jev` (or `jev:<model>`) to classify with Jev instead of an LLM — every other spec
+  keeps the chat path, for deployments without a TypeSafe account. A two-way choice
+  `genuine`/`spam` (the SYSTEM_PROMPT rules as criteria; manipulation attempts are
+  spam); below `comment_automod_jev_confidence` (0.9) the verdict is `unsure` and the
+  comment stays pending. Reason field reads `jev: spam (0.97)`. Runs in the **public**
+  process, which only sees a key set from Settings after a restart.
+  ⚠️ `confidence` is **not** the chosen option's probability — "Testing comment
+  **system**" came back `genuine` at confidence 0.02. Threshold on `confidence`.
+  Calibration 2026-09-29: 49 human-approved comments → 43 genuine, 6 unsure (all
+  site-test/admin posts), 0 spam; 8 synthetic spam → 7 spam at ≥0.99, 1 unsure (0.89).
+- Tests: `tests/test_jev_client.py`, `tests/test_chapter_triage.py`,
+  `tests/test_automod_jev.py`. conftest's
+  autouse `no_live_jev` drops `TYPESAFE_KEY`, so the suite never calls the live API.
+
 ### Configuration
 
 **Two-tier storage:**
@@ -477,7 +525,7 @@ Comment-system env vars (chapter comments feature):
 - `CF_TURNSTILE_SITE_KEY` / `CF_TURNSTILE_SECRET_KEY`: Cloudflare Turnstile (already used by recommendations form)
 - `CF_API_EMAIL` / `CF_API_KEY`: Cloudflare Global API credentials for IP-ban edge enforcement. **Copy from `~/scripts/.env::CF_EMAIL` and `~/scripts/.env::CF_GLOBAL`** (one-time). Without these, comment IP bans still take effect in our DB but won't be pushed to the Cloudflare edge.
 - `COMMENT_AUTOMOD_ENABLED`: `1` to enable async AI auto-moderation of new comments (default `0`)
-- `COMMENT_AUTOMOD_MODEL`: Model spec for auto-mod (default `claude:claude-haiku-4-5`)
+- `COMMENT_AUTOMOD_MODEL`: Model spec for auto-mod (default `claude:claude-haiku-4-5`; `jev` / `jev:<model>` uses the Jev classifier — see "Jev classification")
 
 Reply-notification emails have two pluggable backends (`web/services/email_sender.py`), selected by `EMAIL_BACKEND` (`ses` default | `postfix`). SES is the API path via boto3 `send_raw_email`; Postfix is the local-MTA fallback on `localhost:25` (kept for instant, code-free rollback). SES falls back to Postfix automatically when its credentials are absent.
 - `EMAIL_BACKEND` (settings.json / `EMAIL_BACKEND` env): `ses` or `postfix`. Editable in Settings UI.

@@ -83,6 +83,37 @@ def test_api_key(provider_name: str):
 
 
 # ------------------------------------------------------------------
+# Jev (TypeSafe System One) -- not a chat provider, so not in the
+# provider cards above; see jev_client.py.
+# ------------------------------------------------------------------
+
+@router.post("/typesafe-key")
+def set_typesafe_key(req: ApiKeyRequest):
+    import jev_client
+    key = req.api_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key is empty.")
+    os.environ[jev_client.KEY_ENV] = key
+    persist_env(jev_client.KEY_ENV, key)
+    return {"status": "ok", "env_var": jev_client.KEY_ENV}
+
+
+@router.post("/typesafe-test")
+def test_typesafe_key():
+    """One tiny classification against the live API."""
+    import jev_client
+    try:
+        ans = jev_client.choice(
+            "Chapter 12: The sword flashed as Lin Feng stepped into the courtyard.",
+            "Is this story narrative or an author's note?",
+            {"story": "Story narrative", "note": "An author's note to readers"},
+        )
+    except jev_client.JevError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "response": f"{ans['choice']} (confidence {ans['confidence']:.2f})"}
+
+
+# ------------------------------------------------------------------
 # General settings
 # ------------------------------------------------------------------
 
@@ -98,6 +129,7 @@ def get_settings():
         "public_site_name": _config.public_site_name,
         "comment_automod_enabled": getattr(_config, "comment_automod_enabled", False),
         "comment_automod_model": getattr(_config, "comment_automod_model", "claude:claude-haiku-4-5"),
+        "comment_automod_jev_confidence": settings_store.get("comment_automod_jev_confidence", 0.9),
         "pronoun_repair_model": getattr(_config, "pronoun_repair_model", "claude:claude-haiku-4-5"),
         "email_from": getattr(_config, "email_from", ""),
         "email_backend": getattr(_config, "email_backend", "ses"),
@@ -126,6 +158,11 @@ def get_settings():
         "languagetool_url": getattr(_config, "languagetool_url", "http://127.0.0.1:8081"),
         "grammar_language": getattr(_config, "grammar_language", "en-US"),
         "polish_model": getattr(_config, "polish_model", "claude:claude-sonnet-4-6"),
+        # Jev: read from the store -- chapter_triage consults it live.
+        "jev_model": settings_store.get("jev_model", "jev-latest"),
+        "jev_chapter_conflict": settings_store.get("jev_chapter_conflict", "auto"),
+        "jev_conflict_confidence": settings_store.get("jev_conflict_confidence", 0.9),
+        "has_typesafe_key": bool(os.getenv("TYPESAFE_KEY", "").strip()),
     }
 
 
@@ -138,6 +175,7 @@ class SettingsUpdate(BaseModel):
     public_site_name: Optional[str] = None
     comment_automod_enabled: Optional[bool] = None
     comment_automod_model: Optional[str] = None
+    comment_automod_jev_confidence: Optional[float] = None
     pronoun_repair_model: Optional[str] = None
     email_from: Optional[str] = None
     email_backend: Optional[str] = None
@@ -157,6 +195,10 @@ class SettingsUpdate(BaseModel):
     languagetool_url: Optional[str] = None
     grammar_language: Optional[str] = None
     polish_model: Optional[str] = None
+    jev_model: Optional[str] = None
+    jev_chapter_conflict: Optional[str] = None
+    jev_conflict_confidence: Optional[float] = None
+
 
 
 @router.put("")
@@ -164,6 +206,11 @@ def update_settings(req: SettingsUpdate):
     # Only forward keys the caller actually set, and only those known to the
     # store. settings_store.update() handles JSON persistence + os.environ sync.
     updates = {k: v for k, v in req.model_dump(exclude_unset=True).items() if v is not None}
+    if "jev_chapter_conflict" in updates and updates["jev_chapter_conflict"] not in ("off", "suggest", "auto"):
+        raise HTTPException(status_code=400, detail="jev_chapter_conflict must be off, suggest or auto")
+    for key in ("jev_conflict_confidence", "comment_automod_jev_confidence"):
+        if key in updates and not 0 < updates[key] <= 1:
+            raise HTTPException(status_code=400, detail=f"{key} must be in (0, 1]")
     if updates:
         settings_store.update(updates)
     # Mirror onto the in-memory _config object so callers reading _config.X see

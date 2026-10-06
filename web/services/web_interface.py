@@ -303,6 +303,57 @@ class WebInterface(UserInterface):
             entities=entity_links,
         )
 
+    def _jev_triage_conflict(self, book_id, book_title, chapter_number,
+                             existing_title, existing_lines, new_title, new_lines):
+        """Classify both sides of a chapter conflict with Jev.
+
+        Returns ``(decision, jev)``: ``decision`` is "proceed" / "cancel" when
+        the conflict was resolved automatically, else None; ``jev`` is the
+        triage result to show in the conflict panel (None when triage is off).
+        Every verdict is logged, acted on or not, for threshold calibration.
+        """
+        import chapter_triage
+        if not chapter_triage.enabled():
+            return None, None
+
+        result = chapter_triage.triage(existing_title, existing_lines, new_title, new_lines)
+        if result.get("error"):
+            self.logger.warning(
+                f"Jev triage failed for book {book_id} ch{chapter_number}: {result['error']}")
+            return None, result
+
+        mode = chapter_triage.mode()
+        ex, inc, decision = result["existing"], result["incoming"], result["decision"]
+        self.logger.info(
+            f"Jev triage book {book_id} ch{chapter_number}: "
+            f"existing={ex['choice']}({ex['confidence']:.2f}) "
+            f"incoming={inc['choice']}({inc['confidence']:.2f}) "
+            f"threshold={result['threshold']:.2f} decision={decision} mode={mode} "
+            f"p_existing={ex['probabilities']} p_incoming={inc['probabilities']}"
+        )
+        if mode != "auto" or not decision:
+            return None, result
+
+        if decision == "proceed":
+            action = (f"existing chapter is solely an author's note/ad ({ex['confidence']:.2f}) "
+                      f"and the incoming one is story ({inc['confidence']:.2f}) — overwriting")
+        else:
+            action = (f"incoming chapter is solely an author's note/ad ({inc['confidence']:.2f}) "
+                      f"and the existing one is story ({ex['confidence']:.2f}) — skipping the queue item")
+        self.job_manager.log_activity(
+            type='info',
+            message=f'Chapter {chapter_number} of "{book_title or book_id}" conflict resolved by Jev: {action}.',
+            book_id=book_id, chapter=chapter_number, book_name=book_title,
+        )
+        self.job_manager.send_message_sync({
+            "type": "chapter_conflict_auto_resolved",
+            "book_id": book_id,
+            "chapter_number": chapter_number,
+            "decision": decision,
+            "jev": result,
+        })
+        return decision, result
+
     def check_chapter_conflict(self, chapter_text):
         """
         If a chapter with this (book_id, chapter_number) already exists and
@@ -375,6 +426,21 @@ class WebInterface(UserInterface):
                 first = str(chapter_text[0]).strip()
                 new_title = first.lstrip('#').strip() if first.startswith('#') else first
 
+            # Jev triage: when one side is confidently nothing but an author's
+            # note / ad and the other is story, resolve without asking. Skipped
+            # on a re-prompt after a bad renumber -- the user is already here.
+            jev = None
+            if not error_message:
+                auto_decision, jev = self._jev_triage_conflict(
+                    book_id, book_title, chapter_number,
+                    existing.get('title') or '', existing_untranslated,
+                    new_title, new_untranslated,
+                )
+                if auto_decision == "proceed":
+                    return True
+                if auto_decision == "cancel":
+                    return False
+
             payload = {
                 "book_id": book_id,
                 "chapter_number": chapter_number,
@@ -384,6 +450,8 @@ class WebInterface(UserInterface):
                 "new_title": new_title,
                 "new_untranslated": new_untranslated,
             }
+            if jev:
+                payload["jev"] = jev
             if error_message:
                 payload["error"] = error_message
                 error_message = None

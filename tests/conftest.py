@@ -87,6 +87,17 @@ def no_live_footnote_scan(monkeypatch):
     monkeypatch.setattr(footnote_scan_worker, "enqueue", lambda job: None)
 
 
+@pytest.fixture(autouse=True)
+def no_live_jev(monkeypatch):
+    """Keep chapter-conflict triage from calling the live Jev API.
+
+    Every conflict test goes through check_chapter_conflict, which classifies
+    both sides when TYPESAFE_KEY is set. Tests of the triage itself set the key
+    and stub ``requests.post`` / ``chapter_triage.triage`` themselves.
+    """
+    monkeypatch.delenv("TYPESAFE_KEY", raising=False)
+
+
 @pytest.fixture
 def fake_logger():
     return FakeLogger()

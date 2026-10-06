@@ -44,3 +44,7 @@ OpenCC>=1.1.6
 # starlette 0.31 / uvicorn 0.27 the web app runs on; install with
 #   pip install --user --break-system-packages -c <(printf "starlette==0.31.1\nuvicorn==0.27.1\n") "mcp==1.12.4"
 mcp==1.12.4
+
+# Jev (TypeSafe System One) is called with plain `requests` (jev_client.py).
+# Do NOT install typesafe-sdk: its httpcore2 dependency requires h11>=0.16 and
+# would shadow the apt h11 0.14 that uvicorn runs on.

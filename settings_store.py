@@ -25,6 +25,9 @@ SCHEMA = {
     "pronoun_repair_model":    ("PRONOUN_REPAIR_MODEL",    "claude:claude-haiku-4-5", str),
     "comment_automod_enabled": ("COMMENT_AUTOMOD_ENABLED", False,                     bool),
     "comment_automod_model":   ("COMMENT_AUTOMOD_MODEL",   "claude:claude-haiku-4-5", str),
+    # Only read when comment_automod_model is "jev"/"jev:<model>": a Jev verdict
+    # below this confidence leaves the comment pending as "unsure".
+    "comment_automod_jev_confidence": ("COMMENT_AUTOMOD_JEV_CONFIDENCE", 0.9,        float),
     "unit_cleaning_model":     ("UNIT_CLEANING_MODEL",     "claude:claude-haiku-4-5", str),
     "character_fix_model":     ("CHARACTER_FIX_MODEL",     "claude:claude-opus-4-8",  str),
     "overload_retry_wait_seconds": ("OVERLOAD_RETRY_WAIT_SECONDS", 300,             int),
@@ -65,6 +68,13 @@ SCHEMA = {
     # The URL is the t9-mcp-readonly.service endpoint.
     "claude_code_mcp_tools":   ("CLAUDE_CODE_MCP_TOOLS",   False,                     bool),
     "claude_code_mcp_url":     ("CLAUDE_CODE_MCP_URL",     "http://127.0.0.1:8766/mcp", str),
+    # Jev (TypeSafe System One) -- cheap classification, never translation.
+    # The key is a secret and lives in .env as TYPESAFE_KEY. Chapter-conflict
+    # triage: off | suggest (show Jev's verdict in the panel) | auto (resolve
+    # confident author's-note/ad vs story conflicts without asking).
+    "jev_model":               ("JEV_MODEL",               "jev-latest",              str),
+    "jev_chapter_conflict":    ("JEV_CHAPTER_CONFLICT",    "auto",                    str),
+    "jev_conflict_confidence": ("JEV_CONFLICT_CONFIDENCE", 0.9,                       float),
     "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),
@@ -140,6 +150,8 @@ def _coerce_from_env(raw, t):
         return raw.lower() in ("1", "true", "yes")
     if t is int:
         return int(raw)
+    if t is float:
+        return float(raw)
     return raw
 
 

@@ -20,6 +20,7 @@ export default function ChapterConflictPanel({
   newTitle,
   newUntranslated,
   errorMessage,
+  jev,
   onDone,
 }) {
   const [submitting, setSubmitting] = useState(false)
@@ -134,7 +135,10 @@ export default function ChapterConflictPanel({
           {/* Existing */}
           <div className="flex flex-col border-r border-slate-700 min-h-0">
             <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/60 shrink-0">
-              <div className="text-xs uppercase tracking-wide text-slate-500">Existing chapter</div>
+              <div className="flex items-center gap-2">
+                <div className="text-xs uppercase tracking-wide text-slate-500 flex-1">Existing chapter</div>
+                <JevBadge verdict={jev?.existing} threshold={jev?.threshold} />
+              </div>
               <div className="text-sm text-slate-200 font-medium truncate" title={eTitle}>
                 {eTitle || <span className="text-slate-500 italic">(no title)</span>}
               </div>
@@ -147,7 +151,10 @@ export default function ChapterConflictPanel({
           {/* Incoming */}
           <div className="flex flex-col min-h-0">
             <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/60 shrink-0">
-              <div className="text-xs uppercase tracking-wide text-slate-500">Queue item (incoming)</div>
+              <div className="flex items-center gap-2">
+                <div className="text-xs uppercase tracking-wide text-slate-500 flex-1">Queue item (incoming)</div>
+                <JevBadge verdict={jev?.incoming} threshold={jev?.threshold} />
+              </div>
               <div className="text-sm text-slate-200 font-medium truncate" title={nTitle}>
                 {nTitle || <span className="text-slate-500 italic">(no title)</span>}
               </div>
@@ -157,6 +164,9 @@ export default function ChapterConflictPanel({
             </pre>
           </div>
         </div>
+
+        {/* Jev triage — why this conflict was not resolved automatically */}
+        {jev && <JevNote jev={jev} />}
 
         {/* Error banner */}
         {errorMsg && (
@@ -306,6 +316,49 @@ function ConflictArrow({ direction }) {
       >
         {label}
       </span>
+    </div>
+  )
+}
+
+
+const JEV_LABELS = { story: 'Story', filler: "Author's note / ad" }
+const JEV_SUGGESTIONS = { proceed: 'Overwrite existing', cancel: 'Skip queue item' }
+
+// Jev's verdict on one pane. Amber when below the auto-resolve threshold.
+function JevBadge({ verdict, threshold }) {
+  if (!verdict?.choice) return null
+  const confident = verdict.confidence >= (threshold ?? 0.9)
+  const tone = confident
+    ? (verdict.choice === 'filler' ? 'bg-rose-900/40 text-rose-200 border-rose-700/50'
+                                   : 'bg-emerald-900/40 text-emerald-200 border-emerald-700/50')
+    : 'bg-amber-900/30 text-amber-200 border-amber-700/50'
+  return (
+    <span
+      className={`text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap ${tone}`}
+      title={`Jev probabilities: ${JSON.stringify(verdict.probabilities || {})}`}
+    >
+      Jev: {JEV_LABELS[verdict.choice] || verdict.choice} {verdict.confidence.toFixed(2)}
+    </span>
+  )
+}
+
+function JevNote({ jev }) {
+  if (jev.error) {
+    return (
+      <div className="px-5 py-2 border-t border-slate-700 text-xs text-slate-500 shrink-0">
+        Jev triage unavailable: {jev.error}
+      </div>
+    )
+  }
+  const s = jev.suggestion
+  if (!s) return null
+  const below = !jev.decision
+  return (
+    <div className="px-5 py-2 border-t border-slate-700 bg-slate-800/40 text-xs text-slate-300 shrink-0">
+      Jev suggests: <span className="font-medium text-slate-100">{JEV_SUGGESTIONS[s] || s}</span>
+      {below
+        ? <span className="text-slate-500"> (confidence below {Number(jev.threshold ?? 0.9).toFixed(2)})</span>
+        : <span className="text-slate-500"> (auto-resolve is off)</span>}
     </div>
   )
 }

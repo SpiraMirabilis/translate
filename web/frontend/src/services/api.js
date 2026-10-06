@@ -196,6 +196,8 @@ export const api = {
   listProviders:    ()           => get('/api/settings/providers'),
   setApiKey:        (name, body) => post(`/api/settings/providers/${name}/key`, body),
   testProvider:     (name)       => post(`/api/settings/providers/${name}/test`, {}),
+  setTypesafeKey:   (body)       => post('/api/settings/typesafe-key', body),
+  testTypesafe:     ()           => post('/api/settings/typesafe-test', {}),
   exportDb:         ()           => get('/api/settings/db/export-json'),
 
   // Sitemap (admin-only — the public process has no such route, so a crawler
