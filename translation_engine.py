@@ -793,12 +793,47 @@ class TranslationEngine:
 
         return prompt
     
+    # A run of these is layout or punctuation, never degeneration: horizontal
+    # rules, scene-break ellipsis, box drawing. Raws routinely close a chapter
+    # with the author's afterword behind a line of dashes, the translator
+    # reproduces it faithfully, and `-` x17 read as a token loop aborted an
+    # otherwise perfect stream mid-JSON -- which reaches the user as malformed
+    # JSON truncated at an arbitrary point (book 99, every model, 2026-09-17).
+    REPETITION_FORMAT_CHARS = frozenset(
+        "-=_*~.·•∙…—―#+<>/\\|"
+        # box drawing and block elements: ─ ━ ═ ■ ...
+        + "".join(chr(c) for c in range(0x2500, 0x25A1))
+    )
+
+    # Minimum run of a NON-layout character to call it a loop. Onomatopoeia is
+    # why this is not 10: "Kyaaaa...ack" carries 30 a's and "Bzzzz...z" 20 z's
+    # in translations we accepted, and a scream is not a malfunction. A real
+    # loop runs until the output cap, so it clears this by an order of
+    # magnitude and still fills the 200-char window it is measured in.
+    REPETITION_MIN_RUN = 40
+
+    @property
+    def repetition_guard(self) -> bool:
+        """Is the streamed-output repetition guard armed?
+
+        Off by default. It was added for a DeepSeek generation that looped on a
+        phrase until it hit the output cap; current models do not, and the guard
+        can only abort a stream, never repair one -- on a false positive it
+        burns the whole retry budget and fails the chapter anyway.
+        """
+        return bool(getattr(self.config, 'repetition_guard', False))
+
     def _detect_repetition(self, text: str) -> bool:
         """Detect pathological token repetition loops in streamed output."""
         tail = text[-200:]
-        # Non-whitespace single character repeated 10+ times: 框框框框框框框框框框
-        if re.search(r'([^\s])\1{9,}', tail):
-            return True
+        # A single character repeated past anything prose does: 框框框框框...
+        # Scanned with finditer, not search: a horizontal rule earlier in the
+        # tail must not mask a real loop behind it.
+        for m in re.finditer(r'([^\s])\1{9,}', tail):
+            if m.group(1) in self.REPETITION_FORMAT_CHARS:
+                continue
+            if len(m.group(0)) >= self.REPETITION_MIN_RUN:
+                return True
         # CJK phrase of 2-10 chars repeated 4+ times: 改革开放改革开放改革开放改革开放
         if re.search(r'([\u4e00-\u9fff\u3400-\u4dbf]{2,10})\1{3,}', tail):
             return True
@@ -1680,7 +1715,9 @@ class TranslationEngine:
                                     token_count = len(response_text) // 4
 
                                     # Check for repetition loop every 20 chunks
-                                    if chunk_count % 20 == 0 and self._detect_repetition(response_text):
+                                    if (self.repetition_guard
+                                            and chunk_count % 20 == 0
+                                            and self._detect_repetition(response_text)):
                                         print(f"\n⚠️  Repetition loop detected at ~{token_count} tokens. Aborting stream...")
                                         repetition_detected = True
                                         break

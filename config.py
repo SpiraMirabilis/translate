@@ -71,6 +71,12 @@ class TranslationConfig:
         self.entity_note_updates = os.getenv("ENTITY_NOTE_UPDATES", "1").lower() in ("1", "true", "yes")
         self.footnote_inline_scan = os.getenv("FOOTNOTE_INLINE_SCAN", "1").lower() in ("1", "true", "yes")
 
+        # Abort a streamed translation that looks like a token-repetition loop.
+        # Off by default: it was built for a DeepSeek generation that looped,
+        # and it false-fires on faithful reproductions of a source's own
+        # horizontal rules. See TranslationEngine.repetition_guard.
+        self.repetition_guard = os.getenv("REPETITION_GUARD", "0").lower() in ("1", "true", "yes")
+
         # Traditional → Simplified Chinese preprocessing (global default; per-book overrides via books.trad_to_simp)
         self.trad_to_simp = os.getenv("TRAD_TO_SIMP", "0").lower() in ("1", "true", "yes")
 

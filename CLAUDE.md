@@ -473,6 +473,41 @@ When a provider returns a transient 529 "Overloaded" (the Claude Code CLI prints
 - **Setting**: `overload_retry_wait_seconds` (settings.json, default `300`), mirrored to env `OVERLOAD_RETRY_WAIT_SECONDS`.
 - **Detection**: `providers.base.looks_overloaded()` + `OverloadedError`; providers raise `OverloadedError`, and the engine also sniffs response text / exception strings as a safety net. Applies to streaming, non-streaming, and entity-extraction calls.
 
+### Repetition guard (off by default)
+The streamed-output repetition detector (`TranslationEngine._detect_repetition`,
+called from the stream loop) aborts a chunk that looks like a token-repetition
+loop. It was built for a DeepSeek generation that looped on a phrase until it hit
+the output cap. **It is off by default since 2026-09-17** —
+`repetition_guard` in settings.json (Settings → Translation Safeguards), env
+`REPETITION_GUARD`.
+- ⚠️ **A false positive presents as an output-token problem and is not one.** The
+  guard `break`s out of the stream mid-JSON, so the user sees a malformed
+  response truncated at an arbitrary point. Because the abort is client-side it
+  reproduces on **every** provider, which makes it look like a model limit. Book
+  99 failed ch45/48/49/53 this way across `claude-opus-5` and `kimi-k3` — 18 of
+  18 non-empty failures — because those raws close a chapter with the author's
+  afterword behind a **17-dash horizontal rule** that the translator faithfully
+  reproduced.
+- **It can only abort, never repair.** On detection the chunk is retried with the
+  same prompt; after `MAX_STREAM_RETRIES` it raises. So a true loop fails the
+  chapter either way and the guard's only real benefit is cutting a runaway
+  stream off early to save tokens.
+- **Layout is exempt, and the bar is high.** `REPETITION_FORMAT_CHARS`
+  (dashes, `…`, box drawing U+2500–U+25A0, …) is never a loop at any length;
+  everything else needs `REPETITION_MIN_RUN` (40) consecutive characters. 10 was
+  below ordinary prose here — accepted translations carry 30-wide ellipsis scene
+  breaks and screams like `Kyaaa…ack` (30 a's) and `Bzzz…z` (20 z's), book 42
+  especially. The scan is `finditer`, not `search`, so a rule early in the
+  200-char tail can't mask a real loop behind it.
+- **Diagnosing the next one**: `api_calls` stores every prompt and response.
+  `success=0` with a **non-empty** `response_text` means the guard fired (or the
+  response was empty) — not that the provider failed. Replay the stored text
+  through `_detect_repetition` to confirm.
+- **Sources carrying a 10+ single-char run** (the landmine set, as of
+  2026-09-17): book 27 — 340 of 977 chapters, book 83 — 23, book 36 — 11,
+  book 99 — 4, book 79 — 2.
+- Covered by `tests/test_repetition_guard.py`.
+
 ### Supported Providers
 - **OpenAI**: GPT-4, GPT-3.5-turbo, etc. (max_chars: 5000)
 - **DeepSeek**: deepseek-chat (via OpenAI-compatible API) (max_chars: 5000)

@@ -51,6 +51,7 @@ SCHEMA = {
     # translation pass. Which books do it, and with what prompt, is per book
     # (the footnote_scan module's scan_mode); this only takes it away.
     "footnote_inline_scan":    ("FOOTNOTE_INLINE_SCAN",    True,                      bool),
+    "repetition_guard":        ("REPETITION_GUARD",        False,                     bool),
     "disable_content_cache":   ("DISABLE_CONTENT_CACHE",   False,                     bool),
     "disable_media_cache":     ("DISABLE_MEDIA_CACHE",     False,                     bool),
     "wp_url":                  ("WP_URL",                  "",                        str),

@@ -252,6 +252,24 @@ export default function Settings() {
         </section>
       )}
 
+      {/* Translation safeguards */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Translation Safeguards</h2>
+          <div className="card p-4 space-y-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.repetition_guard === true}
+                onChange={e => setSettings(s => ({ ...s, repetition_guard: e.target.checked }))}
+              />
+              Abort a streamed translation that looks like a repetition loop
+              <span className="text-xs text-slate-500 font-normal">— built for a DeepSeek generation that looped on a phrase until it hit the output cap. It can only abort a stream, never repair one, so a false positive burns the retry budget and fails the chapter with truncated JSON. Leave off unless a model starts looping.</span>
+            </label>
+          </div>
+        </section>
+      )}
+
       {/* WordPress */}
       <WordPressSection />
 
