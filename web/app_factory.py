@@ -212,6 +212,10 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
                 "authenticated": False,
                 "auth_required": True,
                 "public_library": bool(settings_store.get("public_library", True)),
+                # Tells the SPA it is running on the reader process, where
+                # "/" renders the Library in place instead of the admin
+                # login form (the root must not redirect).
+                "public_only": True,
             }
     else:
         # Auth — must be added after CORS so CORS headers are still set on 401s
@@ -546,16 +550,18 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
                 html = _index_for_book(m.group("kind"), int(m.group("book")), chapter)
                 if html is not None:
                     return HTMLResponse(html)
-            elif _library_path_re.match(full_path):
+            elif _library_path_re.match(full_path) or (public_only and not full_path):
+                # The public root IS the library, served in place: a root
+                # that 302s to another path is a redirect on the site's
+                # most-linked URL, which Google treats as the weaker signal
+                # (and it costs every reader an extra round trip). The
+                # canonical tag still names /library, so the two paths
+                # don't compete for indexing.
                 html = _index_for_library()
                 if html is not None:
                     return HTMLResponse(html)
             if public_only:
-                if not full_path:
-                    # Direct hit on the process root (Apache normally
-                    # rewrites / to /library before proxying).
-                    return RedirectResponse("/library", status_code=302)
-                if not _is_public_spa_path(full_path):
+                if full_path and not _is_public_spa_path(full_path):
                     if os.path.isfile(notfound_html):
                         return FileResponse(notfound_html, status_code=404)
                     return HTMLResponse("<h1>Not found</h1>", status_code=404)

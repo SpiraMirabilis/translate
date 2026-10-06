@@ -325,6 +325,11 @@ class TestCanonicalTags:
     def test_library_route(self, public_client):
         assert self._canonical(public_client.get("/library").text) == f"{BASE}/library"
 
+    def test_root_canonicalises_to_the_library(self, public_client):
+        # The reader root serves the Library in place, so it needs the
+        # canonical tag or "/" and "/library" compete as two URLs for one page.
+        assert self._canonical(public_client.get("/").text) == f"{BASE}/library"
+
     def test_rss_autodiscovery_still_spliced(self, public_client, seeded_book):
         html = public_client.get(f"/library/read/{seeded_book}/2").text
         assert f'href="/api/public/books/{seeded_book}/feed.rss?around=2"' in html

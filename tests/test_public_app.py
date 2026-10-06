@@ -116,7 +116,10 @@ class TestSpaCatchAll:
         for path in ("/queue", "/books", "/entities", "/settings"):
             assert pub_client.get(path).status_code == 404, path
 
-    def test_root_redirects_to_library(self, pub_client):
+    def test_root_serves_the_library_without_redirecting(self, pub_client):
+        # "/" must answer with the page, not a hop to /library: a redirecting
+        # root is the weaker signal for crawlers and an extra round trip for
+        # every reader who types the bare domain.
         resp = pub_client.get("/", follow_redirects=False)
-        assert resp.status_code == 302
-        assert resp.headers["location"] == "/library"
+        assert resp.status_code == 200
+        assert "<html" in resp.text.lower()

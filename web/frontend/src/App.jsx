@@ -1,6 +1,6 @@
 import {
   createBrowserRouter, createRoutesFromElements, RouterProvider,
-  Route, Navigate, Outlet,
+  Route, Navigate, Outlet, useLocation,
 } from 'react-router-dom'
 import {
   useState, useEffect, useRef, useCallback, createContext, useContext,
@@ -153,8 +153,16 @@ function WsProvider({ children }) {
 // ------------------------------------------------------------------
 function AdminGate() {
   const { authState, onLoginSuccess } = useContext(AuthContext)
+  const { pathname } = useLocation()
   const needsLogin = authState.auth_required && !authState.authenticated
   if (needsLogin) {
+    // On the public reader process "/" IS the library: the backend serves
+    // the Library shell there rather than redirecting (a 302 on the site's
+    // root is a weak signal to crawlers), so render it in place. Only that
+    // process reports public_only, so the admin host keeps its login at "/".
+    if (authState.public_only && authState.public_library && pathname === '/') {
+      return <Library />
+    }
     return <Login onSuccess={onLoginSuccess} />
   }
   return (
