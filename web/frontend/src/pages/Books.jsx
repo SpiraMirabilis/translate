@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../services/api'
 import { bustUrl } from '../services/cacheBust'
 import {
   Plus, Trash2, Edit2, ChevronDown, ChevronRight, PenLine, Globe, Clock,
-  BookOpen, Loader2, CheckCircle2, Sparkles, Search, Eye, EyeOff, Square, CheckSquare, Code, MessageCircle, MessageCircleOff
+  BookOpen, Loader2, CheckCircle2, Sparkles, Search, Eye, EyeOff, Square, CheckSquare, Code, MessageCircle, MessageCircleOff, X
 } from 'lucide-react'
 import GlobalSearchModal from '../components/GlobalSearchModal'
 import RetroactiveReviewModal from '../components/RetroactiveReviewModal'
@@ -58,6 +58,26 @@ export default function Books() {
   const booksQuery = useQuery({ queryKey: ['books'], queryFn: () => api.listBooks() })
   const books = booksQuery.data?.books || []
   const loading = booksQuery.isPending
+
+  // Book-list filter. Kept in sessionStorage so it survives expanding a book
+  // (/books → /books/:id) and coming back from the chapter editor.
+  const [bookFilter, setBookFilterState] = useState(() => {
+    try { return sessionStorage.getItem('books.filter') || '' } catch { return '' }
+  })
+  const setBookFilter = (v) => {
+    setBookFilterState(v)
+    try { sessionStorage.setItem('books.filter', v) } catch { /* storage unavailable */ }
+  }
+  const filteredBooks = useMemo(() => {
+    const q = bookFilter.trim().toLowerCase()
+    if (!q) return books
+    return books.filter(b =>
+      String(b.id) === q ||
+      (b.title || '').toLowerCase().includes(q) ||
+      (b.author || '').toLowerCase().includes(q) ||
+      (b.tags || []).some(t => String(t).toLowerCase().includes(q))
+    )
+  }, [books, bookFilter])
   const invalidateBooks = () => queryClient.invalidateQueries({ queryKey: ['books'] })
 
   const chaptersQuery = useQuery({
@@ -178,10 +198,13 @@ export default function Books() {
   const selectedCount = (bookId) => getSelected(bookId).size
 
   const toggleChapter = useCallback((bookId, chapterNum, shiftKey) => {
+    // Read the anchor now: the updater below runs later (during the next
+    // render), after the ref has already moved on to this click.
+    const lastChecked = lastCheckedRef.current[bookId]
+    lastCheckedRef.current[bookId] = chapterNum
     setSelected(prev => {
       const cur = new Set(prev[bookId] || [])
       const chapterList = (chaptersRef.current[bookId] || []).map(c => c.chapter)
-      const lastChecked = lastCheckedRef.current[bookId]
       if (shiftKey && lastChecked != null) {
         const lastIdx = chapterList.indexOf(lastChecked)
         const curIdx = chapterList.indexOf(chapterNum)
@@ -195,7 +218,6 @@ export default function Books() {
       }
       return { ...prev, [bookId]: cur }
     })
-    lastCheckedRef.current[bookId] = chapterNum
   }, [])
 
   const handleRetranslateChapter = useCallback((bookId, chapterNum) => {
@@ -277,7 +299,35 @@ export default function Books() {
         </div>
       ) : (
         <div className="space-y-2">
-          {books.map(book => (
+          <div className="relative mb-3">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <input
+              type="text"
+              value={bookFilter}
+              onChange={e => setBookFilter(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') setBookFilter('') }}
+              placeholder="Filter books by title, author, tag, or ID…"
+              className="input w-full pl-8 pr-8"
+            />
+            {bookFilter && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                onClick={() => setBookFilter('')}
+                title="Clear filter (Esc)"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          {bookFilter.trim() && (
+            <div className="text-xs text-slate-500 -mt-1 mb-2">
+              {filteredBooks.length} of {books.length} books
+            </div>
+          )}
+          {filteredBooks.length === 0 && (
+            <div className="card p-6 text-center text-sm text-slate-500">No books match “{bookFilter.trim()}”.</div>
+          )}
+          {filteredBooks.map(book => (
             <div key={book.id} className="card">
               {/* Book row */}
               <div className="flex items-center gap-3 p-3 md:p-4">
@@ -583,6 +633,7 @@ const ChapterRow = memo(function ChapterRow({ bookId, isOriginal, ch, isChecked,
       <td className="py-2 w-8 text-center">
         <button
           className="p-0.5 text-slate-500 hover:text-slate-300"
+          onMouseDown={(e) => { if (e.shiftKey) e.preventDefault() }}
           onClick={(e) => onToggle(bookId, ch.chapter, e.shiftKey)}
         >
           {isChecked
