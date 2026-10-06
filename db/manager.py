@@ -11,6 +11,7 @@ from db.footnotes_repo import FootnotesRepo
 from db.comments_repo import CommentsRepo
 from db.recommendations_repo import RecommendationsRepo
 from db.recommendation_replies_repo import RecommendationRepliesRepo
+from db.error_reports_repo import ErrorReportsRepo
 from db.logs_repo import LogsRepo
 from db.wp_repo import WpStateRepo
 from db.revisions_repo import ChapterRevisionsRepo
@@ -21,7 +22,8 @@ from db.chapter_entities_repo import ChapterEntitiesRepo
 
 class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
                       FootnotesRepo, CommentsRepo, RecommendationsRepo,
-                      RecommendationRepliesRepo, LogsRepo, WpStateRepo,
+                      RecommendationRepliesRepo, ErrorReportsRepo,
+                      LogsRepo, WpStateRepo,
                       ChapterRevisionsRepo, PolishJobsRepo,
                       FootnoteCandidatesRepo, ChapterEntitiesRepo, DatabaseCore):
     """Class to manage database operations including entities, books, and chapters using SQLite"""

@@ -32,7 +32,8 @@ from logger import Logger
 from database import DatabaseManager
 
 from web.services.view_logger import ViewLogger
-from web.api import health, public, recommendations_public, comments_public
+from web.api import (health, public, recommendations_public, comments_public,
+                     error_reports_public)
 
 # ------------------------------------------------------------------
 # Application setup
@@ -49,6 +50,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
     view_logger.start()
     public.init(entity_manager, config, view_logger)
     recommendations_public.init(entity_manager)
+    error_reports_public.init(entity_manager)
     comments_public.init(entity_manager, config)
     health.init(entity_manager)
 
@@ -62,6 +64,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             translation, books, entities, queue_api, settings_api,
             dictionary_api, activity_log_api, api_calls, wordpress_api,
             recommendations_admin, reader_stats_api, comments_admin,
+            error_reports_admin,
             revisions, grammar, mail_ingest, deps, footnote_candidates,
             sitemap,
         )
@@ -118,6 +121,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # broadcasts and logs through the hub directly.
         wordpress_api.init(config, entity_manager, job_hub)
         recommendations_admin.init(entity_manager)
+        error_reports_admin.init(entity_manager)
         mail_ingest.init(entity_manager)
         reader_stats_api.init(entity_manager)
         comments_admin.init(entity_manager)
@@ -240,6 +244,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             translation, books, entities, queue_api, settings_api,
             dictionary_api, activity_log_api, api_calls, wordpress_api,
             recommendations_admin, reader_stats_api, comments_admin,
+            error_reports_admin,
             revisions, grammar, mail_ingest, footnote_candidates, sitemap,
         )
         app.include_router(translation.router)
@@ -254,6 +259,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         app.include_router(api_calls.router)
         app.include_router(wordpress_api.router)
         app.include_router(recommendations_admin.router)
+        app.include_router(error_reports_admin.router)
         app.include_router(mail_ingest.router)
         app.include_router(reader_stats_api.router)
         app.include_router(comments_admin.router)
@@ -266,6 +272,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
     app.include_router(health.router)
     app.include_router(public.router)
     app.include_router(recommendations_public.router)
+    app.include_router(error_reports_public.router)
     app.include_router(comments_public.router)
 
     # ------------------------------------------------------------------

@@ -227,6 +227,49 @@ Per-chapter visibility via `chapters.published_at` (migration 11): **NULL = draf
 - **Public gating**: `published_only=True` param on `list_chapters`/`get_chapter`/`get_chapters_bulk`/`search_book_chapters` (public.py passes it everywhere), RSS feeds gated in `list_recent_translated_chapters`, public Library uses `published_chapter_count`/`last_published_date` from list_books, comments on unpublished chapters 404, public EPUB generates published-only and regenerates when a scheduled chapter crosses its publish time (version basis = max(modified_date, latest_published_at)).
 - **UI**: PublishMenu chip (Draft/Scheduled/Published + publish-now/schedule/unpublish) in both editors' headers (`web/frontend/src/components/PublishMenu.jsx` — note `localIso()`: never use `toISOString()`, UTC breaks the naive-local comparisons); draft/scheduled chips on Books chapter rows; batch **Publish** action on Books with `BatchPublishModal` (start time + stagger interval).
 
+### Reader error reports
+Readers report translation errors from the Reader toolbar (Flag icon) or the
+public book page; the admin triages them at **/error-reports**. `error_reports`
+(migration 21): `book_id`, `chapter_number` (**NULL = book-wide**), `report_type`,
+`quote`, `problem`, `suggested_fix`, `reporter_email`, `status`
+(new|reviewed|resolved|dismissed), `ip`/`user_agent` (the comments precedent, not
+the recommendations one — an abusive reporter has to be identifiable).
+
+- ⚠️ **The optional `quote` is the whole point.** A chapter number alone costs a
+  full re-read to act on; a quoted string becomes a Chapter Editor deep link
+  (`/books/{id}/chapters/{n}/edit?search=<quote>&searchScope=translated`, the same
+  params `GlobalSearchModal` builds), so the admin lands on the reported wording.
+  `SelectionReportButton.jsx` makes it nearly free: highlight prose in the reader
+  and a "Report this" pill appears over the selection, pre-filling the field.
+  Reporting with no selection works exactly as well — the pill is a shortcut into
+  the same modal, not the way in. The pill binds to `bodyRef` (the prose subtree),
+  **not** `contentRef` (the scroll container), and uses `onMouseDown` because a
+  `click` would collapse the selection first.
+- **`report_type`** — wrong_term | mistranslation | typo | formatting |
+  missing_text | other. Enforced server-side (`REPORT_TYPES`) and mirrored in
+  `ReportErrorModal.jsx` / `ErrorReports.jsx`; the "wrong name/term" class is the
+  one that maps onto the entity-correction tooling.
+- **Public POST** `/api/public/error-reports` (`web/api/error_reports_public.py`,
+  both processes) uses the **comments** guard set, not the recommendations one:
+  `origin_check` plus 3/10min and 10/hour per IP, then Turnstile. Private books and
+  unpublished chapters 404 exactly as the rest of the public API does, so the
+  endpoint is never an oracle for drafts. Gates run *before* the captcha
+  round-trip; the rate limiter is in front of everything.
+- **Kill switch**: `error_reports_enabled` (settings.json, Settings → Reader error
+  reports). Read live per request, and `GET /api/public/error-reports/enabled`
+  (via `hooks/useErrorReportsEnabled.js`, one shared query key) hides both entry
+  points rather than offering a form the server will refuse.
+- **Admin**: `web/api/error_reports_admin.py` (`/api/error-reports`, admin process
+  only) + `pages/ErrorReports.jsx`, modelled on the Recommendations queue —
+  status tabs, admin notes, delete, and a `reports` nav badge on `new`.
+- The chapter picker in the modal is a local themed component, **not**
+  `components/ComboBox.jsx` — that one is hard-styled dark/admin and commits free
+  text, while this needs the reader's light/sepia themes and a chapter *number*.
+  Both host pages pass the `chapters` array they already hold, so the modal fetches
+  nothing.
+- Covered by `tests/test_error_reports.py` (which stubs `turnstile.verify` — the
+  suite must never make a live siteverify call).
+
 ### Queue Processing
 - Batch processing of multiple files/chapters
 - Resume functionality for interrupted translations

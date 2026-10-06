@@ -167,6 +167,15 @@ export default function Settings() {
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
+                checked={settings.error_reports_enabled !== false}
+                onChange={e => setSettings(s => ({ ...s, error_reports_enabled: e.target.checked }))}
+              />
+              Reader error reports
+              <span className="text-xs text-slate-500 font-normal">— let readers report translation errors from the reader and book pages</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={settings.disable_content_cache || false}
                 onChange={e => setSettings(s => ({ ...s, disable_content_cache: e.target.checked }))}
               />

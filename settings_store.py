@@ -41,6 +41,9 @@ SCHEMA = {
     "email_backend":           ("EMAIL_BACKEND",           "ses",                     str),
     "debug_mode":              ("DEBUG",                   False,                     bool),
     "public_library":          ("T9_PUBLIC_LIBRARY",       True,                      bool),
+    # May readers submit translation error reports (the Reader / book-page
+    # "Report an error" modal)? Read live by the public process on every POST.
+    "error_reports_enabled":   ("ERROR_REPORTS_ENABLED",   True,                      bool),
     "trad_to_simp":            ("TRAD_TO_SIMP",            False,                     bool),
     # May the translation model revise notes — and correct gender — on entities
     # it already knows? Every change is snapshotted (entity_note_revisions /

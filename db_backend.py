@@ -538,6 +538,29 @@ _COMMON_DDL_SQLITE = [
     )''',
     'CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status)',
 
+    # error_reports — reader-submitted translation error reports.
+    # chapter_number NULL = a book-wide issue; quote is the passage the reader
+    # highlighted, which the admin queue turns into a Chapter Editor deep link.
+    '''CREATE TABLE IF NOT EXISTS error_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER,
+        report_type TEXT NOT NULL,
+        quote TEXT,
+        problem TEXT NOT NULL,
+        suggested_fix TEXT,
+        reporter_email TEXT,
+        status TEXT DEFAULT 'new',
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        admin_notes TEXT,
+        ip TEXT,
+        user_agent TEXT,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_error_reports_status ON error_reports(status, id)',
+    'CREATE INDEX IF NOT EXISTS idx_error_reports_book ON error_reports(book_id, chapter_number)',
+
     # recommendation_replies — email replies from requesters, ingested from the
     # editor mbox by the mail-monitor daemon. recommendation_id NULL = unmatched.
     '''CREATE TABLE IF NOT EXISTS recommendation_replies (
@@ -991,6 +1014,29 @@ _COMMON_DDL_MYSQL = [
         admin_notes TEXT
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
     'CREATE INDEX idx_recommendations_status ON recommendations(status)',
+
+    # error_reports — reader-submitted translation error reports.
+    # chapter_number NULL = a book-wide issue; quote is the passage the reader
+    # highlighted, which the admin queue turns into a Chapter Editor deep link.
+    '''CREATE TABLE IF NOT EXISTS error_reports (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        chapter_number INTEGER,
+        report_type VARCHAR(32) NOT NULL,
+        quote TEXT,
+        problem TEXT NOT NULL,
+        suggested_fix TEXT,
+        reporter_email VARCHAR(254),
+        status VARCHAR(20) DEFAULT 'new',
+        created_at VARCHAR(50) NOT NULL,
+        reviewed_at VARCHAR(50),
+        admin_notes TEXT,
+        ip VARCHAR(45),
+        user_agent VARCHAR(256),
+        KEY idx_error_reports_status (status, id),
+        KEY idx_error_reports_book (book_id, chapter_number),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
     # recommendation_replies — email replies from requesters, ingested from the
     # editor mbox by the mail-monitor daemon. recommendation_id NULL = unmatched.

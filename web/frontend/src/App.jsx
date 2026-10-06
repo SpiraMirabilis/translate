@@ -32,6 +32,7 @@ const Queue           = lazy(() => import('./pages/Queue'))
 const Settings        = lazy(() => import('./pages/Settings'))
 const Help            = lazy(() => import('./pages/Help'))
 const Recommendations = lazy(() => import('./pages/Recommendations'))
+const ErrorReports = lazy(() => import('./pages/ErrorReports'))
 const CommentsAdmin   = lazy(() => import('./pages/CommentsAdmin'))
 const ApiCalls        = lazy(() => import('./pages/ApiCalls'))
 const ApiLogPage      = lazy(() => import('./pages/ApiLogPage'))
@@ -219,6 +220,7 @@ const router = createBrowserRouter(createRoutesFromElements(
         <Route path="entities" element={lazyEl(<Entities />)} />
         <Route path="queue" element={lazyEl(<Queue />)} />
         <Route path="recommendations" element={lazyEl(<Recommendations />)} />
+        <Route path="error-reports" element={lazyEl(<ErrorReports />)} />
         <Route path="comments" element={lazyEl(<CommentsAdmin />)} />
         <Route path="footnotes" element={lazyEl(<FootnoteCandidates />)} />
         <Route path="footnotes/:bookId" element={lazyEl(<FootnoteReview />)} />

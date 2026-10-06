@@ -6,7 +6,7 @@ import { useJobs } from '../hooks/useJobs'
 import { useWs, useSite } from '../App'
 import { api } from '../services/api'
 import {
-  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users, Asterisk
+  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users, Asterisk, Flag
 } from 'lucide-react'
 
 const nav = [
@@ -16,6 +16,7 @@ const nav = [
   { to: '/queue',           icon: ListChecks,        label: 'Queue'           },
   { to: '/recommendations', icon: MessageSquarePlus, label: 'Recommendations', badgeKey: 'recs' },
   { to: '/comments',        icon: MessageSquare,     label: 'Comments',        badgeKey: 'comments' },
+  { to: '/error-reports',   icon: Flag,              label: 'Error Reports',   badgeKey: 'reports' },
   { to: '/footnotes',       icon: Asterisk,          label: 'Footnotes'       },
   { to: '/api-logs',        icon: ScrollText,        label: 'API Logs'        },
   { to: '/reader-stats',    icon: Users,             label: 'Reader Stats'    },
@@ -30,6 +31,7 @@ export default function Layout() {
   const [newRecsCount, setNewRecsCount] = useState(0)
   const [unreadRepliesCount, setUnreadRepliesCount] = useState(0)
   const [pendingCommentsCount, setPendingCommentsCount] = useState(0)
+  const [newReportsCount, setNewReportsCount] = useState(0)
 
   useEffect(() => {
     const fetchCounts = () => {
@@ -42,6 +44,9 @@ export default function Layout() {
       api.countCommentsAdmin('pending')
         .then(data => setPendingCommentsCount(data.count || 0))
         .catch(e => console.warn('Failed to load comments badge count:', e))
+      api.countErrorReports('new')
+        .then(data => setNewReportsCount(data.count || 0))
+        .catch(e => console.warn('Failed to load error-report badge count:', e))
     }
     fetchCounts()
     const interval = setInterval(fetchCounts, 5 * 60 * 1000)
@@ -56,6 +61,7 @@ export default function Layout() {
   const badges = {
     recs: newRecsCount + unreadRepliesCount,
     comments: pendingCommentsCount,
+    reports: newReportsCount,
     jobs: active.length,
   }
 

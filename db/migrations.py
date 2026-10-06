@@ -683,6 +683,65 @@ def _m020_entity_gender_revisions(conn, cursor, backend, logger):
             pass
 
 
+_ERROR_REPORTS_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS error_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER,
+            report_type TEXT NOT NULL,
+            quote TEXT,
+            problem TEXT NOT NULL,
+            suggested_fix TEXT,
+            reporter_email TEXT,
+            status TEXT DEFAULT 'new',
+            created_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            admin_notes TEXT,
+            ip TEXT,
+            user_agent TEXT,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS error_reports (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER,
+            report_type VARCHAR(32) NOT NULL,
+            quote TEXT,
+            problem TEXT NOT NULL,
+            suggested_fix TEXT,
+            reporter_email VARCHAR(254),
+            status VARCHAR(20) DEFAULT 'new',
+            created_at VARCHAR(50) NOT NULL,
+            reviewed_at VARCHAR(50),
+            admin_notes TEXT,
+            ip VARCHAR(45),
+            user_agent VARCHAR(256),
+            KEY idx_error_reports_status (status, id),
+            KEY idx_error_reports_book (book_id, chapter_number),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m021_error_reports(conn, cursor, backend, logger):
+    """Reader-submitted translation error reports, triaged in the admin
+    Error Reports queue. chapter_number NULL means a book-wide report; `quote`
+    is the highlighted passage and is what makes a report actionable without
+    re-reading the chapter."""
+    cursor.execute(_ERROR_REPORTS_DDL[backend.name])
+    # SQLite needs its indexes created separately; MySQL declares them inline.
+    if backend.name == "sqlite":
+        for index_ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_error_reports_status ON error_reports(status, id)",
+            "CREATE INDEX IF NOT EXISTS idx_error_reports_book ON error_reports(book_id, chapter_number)",
+        ):
+            cursor.execute(index_ddl)
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -704,6 +763,7 @@ MIGRATIONS = [
     Migration(18, "entity_note_revisions", _m018_entity_note_revisions),
     Migration(19, "chapter_entities", _m019_chapter_entities),
     Migration(20, "entity_gender_revisions", _m020_entity_gender_revisions),
+    Migration(21, "error_reports", _m021_error_reports),
 ]
 
 

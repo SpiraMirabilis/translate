@@ -6,12 +6,15 @@ import { bustUrl } from '../services/cacheBust'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useBookFeedLink } from '../hooks/useBookFeedLink'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
+import { useErrorReportsEnabled } from '../hooks/useErrorReportsEnabled'
 import { useUrlModal } from '../hooks/useUrlState'
 import ReaderTOC from '../components/ReaderTOC'
 import ReaderSettings from '../components/ReaderSettings'
 import ReaderSearch from '../components/ReaderSearch'
 import ReaderComments from '../components/ReaderComments'
 import ReaderTerms from '../components/ReaderTerms'
+import ReportErrorModal from '../components/ReportErrorModal'
+import SelectionReportButton from '../components/SelectionReportButton'
 import EntityFormModal from '../components/EntityFormModal'
 import { loadIdentity } from '../components/CommentForm'
 import { CATEGORY_COLORS } from '../utils/categories'
@@ -21,7 +24,7 @@ import FootnotePopover from '../components/FootnotePopover'
 import ErrorState from '../components/ErrorState'
 import { useSite } from '../App'
 import {
-  ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle, Languages
+  ArrowLeft, List, Settings2, ChevronLeft, ChevronRight, Loader2, Maximize, Minimize, Search, MessageCircle, Languages, Flag
 } from 'lucide-react'
 
 // How long a chapter must stay open (and visible) before it counts as read.
@@ -72,12 +75,19 @@ export default function Reader({ isPublic = false }) {
   const searchModal = useUrlModal('search')
   const commentsModal = useUrlModal('comments')
   const termsModal = useUrlModal('terms')
+  const reportModal = useUrlModal('report')
   const entityModal = useUrlModal('editEntity', { idKey: 'ent' })
   const tocOpen = tocModal.isOpen
   const settingsOpen = settingsModal.isOpen
   const searchOpen = searchModal.isOpen
   const commentsOpen = commentsModal.isOpen
   const termsOpen = termsModal.isOpen
+  const reportOpen = reportModal.isOpen
+  const reportsEnabled = useErrorReportsEnabled()
+  // Text the reader highlighted before hitting "Report this"; the modal
+  // pre-fills its quote field from it. Empty when they opened the form from
+  // the toolbar instead.
+  const [reportQuote, setReportQuote] = useState('')
   const [commentCount, setCommentCount] = useState(0)
   const [commentsEnabled, setCommentsEnabled] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -370,7 +380,8 @@ export default function Reader({ isPublic = false }) {
         return
       }
       if (e.key === 'Escape') {
-        if (searchOpen) searchModal.close()
+        if (reportOpen) reportModal.close()
+        else if (searchOpen) searchModal.close()
         else if (termsOpen) termsModal.close()
         else if (commentsOpen) commentsModal.close()
         else if (settingsOpen) settingsModal.close()
@@ -378,7 +389,7 @@ export default function Reader({ isPublic = false }) {
         else if (entityModal.isOpen) entityModal.close()
         return
       }
-      if (tocOpen || settingsOpen || searchOpen || commentsOpen || termsOpen || entityModal.isOpen) return
+      if (tocOpen || settingsOpen || searchOpen || commentsOpen || termsOpen || reportOpen || entityModal.isOpen) return
       if (e.key === 'ArrowLeft') goChapter(-1)
       if (e.key === 'ArrowRight') goChapter(1)
     }
@@ -714,6 +725,11 @@ export default function Reader({ isPublic = false }) {
           <button onClick={() => termsModal.open()} className={`${barText} ${barHover} p-1.5`} title="Terms in this chapter">
             <Languages size={20} />
           </button>
+          {reportsEnabled && (
+            <button onClick={() => { setReportQuote(''); reportModal.open() }} className={`${barText} ${barHover} p-1.5`} title="Report an error">
+              <Flag size={20} />
+            </button>
+          )}
           <button onClick={() => searchModal.open()} className={`${barText} ${barHover} p-1.5`} title="Search (Ctrl+F)">
             <Search size={20} />
           </button>
@@ -882,6 +898,25 @@ export default function Reader({ isPublic = false }) {
         // one on its own — an explicit close() first would navigate(-1) and
         // race the push (see the ReaderTOC note). Back returns here.
         onEditEntity={(id) => entityModal.open(id)}
+      />
+      {/* Highlight prose → a "Report this" pill over the selection. The pill is
+          fixed-positioned, so it lives here rather than inside the article. */}
+      {reportsEnabled && !reportOpen && (
+        <SelectionReportButton
+          containerRef={bodyRef}
+          theme={prefs.theme}
+          onReport={(text) => { setReportQuote(text); reportModal.open() }}
+        />
+      )}
+      <ReportErrorModal
+        open={reportOpen}
+        onClose={reportModal.close}
+        bookId={Number(bookId)}
+        bookTitle={book?.title}
+        chapters={chapters}
+        defaultChapter={currentNum}
+        initialQuote={reportQuote}
+        theme={prefs.theme}
       />
       <ReaderComments
         open={commentsOpen}

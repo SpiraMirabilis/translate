@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle, X } from 'lucide-react'
+import { BookOpen, Loader2, ArrowLeft, Download, ChevronRight, Sun, Moon, Sunset, User, BookText, Rss, MessageCircle, X, Flag } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
+import { useErrorReportsEnabled } from '../hooks/useErrorReportsEnabled'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useBookFeedLink } from '../hooks/useBookFeedLink'
 import { useUrlModal } from '../hooks/useUrlState'
@@ -10,6 +11,7 @@ import { useSite } from '../App'
 import { bustUrl } from '../services/cacheBust'
 import { publicApi } from '../services/api'
 import ReaderComments from '../components/ReaderComments'
+import ReportErrorModal from '../components/ReportErrorModal'
 import { loadIdentity } from '../components/CommentForm'
 import TagChips from '../components/TagChips'
 import ProtagonistBadge from '../components/ProtagonistBadge'
@@ -99,6 +101,8 @@ export default function BookDetail() {
 
   const commentsModal = useUrlModal('comments')
   const commentsOpen = commentsModal.isOpen
+  const reportModal = useUrlModal('report')
+  const reportsEnabled = useErrorReportsEnabled()
 
   // Identity header lets the API include the caller's own pending comments.
   const commentCountQuery = useQuery({
@@ -367,6 +371,16 @@ export default function BookDetail() {
                   )}
                 </button>
               )}
+              {reportsEnabled && (
+                <button
+                  onClick={() => reportModal.open()}
+                  title="Report a translation error"
+                  className={`${t.btnSecondary} px-4 py-2.5 rounded-lg font-medium text-sm transition-colors inline-flex items-center gap-2`}
+                >
+                  <Flag size={16} />
+                  Report an error
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -416,6 +430,18 @@ export default function BookDetail() {
           </section>
         )}
       </main>
+
+      {/* Defaults to "Book-wide issue" — a reader on this page hasn't got a
+          chapter in front of them, so the picker starts unset. */}
+      <ReportErrorModal
+        open={reportModal.isOpen}
+        onClose={reportModal.close}
+        bookId={Number(bookId)}
+        bookTitle={book?.title}
+        chapters={chapters}
+        defaultChapter={null}
+        theme={prefs.theme}
+      />
 
       <ReaderComments
         open={commentsOpen}

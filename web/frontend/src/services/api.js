@@ -250,6 +250,12 @@ export const api = {
   countUnreadReplies: () => get('/api/recommendations/replies/unread_count'),
   listUnmatchedReplies: () => get('/api/recommendations/replies/unmatched'),
 
+  // Error reports (reader-submitted translation errors)
+  listErrorReports:  (status) => get(`/api/error-reports${status ? '?status=' + status : ''}`),
+  countErrorReports: (status) => get(`/api/error-reports/count${status ? '?status=' + status : ''}`),
+  updateErrorReport: (id, body) => put(`/api/error-reports/${id}`, body),
+  deleteErrorReport: (id) => del(`/api/error-reports/${id}`),
+
   // Comments (admin moderation)
   listComments:    (params = {}) => {
     const q = new URLSearchParams()
@@ -307,6 +313,11 @@ export const publicApi = {
   searchBook:       (bookId, body) => post(`/api/public/books/${bookId}/search`, body),
   // Is the current AZW3 already in the CDN (fast) or generated on demand (slow)?
   getAzw3Status:    (bookId)       => get(`/api/public/books/${bookId}/azw3/status`),
+
+  // Reader-submitted error reports. `enabled` gates the entry points so the
+  // reader doesn't offer a form the server will refuse.
+  submitErrorReport: (body) => post('/api/public/error-reports', body),
+  getErrorReportsEnabled: () => get('/api/public/error-reports/enabled'),
 
   // Comment count for a chapter. The optional commenter UUID header lets the
   // API include the caller's own pending comments in the count.
