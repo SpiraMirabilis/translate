@@ -166,7 +166,8 @@ export default function Entities() {
     queryKey: ['entities', { book: filterBook, cat: filterCat, search: debouncedSearch }],
     queryFn: () => {
       const params = {}
-      if (filterBook) params.book_id = parseInt(filterBook)
+      if (filterBook === 'global') params.global_only = true
+      else if (filterBook) params.book_id = parseInt(filterBook)
       if (filterCat)  params.category = filterCat
       if (debouncedSearch) params.search = debouncedSearch
       return api.listEntities(params)
@@ -426,7 +427,7 @@ export default function Entities() {
       )}
 
       {/* Note-change audit — where model-written notes get a second look */}
-      {!loading && <NoteChangesPanel bookId={filterBook ? parseInt(filterBook, 10) : null} />}
+      {!loading && <NoteChangesPanel bookId={bookCatsActive ? parseInt(filterBook, 10) : null} />}
 
       {/* Batch action bar */}
       {selected.size > 0 && (
