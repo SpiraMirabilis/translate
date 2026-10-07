@@ -1,5 +1,4 @@
 """API call log endpoints."""
-from itertools import groupby
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -19,52 +18,22 @@ class ApiCallUpdate(BaseModel):
 
 
 @router.get("/api/api-calls")
-def list_all_api_calls(book_id: Optional[int] = Query(None),
-                             limit: int = Query(500, ge=1, le=1000)):
-    rows = _entity_manager.get_all_api_calls(book_id=book_id, limit=limit)
-    sessions = []
-    seen_sessions = {}
-    for row in rows:
-        sid = row["session_id"]
-        if sid not in seen_sessions:
-            seen_sessions[sid] = {
-                "session_id": sid,
-                "book_id": row["book_id"],
-                "book_title": row.get("book_title", ""),
-                "chapter_number": row["chapter_number"],
-                "model_name": row["model_name"],
-                "provider": row["provider"],
-                "created_at": row["created_at"],
-                "total_chunks": row["total_chunks"],
-                "calls": [],
-            }
-            sessions.append(seen_sessions[sid])
-        seen_sessions[sid]["calls"].append(row)
-    return {"sessions": sessions}
+def list_api_call_sessions(book_id: Optional[int] = Query(None),
+                           chapter_number: Optional[int] = Query(None),
+                           before: Optional[int] = Query(None),
+                           limit: int = Query(50, ge=1, le=200)):
+    """A page of sessions, metadata only. Texts come from the session endpoint."""
+    sessions, next_before = _entity_manager.list_api_call_sessions(
+        book_id=book_id, chapter_number=chapter_number, before=before, limit=limit)
+    return {"sessions": sessions, "next_before": next_before}
 
 
-@router.get("/api/api-calls/{book_id}")
-def list_api_calls(book_id: int, chapter_number: Optional[int] = Query(None),
-                         limit: int = Query(500, ge=1, le=1000)):
-    rows = _entity_manager.get_api_calls(book_id, chapter_number=chapter_number, limit=limit)
-    # Group by session_id, preserving the DB ordering (newest sessions first)
-    sessions = []
-    seen_sessions = {}
-    for row in rows:
-        sid = row["session_id"]
-        if sid not in seen_sessions:
-            seen_sessions[sid] = {
-                "session_id": sid,
-                "chapter_number": row["chapter_number"],
-                "model_name": row["model_name"],
-                "provider": row["provider"],
-                "created_at": row["created_at"],
-                "total_chunks": row["total_chunks"],
-                "calls": [],
-            }
-            sessions.append(seen_sessions[sid])
-        seen_sessions[sid]["calls"].append(row)
-    return {"sessions": sessions}
+@router.get("/api/api-calls/session/{session_id}")
+def get_api_call_session(session_id: str):
+    calls = _entity_manager.get_api_call_session(session_id)
+    if not calls:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"session_id": session_id, "calls": calls}
 
 
 @router.get("/api/api-calls/detail/{call_id}")

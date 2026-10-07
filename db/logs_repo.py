@@ -156,87 +156,137 @@ class LogsRepo:
             self.logger.error(f"Error logging API call: {e}")
             return None
 
-    def get_all_api_calls(self, book_id=None, limit=500):
-        """Get API call logs across all books, optionally filtered by book_id."""
-        try:
-            with self._conn() as conn:
-                cursor = conn.cursor()
-                if book_id is not None:
-                    cursor.execute(
-                        'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
-                        'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
-                        'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
-                        'b.title as book_title '
-                        'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
-                        'WHERE ac.book_id = ? '
-                        'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
-                        (book_id, limit),
-                    )
-                else:
-                    cursor.execute(
-                        'SELECT ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, ac.total_chunks, '
-                        'ac.system_prompt, ac.user_prompt, ac.response_text, ac.model_name, ac.provider, '
-                        'ac.prompt_tokens, ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, ac.attempt, ac.created_at, '
-                        'b.title as book_title '
-                        'FROM api_calls ac LEFT JOIN books b ON ac.book_id = b.id '
-                        'ORDER BY ac.created_at DESC, ac.chunk_index ASC, ac.attempt ASC LIMIT ?',
-                        (limit,),
-                    )
-                rows = cursor.fetchall()
-            return [
-                {
-                    'id': r[0], 'session_id': r[1], 'book_id': r[2],
-                    'chapter_number': r[3], 'chunk_index': r[4], 'total_chunks': r[5],
-                    'system_prompt': r[6], 'user_prompt': r[7], 'response_text': r[8],
-                    'model_name': r[9], 'provider': r[10],
-                    'prompt_tokens': r[11], 'completion_tokens': r[12], 'total_tokens': r[13],
-                    'duration_ms': r[14], 'success': r[15], 'attempt': r[16],
-                    'created_at': r[17], 'book_title': r[18],
-                }
-                for r in rows
-            ]
-        except Exception as e:
-            self.logger.error(f"Error getting all API calls: {e}")
-            return []
+    # The list view never carries the three text columns. They are ~95% of a
+    # 4.5 GB table, a single call's prompt runs to tens of KB, and the page only
+    # shows them for the session someone expands (get_api_call_session).
+    _API_CALL_META = ('ac.id, ac.session_id, ac.book_id, ac.chapter_number, ac.chunk_index, '
+                      'ac.total_chunks, ac.model_name, ac.provider, ac.prompt_tokens, '
+                      'ac.completion_tokens, ac.total_tokens, ac.duration_ms, ac.success, '
+                      'ac.attempt, ac.created_at, b.title')
+    _API_CALL_META_KEYS = ('id', 'session_id', 'book_id', 'chapter_number', 'chunk_index',
+                           'total_chunks', 'model_name', 'provider', 'prompt_tokens',
+                           'completion_tokens', 'total_tokens', 'duration_ms', 'success',
+                           'attempt', 'created_at', 'book_title')
+    _API_CALL_SCAN_BATCH = 500
 
-    def get_api_calls(self, book_id, chapter_number=None, limit=500):
-        """Get API call logs for a book, optionally filtered by chapter number."""
+    def list_api_call_sessions(self, book_id=None, chapter_number=None, before=None, limit=50):
+        """One page of API-call sessions, newest first, metadata only.
+
+        Returns ``(sessions, next_before)``. A session sorts by its newest call's
+        id, and a page holds the sessions whose newest id is below ``before``;
+        ``next_before`` is the cursor for the page after, or None at the end.
+
+        Ordering is by id, not created_at: id is the primary key, so the scan
+        walks an index instead of filesorting the table, and calls are inserted
+        as they happen, so the two orders agree. The scan has to be by call and
+        not by session because concurrent jobs interleave their calls — which is
+        also why a session reached through an older call is checked against its
+        true newest id: if that id is at or above ``before``, an earlier page
+        already showed it.
+        """
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
-                if chapter_number is not None:
-                    cursor.execute(
-                        'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
-                        'system_prompt, user_prompt, response_text, model_name, provider, '
-                        'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
-                        'FROM api_calls WHERE book_id = ? AND chapter_number = ? '
-                        'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
-                        (book_id, chapter_number, limit),
-                    )
-                else:
-                    cursor.execute(
-                        'SELECT id, session_id, book_id, chapter_number, chunk_index, total_chunks, '
-                        'system_prompt, user_prompt, response_text, model_name, provider, '
-                        'prompt_tokens, completion_tokens, total_tokens, duration_ms, success, attempt, created_at '
-                        'FROM api_calls WHERE book_id = ? '
-                        'ORDER BY created_at DESC, chunk_index ASC, attempt ASC LIMIT ?',
-                        (book_id, limit),
-                    )
-                rows = cursor.fetchall()
-            return [
-                {
-                    'id': r[0], 'session_id': r[1], 'book_id': r[2],
-                    'chapter_number': r[3], 'chunk_index': r[4], 'total_chunks': r[5],
-                    'system_prompt': r[6], 'user_prompt': r[7], 'response_text': r[8],
-                    'model_name': r[9], 'provider': r[10],
-                    'prompt_tokens': r[11], 'completion_tokens': r[12], 'total_tokens': r[13],
-                    'duration_ms': r[14], 'success': r[15], 'attempt': r[16],
-                    'created_at': r[17],
-                }
-                for r in rows
-            ]
+                where, params = [], []
+                if book_id is not None:
+                    where.append('book_id = ?')
+                    params.append(book_id)
+                    if chapter_number is not None:
+                        where.append('chapter_number = ?')
+                        params.append(chapter_number)
+
+                kept = []            # [(session_id, newest_id)] in newest-first order
+                seen = set()
+                cursor_id = before
+                while len(kept) <= limit:
+                    clauses = list(where)
+                    args = list(params)
+                    if cursor_id is not None:
+                        clauses.append('id < ?')
+                        args.append(cursor_id)
+                    sql = 'SELECT id, session_id FROM api_calls'
+                    if clauses:
+                        sql += ' WHERE ' + ' AND '.join(clauses)
+                    sql += ' ORDER BY id DESC LIMIT ?'
+                    cursor.execute(sql, (*args, self._API_CALL_SCAN_BATCH))
+                    batch = cursor.fetchall()
+                    if not batch:
+                        break
+                    cursor_id = batch[-1][0]
+
+                    fresh = []
+                    for row_id, sid in batch:
+                        if sid not in seen:
+                            seen.add(sid)
+                            fresh.append((sid, row_id))
+                    if before is not None and fresh:
+                        marks = ','.join('?' * len(fresh))
+                        cursor.execute(
+                            f'SELECT session_id, MAX(id) FROM api_calls '
+                            f'WHERE session_id IN ({marks}) GROUP BY session_id',
+                            [sid for sid, _ in fresh])
+                        newest = dict(cursor.fetchall())
+                        fresh = [(sid, rid) for sid, rid in fresh
+                                 if newest.get(sid, rid) < before]
+                    kept.extend(fresh)
+                    if len(batch) < self._API_CALL_SCAN_BATCH:
+                        break
+
+                page = kept[:limit]
+                next_before = page[-1][1] if len(kept) > limit else None
+                if not page:
+                    return [], None
+
+                marks = ','.join('?' * len(page))
+                cursor.execute(
+                    f'SELECT {self._API_CALL_META} FROM api_calls ac '
+                    f'LEFT JOIN books b ON ac.book_id = b.id '
+                    f'WHERE ac.session_id IN ({marks}) '
+                    f'ORDER BY ac.chunk_index ASC, ac.attempt ASC, ac.id ASC',
+                    [sid for sid, _ in page])
+                rows = [dict(zip(self._API_CALL_META_KEYS, r)) for r in cursor.fetchall()]
         except Exception as e:
-            self.logger.error(f"Error getting API calls: {e}")
+            self.logger.error(f"Error listing API call sessions: {e}")
+            return [], None
+
+        calls_by_session = {}
+        for row in rows:
+            calls_by_session.setdefault(row['session_id'], []).append(row)
+        sessions = []
+        for sid, newest_id in page:
+            calls = calls_by_session.get(sid)
+            if not calls:
+                continue
+            head = max(calls, key=lambda c: c['id'])
+            sessions.append({
+                'session_id': sid,
+                'book_id': head['book_id'],
+                'book_title': head['book_title'] or '',
+                'chapter_number': head['chapter_number'],
+                'model_name': head['model_name'],
+                'provider': head['provider'],
+                'created_at': head['created_at'],
+                'total_chunks': head['total_chunks'],
+                'calls': calls,
+            })
+        return sessions, next_before
+
+    def get_api_call_session(self, session_id):
+        """Every call of one session, prompts and response included."""
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'SELECT {self._API_CALL_META}, ac.system_prompt, ac.user_prompt, '
+                    f'ac.response_text FROM api_calls ac '
+                    f'LEFT JOIN books b ON ac.book_id = b.id '
+                    f'WHERE ac.session_id = ? '
+                    f'ORDER BY ac.chunk_index ASC, ac.attempt ASC, ac.id ASC',
+                    (session_id,))
+                keys = self._API_CALL_META_KEYS + ('system_prompt', 'user_prompt', 'response_text')
+                return [dict(zip(keys, r)) for r in cursor.fetchall()]
+        except Exception as e:
+            self.logger.error(f"Error getting API call session {session_id}: {e}")
             return []
 
     def get_api_call(self, call_id):

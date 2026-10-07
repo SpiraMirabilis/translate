@@ -215,8 +215,15 @@ export const api = {
   clearActivityLog:  ()  => del('/api/activity-log'),
 
   // API call logs
-  listAllApiCalls: (bookId) => get(`/api/api-calls${bookId != null ? '?book_id=' + bookId : ''}`),
-  listApiCalls:    (bookId, chapterNum) => get(`/api/api-calls/${bookId}${chapterNum != null ? '?chapter_number=' + chapterNum : ''}`),
+  listApiCallSessions: ({ bookId, chapterNumber, before } = {}) => {
+    const q = new URLSearchParams()
+    if (bookId != null) q.set('book_id', bookId)
+    if (chapterNumber != null) q.set('chapter_number', chapterNumber)
+    if (before != null) q.set('before', before)
+    const qs = q.toString()
+    return get(`/api/api-calls${qs ? '?' + qs : ''}`)
+  },
+  getApiCallSession: (sessionId) => get(`/api/api-calls/session/${encodeURIComponent(sessionId)}`),
   getApiCall:      (id)       => get(`/api/api-calls/detail/${id}`),
   updateApiCall:   (id, body) => put(`/api/api-calls/detail/${id}`, body),
 
