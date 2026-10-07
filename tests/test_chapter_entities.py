@@ -76,6 +76,60 @@ class TestIndexing:
         assert "真人" in {t["untranslated"] for t in db.get_chapter_terms(book_id, 1)}
 
 
+def _last_chapter(db, book_id, key):
+    with db._conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT last_chapter FROM entities WHERE book_id = ? AND untranslated = ?",
+                    (book_id, key))
+        val = cur.fetchone()[0]
+    return int(val) if val is not None else None
+
+
+class TestLastChapter:
+    """last_chapter is the highest saved chapter whose source contains the term.
+
+    It used to move only when the model re-listed a known entity, so a
+    protagonist in every chapter could read ten chapters behind (book 112).
+    """
+
+    def test_save_bumps_every_present_entity(self, db):
+        book_id = _seed_book(db)
+        _save(db, book_id, 1, ["陈元走进青云宗。"])
+        _save(db, book_id, 2, ["陈元。"])
+        assert _last_chapter(db, book_id, "陈元") == 2
+        assert _last_chapter(db, book_id, "青云宗") == 1
+
+    def test_retranslating_an_earlier_chapter_never_lowers_it(self, db):
+        book_id = _seed_book(db)
+        _save(db, book_id, 1, ["陈元。"])
+        _save(db, book_id, 5, ["陈元。"])
+        _save(db, book_id, 1, ["陈元又来了。"])
+        assert _last_chapter(db, book_id, "陈元") == 5
+
+    def test_a_chapter_losing_the_term_falls_back(self, db):
+        book_id = _seed_book(db)
+        _save(db, book_id, 1, ["青云宗。"])
+        _save(db, book_id, 3, ["青云宗。"])
+        _save(db, book_id, 3, ["别处。"])
+        assert _last_chapter(db, book_id, "青云宗") == 1
+
+    def test_unindexed_entity_is_left_alone(self, db):
+        book_id = _seed_book(db)
+        db.update_entity("creatures", "火蛟", last_chapter=7, book_id=book_id)
+        _save(db, book_id, 8, ["陈元。"])
+        assert _last_chapter(db, book_id, "火蛟") == 7
+
+    def test_reindex_repairs_a_stale_value(self, db):
+        book_id = _seed_book(db)
+        _save(db, book_id, 1, ["陈元。"])
+        _save(db, book_id, 4, ["陈元。"])
+        with db._conn() as conn:
+            conn.cursor().execute(
+                "UPDATE entities SET last_chapter = '1' WHERE book_id = ?", (book_id,))
+        db.reindex_book_chapter_entities(book_id)
+        assert _last_chapter(db, book_id, "陈元") == 4
+
+
 class TestTermPayload:
     def test_gender_only_for_gendered_categories(self, db):
         book_id = _seed_book(db)

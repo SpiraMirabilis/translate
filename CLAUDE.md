@@ -187,6 +187,12 @@ fine once per translation and not fine once per reader click in the public proce
   `backfill_chapter_entities.py -b N` (or `--all [--missing-only]`). Everything *joined*
   (translation, category, gender, note) is live, so a corrected rendering reaches
   readers without any reindex; only membership is cached.
+- **`entities.last_chapter` is derived from this index** (2026-10-07): the highest saved
+  chapter whose source contains the term, re-derived for every entity a chapter gains or
+  loses on save (`_refresh_last_chapters`), and book-wide at the end of a reindex. It used
+  to move only when the model re-listed a known entity — 43k of the corpus's values were
+  behind (book 112's protagonist read ch184 at ch193). An entity with no index rows keeps
+  its old value; queued chapters don't count.
 - **Notes are point-in-time.** `get_chapter_terms` resolves them through
   `notes_as_of(book_id, chapter)`, so a reader on ch12 gets the note as it read at ch12.
   A note tracks a character's *present* state (age, realm, rank, allegiance), so serving

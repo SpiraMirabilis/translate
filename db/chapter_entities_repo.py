@@ -17,6 +17,12 @@ indexed: it exists to give the model naming-style hints, and a term that merely
 shares two characters with something in the chapter is not a term *in* the
 chapter.
 
+The index also owns ``entities.last_chapter``: the highest chapter whose source
+contains the entity, refreshed whenever a chapter's rows are rewritten. It used
+to move only when the translation model happened to re-list an entity it
+already knew, which it does for a fraction of them — so a protagonist present
+in every chapter could read ten chapters behind.
+
 Staleness is bounded and one-directional: the index is only as current as the
 glossary was when the chapter was last saved. An entity created at ch300 that
 also occurs at ch5 does not appear in ch5's panel until the book is reindexed
@@ -86,12 +92,17 @@ class ChapterEntitiesRepo:
                 hits.append((entity_id, n))
         return hits
 
-    def index_chapter_entities(self, chapter_id, book_id, source_lines, index_rows=None):
+    def index_chapter_entities(self, chapter_id, book_id, source_lines, index_rows=None,
+                               refresh_last_chapter=True):
         """Rebuild one chapter's row set in chapter_entities. Returns the row count.
 
         Idempotent: the chapter's existing rows are replaced wholesale, so a
         retranslation or an editor save re-states presence rather than
         accumulating it.
+
+        `refresh_last_chapter` re-derives last_chapter for every entity the
+        chapter gained or lost. A whole-book reindex turns it off and refreshes
+        once at the end instead.
         """
         try:
             if index_rows is None:
@@ -100,6 +111,11 @@ class ChapterEntitiesRepo:
 
             with self._conn() as conn:
                 cursor = conn.cursor()
+                touched = set()
+                if refresh_last_chapter:
+                    cursor.execute("SELECT entity_id FROM chapter_entities WHERE chapter_id = ?",
+                                   (chapter_id,))
+                    touched = {row[0] for row in cursor.fetchall()}
                 cursor.execute("DELETE FROM chapter_entities WHERE chapter_id = ?",
                                (chapter_id,))
                 if hits:
@@ -107,6 +123,10 @@ class ChapterEntitiesRepo:
                         "INSERT INTO chapter_entities (chapter_id, entity_id, occurrences) "
                         "VALUES (?, ?, ?)",
                         [(chapter_id, eid, n) for eid, n in hits])
+                if refresh_last_chapter:
+                    touched.update(eid for eid, _ in hits)
+                    if touched:
+                        self._refresh_last_chapters(cursor, book_id, sorted(touched))
             return len(hits)
         except Exception as e:
             self.logger.error(f"Error indexing entities for chapter {chapter_id}: {e}")
@@ -145,12 +165,63 @@ class ChapterEntitiesRepo:
                 continue
             n = self.index_chapter_entities(chapter_id, book_id,
                                             ch.get('untranslated') or [],
-                                            index_rows=index_rows)
+                                            index_rows=index_rows,
+                                            refresh_last_chapter=False)
             done += 1
             rows += n
             if progress:
                 progress(chapter_number, n)
+        if done:
+            self.refresh_entity_last_chapters(book_id)
         return done, rows
+
+    # ------------------------------------------------------------------
+    # last_chapter
+    # ------------------------------------------------------------------
+
+    _LAST_CHAPTER_ID_BATCH = 500
+
+    def _refresh_last_chapters(self, cursor, book_id, entity_ids=None):
+        """Set last_chapter from the index for a book's entities.
+
+        Only the book's own rows: a global entity has no single book to have a
+        last chapter in. An entity with no index rows at all (its source form
+        occurs in no saved chapter — a mis-keyed record, or one that only
+        appears in queued chapters) keeps whatever it had rather than going
+        NULL. Returns the number of rows updated.
+        """
+        sql = ("UPDATE entities SET last_chapter = ("
+               "  SELECT MAX(c.chapter_number) FROM chapter_entities ce"
+               "  JOIN chapters c ON c.id = ce.chapter_id"
+               "  WHERE ce.entity_id = entities.id AND c.book_id = ?) "
+               "WHERE book_id = ? AND EXISTS ("
+               "  SELECT 1 FROM chapter_entities ce"
+               "  JOIN chapters c ON c.id = ce.chapter_id"
+               "  WHERE ce.entity_id = entities.id AND c.book_id = ?)")
+        if entity_ids is None:
+            cursor.execute(sql, (book_id, book_id, book_id))
+            return cursor.rowcount
+        updated = 0
+        for i in range(0, len(entity_ids), self._LAST_CHAPTER_ID_BATCH):
+            batch = entity_ids[i:i + self._LAST_CHAPTER_ID_BATCH]
+            marks = ",".join("?" * len(batch))
+            cursor.execute(f"{sql} AND id IN ({marks})",
+                           (book_id, book_id, book_id, *batch))
+            updated += cursor.rowcount
+        return updated
+
+    def refresh_entity_last_chapters(self, book_id, entity_ids=None):
+        """Re-derive last_chapter from chapter_entities. Returns rows updated."""
+        try:
+            with self._conn() as conn:
+                return self._refresh_last_chapters(
+                    conn.cursor(), book_id,
+                    sorted(set(entity_ids)) if entity_ids is not None else None)
+        except Exception as e:
+            self.logger.error(f"Error refreshing last_chapter for book {book_id}: {e}")
+            if self.strict_writes:
+                raise
+            return 0
 
     # ------------------------------------------------------------------
     # Reading
