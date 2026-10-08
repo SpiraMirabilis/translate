@@ -13,11 +13,16 @@ Designed to run from cron every 5 minutes. On each tick it:
   2. Bails out early when the machine is under load (translation jobs etc.) so it
      never competes with foreground work.
   3. Walks every public book with published chapters and, for each:
-       - skips the book when both the EPUB and AZW3 already exist — checked
-         against the versioned Spaces keys, or (Spaces off) against the files in
-         epub_cache/, which invalidate_epub_cache() clears on any content change;
-       - skips books modified in the last 15 minutes (likely mid-translation/edit,
-         so the content is still churning — don't waste a build);
+       - skips the book when both the EPUB and AZW3 are current — checked
+         against the versioned Spaces keys, or (Spaces off) against the .ver
+         stamps in epub_cache/. A content change moves the book's version basis
+         (DatabaseManager.ebook_version_basis) but leaves the old files in place,
+         so "not current" means stale-but-servable as often as missing;
+       - holds off on a book modified in the last 15 minutes (likely
+         mid-translation/edit — don't rebuild on every chapter save) UNLESS the
+         copy readers are being served is more than 30 minutes old or missing.
+         A book that translates all day therefore refreshes about every half
+         hour instead of never;
        - otherwise generates the published-only EPUB and converts it to AZW3,
          uploading to Spaces (pruning stale versions) or leaving them on local disk.
 
@@ -30,6 +35,7 @@ shows real activity (builds, failures). Pass --verbose to log every tick.
 Usage:
     python3 prewarm_ebooks.py [--dry-run] [--force] [--book-id N] [--verbose]
                               [--max-load F] [--max-minutes M] [--quiet-minutes Q]
+                              [--max-stale-minutes S]
 
 Cron (every 5 min), logging to a file:
     */5 * * * * cd /home/mdm/t9 && /usr/bin/python3 prewarm_ebooks.py >> /home/mdm/t9/logs/prewarm_ebooks.log 2>&1
@@ -63,8 +69,13 @@ LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 MAX_LOAD_PER_CPU = 0.7
 
 # Don't build a book that changed within this many minutes — its content version
-# is probably still moving as chapters are added/edited.
+# is probably still moving as chapters are added/edited...
 QUIET_MINUTES = 15
+
+# ...unless the copy being served is older than this. Readers get a stale ebook
+# while a book changes, never an unbounded one: an actively translating book is
+# never quiet for QUIET_MINUTES, so without a ceiling it would never rebuild.
+MAX_STALE_MINUTES = 30
 
 # Soft wall-clock budget for one run. We stop cleanly before the next cron tick
 # so work stays incremental and load re-checks stay meaningful; the next tick
@@ -142,6 +153,16 @@ def _minutes_since(iso_str):
     return (datetime.datetime.now() - dt).total_seconds() / 60.0
 
 
+def _defer_build(mins_since_modified, served_age_minutes, args):
+    """True when a stale/missing book should wait for a later tick: it changed
+    within --quiet-minutes AND the copy readers are served is younger than
+    --max-stale-minutes. A missing copy has infinite age, so it never waits."""
+    if args.force:
+        return False
+    return (mins_since_modified < args.quiet_minutes
+            and served_age_minutes < args.max_stale_minutes)
+
+
 def _build_published_epub(db, config, logger, book, epub_path, version_basis):
     """Generate the published-only EPUB for a book onto epub_path. Returns True on
     success. Mirrors web/api/public.py's generation exactly (content + book_info)."""
@@ -181,24 +202,23 @@ def _build_published_epub(db, config, logger, book, epub_path, version_basis):
 def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
     """Prewarm one book. Returns a short status string for logging.
 
-    Existence is judged differently by deployment:
+    Currency is judged differently by deployment:
       - Spaces on:  against the versioned CDN keys (exact per content version).
-      - Spaces off: against the local epub_cache/ files. invalidate_epub_cache()
-        deletes those on any content change, so their presence means they're
-        current; generated files just stay on disk with no upload.
+      - Spaces off: against the .ver stamps on the local epub_cache/ files;
+        generated files just stay on disk with no upload.
+    A stale artifact is still on disk/CDN and still being served, so the
+    freshness guard weighs how old that copy is, not just whether it exists.
     """
     book_id = book["id"]
     cache_dir = db._epub_cache_dir()
     epub_path = os.path.join(cache_dir, f"{book_id}.epub")
     azw3_path = os.path.join(cache_dir, f"{book_id}.azw3")
 
-    # Same content-version basis the public endpoint uses: modified_date OR the
-    # latest already-passed publish time (so a scheduled chapter going live bumps
-    # the version). Keys derived from this match the endpoint's byte-for-byte,
-    # and the local cache file is stamped with it in both modes.
-    latest_published = db.latest_published_at(book_id)
-    version_basis = max(filter(None, [book.get("modified_date"), latest_published]),
-                        default=None)
+    # Same content-version basis the public endpoint uses (modified_date,
+    # ebook_invalidated_at, latest already-passed publish time). Keys derived
+    # from this match the endpoint's byte-for-byte, and the local cache files
+    # are stamped with it in both modes.
+    version_basis, _latest_published = db.ebook_version_basis(book_id, book)
 
     if spaces_on:
         ver = spaces.epub_version(book_id, version_basis)
@@ -217,7 +237,7 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
         # (not bare existence) decides currency; legacy unstamped files
         # rebuild once and converge onto the stamped scheme.
         have_epub = ebook_build.is_current(epub_path, version_basis)
-        have_azw3 = os.path.exists(azw3_path) if azw3_ok else True  # can't/needn't build
+        have_azw3 = ebook_build.is_current(azw3_path, version_basis) if azw3_ok else True
         dest = "local cache"
 
     need_epub = not have_epub
@@ -225,10 +245,14 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
     if not need_epub and not need_azw3:
         return "skip: up-to-date"
 
-    # Freshness guard — don't build a book that's actively changing.
+    # Freshness guard — don't rebuild a book that's actively changing, unless
+    # what readers are getting meanwhile has grown too old (or doesn't exist).
     mins = _minutes_since(book.get("modified_date"))
-    if not args.force and mins < args.quiet_minutes:
-        return f"skip: modified {mins:.0f}m ago (<{args.quiet_minutes}m)"
+    served_age = max(ebook_build.age_minutes(p) for p, needed in
+                     ((epub_path, need_epub), (azw3_path, need_azw3)) if needed)
+    if _defer_build(mins, served_age, args):
+        return (f"skip: modified {mins:.0f}m ago (<{args.quiet_minutes:g}m), "
+                f"serving a copy {served_age:.0f}m old (<{args.max_stale_minutes:g}m)")
 
     todo = []
     if need_epub:
@@ -259,6 +283,7 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
         with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
             if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
                 return f"partial: built {built or ['(none)']}, AZW3 conversion failed"
+            ebook_build.write_stamp(azw3_path, version_basis)
             if spaces_on:
                 if not spaces.upload(config, azw3_path, azw3_key, "application/x-mobi8-ebook"):
                     return f"partial: built {built}, AZW3 upload failed"
@@ -279,6 +304,9 @@ def main():
                     help="Soft wall-clock budget for the run (default %.1f)." % MAX_RUN_MINUTES)
     ap.add_argument("--quiet-minutes", type=float, default=QUIET_MINUTES,
                     help="Skip books modified within this many minutes (default %d)." % QUIET_MINUTES)
+    ap.add_argument("--max-stale-minutes", type=float, default=MAX_STALE_MINUTES,
+                    help="...unless the copy being served is older than this "
+                         "(default %d)." % MAX_STALE_MINUTES)
     ap.add_argument("--verbose", action="store_true",
                     help="Log every tick, even when there is nothing to prewarm.")
     args = ap.parse_args()

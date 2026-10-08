@@ -1124,13 +1124,15 @@ def export_book(book_id: int, format: str = Query("text", enum=["text", "epub", 
 
 @router.post("/{book_id}/invalidate-epub-cache")
 def invalidate_epub_cache(book_id: int):
-    """Drop the cached EPUB for a book — local disk file and Spaces blob(s) —
-    so the next export regenerates it from scratch."""
+    """Drop the cached EPUB/AZW3 for a book — local disk files and Spaces
+    blob(s) — so the next download/export regenerates it from scratch.
+
+    The hard purge, unlike the soft invalidation every content edit does
+    (which keeps serving the old copy until prewarm rebuilds): this is the
+    button for "the copy out there must stop being served now"."""
     book = get_book_or_404(book_id)
 
-    # Combined invalidation: drops the local epub_cache/{book_id}.epub file and,
-    # when enabled, best-effort purges this book's EPUB blobs from Spaces/CDN.
-    _entity_manager.invalidate_epub_cache(book_id)
+    _entity_manager.invalidate_epub_cache(book_id, purge=True)
 
     spaces_purged = False
     try:

@@ -589,6 +589,33 @@ Covered by `tests/test_trad_simp.py`.
 - **Retrofitting existing chapters**: `python3 bulk_convert_trad_to_simp.py --book-id N [--dry-run]` rewrites stored `untranslated_content` for chapters saved before the toggle was flipped on.
 - **Dependency**: `OpenCC` (pip) + `libopencc1.1`/`libopencc-data` (apt). Imported lazily — never loaded unless the feature is actually triggered.
 
+### Ebook artifacts: stale-while-rebuild (EPUB/AZW3)
+A content change **marks** a book's public EPUB/AZW3 stale; it does not delete them
+(changed 2026-10-08). An AZW3 conversion takes minutes on a big book, longer than
+Cloudflare holds a request, so deleting on every save made a translating book's
+Kindle file effectively undownloadable.
+
+- **Staleness = version mismatch, no flag column.** `DatabaseManager.ebook_version_basis()`
+  = newest of `modified_date`, `books.ebook_invalidated_at` (migration 22) and the latest
+  passed publish time. It keys the Spaces objects and the local `.ver` stamps; an
+  artifact whose stamp differs is stale. `ebook_invalidated_at` exists for edits that
+  don't bump `modified_date` (footnote re-render, replace-all, substitutions, modules) —
+  and so the Library's "recently updated" sort isn't reshuffled by rebuild-only sweeps.
+- **`invalidate_epub_cache(book_id)`** is soft (stamps `ebook_invalidated_at`).
+  **`purge=True`** also deletes local + Spaces files — used only for changes that
+  *remove* content a stale copy must not keep serving: `delete_chapter`, `delete_book`,
+  a live chapter unpublished or rescheduled into the future (`_withdraws_live`), and the
+  admin Invalidate button (`POST /api/books/{id}/invalidate-epub-cache`).
+- **Public endpoints never rebuild while any copy exists** (`_servable_ebook` in
+  `web/api/public.py`): current CDN key → the CDN key of the version the local stamp
+  records → the local file. Building in the request happens only when no copy exists at
+  all. `/azw3/status` reports `cached` (any copy servable) and `stale`.
+- **`prewarm_ebooks.py`** rebuilds stale/missing artifacts. A book modified within
+  `--quiet-minutes` (15) is deferred **unless** the copy being served is older than
+  `--max-stale-minutes` (30) or missing — so a book translating all day refreshes about
+  every half hour. AZW3 builds are now stamped too (`.azw3.ver`); legacy unstamped ones
+  rebuild once.
+
 ### Sitemap (`sitemap.py`)
 A Google-compliant XML sitemap of the public reader, rebuilt by cron and served
 as a **static file** — generating one walks every published chapter of every

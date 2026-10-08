@@ -742,6 +742,18 @@ def _m021_error_reports(conn, cursor, backend, logger):
             cursor.execute(index_ddl)
 
 
+def _m022_books_ebook_invalidated_at(conn, cursor, backend, logger):
+    """Soft ebook invalidation: a content change stamps this instead of deleting
+    the cached EPUB/AZW3. It is folded into the artifact version basis, so the
+    old files keep being served (stale) until prewarm rebuilds them. NULL on
+    every existing book, so deploying it moves no version token."""
+    if add_column_if_missing(
+            conn, cursor, backend, "books", "ebook_invalidated_at",
+            "ALTER TABLE books ADD COLUMN ebook_invalidated_at TEXT",
+            "ALTER TABLE books ADD COLUMN ebook_invalidated_at VARCHAR(50)"):
+        logger.info("Added ebook_invalidated_at column to books table")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -764,6 +776,7 @@ MIGRATIONS = [
     Migration(19, "chapter_entities", _m019_chapter_entities),
     Migration(20, "entity_gender_revisions", _m020_entity_gender_revisions),
     Migration(21, "error_reports", _m021_error_reports),
+    Migration(22, "books_ebook_invalidated_at", _m022_books_ebook_invalidated_at),
 ]
 
 

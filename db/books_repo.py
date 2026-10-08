@@ -622,7 +622,7 @@ class BooksRepo:
                 
                 # Also delete book-specific entities
                 cursor.execute("DELETE FROM entities WHERE book_id = ?", (book_id,))
-            self.invalidate_epub_cache(book_id)
+            self.invalidate_epub_cache(book_id, purge=True)
 
             self.logger.info(f"Deleted book '{book_title}' (ID: {book_id}) and all its chapters")
             return True
@@ -638,14 +638,60 @@ class BooksRepo:
         """Return the path to the EPUB cache directory."""
         return os.path.join(self.config.script_dir, "epub_cache")
 
-    def invalidate_epub_cache(self, book_id):
-        """Invalidate a book's cached EPUB (and derived AZW3) so they regenerate.
+    def invalidate_epub_cache(self, book_id, purge=False):
+        """Mark a book's cached EPUB/AZW3 stale so prewarm rebuilds them.
 
-        Removes the local on-disk cache files and, when Spaces/CDN is enabled,
-        every EPUB/AZW3 blob under the book's ``epub/{book_id}`` and
-        ``azw3/{book_id}`` prefixes in object storage. The AZW3 is derived from
-        the EPUB, so it must be purged whenever the EPUB content changes.
+        Soft by default: stamps ``books.ebook_invalidated_at``, which
+        ``ebook_version_basis`` folds into the artifact version token. The
+        files themselves stay put and the public endpoints keep serving them
+        (a chapter or two behind) until prewarm_ebooks.py replaces them — an
+        AZW3 takes minutes to build, longer than Cloudflare will hold a
+        download request open.
+
+        ``purge=True`` also deletes the files, locally and in Spaces, for
+        changes that REMOVE content a stale copy must not keep handing out
+        (chapter deleted or unpublished, book deleted, the admin's explicit
+        Invalidate button). The next download then builds on demand.
         """
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE books SET ebook_invalidated_at = ? WHERE id = ?",
+                               (datetime.datetime.now().isoformat(), book_id))
+        except Exception as e:
+            self.logger.warning(f"Failed to mark ebooks stale for book {book_id}: {e}")
+        if purge:
+            self._purge_ebook_artifacts(book_id)
+
+    def ebook_version_basis(self, book_id, book=None):
+        """Content-version basis for a book's ebook artifacts.
+
+        The newest of modified_date (every chapter save and publish change),
+        ebook_invalidated_at (edits that don't touch modified_date: footnote
+        re-renders, replace-all, entity substitution, module rewrites) and the
+        latest publish time already passed (a scheduled chapter going live,
+        with no cron). The same token keys the Spaces objects and the local
+        ``.ver`` stamps, so a mismatch is what marks an artifact stale.
+
+        Returns (version_basis, latest_published)."""
+        modified = invalidated = None
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT modified_date, ebook_invalidated_at FROM books WHERE id = ?",
+                           (book_id,))
+            row = cursor.fetchone()
+        if row:
+            modified, invalidated = row[0], row[1]
+        elif book:
+            modified = book.get("modified_date")
+        latest_published = self.latest_published_at(book_id)
+        basis = max(filter(None, [modified, invalidated, latest_published]), default=None)
+        return basis, latest_published
+
+    def _purge_ebook_artifacts(self, book_id):
+        """Delete a book's EPUB/AZW3 artifacts: local cache files (public and
+        admin "-full", with their stamps) and every Spaces object under the
+        book's ``epub/{book_id}`` and ``azw3/{book_id}`` prefixes."""
         cache_dir = self._epub_cache_dir()
         # Public (published-only) and admin ("-full", drafts included) artifacts
         # share the cache dir; each carries a ".ver" version-stamp sidecar that

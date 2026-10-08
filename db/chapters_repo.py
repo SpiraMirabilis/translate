@@ -855,7 +855,8 @@ class ChaptersRepo:
             SET modified_date = ?
             WHERE id = ?
             ''', (timestamp, book_id))
-            self.invalidate_epub_cache(book_id)
+            # A removal: a stale ebook would keep handing the chapter out.
+            self.invalidate_epub_cache(book_id, purge=True)
 
             if chapter_id:
                 self.logger.info(f"Deleted chapter {chapter[1]}: '{chapter[2]}' from book ID {chapter[0]}")
@@ -996,15 +997,35 @@ class ChaptersRepo:
     # Publishing (published_at: NULL = draft, future = scheduled, past = live)
     # ------------------------------------------------------------------
 
-    def _post_publish_change(self, book_id):
+    def _post_publish_change(self, book_id, withdrew_live=False):
         """Publish-state changes alter the public artifact set: bump the book's
-        modified_date (feeds the Spaces EPUB version key) and drop the cached
-        EPUB so the next download regenerates with the new chapter set."""
+        modified_date (feeds the ebook version basis) and mark the ebooks
+        stale. Publishing more chapters leaves the old ebook servable until
+        prewarm rebuilds it; withdrawing a live chapter purges it, because the
+        stale copy would keep handing that chapter out."""
         with self._conn() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE books SET modified_date = ? WHERE id = ?",
                            (datetime.datetime.now().isoformat(), book_id))
-        self.invalidate_epub_cache(book_id)
+        self.invalidate_epub_cache(book_id, purge=withdrew_live)
+
+    def _withdraws_live(self, cursor, book_id, schedule):
+        """True when applying `schedule` ([(chapter_number, published_at_or_None)])
+        takes any currently-live chapter out of public view (back to draft, or
+        rescheduled into the future)."""
+        pub_clause, now = self._published_filter()
+        hidden = [num for num, published_at in schedule
+                  if published_at is None or published_at > now]
+        for i in range(0, len(hidden), 500):
+            batch = hidden[i:i + 500]
+            marks = ",".join("?" * len(batch))
+            cursor.execute(
+                f"SELECT COUNT(*) FROM chapters WHERE book_id = ? "
+                f"AND chapter_number IN ({marks}) AND {pub_clause}",
+                (book_id, *batch, now))
+            if cursor.fetchone()[0]:
+                return True
+        return False
 
     def set_chapter_published(self, book_id, chapter_number, published_at):
         """Set (ISO timestamp — now or scheduled) or clear (None = back to
@@ -1012,6 +1033,7 @@ class ChaptersRepo:
         Raises LookupError when the chapter doesn't exist."""
         with self._conn() as conn:
             cursor = conn.cursor()
+            withdrew = self._withdraws_live(cursor, book_id, [(chapter_number, published_at)])
             cursor.execute(
                 "UPDATE chapters SET published_at = ? WHERE book_id = ? AND chapter_number = ?",
                 (published_at, book_id, chapter_number),
@@ -1019,7 +1041,7 @@ class ChaptersRepo:
             if cursor.rowcount == 0:
                 raise LookupError(
                     f"Chapter {chapter_number} not found for book {book_id}")
-        self._post_publish_change(book_id)
+        self._post_publish_change(book_id, withdrew_live=withdrew)
         return published_at
 
     def set_chapters_published(self, book_id, schedule):
@@ -1029,6 +1051,7 @@ class ChaptersRepo:
         updated = 0
         with self._conn() as conn:
             cursor = conn.cursor()
+            withdrew = self._withdraws_live(cursor, book_id, schedule)
             for num, published_at in schedule:
                 cursor.execute(
                     "UPDATE chapters SET published_at = ? WHERE book_id = ? AND chapter_number = ?",
@@ -1036,7 +1059,7 @@ class ChaptersRepo:
                 )
                 updated += cursor.rowcount
         if updated:
-            self._post_publish_change(book_id)
+            self._post_publish_change(book_id, withdrew_live=withdrew)
         return updated
 
     def latest_published_at(self, book_id):

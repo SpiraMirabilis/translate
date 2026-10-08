@@ -122,7 +122,9 @@ def _export_epub(db, config, logger, book, book_info) -> ExportResult:
     # under its own name; prewarm owns populating the public CDN.
     cached_path = os.path.join(cache_dir, f"{book_id}-full.epub")
     filename = f"{book['title'].replace(' ', '_')}.epub"
-    version_basis = book.get("modified_date")
+    # Shared basis, so edits that only stamp ebook_invalidated_at (footnote
+    # re-renders, replace-all, substitutions) reach the admin export too.
+    version_basis, _ = db.ebook_version_basis(book_id, book)
 
     with ebook_build.book_lock(cache_dir, f"{book_id}-full"):
         if not ebook_build.is_current(cached_path, version_basis):

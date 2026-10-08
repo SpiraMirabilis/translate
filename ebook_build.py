@@ -11,11 +11,17 @@ may run from more than one process. Three primitives keep them safe:
   half-written artifact is never visible at its final path.
 - a ``<artifact>.ver`` sidecar stamp recording the content-version basis an
   artifact was built from, so a file that exists but predates an edit is
-  detected as stale instead of being served/uploaded under a fresh version
-  key forever.
+  detected as stale instead of being uploaded under a fresh version key.
+
+Stale is not missing. A content change only moves the version basis (see
+``DatabaseManager.ebook_version_basis``); the old artifact stays on disk and in
+Spaces and the public endpoints keep serving it until prewarm_ebooks.py
+rebuilds. ``served_version`` recovers which version that old artifact is, so
+its Spaces key can still be found.
 """
 import fcntl
 import os
+import time
 from contextlib import contextmanager
 
 
@@ -60,3 +66,26 @@ def is_current(artifact_path, token):
     them onto the stamped scheme).
     """
     return os.path.exists(artifact_path) and read_stamp(artifact_path) == str(token or "")
+
+
+def served_version(artifact_path):
+    """Version basis the artifact on disk was built from, or None when there is
+    no artifact or it predates stamping. Differs from the current basis exactly
+    when the artifact is stale."""
+    if not os.path.exists(artifact_path):
+        return None
+    return read_stamp(artifact_path)
+
+
+def age_minutes(artifact_path):
+    """Minutes since the artifact was built — the stamp's mtime (written right
+    after the build), else the file's own. Infinite when there is no artifact,
+    so "missing" always counts as older than any staleness ceiling."""
+    if not os.path.exists(artifact_path):
+        return float("inf")
+    for path in (stamp_path(artifact_path), artifact_path):
+        try:
+            return (time.time() - os.path.getmtime(path)) / 60.0
+        except OSError:
+            continue
+    return float("inf")

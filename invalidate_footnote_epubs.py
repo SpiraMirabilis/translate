@@ -6,7 +6,7 @@ markup, so every book carrying footnotes needs its cached ebooks purged. The
 prewarm_ebooks.py cron regenerates them on its next tick.
 
     python3 invalidate_footnote_epubs.py            # dry run — list affected books
-    python3 invalidate_footnote_epubs.py --apply    # purge caches
+    python3 invalidate_footnote_epubs.py --apply    # mark stale; prewarm rebuilds
 """
 import argparse
 
