@@ -27,6 +27,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
 import sitemap as sitemap_builder
+from web import seo_html
+from web.services import media_urls
 from config import TranslationConfig
 from logger import Logger
 from database import DatabaseManager
@@ -505,16 +507,45 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         def _canonical_tag(url: str | None) -> str | None:
             return f'<link rel="canonical" href="{escape(url, quote=True)}" />' if url else None
 
-        def _index_for_book(kind: str, book_id: int, chapter: int | None):
-            """index.html with this book's RSS autodiscovery + canonical tags.
+        def _not_found():
+            if os.path.isfile(notfound_html):
+                return FileResponse(notfound_html, status_code=404,
+                                    headers={"Cache-Control": "no-store"})
+            return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
-            Both are invisible to non-JS clients otherwise: feed readers and
-            crawlers fetch the URL server-side and never run the React that
-            would inject them.
+        def _site_name() -> str:
+            import settings_store
+            return settings_store.get("public_site_name", "Boonnovels") or "Boonnovels"
+
+        def _index_for_book(kind: str, book_id: int, chapter: int | None):
+            """index.html for a book or chapter route, with the page's real content.
+
+            Splices in (web/seo_html.py) a <title>, a meta description and a
+            static #ssr block — the chapter prose with prev/next/book links, or
+            the book page with its chapter list — plus this book's RSS
+            autodiscovery tag and the canonical. None of it is visible to a
+            non-JS client otherwise: feed readers and crawlers fetch the URL
+            server-side and never run the React that would produce it.
+
+            A book that isn't public, or a chapter that isn't published, is a
+            real 404 here, as it is on the API: the shell used to come back
+            200 and React then showed "Couldn't load this book" — a soft 404.
             """
             book = entity_manager.get_book(book_id=book_id)
             if not book or not book.get("is_public", True):
-                return None
+                return _not_found()
+            chapters = entity_manager.list_chapters(book_id, published_only=True)
+            site_name = _site_name()
+            if chapter is not None:
+                ch = entity_manager.get_chapter(book_id=book_id, chapter_number=chapter,
+                                                published_only=True)
+                if not ch:
+                    return _not_found()
+                illustrations = media_urls.illustration_map(entity_manager, book_id,
+                                                            ch.get("content"))
+                page = seo_html.chapter_page(book, ch, chapters, site_name, illustrations)
+            else:
+                page = seo_html.book_page(book, chapters, site_name)
             title = escape(f"{book.get('title', 'Book')} — New Chapters", quote=True)
             # Chapter pages advertise a chapter-windowed feed (?around=N,
             # chapters N-50..N+100) so a feed reader that discovers the feed
@@ -527,13 +558,17 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             html, n = _global_feed_re.subn(tag.replace("\\", "\\\\"), _index_html_text, count=1)
             if n == 0:  # index.html lost its global tag — just add ours
                 html = _with_head_tags(_index_html_text, [tag])
-            return _with_head_tags(html, [_canonical_tag(_canonical_url(kind, book_id, chapter))])
+            html = _with_head_tags(html, [_canonical_tag(_canonical_url(kind, book_id, chapter))])
+            return HTMLResponse(seo_html.splice(html, page))
 
         def _index_for_library():
+            books = [b for b in entity_manager.list_books(order_by="popular")
+                     if b.get("is_public", True)]
+            page = seo_html.library_page(books, _site_name())
             base = sitemap_builder.resolve_base_url(config)
-            if not base:
-                return None
-            return _with_head_tags(_index_html_text, [_canonical_tag(f"{base}/library")])
+            html = _with_head_tags(_index_html_text,
+                                   [_canonical_tag(f"{base}/library")] if base else [])
+            return HTMLResponse(seo_html.splice(html, page))
 
         # The public process only serves the reader SPA routes; everything
         # else gets the themed 404 page. The admin process serves index.html
@@ -554,24 +589,17 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             m = _book_path_re.match(full_path)
             if m:
                 chapter = int(m.group("chapter")) if m.group("chapter") else None
-                html = _index_for_book(m.group("kind"), int(m.group("book")), chapter)
-                if html is not None:
-                    return HTMLResponse(html)
-            elif _library_path_re.match(full_path) or (public_only and not full_path):
+                return _index_for_book(m.group("kind"), int(m.group("book")), chapter)
+            if _library_path_re.match(full_path) or (public_only and not full_path):
                 # The public root IS the library, served in place: a root
                 # that 302s to another path is a redirect on the site's
                 # most-linked URL, which Google treats as the weaker signal
                 # (and it costs every reader an extra round trip). The
                 # canonical tag still names /library, so the two paths
                 # don't compete for indexing.
-                html = _index_for_library()
-                if html is not None:
-                    return HTMLResponse(html)
-            if public_only:
-                if full_path and not _is_public_spa_path(full_path):
-                    if os.path.isfile(notfound_html):
-                        return FileResponse(notfound_html, status_code=404)
-                    return HTMLResponse("<h1>Not found</h1>", status_code=404)
+                return _index_for_library()
+            if public_only and full_path and not _is_public_spa_path(full_path):
+                return _not_found()
             return FileResponse(index_html)
 
     return app
