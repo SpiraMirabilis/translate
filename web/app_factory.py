@@ -27,7 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
 import sitemap as sitemap_builder
-from web import seo_html
+from web import analytics, seo_html
 from web.services import media_urls
 from config import TranslationConfig
 from logger import Logger
@@ -367,6 +367,11 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
     # static route; the EPUB links carry a same-host Referer, which passes
     # the public origin check.
     # ------------------------------------------------------------------
+    def _public_page(html: str) -> str:
+        """Add the Google Tag Manager snippet in the public process only —
+        the admin host serves the same pages and stays out of analytics."""
+        return analytics.with_gtm(html) if public_only else html
+
     @app.get("/simple", response_class=HTMLResponse)
     async def simple_book_list():
         # Honour the same public-library gate as /api/public/* — otherwise
@@ -444,7 +449,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             f"{table}\n"
             "</body>\n</html>\n"
         )
-        return HTMLResponse(html)
+        return HTMLResponse(_public_page(html))
 
     # Serve built frontend (production)
     static_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
@@ -508,6 +513,10 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             return f'<link rel="canonical" href="{escape(url, quote=True)}" />' if url else None
 
         def _not_found():
+            if public_only and os.path.isfile(notfound_html):
+                with open(notfound_html, "r", encoding="utf-8") as fh:
+                    return HTMLResponse(_public_page(fh.read()), status_code=404,
+                                        headers={"Cache-Control": "no-store"})
             if os.path.isfile(notfound_html):
                 return FileResponse(notfound_html, status_code=404,
                                     headers={"Cache-Control": "no-store"})
@@ -559,7 +568,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             if n == 0:  # index.html lost its global tag — just add ours
                 html = _with_head_tags(_index_html_text, [tag])
             html = _with_head_tags(html, [_canonical_tag(_canonical_url(kind, book_id, chapter))])
-            return HTMLResponse(seo_html.splice(html, page))
+            return HTMLResponse(_public_page(seo_html.splice(html, page)))
 
         def _index_for_library():
             books = [b for b in entity_manager.list_books(order_by="popular")
@@ -568,7 +577,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             base = sitemap_builder.resolve_base_url(config)
             html = _with_head_tags(_index_html_text,
                                    [_canonical_tag(f"{base}/library")] if base else [])
-            return HTMLResponse(seo_html.splice(html, page))
+            return HTMLResponse(_public_page(seo_html.splice(html, page)))
 
         # The public process only serves the reader SPA routes; everything
         # else gets the themed 404 page. The admin process serves index.html
@@ -600,6 +609,8 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
                 return _index_for_library()
             if public_only and full_path and not _is_public_spa_path(full_path):
                 return _not_found()
+            if public_only:
+                return HTMLResponse(_public_page(_index_html_text))
             return FileResponse(index_html)
 
     return app

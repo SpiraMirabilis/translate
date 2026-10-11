@@ -123,3 +123,42 @@ class TestSpaCatchAll:
         resp = pub_client.get("/", follow_redirects=False)
         assert resp.status_code == 200
         assert "<html" in resp.text.lower()
+
+
+def test_simple_page_carries_gtm(pub_client, public_book):
+    from web.analytics import GTM_ID
+
+    html = pub_client.get("/simple").text
+    head, body = html.split("<body>", 1)
+    assert f"gtm.js?id='+i+dl" in head and GTM_ID in head
+    assert f"ns.html?id={GTM_ID}" in body
+
+
+def test_admin_pages_carry_no_gtm(web_app, public_book):
+    # The admin host serves the same pages; its traffic stays out of analytics.
+    from tests.api_client import SyncASGIClient
+    from web.analytics import GTM_ID
+
+    client = SyncASGIClient(web_app)
+    resp = client.get("/simple")
+    if resp.status_code == 200:
+        assert GTM_ID not in resp.text
+
+
+def test_with_gtm_placement_and_idempotence():
+    from web.analytics import GTM_ID, with_gtm
+
+    html = with_gtm('<html><head lang="x"><title>t</title></head><body class="c"><p>x</p></body></html>')
+    assert html.index("<head") < html.index("googletagmanager.com/gtm.js") < html.index("<title>")
+    assert html.index("<body") < html.index("ns.html") < html.index("<p>x</p>")
+    assert with_gtm(html) == html
+    assert html.count(GTM_ID) == 2
+
+
+@pytest.mark.skipif(not os.path.isdir(_dist), reason="frontend dist not built")
+def test_spa_routes_and_404_carry_gtm(pub_client, public_book):
+    from web.analytics import GTM_ID
+
+    for path in ("/", "/library", f"/library/book/{public_book}",
+                 f"/library/read/{public_book}/1", "/library/whatever", "/queue"):
+        assert pub_client.get(path).text.count(GTM_ID) == 2, path
