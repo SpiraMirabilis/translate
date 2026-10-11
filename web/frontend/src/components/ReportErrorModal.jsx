@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { X, Loader2, CheckCircle, Send, Search } from 'lucide-react'
 import { useTurnstile } from '../hooks/useTurnstile'
 import { publicApi } from '../services/api'
@@ -17,39 +18,34 @@ const QUOTE_MAX = 500
 const TEXT_MAX = 2000
 
 /**
- * Chapter picker: "Book-wide issue" plus every chapter, filtered as you type.
+ * Type-to-filter picker over a fixed option list — the novel and chapter
+ * fields both use it (95 novels, 1800 chapters: a plain <select> is a scroll).
  *
  * Deliberately not components/ComboBox.jsx — that one is hard-styled for the
  * dark admin surface and commits free text, while this needs the reader's
- * light/sepia themes and a chapter *number* (or null) as its value.
+ * light/sepia themes and commits only a listed option's value.
+ *
+ * options: [{ value, label, strong? }]; value may be null (e.g. "Book-wide").
  */
-function ChapterPicker({ value, onChange, chapters, tokens, inputId }) {
+function SearchPicker({
+  value, onChange, options: allOptions, selectedLabel, placeholder, emptyText,
+  tokens, inputId,
+}) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const boxRef = useRef(null)
   const listRef = useRef(null)
+  const listId = `${inputId}-list`
 
   const options = useMemo(() => {
-    const all = [{ num: null, label: 'Book-wide issue' }].concat(
-      (chapters || []).map(c => ({
-        num: c.chapter,
-        label: `Ch ${c.chapter}${c.title ? ` — ${c.title}` : ''}`,
-      })),
-    )
     const q = query.trim().toLowerCase()
-    if (!q) return all
-    return all.filter(o => o.label.toLowerCase().includes(q))
-  }, [chapters, query])
-
-  const selectedLabel = useMemo(() => {
-    if (value == null) return 'Book-wide issue'
-    const hit = (chapters || []).find(c => c.chapter === value)
-    return `Ch ${value}${hit?.title ? ` — ${hit.title}` : ''}`
-  }, [value, chapters])
+    if (!q) return allOptions
+    return allOptions.filter(o => o.label.toLowerCase().includes(q))
+  }, [allOptions, query])
 
   // Close on outside click, committing nothing (the value only changes on an
-  // explicit pick — free text here would mean an unresolvable chapter).
+  // explicit pick — free text here would mean an unresolvable value).
   useEffect(() => {
     if (!open) return
     const onDocClick = (e) => {
@@ -70,7 +66,7 @@ function ChapterPicker({ value, onChange, chapters, tokens, inputId }) {
   }, [active, open])
 
   const pick = (opt) => {
-    onChange(opt.num)
+    onChange(opt.value)
     setOpen(false)
     setQuery('')
   }
@@ -99,37 +95,37 @@ function ChapterPicker({ value, onChange, chapters, tokens, inputId }) {
         id={inputId}
         type="text"
         value={open ? query : selectedLabel}
-        placeholder="Search chapters…"
+        placeholder={placeholder}
         onFocus={() => { setOpen(true); setActive(0) }}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); setActive(0) }}
         onKeyDown={onKeyDown}
-        className={`w-full rounded-lg border px-3 py-2 text-sm ${tokens.input}`}
+        className={`w-full rounded-lg border px-3 py-2 pr-9 text-sm ${tokens.input}`}
         autoComplete="off"
         role="combobox"
         aria-expanded={open}
-        aria-controls="report-chapter-list"
+        aria-controls={listId}
       />
       <Search size={15} className={`absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none ${tokens.muted}`} />
       {open && (
         <ul
-          id="report-chapter-list"
+          id={listId}
           ref={listRef}
           role="listbox"
           className={`absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border shadow-lg ${tokens.dropdown}`}
         >
           {options.length === 0 && (
-            <li className={`px-3 py-2 text-sm ${tokens.muted}`}>No matching chapter</li>
+            <li className={`px-3 py-2 text-sm ${tokens.muted}`}>{emptyText}</li>
           )}
           {options.map((opt, i) => (
             <li
-              key={opt.num == null ? 'book' : opt.num}
+              key={opt.value == null ? '__none' : opt.value}
               role="option"
-              aria-selected={opt.num === value}
+              aria-selected={opt.value === value}
               onMouseEnter={() => setActive(i)}
               onMouseDown={(e) => { e.preventDefault(); pick(opt) }}
               className={`cursor-pointer truncate px-3 py-2 text-sm ${
                 i === active ? tokens.optionActive : ''
-              } ${opt.num == null ? 'font-medium' : ''}`}
+              } ${opt.strong ? 'font-medium' : ''}`}
             >
               {opt.label}
             </li>
@@ -140,8 +136,45 @@ function ChapterPicker({ value, onChange, chapters, tokens, inputId }) {
   )
 }
 
+/** Chapter picker: "Book-wide issue" plus every chapter; value is a number or null. */
+function ChapterPicker({ value, onChange, chapters, tokens, inputId }) {
+  const options = useMemo(() => [{ value: null, label: 'Book-wide issue', strong: true }].concat(
+    (chapters || []).map(c => ({
+      value: c.chapter,
+      label: `Ch ${c.chapter}${c.title ? ` — ${c.title}` : ''}`,
+    })),
+  ), [chapters])
+  const selectedLabel = useMemo(() => {
+    if (value == null) return 'Book-wide issue'
+    const hit = (chapters || []).find(c => c.chapter === value)
+    return `Ch ${value}${hit?.title ? ` — ${hit.title}` : ''}`
+  }, [value, chapters])
+  return (
+    <SearchPicker value={value} onChange={onChange} options={options}
+      selectedLabel={selectedLabel} placeholder="Search chapters…"
+      emptyText="No matching chapter" tokens={tokens} inputId={inputId} />
+  )
+}
+
+/** Novel picker for hosts with no book open (the Library); value is a book id or null. */
+function BookPicker({ value, onChange, books, tokens, inputId }) {
+  const options = useMemo(() => [...(books || [])]
+    .sort((a, b) => (a.title || '').localeCompare(b.title || ''))
+    .map(b => ({ value: b.id, label: b.author ? `${b.title} — ${b.author}` : b.title })),
+  [books])
+  const selectedLabel = useMemo(
+    () => (value == null ? '' : (books || []).find(b => b.id === value)?.title || ''),
+    [value, books],
+  )
+  return (
+    <SearchPicker value={value} onChange={onChange} options={options}
+      selectedLabel={selectedLabel} placeholder="Type to find a novel…"
+      emptyText="No matching novel" tokens={tokens} inputId={inputId} />
+  )
+}
+
 /**
- * "Report an error" — shared by the Reader and the public book page.
+ * "Report an error" — shared by the Reader, the public book page and the Library.
  *
  * The optional quote is the point of the form: a chapter number alone costs a
  * full re-read to act on, while a quoted string becomes a Chapter Editor deep
@@ -149,15 +182,29 @@ function ChapterPicker({ value, onChange, chapters, tokens, inputId }) {
  * everything else works fine without it.
  *
  * Props:
+ *   bookId         - the book being reported; omit it and pass `books` to let
+ *                    the reader pick one (the Library, which has no book open)
+ *   books          - [{ id, title }] for that picker; the chosen book's
+ *                    chapters are then fetched here
  *   chapters       - [{ chapter, title }] the host page already holds (no fetch)
  *   defaultChapter - chapter number to preselect, or null for "Book-wide issue"
  *   initialQuote   - text the reader highlighted, if any
  *   theme          - 'dark' | 'light' | 'sepia'
  */
 export default function ReportErrorModal({
-  open, onClose, bookId, bookTitle, chapters = [],
+  open, onClose, bookId, bookTitle, books = null, chapters = [],
   defaultChapter = null, initialQuote = '', theme = 'dark',
 }) {
+  const pickingBook = bookId == null && Array.isArray(books)
+  const [pickedBookId, setPickedBookId] = useState(null)
+  const effectiveBookId = pickingBook ? pickedBookId : bookId
+  // Same key BookDetail uses, so a book the reader just came from is cached.
+  const pickedChaptersQuery = useQuery({
+    queryKey: ['public', 'books', 'detail', String(effectiveBookId), 'chapters'],
+    queryFn: () => publicApi.listChapters(effectiveBookId),
+    enabled: open && pickingBook && effectiveBookId != null,
+  })
+  const chapterOptions = pickingBook ? (pickedChaptersQuery.data?.chapters || []) : chapters
   const [chapterNumber, setChapterNumber] = useState(defaultChapter)
   const [reportType, setReportType] = useState('')
   const [quote, setQuote] = useState(initialQuote)
@@ -229,6 +276,7 @@ export default function ReportErrorModal({
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    if (effectiveBookId == null) return setError('Please pick the novel.')
     if (!reportType) return setError('Please pick what kind of problem this is.')
     if (!problem.trim()) return setError('Please describe the problem.')
     if (email.trim() && !email.includes('@')) return setError('That email address doesn\'t look valid.')
@@ -237,7 +285,7 @@ export default function ReportErrorModal({
     setSubmitting(true)
     try {
       await publicApi.submitErrorReport({
-        book_id: Number(bookId),
+        book_id: Number(effectiveBookId),
         chapter_number: chapterNumber,
         report_type: reportType,
         quote: quote.trim().slice(0, QUOTE_MAX) || null,
@@ -292,16 +340,33 @@ export default function ReportErrorModal({
         ) : (
           <form onSubmit={handleSubmit} onChange={markInteracted}
                 className="px-4 py-3 space-y-3 overflow-y-auto">
-            <div>
-              <label htmlFor="report-chapter" className={labelClass}>Where is it?</label>
-              <ChapterPicker
-                inputId="report-chapter"
-                value={chapterNumber}
-                onChange={setChapterNumber}
-                chapters={chapters}
-                tokens={tokens}
-              />
-            </div>
+            {pickingBook && (
+              <div>
+                <label htmlFor="report-book" className={labelClass}>
+                  Which novel? <span className="text-rose-500">*</span>
+                </label>
+                <BookPicker
+                  inputId="report-book"
+                  value={pickedBookId}
+                  onChange={(id) => { setPickedBookId(id); setChapterNumber(null); markInteracted() }}
+                  books={books}
+                  tokens={tokens}
+                />
+              </div>
+            )}
+
+            {(!pickingBook || effectiveBookId != null) && (
+              <div>
+                <label htmlFor="report-chapter" className={labelClass}>Where is it?</label>
+                <ChapterPicker
+                  inputId="report-chapter"
+                  value={chapterNumber}
+                  onChange={setChapterNumber}
+                  chapters={chapterOptions}
+                  tokens={tokens}
+                />
+              </div>
+            )}
 
             <div>
               <span className={labelClass}>What kind of problem?</span>

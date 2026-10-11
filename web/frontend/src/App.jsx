@@ -31,6 +31,7 @@ const Entities        = lazy(() => import('./pages/Entities'))
 const Queue           = lazy(() => import('./pages/Queue'))
 const Settings        = lazy(() => import('./pages/Settings'))
 const Help            = lazy(() => import('./pages/Help'))
+const About           = lazy(() => import('./pages/About'))
 const Recommendations = lazy(() => import('./pages/Recommendations'))
 const ErrorReports = lazy(() => import('./pages/ErrorReports'))
 const CommentsAdmin   = lazy(() => import('./pages/CommentsAdmin'))
@@ -199,6 +200,7 @@ const router = createBrowserRouter(createRoutesFromElements(
   <>
     {/* Public routes — gated server-side via auth middleware when public library is off */}
     <Route path="/library" element={<Library />} />
+    <Route path="/library/about" element={lazyEl(<About />)} />
     <Route path="/library/book/:bookId" element={<BookDetail />} />
     <Route path="/library/read/:bookId/:chapterNum" element={<Reader isPublic />} />
     <Route path="/library/read/:bookId" element={<BookDetail />} />

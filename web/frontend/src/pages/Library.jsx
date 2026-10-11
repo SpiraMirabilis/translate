@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
-import { BookOpen, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, Sparkles, Clock, Star, BookMarked, LibraryBig } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { BookOpen, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, Sparkles, Clock, Star, BookMarked, LibraryBig, Flag, Info } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import RecommendModal from '../components/RecommendModal'
+import ReportErrorModal from '../components/ReportErrorModal'
+import { useErrorReportsEnabled } from '../hooks/useErrorReportsEnabled'
 import ErrorState from '../components/ErrorState'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
@@ -48,6 +50,8 @@ function readFilters(sp) {
 export default function Library() {
   const [sort, setSort] = useLocalStorage('library.sort', 'trending')
   const recommendModal = useUrlModal('recommend')
+  const reportModal = useUrlModal('report')
+  const reportsEnabled = useErrorReportsEnabled()
   const { prefs, setPrefs, theme } = useReaderPrefs()
   const { site_name, public_site_name } = useSite()
   const t = LIBRARY_THEME[prefs.theme] || LIBRARY_THEME.light
@@ -121,6 +125,22 @@ export default function Library() {
                   </>
                 )}
               </p>
+              <nav className={`mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm ${t.subtitle}`}>
+                <button onClick={() => recommendModal.open()}
+                  className="inline-flex items-center gap-1.5 hover:text-indigo-500 transition-colors">
+                  <MessageSquarePlus size={14} /> Recommend a Novel
+                </button>
+                {reportsEnabled && (
+                  <button onClick={() => reportModal.open()}
+                    className="inline-flex items-center gap-1.5 hover:text-indigo-500 transition-colors">
+                    <Flag size={14} /> Report an Error
+                  </button>
+                )}
+                <Link to="/library/about"
+                  className="inline-flex items-center gap-1.5 hover:text-indigo-500 transition-colors">
+                  <Info size={14} /> About Us
+                </Link>
+              </nav>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <a href="/api/public/feed.rss" title="RSS feed of recently translated chapters"
@@ -218,6 +238,13 @@ export default function Library() {
       </main>
 
       {recommendModal.isOpen && <RecommendModal onClose={recommendModal.close} theme={t} />}
+      {/* No book is open here, so the modal asks which one. */}
+      <ReportErrorModal
+        open={reportsEnabled && reportModal.isOpen}
+        onClose={reportModal.close}
+        books={books}
+        theme={prefs.theme}
+      />
     </div>
   )
 }
