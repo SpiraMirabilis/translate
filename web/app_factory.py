@@ -19,6 +19,7 @@ import copy
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from html import escape
 
 from fastapi import FastAPI, Request
@@ -131,17 +132,22 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         footnote_candidates.init(entity_manager)
         sitemap.init(entity_manager, config)
 
+    # Flush buffered reader views on clean shutdown (best-effort; up to a few
+    # seconds of views are accepted-lost on a hard kill).
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+        view_logger.stop()
+
     if public_only:
         # No docs/openapi on the public surface — nothing to advertise.
         site = getattr(config, "public_site_name", None) or "Public"
         app = FastAPI(title=f"{site} Reader", version="1.0.0",
-                      docs_url=None, redoc_url=None, openapi_url=None)
+                      docs_url=None, redoc_url=None, openapi_url=None,
+                      lifespan=lifespan)
     else:
-        app = FastAPI(title=f"{config.site_name} Translation GUI", version="1.0.0")
-
-    # Flush buffered reader views on clean shutdown (best-effort; up to a few
-    # seconds of views are accepted-lost on a hard kill).
-    app.add_event_handler("shutdown", view_logger.stop)
+        app = FastAPI(title=f"{config.site_name} Translation GUI", version="1.0.0",
+                      lifespan=lifespan)
 
     if not public_only:
         app.add_middleware(

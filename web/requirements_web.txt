@@ -1,4 +1,6 @@
-fastapi>=0.110.0
+# Upper bound: fastapi 0.137+ wraps included routers (app.routes no longer
+# lists their paths), which tests/test_error_reports.py relies on.
+fastapi>=0.110.0,<0.137
 uvicorn[standard]>=0.29.0
 websockets>=12.0
 python-multipart>=0.0.9

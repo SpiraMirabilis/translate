@@ -32,6 +32,9 @@ lxml>=4.6.3
 # Web auth
 itsdangerous>=2.0.0
 
+# Image handling (covers, illustrations) — imported by web/api/books.py
+Pillow>=10.0
+
 # Optional: DigitalOcean Spaces / S3-compatible CDN offload (only needed if SPACES_ENABLED=1)
 # Debian/Ubuntu: sudo apt install python3-boto3
 boto3>=1.28.0
@@ -44,6 +47,9 @@ OpenCC>=1.1.6
 # starlette 0.31 / uvicorn 0.27 the web app runs on; install with
 #   pip install --user --break-system-packages -c <(printf "starlette==0.31.1\nuvicorn==0.27.1\n") "mcp==1.12.4"
 mcp==1.12.4
+# mcp 1.12.4 imports pydantic._internal._typing_extra.eval_type_backport,
+# which pydantic 2.14 removed.
+pydantic<2.14
 
 # Jev (TypeSafe System One) is called with plain `requests` (jev_client.py).
 # Do NOT install typesafe-sdk: its httpcore2 dependency requires h11>=0.16 and
