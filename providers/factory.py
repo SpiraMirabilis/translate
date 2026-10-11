@@ -9,6 +9,7 @@ from .openai_provider import OpenAIProvider
 from .claude_provider import ClaudeProvider
 from .gemini_provider import GeminiProvider
 from .claude_code_provider import ClaudeCodeProvider
+from .codex_provider import CodexProvider
 
 
 class ProviderFactory:
@@ -66,7 +67,7 @@ class ProviderFactory:
         provider_config = self.config['providers'][resolved_name]
         
         # Get API key. Providers without `api_key_env` configured handle auth
-        # out-of-band (e.g. ClaudeCodeProvider relies on the local CLI session).
+        # out-of-band (e.g. ClaudeCodeProvider and CodexProvider rely on the local CLI login).
         if api_key is None:
             api_key_env = provider_config.get('api_key_env')
             if api_key_env:
@@ -114,6 +115,7 @@ class ProviderFactory:
             'ClaudeProvider': ClaudeProvider,
             'GeminiProvider': GeminiProvider,
             'ClaudeCodeProvider': ClaudeCodeProvider,
+            'CodexProvider': CodexProvider,
         }
         
         if class_name not in classes:

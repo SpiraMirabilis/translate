@@ -19,10 +19,11 @@ class OverloadedError(Exception):
 
 
 class SessionLimitError(Exception):
-    """Raised when the Claude Code CLI reports the user's usage limit is
-    exhausted — either the session limit ("You've hit your session limit ·
-    resets 10:40pm (UTC)") or the weekly one ("You've hit your weekly limit ·
-    resets Aug 21 2pm (UTC)").
+    """Raised when a subscription CLI (Claude Code, Codex) reports the user's
+    usage limit is exhausted — Claude Code's session limit ("You've hit your
+    session limit · resets 10:40pm (UTC)") or weekly one ("You've hit your
+    weekly limit · resets Aug 21 2pm (UTC)"), or Codex's ("You've hit your
+    usage limit. ... or try again at 3:45 PM.").
 
     Unlike OverloadedError (a transient saturation retried after a fixed
     interval), this carries a concrete reset time. The translation engine
@@ -68,10 +69,15 @@ _TIME_TAIL = (
     r"\s*(?:\(\s*(?P<tz>[A-Za-z/_]+)\s*\))?"
 )
 
+# What introduces the reset time: Claude Code says "resets 10:40pm"; the Codex
+# CLI says "...or try again at 3:45 PM" (or "at Oct 13 3:45 PM" when the reset
+# is on a later day).
+_RESET_LEAD = r"(?:resets?|try\s+again\s+at)"
+
 # "resets Aug 21 2pm (UTC)" / "resets 21 Aug 2026 at 2pm" — the weekly form,
 # whose reset can be days away and so names a date.
 _RESET_DATED_RE = re.compile(
-    r"resets?\s+(?:on\s+)?(?:"
+    _RESET_LEAD + r"\s+(?:on\s+)?(?:"
     r"(?P<mon1>[A-Za-z]{3,9})\.?\s+(?P<day1>\d{1,2})(?:st|nd|rd|th)?"
     r"|"
     r"(?P<day2>\d{1,2})(?:st|nd|rd|th)?\s+(?P<mon2>[A-Za-z]{3,9})\.?"
@@ -80,13 +86,13 @@ _RESET_DATED_RE = re.compile(
 )
 
 # "resets 10:40pm (UTC)" — a clock time only, meaning the next occurrence of it.
-_RESET_TIME_RE = re.compile(r"resets?\s+" + _TIME_TAIL, re.IGNORECASE)
+_RESET_TIME_RE = re.compile(_RESET_LEAD + r"\s+" + _TIME_TAIL, re.IGNORECASE)
 
 # Last-ditch: a wording we don't recognise between "resets" and the clock time
 # ("resets tomorrow at 3pm"). Requires am/pm so a stray date number can't be
 # mistaken for an hour.
 _RESET_LOOSE_RE = re.compile(
-    r"resets?\b[^\d\n]{0,24}?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?:resets?|try\s+again)\b[^\d\n]{0,24}?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
     r"(?P<ampm>[ap]\.?m\.?)\s*(?:\(\s*(?P<tz>[A-Za-z/_]+)\s*\))?",
     re.IGNORECASE,
 )
@@ -98,7 +104,7 @@ _MAX_RESET_WAIT_SECONDS = 8 * 24 * 60 * 60
 
 
 def looks_session_limited(text) -> bool:
-    """Return True if `text` looks like a Claude Code usage-limit notice.
+    """Return True if `text` looks like a Claude Code or Codex usage-limit notice.
 
     Covers both the per-session limit and the weekly limit; use `limit_kind`
     if you need to tell them apart."""

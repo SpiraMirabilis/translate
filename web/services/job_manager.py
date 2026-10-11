@@ -248,7 +248,7 @@ class Job:
         self.is_running = False
         self.status = "idle"  # idle | running | waiting | awaiting_review | complete | error
         self._waiting_reason: Optional[str] = None  # 'session_limit' | 'overloaded' while status == waiting
-        self._waiting_limit: Optional[str] = None  # 'session' | 'weekly' for a session_limit wait
+        self._waiting_limit: Optional[str] = None  # 'session' | 'weekly' | 'usage' for a session_limit wait
         self.error: Optional[str] = None
         self.last_result: Optional[dict] = None
 
@@ -385,8 +385,8 @@ class Job:
     def on_progress(self, progress: dict):
         phase = progress.get("phase")
         if phase in ("session_limit", "overloaded"):
-            # The translation thread is parked — either until the Claude Code
-            # session/weekly usage resets, or for the configured 529-overload retry
+            # The translation thread is parked — either until a subscription
+            # CLI's (Claude Code, Codex) usage limit resets, or for the configured 529-overload retry
             # interval (both the Anthropic API and Claude Code providers raise
             # OverloadedError into the same engine retry loop). Surface that as
             # a distinct "waiting" status (so the UI doesn't look like it's
@@ -401,7 +401,7 @@ class Job:
                 if phase == "session_limit":
                     # "session" or "weekly" — a weekly reset can be days out.
                     self._waiting_limit = progress.get("limit") or "session"
-                    msg = f"Claude Code {self._waiting_limit} limit reached — queue paused"
+                    msg = f"{self._waiting_limit.capitalize()} limit reached — queue paused"
                     if mins:
                         msg += f"; resuming in ~{mins} min"
                 else:

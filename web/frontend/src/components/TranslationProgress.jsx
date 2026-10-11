@@ -34,11 +34,12 @@ export default function TranslationProgress({ progress, status }) {
   const { chunk, total, phase, token_count, expected_tokens, percent, tokens_per_second, elapsed } = progress
   const hasTokenData = token_count != null && expected_tokens != null
 
-  // Paused: a Claude Code usage limit was reached (session or weekly). The
+  // Paused: a subscription CLI's usage limit was reached (Claude Code's
+  // session or weekly limit, or Codex's usage limit). The
   // translation thread is sleeping until the reset time; show that clearly
   // rather than an active bar.
   if (phase === 'session_limit') {
-    const limitLabel = progress.limit === 'weekly' ? 'Weekly limit' : 'Session limit'
+    const limitLabel = { weekly: 'Weekly limit', usage: 'Usage limit' }[progress.limit] || 'Session limit'
     const mins = progress.wait_seconds ? Math.max(1, Math.round(progress.wait_seconds / 60)) : null
     // A weekly reset can be days out, so a bare clock time would be
     // ambiguous — include the date once the wait passes half a day.

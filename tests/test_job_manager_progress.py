@@ -53,10 +53,10 @@ def test_overload_resume_logs_recovery():
     assert "recovered from overload" in jm.db_manager.entries[1]["message"]
 
 
-def test_session_limit_messages_unchanged():
+def test_session_limit_messages():
     jm = _jm()
     jm.on_progress({"phase": "session_limit", "wait_seconds": 1800})
-    assert "session limit" in jm.db_manager.entries[0]["message"]
+    assert "Session limit reached" in jm.db_manager.entries[0]["message"]
     jm.on_progress({"phase": "chunk", "chunk": 1})
     assert "Session limit reset" in jm.db_manager.entries[1]["message"]
 
@@ -73,7 +73,7 @@ def test_second_overload_after_recovery_logs_again():
 def test_weekly_limit_message_names_the_kind():
     jm = _jm()
     jm.on_progress({"phase": "session_limit", "limit": "weekly", "wait_seconds": 7200})
-    assert "weekly limit" in jm.db_manager.entries[0]["message"]
+    assert "Weekly limit reached" in jm.db_manager.entries[0]["message"]
     assert jm.status == "waiting"
 
 
@@ -82,3 +82,13 @@ def test_weekly_limit_resume_message_names_the_kind():
     jm.on_progress({"phase": "session_limit", "limit": "weekly", "wait_seconds": 7200})
     jm.on_progress({"phase": "chunk", "chunk": 1})
     assert "Weekly limit reset" in jm.db_manager.entries[1]["message"]
+
+
+def test_codex_usage_limit_message_names_the_kind():
+    jm = _jm()
+    jm.on_progress({"phase": "session_limit", "limit": "usage", "wait_seconds": 3600})
+    msg = jm.db_manager.entries[0]["message"]
+    assert "Usage limit reached" in msg
+    assert "Claude Code" not in msg
+    jm.on_progress({"phase": "chunk", "chunk": 1})
+    assert "Usage limit reset" in jm.db_manager.entries[1]["message"]

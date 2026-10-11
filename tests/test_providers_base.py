@@ -253,3 +253,51 @@ def test_parse_reset_seconds_unparseable_returns_none():
     assert parse_session_reset_seconds("resets Smarch 4 2pm (UTC)") is None
     assert parse_session_reset_seconds("") is None
     assert parse_session_reset_seconds(None) is None
+
+
+# ── Codex CLI usage-limit notices ──────────────────────────────────
+# Every plan-specific wording in codex-cli 0.160 (pulled from the binary).
+# Each ends "... try again at <time>", time as "3:45 PM" or "Oct 13, 2026 3:45 PM".
+
+CODEX_NOTICES = {
+    "free": "You've hit your usage limit. Upgrade to Plus to continue using Codex "
+            "(https://chatgpt.com/explore/plus), or try again at {when}.",
+    "plus": "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+            "visit https://chatgpt.com/codex/settings/usage to purchase more credits "
+            "or try again at {when}.",
+    "pro": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+           "to purchase more credits or try again at {when}.",
+    "business": "You've hit your usage limit. To get more access now, send a request "
+                "to your admin or try again at {when}.",
+    "generic": "You've hit your usage limit. Try again at {when}.",
+    "per_model": "You've hit your usage limit for gpt-6.1-sol. Switch to another model now, "
+                 "or try again at {when}.",
+}
+
+
+@pytest.mark.parametrize("plan", sorted(CODEX_NOTICES))
+def test_codex_usage_limit_detected(plan):
+    notice = CODEX_NOTICES[plan].format(when="3:45 PM")
+    assert looks_session_limited(notice) is True
+    assert limit_kind(notice) == "usage"
+
+
+@pytest.mark.parametrize("plan", sorted(CODEX_NOTICES))
+def test_parse_reset_seconds_codex_same_day(plan):
+    now = datetime(2026, 7, 1, 12, 0, 0)
+    notice = CODEX_NOTICES[plan].format(when="3:45 PM")
+    assert parse_session_reset_seconds(notice, now=now) == 3 * 3600 + 45 * 60 + 60
+
+
+@pytest.mark.parametrize("plan", sorted(CODEX_NOTICES))
+def test_parse_reset_seconds_codex_dated(plan):
+    now = datetime(2026, 10, 11, 12, 0, 0)
+    notice = CODEX_NOTICES[plan].format(when="Oct 13, 2026 9:05 AM")
+    assert parse_session_reset_seconds(notice, now=now) == \
+        (1 * 86400) + (21 * 3600) + (5 * 60) + 60
+
+
+def test_parse_reset_seconds_codex_dated_without_year():
+    now = datetime(2026, 10, 11, 12, 0, 0)
+    notice = CODEX_NOTICES["pro"].format(when="Oct 12 1:00 PM")
+    assert parse_session_reset_seconds(notice, now=now) == 86400 + 3600 + 60

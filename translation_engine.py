@@ -122,8 +122,9 @@ class TranslationEngine:
     UNPARSEABLE_WEEKLY_WAIT_SECONDS = 30 * 60
 
     def _sleep_for_session_limit(self, reason, progress_callback=None, chunk_index=None, should_cancel=None):
-        """Pause the queue until just past the Claude Code usage-limit reset
-        time named in `reason`, then return so the caller can retry the chunk.
+        """Pause the queue until just past the usage-limit reset time named in
+        `reason` (Claude Code or Codex CLI), then return so the caller can
+        retry the chunk.
 
         Handles both kinds of notice — the session limit ("resets 10:40pm
         (UTC)") and the weekly limit, whose reset may name a calendar date
@@ -145,7 +146,7 @@ class TranslationEngine:
         where = f" on chunk {chunk_index}" if chunk_index else ""
         mins = max(1, round(wait / 60))
         print(
-            f"\n⏸️  Claude Code {kind} limit hit{where}. "
+            f"\n⏸️  {kind.capitalize()} limit hit{where}. "
             f"Pausing ~{mins} min ({detail}) before resuming..."
         )
         self.logger.warning(

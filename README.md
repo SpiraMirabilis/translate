@@ -2,7 +2,7 @@
 
 T9 started as an AI-powered tool for translating web novels into English and has grown into a full publishing platform. It has two halves that matter about equally:
 
-- **A translation & writing studio** — multi-provider AI translation (OpenAI, Claude, Gemini, DeepSeek, OpenRouter, or your local Claude Code subscription) with an entity glossary that keeps terminology consistent across thousands of chapters, a split-pane proofreading editor, a WYSIWYG editor for original fiction, and batch queue processing.
+- **A translation & writing studio** — multi-provider AI translation (OpenAI, Claude, Gemini, DeepSeek, OpenRouter, or your local Claude Code or Codex subscription) with an entity glossary that keeps terminology consistent across thousands of chapters, a split-pane proofreading editor, a WYSIWYG editor for original fiction, and batch queue processing.
 - **A public reader site** — a clean, login-free Library and Reader for your finished work, with chapter scheduling and drip releases, anonymous comments with moderation, RSS feeds, EPUB downloads, reader statistics, and CDN-backed covers and illustrations.
 
 Source languages include Chinese, Japanese, Korean, and Russian, with genre-specific prompt presets (xianxia, light novel, Korean web novel, and more).
@@ -10,7 +10,7 @@ Source languages include Chinese, Japanese, Korean, and Russian, with genre-spec
 ## Feature Highlights
 
 ### Translation engine
-- **Multi-provider AI translation** — OpenAI, Anthropic Claude, Google Gemini, DeepSeek, OpenRouter, and a `claudecode` provider that drives the local Claude Code CLI (translate on your Claude subscription with no API key; the queue pauses and resumes automatically around session limits)
+- **Multi-provider AI translation** — OpenAI, Anthropic Claude, Google Gemini, DeepSeek, OpenRouter, and `claudecode` / `codex` providers that drive the local Claude Code or Codex CLI (translate on your Claude or ChatGPT subscription with no API key; the queue pauses and resumes automatically around usage limits)
 - **Entity consistency** — automatically identifies proper nouns and maintains a per-book glossary so names, places, and terms stay consistent across hundreds of chapters
 - **Entity review** — after each chapter, review newly discovered entities, fix translations, and delete false positives before they propagate; retroactive review revisits earlier entities with AI advice, dictionary lookup, and propagation to affected chapters
 - **Queue processing** — upload EPUB, FB2, or text files and translate back-to-back with auto-processing; resilient to provider overload (529 responses trigger a patient retry loop instead of burning the retry budget)
@@ -73,7 +73,7 @@ Enabling, disabling, or reconfiguring a module backfills (or reverses) the trans
 
 - Python 3.10+
 - Node.js 18+ and npm
-- At least one AI provider API key (or a Claude Code login for the `claudecode` provider)
+- At least one AI provider API key (or a Claude Code or Codex login for the `claudecode` / `codex` providers)
 
 ### Installation
 
@@ -160,10 +160,13 @@ Chapters from the translation pipeline go live immediately by default; original-
 | DeepSeek | `ds` | deepseek-chat | `DEEPSEEK_KEY` |
 | OpenRouter | `or` | any model on OpenRouter | `OPENROUTER_KEY` |
 | Claude Code | `cc` | sonnet, opus | *(none — uses your local Claude Code login)* |
+| Codex | `cx` | gpt-6.1-sol, gpt-6-luna | *(none — uses your local Codex / ChatGPT login)* |
 
-Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `cc:sonnet`)
+Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `cc:sonnet`, `cx:gpt-6-luna`)
 
-The `cc` provider shells out to the Claude Code CLI, so translation costs come out of a Claude subscription instead of API billing. When a session usage limit is hit mid-queue, T9 parks the job and resumes automatically when the limit resets.
+The `cc` and `cx` providers shell out to the Claude Code and Codex CLIs, so translation costs come out of a Claude or ChatGPT subscription instead of API billing. When a usage limit is hit mid-queue, T9 parks the job and resumes automatically when the limit resets.
+
+`cx` runs each call as an ephemeral `codex exec` turn in an empty directory with a read-only sandbox, your Codex config ignored, and Codex's agent tools switched off. That keeps Codex's own per-call overhead to about 4k input tokens. `CODEX_EFFORT` sets the reasoning effort (default `medium`), and `CODEX_BIN` points at a non-default binary. Codex returns each response whole rather than token by token, so the progress bar jumps once per chunk. The MCP research tools (see the Claude Code research tools module) are `cc`-only for now.
 
 Providers can be configured and new models added by editing `providers/models.json`.
 
