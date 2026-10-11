@@ -14,8 +14,10 @@ def reset_public_limiter():
     from web.api import public as public_api
 
     public_api._public_limiter.reset()
+    public_api._trending_memo.update(at=0.0, views={})
     yield
     public_api._public_limiter.reset()
+    public_api._trending_memo.update(at=0.0, views={})
 
 
 @pytest.fixture
@@ -42,6 +44,48 @@ def test_public_books_served(pub_client, public_book):
     resp = pub_client.get("/api/public/books")
     assert resp.status_code == 200, resp.text
     assert any(b["id"] == public_book for b in resp.json()["books"])
+
+
+def test_public_books_carry_source_language(pub_client, db):
+    book_id = db.create_book("Korean Book", author="A", source_language="ko")
+    db.save_chapter(book_id=book_id, chapter_number=1,
+                    untranslated_content=["x"], translated_content=["Chapter 1", "y"], title="T")
+    books = {b["id"]: b for b in pub_client.get("/api/public/books").json()["books"]}
+    assert books[book_id]["source_language"] == "ko"
+
+
+def _two_books(db):
+    older = db.create_book("Older Book", author="A")
+    newer = db.create_book("Newer Book", author="A")
+    for bid in (older, newer):
+        db.save_chapter(book_id=bid, chapter_number=1,
+                        untranslated_content=["x"], translated_content=["Chapter 1", "y"], title="T")
+    return older, newer
+
+
+def test_trending_sort_follows_recent_views(pub_client, db):
+    older, newer = _two_books(db)
+    for _ in range(3):
+        db.log_reader_view(older, 1, "10.0.0.1")
+    db.log_reader_view(newer, 1, "10.0.0.2")
+    books = pub_client.get("/api/public/books?sort=trending").json()["books"]
+    ids = [b["id"] for b in books]
+    assert ids.index(older) < ids.index(newer)
+    by_id = {b["id"]: b for b in books}
+    assert by_id[older]["recent_views"] == 3
+    assert by_id[newer]["recent_views"] == 1
+
+
+def test_updated_sort_uses_published_chapter_not_modified_date(pub_client, db):
+    older, newer = _two_books(db)
+    # A new chapter on `older` makes it the most recently updated book...
+    db.save_chapter(book_id=older, chapter_number=2,
+                    untranslated_content=["x"], translated_content=["Chapter 2", "z"], title="T2")
+    # ...while an edit that bumps only modified_date must not promote `newer`.
+    with db._conn() as conn:
+        conn.cursor().execute("UPDATE books SET modified_date = '2999-01-01T00:00:00' WHERE id = ?", (newer,))
+    ids = [b["id"] for b in pub_client.get("/api/public/books?sort=updated").json()["books"]]
+    assert ids.index(older) < ids.index(newer)
 
 
 def test_health_open(pub_client):

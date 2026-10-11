@@ -5,6 +5,7 @@ Protected by:
   - Origin/Referer header validation (requests must come from this site)
   - Per-IP rate limiting
 """
+import time
 import os
 import re
 import json
@@ -175,7 +176,28 @@ def _guard(request: Request):
 # Endpoints
 # ------------------------------------------------------------------
 
-_VALID_SORTS = {'popular', 'title', 'updated', 'newly_added'}
+_VALID_SORTS = {'popular', 'trending', 'title', 'updated', 'newly_added'}
+# Public 'updated' means "newest published chapter", not books.modified_date
+# (which every substitution sweep bumps). 'trending' is sorted here, after the
+# fetch, from the recent-views map.
+_REPO_SORT = {'updated': 'published', 'trending': 'popular'}
+
+TRENDING_DAYS = 30
+_TRENDING_TTL = 300  # seconds; matches _CACHE_SHORT
+_trending_memo = {"at": 0.0, "views": {}}
+
+
+def _recent_views():
+    """{book_id: views in the last TRENDING_DAYS}, memoised per process.
+
+    The GROUP BY over reader_log is ~0.35s on the live table — fine once per
+    five minutes, not once per Library load.
+    """
+    now = time.monotonic()
+    if now - _trending_memo["at"] > _TRENDING_TTL:
+        _trending_memo["views"] = _db.recent_book_views(TRENDING_DAYS)
+        _trending_memo["at"] = now
+    return _trending_memo["views"]
 
 
 @router.get("/books")
@@ -184,8 +206,9 @@ def list_books(request: Request, response: Response, sort: str = 'popular'):
     _cache(response, _CACHE_SHORT)
     if sort not in _VALID_SORTS:
         sort = 'popular'
-    books = _db.list_books(order_by=sort)
+    books = _db.list_books(order_by=_REPO_SORT.get(sort, sort))
     latest = _db.latest_published_chapters()
+    recent = _recent_views()
     # Return only public-facing fields, filtered to public books
     out = []
     for b in books:
@@ -212,7 +235,10 @@ def list_books(request: Request, response: Response, sort: str = 'popular'):
             "last_chapter_date": b.get("last_published_date"),
             "latest_chapter": latest_ch["chapter"] if latest_ch else None,
             "latest_chapter_title": latest_ch["title"] if latest_ch else None,
+            "recent_views": recent.get(b["id"], 0),
         })
+    if sort == 'trending':
+        out.sort(key=lambda b: (-b["recent_views"], (b["title"] or "").lower()))
     return {"books": out}
 
 

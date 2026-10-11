@@ -226,6 +226,35 @@ fine once per translation and not fine once per reader click in the public proce
   ordinary English, and a false highlight in prose is worse than a missed one. The note
   popover is `FootnotePopover` with a `label` instead of `[n]`.
 
+### Public Library page (`web/frontend/src/pages/Library.jsx`, reworked 2026-10-11)
+The reader's front page. One payload (`GET /api/public/books?sort=`) feeds everything;
+filtering and shelving are client-side in `web/frontend/src/lib/libraryFilter.js` (pure,
+unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf`,
+`ContinueReadingCard`, `LibraryToolbar`, `theme.js` with the per-theme tokens).
+- **Default view is shelves**: Continue reading (from the `reader-progress` localStorage
+  entry, both shapes), Recently updated (48 h), New this month (31 d), Editor's choice,
+  then the full grid with the chosen sort. Any search/filter collapses to one result grid.
+- **Filters are URL state**: `?q=…&tag=a,b&status=completed&lang=korean`. `tag` is
+  comma-joined and AND-ed; the old single `?tag=` deep link still works. Status
+  "ongoing" includes `ongoing-trial`. `/` focuses the search box.
+- **Filter chips come from `tag_vocab.json`** (repo root) — canonical tags grouped by
+  axis (`genre` always shown; premise/setting/romance/tone/theme behind "More"), imported
+  at build time; a tag no public book carries is not offered. `aliases` fold legacy
+  variants, `drop` lists tags retired on purpose. **Re-tagging a book**: edit tags in the
+  admin Books form or run `build_tag_dossiers.py --out DIR --book N` → classify (the
+  2026-10-11 pass used Sonnet subagents, brief in the session scratchpad) →
+  `apply_book_tags.py --file proposals.json [--apply]`, which folds aliases and always
+  carries an existing `editor's choice` over — curation is never the model's call.
+- **Sorts**: `trending` (views in the last 30 days, `recent_book_views` in
+  `db/logs_repo.py`, memoised 5 min per process in `public.py` because the GROUP BY is
+  ~0.35 s live), `popular` (all-time `view_count`), `updated` (**last published chapter**,
+  not `modified_date` — a substitution sweep must not reshuffle the Library), `newly_added`,
+  `title`. `list_books` now also returns `source_language`; it used to select only
+  `language` (the target), which is why the language tag never rendered.
+- Cards are three text rows: title, author, `Ch. N · 3h ago` (links to the latest chapter)
+  plus a status chip; translation progress is a 2 px bar under the cover; the blurb and the
+  tag chips live in a desktop-only hover pane. Coverless books get a hue from their id.
+
 ### Chapter publishing (drafts / scheduling)
 Per-chapter visibility via `chapters.published_at` (migration 11): **NULL = draft, future = scheduled, past = live**. Visibility is evaluated at query time (`published_at <= now`), so scheduled chapters appear automatically — no cron. All pre-existing chapters were backfilled to their translation_date (everything stayed live).
 - **Defaults**: translation-pipeline chapters publish immediately; original-work chapters are born drafts. The "Save as draft(s)" checkbox on the Dashboard and Queue pages overrides the pipeline default (`save_as_draft` run option → `save_chapter(publish=False)`). Re-saves/retranslations never change publish state.

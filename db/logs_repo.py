@@ -97,6 +97,26 @@ class LogsRepo:
                     (int(count), book_id)
                 )
 
+    def recent_book_views(self, days: int = 30):
+        """Chapter views per book over the last `days` days → {book_id: count}.
+
+        Drives the public Library's "Trending" sort. Uses idx_reader_log_viewed;
+        the lexical compare works because viewed_at is ISO-8601 text.
+        """
+        since = (datetime.datetime.now(datetime.timezone.utc)
+                 - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT book_id, COUNT(*) FROM reader_log WHERE viewed_at >= ? GROUP BY book_id',
+                    (since,)
+                )
+                return {int(b): int(n) for b, n in cursor.fetchall()}
+        except Exception as e:
+            self.logger.error(f"Error counting recent book views: {e}")
+            return {}
+
     def increment_book_view_count(self, book_id: int):
         """Atomically bump books.view_count by 1. Does not write reader_log."""
         try:

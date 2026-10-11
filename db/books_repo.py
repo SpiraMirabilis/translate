@@ -513,6 +513,10 @@ class BooksRepo:
             'popular': 'view_count DESC, ' + title_clause,
             'updated': "COALESCE(modified_date, created_date, '') DESC, " + title_clause,
             'newly_added': 'id DESC',
+            # Newest *published* chapter first — what the public Library means
+            # by "recently updated". 'updated' follows modified_date, which
+            # every substitution sweep and footnote re-render bumps too.
+            'published': 'last_published_date DESC, ' + title_clause,
         }
         clause = ORDER_CLAUSES.get(order_by, ORDER_CLAUSES['title'])
         try:
@@ -531,7 +535,8 @@ class BooksRepo:
                 (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id) as last_chapter_date,
                 is_original,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id AND {pub}) as published_chapter_count,
-                (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id AND {pub}) as last_published_date
+                (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id AND {pub}) as last_published_date,
+                source_language
             FROM books
             ORDER BY {clause}
             ''', (now, now))
@@ -544,7 +549,7 @@ class BooksRepo:
                  chapter_count, description, is_public, total_source_chapters, status,
                  comments_enabled, source_url, notes, view_count, modified_date,
                  trad_to_simp, raw_tags, raw_modules, last_chapter_date, is_original,
-                 published_chapter_count, last_published_date) = row
+                 published_chapter_count, last_published_date, source_language) = row
                 try:
                     modules = json.loads(raw_modules) if raw_modules else None
                 except (json.JSONDecodeError, TypeError):
@@ -562,6 +567,7 @@ class BooksRepo:
                     "title": title,
                     "author": author,
                     "language": language,
+                    "source_language": source_language,
                     "created_date": created_date,
                     "modified_date": modified_date,
                     "last_chapter_date": last_chapter_date,

@@ -1,66 +1,29 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, useSearchParams } from 'react-router-dom'
-import { BookOpen, Loader2, User, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, X } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { BookOpen, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, Sparkles, Clock, Star, BookMarked, LibraryBig } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import RecommendModal from '../components/RecommendModal'
 import ErrorState from '../components/ErrorState'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
-import { bustUrl } from '../services/cacheBust'
 import { publicApi } from '../services/api'
-import TagChips from '../components/TagChips'
-import ProtagonistBadge from '../components/ProtagonistBadge'
-import EditorsChoiceBadge from '../components/EditorsChoiceBadge'
-import { hasEditorsChoice } from '../utils/specialTags'
+import { applyFilters, buildShelves, hasActiveFilters, libraryStats, EMPTY_FILTERS } from '../lib/libraryFilter'
+import { LIBRARY_THEME } from '../components/library/theme'
+import BookCard from '../components/library/BookCard'
+import BookCardSkeleton from '../components/library/BookCardSkeleton'
+import BookShelf from '../components/library/BookShelf'
+import ContinueReadingCard from '../components/library/ContinueReadingCard'
+import LibraryToolbar from '../components/library/LibraryToolbar'
 
 const SORT_OPTIONS = [
+  { id: 'trending',    label: 'Trending' },
   { id: 'popular',     label: 'Most Popular' },
   { id: 'updated',     label: 'Recently Updated' },
   { id: 'newly_added', label: 'Newly Added' },
   { id: 'title',       label: 'Title' },
 ]
-
-// Maps a source-language code to a display tag. Covers the languages we
-// currently translate from; colloquial variants (kr/jp) map alongside the
-// official ISO 639 codes (ko/ja) so a book tags correctly however it was created.
-// Add more codes here as new source languages come online.
-const LANGUAGE_TAGS = {
-  en: 'english',
-  zh: 'chinese',
-  ru: 'russian',
-  ko: 'korean',   kr: 'korean',
-  ja: 'japanese', jp: 'japanese',
-}
-
-// Prepend the source-language tag (if known) to a book's own tags,
-// skipping it when the book already carries that tag explicitly.
-function tagsWithLanguage(book) {
-  const tags = book.tags || []
-  const lang = LANGUAGE_TAGS[(book.source_language || '').toLowerCase()]
-  if (!lang || tags.some(t => t.toLowerCase() === lang)) return tags
-  return [lang, ...tags]
-}
-
-// A book is "new" if it was added within this many days.
-const NEW_BOOK_DAYS = 31
-// A book has "new updates" if its latest chapter posted within this many hours.
-const RECENT_UPDATE_HOURS = 48
-
-function isNewlyAdded(createdDate) {
-  if (!createdDate) return false
-  const created = new Date(createdDate)
-  if (isNaN(created)) return false
-  return (Date.now() - created.getTime()) < NEW_BOOK_DAYS * 24 * 60 * 60 * 1000
-}
-
-function hasRecentUpdate(lastChapterDate) {
-  if (!lastChapterDate) return false
-  const updated = new Date(lastChapterDate)
-  if (isNaN(updated)) return false
-  return (Date.now() - updated.getTime()) < RECENT_UPDATE_HOURS * 60 * 60 * 1000
-}
 
 const THEME_TOGGLE = [
   { id: 'light', icon: Sun,    label: 'Light' },
@@ -68,318 +31,193 @@ const THEME_TOGGLE = [
   { id: 'dark',  icon: Moon,   label: 'Dark'  },
 ]
 
-// Per-theme style tokens (beyond the bg/text from useReaderPrefs)
-const T = {
-  light: {
-    headerBg: 'bg-white', headerBorder: 'border-stone-200',
-    subtitle: 'text-gray-500', cardBg: 'bg-stone-200',
-    placeholderFrom: 'from-indigo-100', placeholderTo: 'to-indigo-50',
-    placeholderIcon: 'text-indigo-300', placeholderText: 'text-indigo-400',
-    title: 'text-gray-900', titleHover: 'group-hover:text-indigo-600',
-    author: 'text-gray-500', chapters: 'text-gray-400',
-    toggleBg: 'bg-stone-100', toggleActive: 'bg-white text-indigo-600 shadow-sm',
-    toggleInactive: 'text-gray-400 hover:text-gray-600',
-    // Modal theme tokens
-    modalBg: 'bg-white', modalText: 'text-gray-900', modalBorder: 'border-gray-200',
-    inputBg: 'bg-gray-50', inputBorder: 'border-gray-300', inputText: 'text-gray-900',
-    labelText: 'text-gray-700', subtleText: 'text-gray-500', turnstileTheme: 'light',
-  },
-  sepia: {
-    headerBg: 'bg-amber-100/80', headerBorder: 'border-amber-200',
-    subtitle: 'text-amber-800/60', cardBg: 'bg-amber-200/50',
-    placeholderFrom: 'from-amber-200/60', placeholderTo: 'to-amber-100/60',
-    placeholderIcon: 'text-amber-400', placeholderText: 'text-amber-600',
-    title: 'text-amber-950', titleHover: 'group-hover:text-indigo-700',
-    author: 'text-amber-800/60', chapters: 'text-amber-700/50',
-    toggleBg: 'bg-amber-200/50', toggleActive: 'bg-amber-50 text-amber-900 shadow-sm',
-    toggleInactive: 'text-amber-700/50 hover:text-amber-900',
-    modalBg: 'bg-amber-50', modalText: 'text-amber-950', modalBorder: 'border-amber-200',
-    inputBg: 'bg-amber-100/50', inputBorder: 'border-amber-300', inputText: 'text-amber-950',
-    labelText: 'text-amber-800', subtleText: 'text-amber-700/60', turnstileTheme: 'light',
-  },
-  dark: {
-    headerBg: 'bg-slate-800/80', headerBorder: 'border-slate-700',
-    subtitle: 'text-slate-400', cardBg: 'bg-slate-800',
-    placeholderFrom: 'from-slate-800', placeholderTo: 'to-slate-700',
-    placeholderIcon: 'text-slate-500', placeholderText: 'text-slate-400',
-    title: 'text-slate-100', titleHover: 'group-hover:text-indigo-400',
-    author: 'text-slate-400', chapters: 'text-slate-500',
-    toggleBg: 'bg-slate-800', toggleActive: 'bg-slate-700 text-slate-100 shadow-sm',
-    toggleInactive: 'text-slate-500 hover:text-slate-300',
-    modalBg: 'bg-slate-800', modalText: 'text-slate-100', modalBorder: 'border-slate-700',
-    inputBg: 'bg-slate-700', inputBorder: 'border-slate-600', inputText: 'text-slate-100',
-    labelText: 'text-slate-300', subtleText: 'text-slate-400', turnstileTheme: 'dark',
-  },
+const GRID = 'grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] sm:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-x-5 gap-y-8'
+
+// Filters live in the query string so a narrowed view is a shareable link:
+// ?q=…&tag=a,b&status=completed&lang=korean. The old single ?tag= deep link
+// (from card chips, the book page) still reads correctly.
+function readFilters(sp) {
+  return {
+    q: sp.get('q') || '',
+    tags: (sp.get('tag') || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    status: sp.get('status') || '',
+    lang: (sp.get('lang') || '').toLowerCase(),
+  }
 }
 
 export default function Library() {
-  const [sort, setSort] = useLocalStorage('library.sort', 'popular')
+  const [sort, setSort] = useLocalStorage('library.sort', 'trending')
   const recommendModal = useUrlModal('recommend')
   const { prefs, setPrefs, theme } = useReaderPrefs()
   const { site_name, public_site_name } = useSite()
-  const t = T[prefs.theme] || T.light
+  const t = LIBRARY_THEME[prefs.theme] || LIBRARY_THEME.light
   const [searchParams, setSearchParams] = useSearchParams()
-  const activeTag = searchParams.get('tag')?.toLowerCase() || ''
+  const [progress] = useLocalStorage('reader-progress', {})
+
+  const filters = useMemo(() => readFilters(searchParams), [searchParams])
+  const updateFilters = useCallback((patch) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      const f = { ...readFilters(prev), ...patch }
+      f.q ? next.set('q', f.q) : next.delete('q')
+      f.tags?.length ? next.set('tag', f.tags.join(',')) : next.delete('tag')
+      f.status ? next.set('status', f.status) : next.delete('status')
+      f.lang ? next.set('lang', f.lang) : next.delete('lang')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+  const addTag = useCallback((tag) => {
+    const lower = tag.toLowerCase()
+    updateFilters({ tags: filters.tags.includes(lower) ? filters.tags : [...filters.tags, lower] })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [filters.tags, updateFilters])
 
   const { data, isPending: loading, error, refetch } = useQuery({
     queryKey: ['public', 'books', sort],
     queryFn: () => publicApi.listBooks(sort),
   })
-  const books = data?.books || []
-
-  const filteredBooks = activeTag
-    ? books.filter(b => tagsWithLanguage(b).some(t => t.toLowerCase() === activeTag))
-    : books
-
-  const clearTag = () => {
-    const next = new URLSearchParams(searchParams)
-    next.delete('tag')
-    setSearchParams(next, { replace: true })
-  }
-
-  const setTag = (tag) => {
-    const next = new URLSearchParams(searchParams)
-    next.set('tag', tag)
-    setSearchParams(next)
-  }
+  const books = useMemo(() => data?.books || [], [data])
+  const filtering = hasActiveFilters(filters)
+  const filtered = useMemo(() => (filtering ? applyFilters(books, filters) : books), [books, filters, filtering])
+  const shelves = useMemo(() => (filtering ? null : buildShelves(books, progress)), [books, progress, filtering])
+  const stats = useMemo(() => libraryStats(books), [books])
+  const now = Date.now()
 
   useEffect(() => {
     document.title = public_site_name
     return () => { document.title = site_name }
   }, [public_site_name, site_name])
 
-  const cycleTheme = (id) => setPrefs(p => ({ ...p, theme: id }))
+  const card = (book) => <BookCard key={book.id} book={book} t={t} themeName={prefs.theme} onTagClick={addTag} now={now} />
+
+  const recommendCard = (
+    <button key="recommend" onClick={() => recommendModal.open()} className="group block text-left min-w-0">
+      <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative border-2 border-dashed ${t.divider}`}>
+        <div className="w-full h-full flex flex-col items-center justify-center p-4">
+          <MessageSquarePlus size={32} className={`${t.chapters} mb-3 group-hover:scale-110 group-hover:text-indigo-500 transition-all duration-300`} />
+          <span className={`text-sm font-medium ${t.author} text-center leading-tight`}>Recommend a Novel</span>
+        </div>
+      </div>
+      <h3 className={`mt-2 font-semibold ${t.title} text-sm leading-tight ${t.titleHover} transition-colors`}>Recommend a Novel</h3>
+      <p className={`mt-0.5 text-xs ${t.chapters}`}>Suggest one for translation</p>
+    </button>
+  )
 
   return (
     <div className={`min-h-screen ${theme.bg} ${theme.text} transition-colors duration-300`}>
-      {/* Header */}
       <header className={`${t.headerBg} border-b ${t.headerBorder} shadow-sm transition-colors duration-300`}>
-        <div className="max-w-6xl mx-auto px-6 py-6 sm:py-8 flex items-start justify-between">
-          <div>
-            <div className="flex items-center gap-3">
-              <BookOpen size={28} className="text-indigo-500" />
-              <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} tracking-tight`}>{public_site_name}</h1>
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-5 pb-4 sm:pt-7 sm:pb-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-3">
+                <BookOpen size={28} className="text-indigo-500 shrink-0" />
+                <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} tracking-tight truncate`}>{public_site_name}</h1>
+              </div>
+              <p className={`mt-1 ${t.subtitle} text-sm tabular-nums`}>
+                {loading ? 'Loading the shelves…' : (
+                  <>
+                    {stats.books.toLocaleString()} novels · {stats.chapters.toLocaleString()} chapters
+                    {stats.updatedThisWeek > 0 && <span className="hidden sm:inline"> · {stats.updatedThisWeek} updated this week</span>}
+                  </>
+                )}
+              </p>
             </div>
-            <p className={`mt-1 ${t.subtitle} text-sm`}>Browse and read novels. Non-wordpress version.</p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
-              aria-label="Sort books"
-              className={`text-sm rounded-md px-2 py-1.5 border-none focus:outline-none focus:ring-2 focus:ring-indigo-400 ${t.toggleBg} ${t.toggleInactive}`}
-            >
-              {SORT_OPTIONS.map(opt => (
-                <option key={opt.id} value={opt.id}>{opt.label}</option>
-              ))}
-            </select>
-            <a
-              href="/api/public/feed.rss"
-              title="RSS feed of recently translated chapters"
-              className={`p-2 rounded-md transition-all duration-200 ${t.toggleInactive}`}
-            >
-              <Rss size={16} />
-            </a>
-            {/* Theme toggle */}
-            <div className={`flex items-center gap-0.5 ${t.toggleBg} rounded-lg p-1 transition-colors duration-300`}>
-              {THEME_TOGGLE.map(({ id, icon: Icon, label }) => (
-                <button
-                  key={id}
-                  onClick={() => cycleTheme(id)}
-                  title={label}
-                  className={`p-2 rounded-md transition-all duration-200 ${prefs.theme === id ? t.toggleActive : t.toggleInactive}`}
-                >
-                  <Icon size={16} />
-                </button>
-              ))}
+            <div className="flex items-center gap-2 shrink-0">
+              <a href="/api/public/feed.rss" title="RSS feed of recently translated chapters"
+                 className={`p-2 rounded-md transition-all duration-200 ${t.toggleInactive}`}>
+                <Rss size={16} />
+              </a>
+              <div className={`flex items-center gap-0.5 ${t.toggleBg} rounded-lg p-1 transition-colors duration-300`}>
+                {THEME_TOGGLE.map(({ id, icon: Icon, label }) => (
+                  <button key={id} onClick={() => setPrefs(p => ({ ...p, theme: id }))} title={label}
+                    className={`p-2 rounded-md transition-all duration-200 ${prefs.theme === id ? t.toggleActive : t.toggleInactive}`}>
+                    <Icon size={16} />
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       </header>
 
-      {/* Content */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {activeTag && (
-          <div className={`mb-6 flex items-center gap-2 flex-wrap text-sm ${t.subtitle}`}>
-            <span>Filtering by tag:</span>
-            <span className="px-2 py-0.5 rounded font-medium bg-indigo-500/20 text-indigo-400">{activeTag}</span>
-            <span>· {filteredBooks.length} book{filteredBooks.length !== 1 ? 's' : ''}</span>
-            <button
-              onClick={clearTag}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${t.toggleBg} ${t.toggleInactive} hover:text-indigo-400`}
-            >
-              <X size={11} /> Clear
-            </button>
-          </div>
-        )}
+      {/* Sticky toolbar: search, sort, filters */}
+      <div className={`sticky top-0 z-20 ${t.headerBg} border-b ${t.headerBorder} backdrop-blur transition-colors duration-300`}>
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3">
+          <LibraryToolbar
+            books={books} filters={filters} onChange={updateFilters}
+            sort={sort} setSort={setSort} sortOptions={SORT_OPTIONS}
+            resultCount={filtering ? filtered.length : null} t={t}
+          />
+        </div>
+      </div>
+
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         {loading ? (
-          <div className="flex justify-center py-32">
-            <Loader2 size={32} className="animate-spin text-indigo-400" />
+          <div className={GRID}>
+            {Array.from({ length: 15 }, (_, i) => <BookCardSkeleton key={i} t={t} />)}
           </div>
         ) : error ? (
-          <ErrorState
-            size="page"
-            className={t.title}
-            message="Couldn't load the library"
+          <ErrorState size="page" className={t.title} message="Couldn't load the library"
             detail={error.message || 'The connection may have dropped. Try again.'}
-            onRetry={refetch}
-            buttonClassName={
-              prefs.theme === 'dark' ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700'
-                : prefs.theme === 'sepia' ? 'bg-amber-100 text-amber-900 hover:bg-amber-200 border-amber-200'
-                : 'bg-stone-100 text-gray-700 hover:bg-stone-200 border-stone-200'
-            }
-          />
-        ) : filteredBooks.length === 0 ? (
-          <div className="text-center py-32">
-            <BookText size={48} className="mx-auto mb-4 opacity-30" />
-            <p className={`${t.subtitle} text-lg`}>
-              {activeTag ? `No books tagged "${activeTag}"` : 'No books available yet'}
-            </p>
-          </div>
+            onRetry={refetch} buttonClassName={t.errorButton} />
+        ) : filtering ? (
+          filtered.length === 0 ? (
+            <div className="text-center py-32">
+              <BookText size={48} className="mx-auto mb-4 opacity-30" />
+              <p className={`${t.subtitle} text-lg`}>No books match these filters</p>
+              <button onClick={() => updateFilters({ ...EMPTY_FILTERS })} className="mt-3 text-sm text-indigo-500 hover:underline">Clear filters</button>
+            </div>
+          ) : (
+            <div className={GRID}>{filtered.map(card)}{recommendCard}</div>
+          )
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-            {filteredBooks.map(book => {
-              const isNew = isNewlyAdded(book.created_date)
-              const isUpdated = hasRecentUpdate(book.last_chapter_date)
-              const tags = tagsWithLanguage(book)
-              const editorsChoice = hasEditorsChoice(tags)
-              return (
-              <div key={book.id} className="group">
-                <Link to={`/library/book/${book.id}`} className="block">
-                  {/* Cover */}
-                  <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative ${editorsChoice ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-transparent shadow-amber-500/30' : ''}`}>
-                    {book.cover_image ? (
-                      <img
-                        src={bustUrl(book.cover_medium_url || `/api/public/books/${book.id}/cover/medium`)}
-                        alt={book.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                    ) : (
-                      <div className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br ${t.placeholderFrom} ${t.placeholderTo} p-4`}>
-                        <BookOpen size={36} className={`${t.placeholderIcon} mb-3`} />
-                        <span className={`text-sm font-medium ${t.placeholderText} text-center leading-tight`}>
-                          {book.title}
-                        </span>
-                      </div>
-                    )}
-                    {/* "New" badge — top-left corner overlay */}
-                    {isNew && (
-                      <div className="absolute top-1.5 left-1.5">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-400 text-amber-950 shadow-sm">
-                          New
-                        </span>
-                      </div>
-                    )}
-                    {/* Protagonist badge — top-right corner overlay */}
-                    {tags.length > 0 && (
-                      <div className="absolute top-1.5 right-1.5">
-                        <ProtagonistBadge tags={tags} size="sm" showLabel={false} overlay />
-                      </div>
-                    )}
-                    {/* Editor's Choice badge — bottom-center overlay */}
-                    {editorsChoice && (
-                      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10">
-                        <EditorsChoiceBadge />
-                      </div>
-                    )}
-                    {/* Hover overlay */}
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
-                  </div>
-
-                  {/* Info */}
-                  <div className="mt-3">
-                    <div className="flex items-center gap-1.5">
-                      <h3 className={`font-semibold ${t.title} text-sm leading-tight line-clamp-2 ${t.titleHover} transition-colors`}>
-                        {book.title}
-                      </h3>
-                    </div>
-                    {book.author && (
-                      <p className={`flex items-center gap-1 mt-1 text-xs ${t.author}`}>
-                        <User size={11} />
-                        {book.author}
-                      </p>
-                    )}
-                    <p className={`mt-0.5 text-xs ${t.chapters} flex items-center gap-1 flex-wrap`}>
-                      <span>
-                        {book.chapter_count} chapter{book.chapter_count !== 1 ? 's' : ''}
-                        {book.total_source_chapters > 0 && (
-                          <> / {book.total_source_chapters} ({Math.round((book.chapter_count / book.total_source_chapters) * 100)}%)</>
-                        )}
-                      </span>
-                      {isUpdated && (
-                        <span className="px-1.5 py-0 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400">
-                          Updated
-                        </span>
-                      )}
-                      {book.status && book.status !== 'ongoing' && (
-                        <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
-                          book.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
-                          book.status === 'hiatus' ? 'bg-amber-500/20 text-amber-400' :
-                          book.status === 'dropped' ? 'bg-rose-500/20 text-rose-400' :
-                          book.status === 'ongoing-trial' ? 'bg-cyan-500/20 text-cyan-400' :
-                          'bg-slate-500/20 text-slate-400'
-                        }`}>{book.status}</span>
-                      )}
-                    </p>
-                  </div>
-                </Link>
-                {/* Latest chapter — its own link, outside the card's <Link>
-                    (anchors can't nest). The number never truncates; the title does. */}
-                {book.latest_chapter != null && (
-                  <Link
-                    to={`/library/read/${book.id}/${book.latest_chapter}`}
-                    title={`Chapter ${book.latest_chapter}${book.latest_chapter_title ? `: ${book.latest_chapter_title}` : ''}`}
-                    className={`mt-0.5 flex min-w-0 gap-1 text-xs ${t.chapters} hover:text-indigo-500 transition-colors`}
-                  >
-                    <span className="shrink-0">Latest: Ch. {book.latest_chapter}</span>
-                    {book.latest_chapter_title && (
-                      <span className="truncate">&middot; {book.latest_chapter_title}</span>
-                    )}
-                  </Link>
-                )}
-                {tags.length > 0 && (
-                  <div className="mt-1.5">
-                    <TagChips tags={tags} size="sm" theme={prefs.theme} onTagClick={setTag} />
-                  </div>
-                )}
+          <>
+            {shelves.continue.length > 0 && (
+              <BookShelf title="Continue reading" icon={BookMarked} count={shelves.continue.length} t={t}>
+                {shelves.continue.map(({ book, chapter }) => (
+                  <ContinueReadingCard key={book.id} book={book} chapter={chapter} t={t} themeName={prefs.theme} />
+                ))}
+              </BookShelf>
+            )}
+            {shelves.updated.length > 0 && (
+              <BookShelf title="Recently updated" icon={Clock} count={shelves.updated.length} t={t}
+                action={{ label: 'Sort by updated', onClick: () => setSort('updated') }}>
+                {shelves.updated.map(card)}
+              </BookShelf>
+            )}
+            {shelves.fresh.length > 0 && (
+              <BookShelf title="New this month" icon={Sparkles} count={shelves.fresh.length} t={t}
+                action={{ label: 'Sort by newest', onClick: () => setSort('newly_added') }}>
+                {shelves.fresh.map(card)}
+              </BookShelf>
+            )}
+            {shelves.picks.length > 0 && (
+              <BookShelf title="Editor's choice" icon={Star} count={shelves.picks.length} t={t}
+                action={{ label: 'See all', onClick: () => updateFilters({ tags: ["editor's choice"] }) }}>
+                {shelves.picks.map(card)}
+              </BookShelf>
+            )}
+            <section>
+              <div className="flex items-baseline justify-between mb-4">
+                <h2 className={`flex items-center gap-2 text-base font-semibold ${t.shelfTitle}`}>
+                  <LibraryBig size={16} className="text-indigo-500" /> All books
+                  <span className={`text-xs font-normal ${t.shelfMeta}`}>{SORT_OPTIONS.find(o => o.id === sort)?.label}</span>
+                </h2>
               </div>
-              )
-            })}
-
-            {/* Recommend a Novel card */}
-            <button
-              onClick={() => recommendModal.open()}
-              className="group block text-left"
-            >
-              <div className={`aspect-[2/3] rounded-lg overflow-hidden ${t.cardBg} shadow-md group-hover:shadow-xl transition-shadow duration-300 relative cursor-pointer`}>
-                <div className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br ${t.placeholderFrom} ${t.placeholderTo} p-4`}>
-                  <MessageSquarePlus size={36} className={`${t.placeholderIcon} mb-3 group-hover:scale-110 transition-transform duration-300`} />
-                  <span className={`text-sm font-medium ${t.placeholderText} text-center leading-tight`}>
-                    Recommend a Novel
-                  </span>
+              {books.length === 0 ? (
+                <div className="text-center py-32">
+                  <BookText size={48} className="mx-auto mb-4 opacity-30" />
+                  <p className={`${t.subtitle} text-lg`}>No books available yet</p>
                 </div>
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
-              </div>
-              <div className="mt-3">
-                <h3 className={`font-semibold ${t.title} text-sm leading-tight ${t.titleHover} transition-colors`}>
-                  Recommend a Novel
-                </h3>
-                <p className={`mt-0.5 text-xs ${t.chapters}`}>
-                  Suggest a novel for translation
-                </p>
-              </div>
-            </button>
-          </div>
+              ) : (
+                <div className={GRID}>{books.map(card)}{recommendCard}</div>
+              )}
+            </section>
+          </>
         )}
       </main>
 
-      {recommendModal.isOpen && (
-        <RecommendModal
-          onClose={recommendModal.close}
-          theme={t}
-        />
-      )}
+      {recommendModal.isOpen && <RecommendModal onClose={recommendModal.close} theme={t} />}
     </div>
   )
 }
