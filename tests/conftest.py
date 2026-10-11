@@ -96,6 +96,8 @@ def no_live_jev(monkeypatch):
     and stub ``requests.post`` / ``chapter_triage.triage`` themselves.
     """
     monkeypatch.delenv("TYPESAFE_KEY", raising=False)
+    # A live jev_model of openai:decisions would route to OPENAI_KEY instead.
+    monkeypatch.setenv("JEV_MODEL", "jev-latest")
 
 
 @pytest.fixture

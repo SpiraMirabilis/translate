@@ -84,7 +84,7 @@ def test_auto_proceed_overwrites_without_prompting(jev):
     assert ui.check_chapter_conflict(["第134章 正文"]) is True
     assert ui.job_manager.status == "running"
     assert [m["type"] for m in ui.job_manager.prompts] == ["chapter_conflict_auto_resolved"]
-    assert "resolved by Jev" in ui.job_manager.activity[0]["message"]
+    assert "resolved by Probability model (Jev)" in ui.job_manager.activity[0]["message"]
 
 
 def test_auto_cancel_skips_the_queue_item(jev):

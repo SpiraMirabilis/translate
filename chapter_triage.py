@@ -103,11 +103,12 @@ def triage(existing_title, existing_lines, new_title, new_lines, threshold_=None
         existing = classify_chapter(existing_title, existing_lines)
         incoming = classify_chapter(new_title, new_lines)
     except jev_client.JevError as e:
-        return {"error": str(e), "threshold": t}
+        return {"error": str(e), "threshold": t, "label": jev_client.label()}
     except Exception as e:  # never let triage take a translation job down
-        logger.exception("Jev triage failed")
-        return {"error": f"{type(e).__name__}: {e}", "threshold": t}
+        logger.exception(f"{jev_client.label()} triage failed")
+        return {"error": f"{type(e).__name__}: {e}", "threshold": t, "label": jev_client.label()}
     return {
+        "label": jev_client.label(),
         "existing": existing,
         "incoming": incoming,
         "threshold": t,

@@ -84,7 +84,8 @@ def test_api_key(provider_name: str):
 
 # ------------------------------------------------------------------
 # Jev (TypeSafe System One) -- not a chat provider, so not in the
-# provider cards above; see jev_client.py.
+# provider cards above; see jev_client.py. jev_model "openai:decisions"
+# routes the same calls to OpenAI's Decisions API on OPENAI_KEY.
 # ------------------------------------------------------------------
 
 @router.post("/typesafe-key")
@@ -100,7 +101,7 @@ def set_typesafe_key(req: ApiKeyRequest):
 
 @router.post("/typesafe-test")
 def test_typesafe_key():
-    """One tiny classification against the live API."""
+    """One tiny classification against the live API (whichever jev_model names)."""
     import jev_client
     try:
         ans = jev_client.choice(
@@ -167,6 +168,7 @@ def get_settings():
         "jev_unit_filter": settings_store.get("jev_unit_filter", True),
         "jev_unit_confidence": settings_store.get("jev_unit_confidence", 0.9),
         "has_typesafe_key": bool(os.getenv("TYPESAFE_KEY", "").strip()),
+        "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
     }
 
 

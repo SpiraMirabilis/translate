@@ -137,7 +137,7 @@ export default function ChapterConflictPanel({
             <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/60 shrink-0">
               <div className="flex items-center gap-2">
                 <div className="text-xs uppercase tracking-wide text-slate-500 flex-1">Existing chapter</div>
-                <JevBadge verdict={jev?.existing} threshold={jev?.threshold} />
+                <JevBadge verdict={jev?.existing} threshold={jev?.threshold} label={jevName(jev)} />
               </div>
               <div className="text-sm text-slate-200 font-medium truncate" title={eTitle}>
                 {eTitle || <span className="text-slate-500 italic">(no title)</span>}
@@ -153,7 +153,7 @@ export default function ChapterConflictPanel({
             <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/60 shrink-0">
               <div className="flex items-center gap-2">
                 <div className="text-xs uppercase tracking-wide text-slate-500 flex-1">Queue item (incoming)</div>
-                <JevBadge verdict={jev?.incoming} threshold={jev?.threshold} />
+                <JevBadge verdict={jev?.incoming} threshold={jev?.threshold} label={jevName(jev)} />
               </div>
               <div className="text-sm text-slate-200 font-medium truncate" title={nTitle}>
                 {nTitle || <span className="text-slate-500 italic">(no title)</span>}
@@ -325,7 +325,11 @@ const JEV_LABELS = { story: 'Story', filler: "Author's note / ad" }
 const JEV_SUGGESTIONS = { proceed: 'Overwrite existing', cancel: 'Skip queue item' }
 
 // Jev's verdict on one pane. Amber when below the auto-resolve threshold.
-function JevBadge({ verdict, threshold }) {
+// "Probability model (Jev)" / "Probability model (OpenAI Decisions)" — the
+// server names the backend; older payloads without a label fall back.
+const jevName = jev => jev?.label || 'Probability model'
+
+function JevBadge({ verdict, threshold, label }) {
   if (!verdict?.choice) return null
   const confident = verdict.confidence >= (threshold ?? 0.9)
   const tone = confident
@@ -335,9 +339,9 @@ function JevBadge({ verdict, threshold }) {
   return (
     <span
       className={`text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap ${tone}`}
-      title={`Jev probabilities: ${JSON.stringify(verdict.probabilities || {})}`}
+      title={`${label} probabilities: ${JSON.stringify(verdict.probabilities || {})}`}
     >
-      Jev: {JEV_LABELS[verdict.choice] || verdict.choice} {verdict.confidence.toFixed(2)}
+      {label}: {JEV_LABELS[verdict.choice] || verdict.choice} {verdict.confidence.toFixed(2)}
     </span>
   )
 }
@@ -346,7 +350,7 @@ function JevNote({ jev }) {
   if (jev.error) {
     return (
       <div className="px-5 py-2 border-t border-slate-700 text-xs text-slate-500 shrink-0">
-        Jev triage unavailable: {jev.error}
+        {jevName(jev)} triage unavailable: {jev.error}
       </div>
     )
   }
@@ -355,7 +359,7 @@ function JevNote({ jev }) {
   const below = !jev.decision
   return (
     <div className="px-5 py-2 border-t border-slate-700 bg-slate-800/40 text-xs text-slate-300 shrink-0">
-      Jev suggests: <span className="font-medium text-slate-100">{JEV_SUGGESTIONS[s] || s}</span>
+      {jevName(jev)} suggests: <span className="font-medium text-slate-100">{JEV_SUGGESTIONS[s] || s}</span>
       {below
         ? <span className="text-slate-500"> (confidence below {Number(jev.threshold ?? 0.9).toFixed(2)})</span>
         : <span className="text-slate-500"> (auto-resolve is off)</span>}

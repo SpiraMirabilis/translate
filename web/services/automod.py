@@ -6,7 +6,8 @@ classified by a small model (default claude:claude-haiku-4-5) and the
 verdict drives the comment's status. COMMENT_AUTOMOD_MODEL may instead be
 "jev" or "jev:<model>" to use TypeSafe's Jev classifier (jev_client.py) --
 far cheaper, and a typed decision rather than parsed prose; a verdict below
-COMMENT_AUTOMOD_JEV_CONFIDENCE becomes "unsure".
+COMMENT_AUTOMOD_JEV_CONFIDENCE becomes "unsure". "openai:decisions" (or
+"jev:openai:decisions") takes the same path on OpenAI's Decisions API.
 
   genuine → approved
   spam    → blocked (shadowbanned: still visible to author)
@@ -56,7 +57,17 @@ def _model_spec() -> str:
 
 def _uses_jev(spec: str) -> bool:
     s = (spec or "").strip().lower()
-    return s == "jev" or s.startswith("jev:")
+    return s == "jev" or s.startswith("jev:") or s in ("openai:decisions", "oai:decisions")
+
+
+def _jev_model(spec: str) -> Optional[str]:
+    """The jev_client model spec: None follows JEV_MODEL."""
+    s = (spec or "").strip()
+    if not s.lower().startswith("jev"):
+        return s  # openai:decisions
+    if ":" not in s:
+        return None
+    return s.split(":", 1)[1].strip() or None
 
 
 def _jev_threshold() -> float:
@@ -90,18 +101,19 @@ JEV_CRITERIA = {
 
 def _classify_jev(body: str, display_name: str, context: dict, spec: str) -> dict:
     import jev_client
-    model = spec.split(":", 1)[1].strip() if ":" in spec else None
+    model = _jev_model(spec)
     try:
         ans = jev_client.choice(
             _comment_payload(body, display_name, context),
-            JEV_INSTRUCTIONS, JEV_CRITERIA, model=model or None,
+            JEV_INSTRUCTIONS, JEV_CRITERIA, model=model,
         )
     except jev_client.JevError as e:
-        logger.warning("automod: jev failed: %s", e)
-        return {"verdict": "error", "reason": f"jev: {str(e)[:60]}"}
+        tag = jev_client.short_label(model)
+        logger.warning("automod: %s failed: %s", jev_client.label(model), e)
+        return {"verdict": "error", "reason": f"{tag}: {str(e)[:60]}"}
     threshold = _jev_threshold()
     verdict = ans["choice"] if ans["confidence"] >= threshold else "unsure"
-    reason = f"jev: {ans['choice']} ({ans['confidence']:.2f})"
+    reason = f"{jev_client.short_label(model)}: {ans['choice']} ({ans['confidence']:.2f})"
     if verdict == "unsure":
         reason += f" < {threshold:.2f}"
     return {"verdict": verdict, "reason": reason}

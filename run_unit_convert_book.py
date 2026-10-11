@@ -226,13 +226,15 @@ def main():
         book_ids = [book_arg]
 
     use_jev = False if no_jev else unit_converter._jev_unit_filter_enabled()
+    import jev_client
+    jev_label = jev_client.label()
     if use_jev:
-        print(f"Jev unit filter: on (confidence >= {unit_converter._jev_unit_threshold():.2f})")
+        print(f"{jev_label} unit filter: on (confidence >= {unit_converter._jev_unit_threshold():.2f})")
     if cleaning_model:
-        scope = "matches Jev is unsure of" if use_jev else "all matches"
+        scope = f"matches the {jev_label} is unsure of" if use_jev else "all matches"
         print(f"Cleaning model: {cleaning_model} ({scope})\n")
     elif use_jev:
-        print("Cleaning model: none (Jev-unsure matches are converted)\n")
+        print(f"Cleaning model: none (matches the {jev_label} is unsure of are converted)\n")
     else:
         print("Cleaning model: none (pure regex)\n")
 

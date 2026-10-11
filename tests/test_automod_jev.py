@@ -30,10 +30,24 @@ def jev(monkeypatch):
 
 @pytest.mark.parametrize("spec, expected", [
     ("jev", True), ("JEV", True), ("jev:jev-1.13.0", True), (" jev ", True),
+    ("openai:decisions", True), ("OpenAI:Decisions", True), ("jev:openai:decisions", True),
     ("claude:claude-haiku-4-5", False), ("jevons:model", False), ("", False),
+    ("openai:gpt-5.4", False),
 ])
 def test_uses_jev(spec, expected):
     assert automod._uses_jev(spec) is expected
+
+
+@pytest.mark.parametrize("spec, model", [
+    ("jev", None), ("jev:", None), ("jev:jev-1.13.0", "jev-1.13.0"),
+    ("jev:openai:decisions", "openai:decisions"), ("openai:decisions", "openai:decisions"),
+])
+def test_jev_model_passed_through(jev, spec, model, monkeypatch):
+    calls, answer = jev
+    answer.update(choice="genuine", confidence=0.99)
+    monkeypatch.setenv("COMMENT_AUTOMOD_MODEL", spec)
+    automod.classify("nice chapter", "reader", CTX)
+    assert calls[0]["model"] == model
 
 
 @pytest.mark.parametrize("choice, confidence, verdict", [

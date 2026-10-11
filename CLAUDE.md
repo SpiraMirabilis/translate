@@ -472,6 +472,19 @@ inside the app, never translation.
   and model pickers all assume chat). Plain `requests`, deliberately **not**
   `typesafe-sdk`: its httpcore2 dependency needs `h11>=0.16` and would shadow the apt
   h11 0.14 uvicorn runs on — the starlette/mcp trap again.
+- **OpenAI Decisions backend** (2026-10-10): set `jev_model` to `openai:decisions`
+  (or `openai:<model>`) and every Jev caller — triage, unit filter, automod, the
+  Settings Test button — goes to OpenAI's `POST /v1/decisions` (`gpt-6-luna`,
+  $0.10/M input, output free) on `OPENAI_KEY` instead. `jev_client` translates the
+  shapes both ways (questions/answers are arrays there, `criteria` → `choices`,
+  dict `state` → JSON-string `input`, `probabilities` array → map), so callers are
+  unchanged; only `choice` questions are translated. A `refusal` answer has no
+  `choice`, which `choice()` rejects and the batch callers count as unsure.
+  Automod also accepts `openai:decisions` (or `jev:openai:decisions`) directly.
+  User-facing messages name the backend via `jev_client.label()` — "Probability
+  model (Jev)" / "Probability model (OpenAI Decisions)"; automod reasons use the
+  short tag `jev:` / `decisions:`. ⚠️ The thresholds were calibrated on Jev;
+  recalibrate before trusting `auto` triage on the OpenAI backend.
 - **Config**: `TYPESAFE_KEY` in `.env` (Settings → Jev Classification writes it via
   `persist_env`); `jev_model` (`jev-latest`), `jev_chapter_conflict`
   (`off`|`suggest`|`auto`, default `auto`), `jev_conflict_confidence` (0.9) in

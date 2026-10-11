@@ -317,15 +317,17 @@ class WebInterface(UserInterface):
             return None, None
 
         result = chapter_triage.triage(existing_title, existing_lines, new_title, new_lines)
+        import jev_client
+        who = result.get("label") or jev_client.label()
         if result.get("error"):
             self.logger.warning(
-                f"Jev triage failed for book {book_id} ch{chapter_number}: {result['error']}")
+                f"{who} triage failed for book {book_id} ch{chapter_number}: {result['error']}")
             return None, result
 
         mode = chapter_triage.mode()
         ex, inc, decision = result["existing"], result["incoming"], result["decision"]
         self.logger.info(
-            f"Jev triage book {book_id} ch{chapter_number}: "
+            f"{who} triage book {book_id} ch{chapter_number}: "
             f"existing={ex['choice']}({ex['confidence']:.2f}) "
             f"incoming={inc['choice']}({inc['confidence']:.2f}) "
             f"threshold={result['threshold']:.2f} decision={decision} mode={mode} "
@@ -342,7 +344,7 @@ class WebInterface(UserInterface):
                       f"and the existing one is story ({ex['confidence']:.2f}) — skipping the queue item")
         self.job_manager.log_activity(
             type='info',
-            message=f'Chapter {chapter_number} of "{book_title or book_id}" conflict resolved by Jev: {action}.',
+            message=f'Chapter {chapter_number} of "{book_title or book_id}" conflict resolved by {who}: {action}.',
             book_id=book_id, chapter=chapter_number, book_name=book_title,
         )
         self.job_manager.send_message_sync({

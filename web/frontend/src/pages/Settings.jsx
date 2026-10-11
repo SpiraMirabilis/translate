@@ -434,9 +434,10 @@ export default function Settings() {
               <p className="text-xs text-slate-500 mt-1">
                 A fast/cheap model is recommended since every new comment is scanned.
                 <code className="mx-1">jev</code>(or <code>jev:&lt;model&gt;</code>) uses the Jev classifier below instead — much cheaper, needs a TypeSafe key.
+                <code className="mx-1">openai:decisions</code>uses OpenAI's Decisions API the same way, on the OpenAI key.
               </p>
             </div>
-            {/^jev(:|$)/i.test((settings.comment_automod_model || '').trim()) && (
+            {/^(jev(:|$)|(openai|oai):decisions$)/i.test((settings.comment_automod_model || '').trim()) && (
               <div className="max-w-xs">
                 <label className="label">Jev confidence threshold</label>
                 <input
@@ -461,7 +462,7 @@ export default function Settings() {
       {/* Jev classification */}
       {settings && (
         <section>
-          <h2 className="text-sm font-semibold text-slate-300 mb-3">Jev Classification (TypeSafe)</h2>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Jev Classification (TypeSafe / OpenAI Decisions)</h2>
           <div className="card p-4 space-y-4">
             <p className="text-xs text-slate-500">
               Cheap, fast classification — never translation. Used to triage chapter conflicts:
@@ -472,6 +473,8 @@ export default function Settings() {
             </p>
             <JevKeyRow
               hasKey={settings.has_typesafe_key}
+              openai={/^(openai|oai):/i.test((settings.jev_model || '').trim())}
+              hasOpenaiKey={settings.has_openai_key}
               onSaved={() => setSettings(s => ({ ...s, has_typesafe_key: true }))}
             />
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -483,6 +486,9 @@ export default function Settings() {
                   onChange={e => setSettings(s => ({ ...s, jev_model: e.target.value }))}
                   placeholder="jev-latest"
                 />
+                <p className="text-xs text-slate-500 mt-1">
+                  <code>openai:decisions</code> uses OpenAI's Decisions API (gpt-6-luna) instead.
+                </p>
               </div>
               <div>
                 <label className="label">Chapter conflicts</label>
@@ -560,7 +566,7 @@ export default function Settings() {
 }
 
 
-function JevKeyRow({ hasKey, onSaved }) {
+function JevKeyRow({ hasKey, openai, hasOpenaiKey, onSaved }) {
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(null)   // 'save' | 'test'
   const [result, setResult] = useState(null)   // { ok, text }
@@ -585,6 +591,27 @@ function JevKeyRow({ hasKey, onSaved }) {
     } catch (e) {
       setResult({ ok: false, text: e.message })
     } finally { setBusy(null) }
+  }
+
+  // On the OpenAI backend the key is the OpenAI provider card's OPENAI_KEY;
+  // Test runs against the *saved* model, so save settings before testing.
+  if (openai) {
+    return (
+      <div>
+        <label className="label">
+          API key <span className="text-slate-500 font-normal">(OPENAI_KEY, set on the OpenAI provider card — {hasOpenaiKey ? 'set' : 'not set'})</span>
+        </label>
+        <div className="flex items-center gap-2">
+          <button className="btn-secondary" disabled={!hasOpenaiKey || busy} onClick={test}>
+            {busy === 'test' ? 'Testing…' : 'Test'}
+          </button>
+          <span className="text-xs text-slate-500">Tests the saved model — save settings first.</span>
+        </div>
+        {result && (
+          <p className={`text-xs mt-1 ${result.ok ? 'text-emerald-400' : 'text-red-400'}`}>{result.text}</p>
+        )}
+      </div>
+    )
   }
 
   return (

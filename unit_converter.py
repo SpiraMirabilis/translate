@@ -1300,7 +1300,7 @@ def _jev_false_positives(context: dict, uset: _UnitSet) -> Tuple[Set[int], Set[i
                 unsure.add(int(mid))
             elif label == "not_unit":
                 false_positives.add(int(mid))
-    logger.info(f"Jev unit filter: {len(context)} match(es), "
+    logger.info(f"{jev_client.label()} unit filter: {len(context)} match(es), "
                 f"{len(false_positives)} false positive(s), {len(unsure)} unsure")
     return false_positives, unsure
 
@@ -1392,7 +1392,8 @@ def _find_false_positives(lines: List[str], matches: list,
             false_positives |= fps
             pending = {mid: context[mid] for mid in context if int(mid) in unsure}
         except Exception as e:  # JevError, or anything unexpected: fall back
-            logger.warning(f"Jev unit filter failed, "
+            import jev_client
+            logger.warning(f"{jev_client.label()} unit filter failed, "
                            f"{'falling back to ' + cleaning_model if cleaning_model else 'converting all matches'}: {e}")
             pending = context
     if pending and cleaning_model:
