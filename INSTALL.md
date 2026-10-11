@@ -7,6 +7,8 @@ npm 9. All 1480 Python tests and 313 frontend tests pass after following it.
 For background on features, configuration variables, and deployment, see
 [README.md](README.md). This file covers only installation.
 
+To run T9 in a container instead, see [QUICKSTART-Docker.md](QUICKSTART-Docker.md).
+
 ## 1. System prerequisites
 
 | Requirement | Version | Notes |

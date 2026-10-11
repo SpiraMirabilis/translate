@@ -27,7 +27,8 @@ def init(entity_manager, translator=None):
     # Deliberately NOT loaded here: bootstrapping may download CC-CEDICT from
     # the network, and doing that synchronously at init could hang startup
     # (the /api/health watchdog reboots the VM). Loaded lazily on first lookup.
-    _dict_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cedict.db')
+    # realpath: the Docker image symlinks these into the /data volume.
+    _dict_db_path = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cedict.db'))
 
 
 CEDICT_URL = "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz"
@@ -76,7 +77,9 @@ def _ensure_dict_loaded():
         except sqlite3.OperationalError:
             pass  # table doesn't exist yet, continue to load
 
-    cedict_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cedict_ts.u8')
+    # realpath, so the .gz temp file _download_cedict derives from it lands
+    # beside the real file (in the /data volume under Docker), not the symlink.
+    cedict_path = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cedict_ts.u8'))
     if not os.path.exists(cedict_path):
         if not _download_cedict(cedict_path):
             return

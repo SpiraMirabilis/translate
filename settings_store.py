@@ -102,7 +102,10 @@ SCHEMA = {
 # (SES_ACCESS_KEY_ID / SES_SECRET_ACCESS_KEY / SES_REGION) are secrets/infra
 # and live ONLY in .env — do NOT add them to SCHEMA.
 
-_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+# realpath: when settings.json is a symlink (the Docker image points it into
+# the /data volume), _save_locked's os.replace must replace the target, not
+# the link — otherwise the first save detaches settings from the volume.
+_PATH = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json"))
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 _data = None  # cached dict; populated lazily by load()
 _mtime_ns = None  # st_mtime_ns of settings.json when _data was last read

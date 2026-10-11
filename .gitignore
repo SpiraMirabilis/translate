@@ -296,3 +296,6 @@ deploy/novels-redirects.conf
 deploy/resource_monitor.sh
 harvest_wp_redirects.py
 /scraping_utilities/
+
+# Docker runtime state (compose.yaml bind-mounts ./data)
+/data/

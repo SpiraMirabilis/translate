@@ -1,0 +1,51 @@
+# T9 — `docker compose up -d`, then open http://localhost:8000. See QUICKSTART-Docker.md.
+#
+# All state (SQLite database, settings.json, .env secrets, covers, EPUBs, logs)
+# lives in ./data on the host.
+
+services:
+  t9:
+    # `docker compose pull` fetches the published release; `up --build`
+    # builds this checkout instead. T9_VERSION pins a release (e.g. 1.2.0).
+    image: ghcr.io/spiramirabilis/translate:${T9_VERSION:-latest}
+    build: .
+    restart: unless-stopped
+    ports:
+      # Loopback only. To expose it, set T9_PASSWORD in data/.env first, then
+      # put a TLS reverse proxy in front (deploy/nginx-reverse-proxy.conf) or
+      # change this to "8000:8000".
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      # A reverse proxy on the host reaches the container from the network
+      # gateway; trust forwarded client IPs from it (rate limits, comment bans).
+      TRUSTED_PROXY_IPS: 127.0.0.1,172.30.57.1
+      T9_FORWARDED_ALLOW_IPS: 127.0.0.1,172.30.57.1
+    networks: [t9]
+
+  # Optional: the public reader as its own process, as on the production host.
+  # Start with `docker compose --profile public up -d`; it serves on :8001.
+  t9-public:
+    image: ghcr.io/spiramirabilis/translate:${T9_VERSION:-latest}
+    command: ["public"]
+    profiles: [public]
+    restart: unless-stopped
+    depends_on: [t9]
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      TRUSTED_PROXY_IPS: 127.0.0.1,172.30.57.1
+      T9_FORWARDED_ALLOW_IPS: 127.0.0.1,172.30.57.1
+    networks: [t9]
+
+networks:
+  t9:
+    ipam:
+      # Fixed so the gateway address above is known. Change all three if this
+      # subnet collides with one on your machine.
+      config:
+        - subnet: 172.30.57.0/24
+          gateway: 172.30.57.1

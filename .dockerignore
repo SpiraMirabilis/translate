@@ -1,0 +1,25 @@
+# Never bake secrets or local state into the image
+.env
+data/
+database.db*
+settings.json
+*.db
+cedict_ts.u8
+covers/
+illustrations/
+epub_cache/
+output/
+logs/
+sitemaps/
+backups/
+*.log
+*.tmp
+
+# Build artifacts and local environments
+.git/
+.venv/
+venv/
+**/__pycache__/
+.pytest_cache/
+web/frontend/node_modules/
+web/frontend/dist/
