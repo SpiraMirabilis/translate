@@ -246,14 +246,25 @@ unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf
   `apply_book_tags.py --file proposals.json [--apply]`, which folds aliases and always
   carries an existing `editor's choice` over — curation is never the model's call.
 - **Sorts**: `trending` (views in the last 30 days, `recent_book_views` in
-  `db/logs_repo.py`, memoised 5 min per process in `public.py` because the GROUP BY is
-  ~0.35 s live), `popular` (all-time `view_count`), `updated` (**last published chapter**,
+  `db/logs_repo.py`; index-only via `idx_reader_log_viewed_book`, migration 23 — it was
+  ~1 s without. Memoised 5 min per process in `public.py`, **stale-while-revalidate**: an
+  expired memo is served and refreshed on a background thread), `popular` (all-time `view_count`), `updated` (**last published chapter**,
   not `modified_date` — a substitution sweep must not reshuffle the Library), `newly_added`,
   `title`. `list_books` now also returns `source_language`; it used to select only
   `language` (the target), which is why the language tag never rendered.
 - Cards are three text rows: title, author, `Ch. N · 3h ago` (links to the latest chapter)
   plus a status chip; translation progress is a 2 px bar under the cover; the blurb and the
   tag chips live in a desktop-only hover pane. Coverless books get a hue from their id.
+- **The shell carries the payload**: `_index_for_library` (`web/app_factory.py`) inlines
+  the exact `public_book_list("trending")` result as `<script type="application/json"
+  id="library-data">` (`<`/`>`/`&` \u-escaped), and `Library.jsx` seeds its query from it
+  via `lib/inlineData.js` when the reader's sort is the default — first paint needs no API
+  round trip. With `public_library` off the shell carries neither this nor the #ssr list
+  (`_public_catalog_allowed`, the same gate as `/simple`).
+- **Header links**: Recommend a Novel, Report an Error (hidden by `error_reports_enabled`)
+  and About Us (`/library/about`, `pages/About.jsx` — team blurb, GitHub repo, the
+  editor@/abuse@ contact addresses). With no book open, `ReportErrorModal` takes `books`
+  and shows a type-to-filter novel picker, then fetches that book's chapters.
 
 ### Chapter publishing (drafts / scheduling)
 Per-chapter visibility via `chapters.published_at` (migration 11): **NULL = draft, future = scheduled, past = live**. Visibility is evaluated at query time (`published_at <= now`), so scheduled chapters appear automatically — no cron. All pre-existing chapters were backfilled to their translation_date (everything stayed live).

@@ -16,6 +16,7 @@ same built frontend in web/frontend/dist. Runtime settings propagate across
 processes via settings_store's mtime-based reload of settings.json.
 """
 import copy
+import json
 import os
 import re
 from html import escape
@@ -372,17 +373,20 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         the admin host serves the same pages and stays out of analytics."""
         return analytics.with_gtm(html) if public_only else html
 
+    def _public_catalog_allowed() -> bool:
+        """The same public-library gate as /api/public/*, for the pages that
+        carry the catalog outside the API (/simple, the /library shell)."""
+        if public_only:
+            import settings_store
+            return bool(settings_store.get("public_library", True))
+        from web.auth import is_public_library, auth_required
+        return not auth_required() or is_public_library()
+
     @app.get("/simple", response_class=HTMLResponse)
     async def simple_book_list():
         # Honour the same public-library gate as /api/public/* — otherwise
         # turning the public library off still leaks the catalog at /simple.
-        if public_only:
-            import settings_store
-            allowed = bool(settings_store.get("public_library", True))
-        else:
-            from web.auth import is_public_library, auth_required
-            allowed = not auth_required() or is_public_library()
-        if not allowed:
+        if not _public_catalog_allowed():
             return HTMLResponse(
                 "<!DOCTYPE html><title>Not found</title><p>Not found.</p>",
                 status_code=404,
@@ -570,14 +574,37 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             html = _with_head_tags(html, [_canonical_tag(_canonical_url(kind, book_id, chapter))])
             return HTMLResponse(_public_page(seo_html.splice(html, page)))
 
+        # The Library's default sort (useLocalStorage('library.sort', …) in
+        # Library.jsx). Only a reader on this sort gets the inlined payload.
+        _LIBRARY_DEFAULT_SORT = "trending"
+
+        def _inline_json(element_id: str, data) -> str:
+            """<script type="application/json"> safe to splice into HTML: no
+            "</script>" or comment opener can survive the \\u escapes."""
+            text = (json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                    .replace("<", "\\u003c").replace(">", "\\u003e")
+                    .replace("&", "\\u0026"))
+            return f'<script type="application/json" id="{element_id}">{text}</script>'
+
         def _index_for_library():
-            books = [b for b in entity_manager.list_books(order_by="popular")
-                     if b.get("is_public", True)]
-            page = seo_html.library_page(books, _site_name())
+            """index.html for /library (and the public root): the static book
+            list for crawlers (#ssr), plus the exact GET /api/public/books
+            payload inline as #library-data, so the SPA paints the Library
+            without waiting on a second request after its JS loads.
+
+            With the public library switched off the API 404s, so the shell
+            must not carry the catalog either: plain shell, no list."""
+            if not _public_catalog_allowed():
+                return HTMLResponse(_public_page(_index_html_text))
+            payload = public.public_book_list(_LIBRARY_DEFAULT_SORT)
+            payload["sort"] = _LIBRARY_DEFAULT_SORT
+            page = seo_html.library_page(payload["books"], _site_name())
             base = sitemap_builder.resolve_base_url(config)
             html = _with_head_tags(_index_html_text,
                                    [_canonical_tag(f"{base}/library")] if base else [])
-            return HTMLResponse(_public_page(seo_html.splice(html, page)))
+            html = seo_html.splice(html, page)
+            html = html.replace("</body>", _inline_json("library-data", payload) + "</body>", 1)
+            return HTMLResponse(_public_page(html))
 
         # The public process only serves the reader SPA routes; everything
         # else gets the themed 404 page. The admin process serves index.html

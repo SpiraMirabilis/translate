@@ -14,10 +14,10 @@ def reset_public_limiter():
     from web.api import public as public_api
 
     public_api._public_limiter.reset()
-    public_api._trending_memo.update(at=0.0, views={})
+    public_api._trending_memo.update(at=0.0, views=None)
     yield
     public_api._public_limiter.reset()
-    public_api._trending_memo.update(at=0.0, views={})
+    public_api._trending_memo.update(at=0.0, views=None)
 
 
 @pytest.fixture
@@ -167,6 +167,73 @@ class TestSpaCatchAll:
         resp = pub_client.get("/", follow_redirects=False)
         assert resp.status_code == 200
         assert "<html" in resp.text.lower()
+
+    @staticmethod
+    def _inline_library_data(html):
+        import json
+        import re
+        m = re.search(r'<script type="application/json" id="library-data">(.*?)</script>',
+                      html, re.S)
+        return json.loads(m.group(1)) if m else None
+
+    def test_library_shell_inlines_the_api_payload(self, pub_client, public_book):
+        # The SPA seeds its book query from this, so it must be exactly the
+        # API's payload for the default sort — no second request on first paint.
+        data = self._inline_library_data(pub_client.get("/library").text)
+        assert data is not None
+        assert data["sort"] == "trending"
+        api = pub_client.get("/api/public/books?sort=trending").json()
+        assert data["books"] == api["books"]
+        assert any(b["title"] == "Split Proc Book" for b in data["books"])
+
+    def test_inline_payload_cannot_close_its_script(self, pub_client, db):
+        db.create_book("Evil </script><script>alert(1)</script> & <!-- Book", author="A")
+        html = pub_client.get("/library").text
+        assert "</script><script>alert(1)" not in html
+        data = self._inline_library_data(html)
+        assert any(b["title"].startswith("Evil </script>") for b in data["books"])
+
+    def test_library_shell_carries_no_catalog_when_gated(self, pub_client, public_book):
+        import settings_store
+
+        settings_store.update({"public_library": False})
+        try:
+            html = pub_client.get("/library").text
+        finally:
+            settings_store.update({"public_library": True})
+        assert self._inline_library_data(html) is None
+        assert "Split Proc Book" not in html
+
+
+def test_trending_memo_refreshes_in_the_background(monkeypatch):
+    """An expired memo is served stale and refreshed off-request."""
+    import threading
+    from web.api import public as public_api
+
+    release = threading.Event()
+    calls = []
+
+    class SlowDb:
+        def recent_book_views(self, days):
+            calls.append(days)
+            release.wait(5)
+            return {1: 99}
+
+    monkeypatch.setattr(public_api, "_db", SlowDb())
+    public_api._trending_memo.update(at=0.0, views={1: 5})
+    try:
+        assert public_api._recent_views() == {1: 5}   # stale, not blocked
+        assert public_api._recent_views() == {1: 5}   # no second refresh
+        release.set()
+        for _ in range(100):
+            if public_api._trending_memo["views"] == {1: 99}:
+                break
+            threading.Event().wait(0.02)
+        assert public_api._trending_memo["views"] == {1: 99}
+        assert len(calls) == 1
+    finally:
+        release.set()
+        public_api._trending_memo.update(at=0.0, views=None)
 
 
 def test_simple_page_carries_gtm(pub_client, public_book):

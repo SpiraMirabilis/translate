@@ -11,6 +11,7 @@ import ErrorState from '../components/ErrorState'
 import { useUrlModal } from '../hooks/useUrlState'
 import { useSite } from '../App'
 import { publicApi } from '../services/api'
+import { takeInlineJson } from '../lib/inlineData'
 import { applyFilters, buildShelves, hasActiveFilters, libraryStats, EMPTY_FILTERS } from '../lib/libraryFilter'
 import { LIBRARY_THEME } from '../components/library/theme'
 import BookCard from '../components/library/BookCard'
@@ -76,9 +77,15 @@ export default function Library() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [filters.tags, updateFilters])
 
+  // The /library shell carries the default sort's payload inline (see
+  // _index_for_library in web/app_factory.py), so the first paint needs no
+  // API round trip. Only used when it matches the reader's chosen sort.
+  const inline = takeInlineJson('library-data')
+  const seeded = inline && inline.data?.sort === sort
   const { data, isPending: loading, error, refetch } = useQuery({
     queryKey: ['public', 'books', sort],
     queryFn: () => publicApi.listBooks(sort),
+    ...(seeded ? { initialData: inline.data, initialDataUpdatedAt: inline.at } : {}),
   })
   const books = useMemo(() => data?.books || [], [data])
   const filtering = hasActiveFilters(filters)

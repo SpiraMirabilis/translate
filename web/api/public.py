@@ -7,6 +7,7 @@ Protected by:
 """
 import time
 import os
+import threading
 import re
 import json
 import hashlib
@@ -184,19 +185,33 @@ _REPO_SORT = {'updated': 'published', 'trending': 'popular'}
 
 TRENDING_DAYS = 30
 _TRENDING_TTL = 300  # seconds; matches _CACHE_SHORT
-_trending_memo = {"at": 0.0, "views": {}}
+_trending_memo = {"at": 0.0, "views": None}
+_trending_refreshing = threading.Lock()
+
+
+def _refresh_recent_views():
+    try:
+        _trending_memo["views"] = _db.recent_book_views(TRENDING_DAYS)
+        _trending_memo["at"] = time.monotonic()
+    finally:
+        _trending_refreshing.release()
 
 
 def _recent_views():
     """{book_id: views in the last TRENDING_DAYS}, memoised per process.
 
-    The GROUP BY over reader_log is ~0.35s on the live table — fine once per
-    five minutes, not once per Library load.
+    Stale-while-revalidate: once a value exists, an expired memo is returned
+    as-is and refreshed on a background thread, so no Library request waits
+    on the GROUP BY. Only the process's very first call computes inline
+    (~50ms with idx_reader_log_viewed_book; it was ~1s without).
     """
-    now = time.monotonic()
-    if now - _trending_memo["at"] > _TRENDING_TTL:
+    if _trending_memo["views"] is None:
         _trending_memo["views"] = _db.recent_book_views(TRENDING_DAYS)
-        _trending_memo["at"] = now
+        _trending_memo["at"] = time.monotonic()
+    elif (time.monotonic() - _trending_memo["at"] > _TRENDING_TTL
+          and _trending_refreshing.acquire(blocking=False)):
+        threading.Thread(target=_refresh_recent_views, daemon=True,
+                         name="trending-refresh").start()
     return _trending_memo["views"]
 
 
@@ -204,6 +219,15 @@ def _recent_views():
 def list_books(request: Request, response: Response, sort: str = 'popular'):
     _guard(request)
     _cache(response, _CACHE_SHORT)
+    return public_book_list(sort)
+
+
+def public_book_list(sort: str = 'popular') -> dict:
+    """The Library payload, `{"books": [...]}` — public books, public fields.
+
+    Shared by GET /api/public/books and the /library shell, which inlines the
+    default sort's payload so the page renders without a second round trip.
+    """
     if sort not in _VALID_SORTS:
         sort = 'popular'
     books = _db.list_books(order_by=_REPO_SORT.get(sort, sort))

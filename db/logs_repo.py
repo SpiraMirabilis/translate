@@ -100,7 +100,8 @@ class LogsRepo:
     def recent_book_views(self, days: int = 30):
         """Chapter views per book over the last `days` days → {book_id: count}.
 
-        Drives the public Library's "Trending" sort. Uses idx_reader_log_viewed;
+        Drives the public Library's "Trending" sort. Index-only via
+        idx_reader_log_viewed_book (migration 23);
         the lexical compare works because viewed_at is ISO-8601 text.
         """
         since = (datetime.datetime.now(datetime.timezone.utc)

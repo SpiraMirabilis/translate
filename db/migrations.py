@@ -754,6 +754,27 @@ def _m022_books_ebook_invalidated_at(conn, cursor, backend, logger):
         logger.info("Added ebook_invalidated_at column to books table")
 
 
+def _m023_reader_log_viewed_book_index(conn, cursor, backend, logger):
+    """Covering index for the Library's "Trending" count.
+
+    recent_book_views is `WHERE viewed_at >= ? GROUP BY book_id`. With only
+    single-column indexes MySQL walked idx_reader_log_book in full and looked
+    up every row to test viewed_at — 0.8-1.3s on 284k rows, paid by one
+    Library visitor per memo expiry. (viewed_at, book_id) makes it an
+    index-only range scan over the window.
+    """
+    name, target = "idx_reader_log_viewed_book", "reader_log(viewed_at, book_id)"
+    if backend.name == "mysql":
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'reader_log' "
+            "AND INDEX_NAME = ?", (name,))
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(f"CREATE INDEX {name} ON {target}")
+    else:
+        cursor.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -777,6 +798,7 @@ MIGRATIONS = [
     Migration(20, "entity_gender_revisions", _m020_entity_gender_revisions),
     Migration(21, "error_reports", _m021_error_reports),
     Migration(22, "books_ebook_invalidated_at", _m022_books_ebook_invalidated_at),
+    Migration(23, "reader_log_viewed_book_index", _m023_reader_log_viewed_book_index),
 ]
 
 
