@@ -17,6 +17,10 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/data
+      # Codex provider login. Set CODEX_HOME_HOST=~/.codex in the .env next to
+      # this file to reuse the host's existing Codex login; by default it
+      # lives in data/codex. See QUICKSTART-Docker.md.
+      - ${CODEX_HOME_HOST:-./data/codex}:/data/codex
     environment:
       # A reverse proxy on the host reaches the container from the network
       # gateway; trust forwarded client IPs from it (rate limits, comment bans).
@@ -36,6 +40,7 @@ services:
       - "127.0.0.1:8001:8000"
     volumes:
       - ./data:/data
+      - ${CODEX_HOME_HOST:-./data/codex}:/data/codex
     environment:
       TRUSTED_PROXY_IPS: 127.0.0.1,172.30.57.1
       T9_FORWARDED_ALLOW_IPS: 127.0.0.1,172.30.57.1

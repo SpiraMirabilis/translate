@@ -9,7 +9,7 @@ happen inside the image.
 **From the published image** (no clone needed):
 
 ```bash
-mkdir t9 && cd t9
+mkdir -p t9/data && cd t9
 curl -fsSLO https://raw.githubusercontent.com/SpiraMirabilis/translate/main/compose.yaml
 docker compose pull
 docker compose up -d
@@ -20,10 +20,12 @@ docker compose up -d
 ```bash
 git clone https://github.com/SpiraMirabilis/translate
 cd translate
+mkdir -p data
 docker compose up -d --build
 ```
 
-The image runs on x86-64 and ARM64. When `docker compose ps` shows `(healthy)`,
+Creating `data/` yourself first means its files belong to you (see
+[Your data](#your-data)). The image runs on x86-64 and ARM64. When `docker compose ps` shows `(healthy)`,
 open **http://localhost:8000**.
 
 ## 2. Set a password and API keys
@@ -68,8 +70,40 @@ Everything persists in `./data` on the host:
 - `covers/`, `illustrations/`, `epub_cache/`, `logs/` and the downloaded
   dictionary
 
-To back up, stop the container and copy the `data/` directory. Files in it are
-owned by uid 1000.
+To back up, stop the container and copy the `data/` directory.
+
+The container runs as whoever owns `data/` (or a mounted `~/.codex`, below), so
+the files stay yours and you can edit them without `sudo`. If Docker created
+`data/` itself, it's owned by root and the container falls back to uid 1000.
+To choose explicitly, set `PUID` and `PGID` in the `.env` file next to
+`compose.yaml` (for example `PUID=1001`).
+
+## Using the Codex provider
+
+The image includes the Codex CLI, so the `codex` provider (`cx:gpt-6-luna` and
+so on) translates on a ChatGPT subscription. It needs a Codex login. Pick one:
+
+- **Reuse the host's login.** If you already use Codex on this machine, add
+  this line to the `.env` file next to `compose.yaml` (not `data/.env`) and run
+  `docker compose up -d`:
+
+  ```env
+  CODEX_HOME_HOST=~/.codex
+  ```
+
+  The container then shares your `~/.codex`, the same way a second Codex
+  terminal would. Token refreshes stay in sync, and the container runs as your
+  user. Don't copy `auth.json` instead: two copies refresh separately and can
+  log each other out.
+
+- **Log in inside the container.** The login is stored in `data/codex`:
+
+  ```bash
+  docker compose exec t9 codex login --device-auth
+  ```
+
+Check it with `docker compose exec t9 codex login status`, or with the
+**Test** button on the Codex card on the Settings page.
 
 ## Exposing it beyond this machine
 
@@ -96,8 +130,8 @@ docker compose --profile public up -d
 
 ## Not available in the container
 
-- **The `claudecode` provider**: it needs the `claude` CLI and a login inside
-  the container. Use an API-key provider instead.
+- **The `claudecode` provider**: it needs the `claude` CLI, which the image
+  doesn't include. Use `codex` or an API-key provider instead.
 - **AZW3 (Kindle) export**: it needs Calibre's `ebook-convert`. EPUB export
   works.
 

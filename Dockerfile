@@ -11,11 +11,22 @@ COPY web/frontend/ ./
 COPY tag_vocab.json /src/tag_vocab.json
 RUN npm run build
 
+# ---- Codex CLI (for the `codex` provider) -------------------------------------
+# The npm package is a Node wrapper around a static native binary; only that
+# binary is kept. Not --platform=$BUILDPLATFORM: npm must fetch the binary for
+# the image's own architecture.
+FROM node:22-slim AS codex
+ARG CODEX_VERSION=0.160.1
+RUN npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
+ && bin=$(find /usr/local/lib/node_modules/@openai -path '*/vendor/*/bin/codex' -type f | head -n1) \
+ && test -n "$bin" && install -m 755 "$bin" /codex
+
 # ---- Runtime ----------------------------------------------------------------
 FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    CODEX_HOME=/data/codex \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -39,8 +50,10 @@ RUN useradd --uid 1000 --create-home t9 \
         rm -rf "/app/web/$f"; ln -s "/data/$f" "/app/web/$f"; \
     done
 
+COPY --from=codex /codex /usr/local/lib/codex/codex
+COPY docker/codex-wrapper.sh /usr/local/bin/codex
 COPY docker/entrypoint.sh /usr/local/bin/t9-entrypoint
-RUN chmod 755 /usr/local/bin/t9-entrypoint
+RUN chmod 755 /usr/local/bin/t9-entrypoint /usr/local/bin/codex
 
 VOLUME /data
 EXPOSE 8000
