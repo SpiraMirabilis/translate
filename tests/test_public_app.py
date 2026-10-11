@@ -236,40 +236,59 @@ def test_trending_memo_refreshes_in_the_background(monkeypatch):
         public_api._trending_memo.update(at=0.0, views=None)
 
 
-def test_simple_page_carries_gtm(pub_client, public_book):
-    from web.analytics import GTM_ID
+TEST_GTM_ID = "GTM-TEST123"
 
+
+@pytest.fixture
+def gtm_id(monkeypatch):
+    # The container ID lives in .env (GTM_ID); tests pin their own.
+    monkeypatch.setenv("GTM_ID", TEST_GTM_ID)
+    return TEST_GTM_ID
+
+
+def test_simple_page_carries_gtm(pub_client, public_book, gtm_id):
     html = pub_client.get("/simple").text
     head, body = html.split("<body>", 1)
-    assert f"gtm.js?id='+i+dl" in head and GTM_ID in head
-    assert f"ns.html?id={GTM_ID}" in body
+    assert f"gtm.js?id='+i+dl" in head and gtm_id in head
+    assert f"ns.html?id={gtm_id}" in body
 
 
-def test_admin_pages_carry_no_gtm(web_app, public_book):
+def test_admin_pages_carry_no_gtm(web_app, public_book, gtm_id):
     # The admin host serves the same pages; its traffic stays out of analytics.
     from tests.api_client import SyncASGIClient
-    from web.analytics import GTM_ID
 
     client = SyncASGIClient(web_app)
     resp = client.get("/simple")
     if resp.status_code == 200:
-        assert GTM_ID not in resp.text
+        assert gtm_id not in resp.text
 
 
-def test_with_gtm_placement_and_idempotence():
-    from web.analytics import GTM_ID, with_gtm
+def test_with_gtm_placement_and_idempotence(gtm_id):
+    from web.analytics import with_gtm
 
     html = with_gtm('<html><head lang="x"><title>t</title></head><body class="c"><p>x</p></body></html>')
     assert html.index("<head") < html.index("googletagmanager.com/gtm.js") < html.index("<title>")
     assert html.index("<body") < html.index("ns.html") < html.index("<p>x</p>")
     assert with_gtm(html) == html
-    assert html.count(GTM_ID) == 2
+    assert html.count(gtm_id) == 2
+
+
+@pytest.mark.parametrize("value", [None, "", "UA-12345-1", "GTM-ABC');alert(1);//"])
+def test_with_gtm_needs_a_valid_configured_id(monkeypatch, value):
+    # Unset (a fresh clone) or not a GTM container ID → no snippet at all;
+    # the value goes into a <script>, so a malformed one is never spliced.
+    from web.analytics import with_gtm
+
+    if value is None:
+        monkeypatch.delenv("GTM_ID", raising=False)
+    else:
+        monkeypatch.setenv("GTM_ID", value)
+    page = "<html><head></head><body></body></html>"
+    assert with_gtm(page) == page
 
 
 @pytest.mark.skipif(not os.path.isdir(_dist), reason="frontend dist not built")
-def test_spa_routes_and_404_carry_gtm(pub_client, public_book):
-    from web.analytics import GTM_ID
-
+def test_spa_routes_and_404_carry_gtm(pub_client, public_book, gtm_id):
     for path in ("/", "/library", f"/library/book/{public_book}",
                  f"/library/read/{public_book}/1", "/library/whatever", "/queue"):
-        assert pub_client.get(path).text.count(GTM_ID) == 2, path
+        assert pub_client.get(path).text.count(gtm_id) == 2, path

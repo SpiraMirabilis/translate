@@ -602,6 +602,7 @@ Reply-notification emails have two pluggable backends (`web/services/email_sende
 - `EMAIL_BACKEND` (settings.json / `EMAIL_BACKEND` env): `ses` or `postfix`. Editable in Settings UI.
 - `EMAIL_FROM`: Sender address for reply notifications (e.g. `editor@boondollars.com`). For SES it must be a verified SES identity (domain or address); for Postfix a domain it's authorized to send from. If unset, notifications are sent from `noreply@localhost` and won't deliver — explicitly set this before turning the feature live.
 - `SITE_BASE_URL`: Public base URL of the reader site (e.g. `https://reader.boondollars.com`), used to build absolute links to chapters and the unsubscribe endpoint in outgoing emails. Must be set or email links will be relative and break in many mail clients.
+- `GTM_ID`: Google Tag Manager container ID (`GTM-XXXXXXX`) for the public reader. `web/analytics.py` reads it per request and splices the snippet into public-process pages only; unset or not GTM-shaped → no snippet. Not in settings SCHEMA (a deploy constant, like `SITE_BASE_URL`'s infra siblings).
 - **Amazon SES secrets/infra (`.env` only, not in settings SCHEMA — same convention as the Spaces `BUCKET_*` vars):** `SES_REGION` (default `us-east-2`), `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY` (IAM user with `ses:SendRawEmail`). The sending identity must be verified in that region and the account out of the SES sandbox to reach arbitrary recipients.
 
 ### Unit converter tables (`units.json`, language-keyed since 2026-10-05)

@@ -374,6 +374,7 @@ Secrets and infrastructure go in `.env`; most other settings are managed from th
 | `T9_PUBLIC_LIBRARY` | Enable the public library/reader |
 | `SITE_NAME` / `PUBLIC_SITE_NAME` | Branding for the admin UI / public site |
 | `SITE_BASE_URL` | Public base URL — used for RSS links and email links |
+| `GTM_ID` | Google Tag Manager container ID (`GTM-XXXXXXX`) for the public reader; blank = no analytics. The admin host never gets the snippet |
 | `DB_BACKEND` | `sqlite` (default) or `mysql` |
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASS` / `MYSQL_DB` / `MYSQL_POOL_SIZE` | MySQL connection settings |
 | `SPACES_ENABLED` / `SPACES_BUCKET` / `SPACES_REGION` / `SPACES_PREFIX` / `SPACES_CDN_BASE` | S3-compatible object storage (DigitalOcean Spaces) offload |
