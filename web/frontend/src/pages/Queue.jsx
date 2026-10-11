@@ -495,7 +495,12 @@ export default function Queue() {
       )}
 
       {showUpload && (
-        <UploadModal books={books} onClose={() => setShowUpload(false)} onDone={() => { setShowUpload(false); invalidateQueue() }} />
+        <UploadModal books={books} onClose={() => setShowUpload(false)} onDone={(uploadedBookId) => {
+          setShowUpload(false)
+          // Show the book just uploaded to (for "create book", the new id).
+          if (uploadedBookId) setFilterBook(String(uploadedBookId))
+          invalidateQueue()
+        }} />
       )}
     </div>
   )
@@ -566,7 +571,7 @@ function UploadModal({ books, onClose, onDone }) {
         setUploading(false)
         return
       }
-      onDone()
+      onDone(res?.book_id || bookId)
     } catch (e) {
       setError(e.message); setUploading(false)
     }
@@ -575,8 +580,8 @@ function UploadModal({ books, onClose, onDone }) {
   const resolveConflict = async (mode) => {  // 'keep' | 'discard'
     setConflict(null); setUploading(true); setError(null)
     try {
-      await doUpload(mode)
-      onDone()
+      const res = await doUpload(mode)
+      onDone(res?.book_id || bookId)
     } catch (e) {
       setError(e.message); setUploading(false)
     }

@@ -9,6 +9,7 @@ import logging
 import posixpath
 from urllib.parse import unquote, urldefrag
 from bs4 import BeautifulSoup
+import ebooklib
 from ebooklib import epub
 import html2text
 from illustrations import IllustrationCollector, make_marker, store_chapter_illustrations, MARKER_RE
@@ -195,18 +196,21 @@ class EPUBProcessor:
             list: List of (title, href) tuples representing the TOC
         """
         toc = []
-        for item in book.toc:
-            if isinstance(item, tuple) and len(item) > 1:
-                # For books with nested TOC
-                section_title, subitems = item[0], item[1]
-                if hasattr(section_title, 'title') and hasattr(section_title, 'href'):
-                    toc.append((section_title.title, section_title.href))
-                for subitem in subitems:
-                    if hasattr(subitem, 'title') and hasattr(subitem, 'href'):
-                        toc.append((subitem.title, subitem.href))
-            elif hasattr(item, 'title') and hasattr(item, 'href'):
-                toc.append((item.title, item.href))
-        
+
+        # ebooklib nests a section as (Section, [children]), but some books carry
+        # a bare (Link, Link) tuple or nest deeper than one level, so walk any
+        # tuple/list recursively instead of assuming item[1] is a child list. An
+        # empty <navMap/> comes back as one bare Link with no href; entries that
+        # point nowhere are skipped so an empty TOC falls through to the spine.
+        def walk(node):
+            if isinstance(node, (list, tuple)):
+                for child in node:
+                    walk(child)
+            elif getattr(node, 'href', None) and hasattr(node, 'title'):
+                toc.append((node.title, node.href))
+
+        walk(book.toc)
+
         self.logger.info(f"Extracted {len(toc)} TOC entries")
         return toc
     
@@ -252,7 +256,7 @@ class EPUBProcessor:
                 })
         else:
             # Process all items as potential chapters
-            items = [item for item in book.get_items() if item.get_type() == epub.ITEM_DOCUMENT]
+            items = [item for item in book.get_items() if item.get_type() == ebooklib.ITEM_DOCUMENT]
             
             # Sort items by file name (often contains ordering information)
             items.sort(key=lambda x: x.file_name)

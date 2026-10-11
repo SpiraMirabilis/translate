@@ -456,7 +456,8 @@ def upload_epub(
 
         success, num_chapters, message = processor.process_epub(tmp_path, book_id, skip_numbers=skip_numbers)
         if not success:
-            raise HTTPException(status_code=500, detail=message)
+            # An unreadable or chapterless file is a bad upload, not a server fault.
+            raise HTTPException(status_code=422, detail=message)
 
         # Batch boundary: emit pending module-transform summaries as one line.
         module_activity.flush(book_id)
