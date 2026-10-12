@@ -489,13 +489,15 @@ are enforced by the server rather than remembered by the agent.
   glossary search for terms the matched glossary lacks, earlier renderings of recurring
   phrases, callbacks) — the first, cautious wording drew zero lookups on book 106. Server down → the call goes out without
   tools (0.5s health probe, cached 30s). `/health` must report `read_only=true` and
-  `research_scope_version=1`; older services must be restarted. Shared provider helpers
+  `research_scope_version=1`; a reachable incompatible service raises an actionable
+  translation error rather than silently dropping research. Restart older services. Shared provider helpers
   live in `research_tools.py` (no MCP SDK dependency). Codex supplies only `t9` via
-  explicit `-c mcp_servers=...` overrides, with seven allowed research tools, optional
+  explicit `-c mcp_servers=...` overrides, with nine allowed research tools, optional
   initialization, and short tool timeouts; `--ignore-user-config` and sandbox/tool
   restrictions stay in place. T9 is a direct tool namespace for code-mode models.
   Its JSON event reader enforces the lookup budget and
-  reaps the CLI before returning a final answer.
+  allows five seconds for normal CLI shutdown (including credential persistence)
+  before reaping. Errors and canceled streams terminate the process group immediately.
   Standard Docker Compose starts this same server in T9's network namespace on
   loopback; no MCP port is published and the URL is unchanged. Research use remains
   disabled by default through the existing global/per-book settings.
@@ -506,18 +508,21 @@ are enforced by the server rather than remembered by the agent.
   book/chapter state. The server verifies the book and a stored/queued boundary
   chapter, checks tool arguments, rejects
   future single-chapter requests, and intersects broad queries (including queued grep)
-  with the boundary. Only verified book-local glossary renderings and complete dated
-  note histories are exposed; unknown/global/future records and unversioned fields are
-  omitted. Existing stdio/full-server review access is unchanged. Headers rely on the
-  existing trusted-local deployment; they are not authentication. Tests use synthetic
-  SQLite data: `tests/test_mcp_research_scope.py`, `tests/test_research_tools.py`, and the
-  Codex/Claude research provider tests.
-  Entity verification uses a shared literal matcher per lookup, checks overlaps and
-  same-chapter evidence, and narrows candidates for specific queries. No chapter or
-  verification cache crosses requests. `benchmark_research_scope.py` exercises 900
-  synthetic chapters and 5,000 glossary entries without application configuration.
+  with the boundary. Glossary reads use existing SQL query helpers with an origin
+  boundary, retain current renderings/gender/category, and rewind only notes via
+  `notes_as_of`, preserving legacy notes and undated corrections. Global entries
+  follow existing glossary semantics; unknown origins do not satisfy the boundary.
+  `t9_search_chapters` bounds its SQL read; `t9_get_book` remains book-scoped.
+  Existing stdio/full-server review access is unchanged. Headers rely on the existing
+  trusted-local deployment; they are not authentication. Tests use synthetic SQLite
+  data: `tests/test_mcp_research_scope.py`, `tests/test_research_tools.py`, and the
+  Codex/Claude research provider tests. `benchmark_research_scope.py` exercises the
+  existing glossary helpers and asserts zero chapter-prose reads, without application
+  configuration. See README.md for the synthetic comparison and production baseline.
 - **Usage log**: `logs/mcp_usage.log`, one JSON line per tool call, both servers (tool,
-  args, book, ms, ok/error, result size). Translation lines carry caller/book/chapter from
+  args, book, ms, ok/error, result size). Docker explicitly sets MCP_USAGE_LOG to
+  `/data/logs/mcp_usage.log` on the persistent data mount; root stays read-only.
+  Translation lines carry caller/book/chapter from
   the `X-T9-*` headers. `python3 -m mcp_server.usage [--days N]` reports calls by caller and
   tool, and translation lookups per book and per chapter that used them. (A per-connection
   `connect` line existed briefly on 2026-09-29 to prove the model was using the tools at

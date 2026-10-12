@@ -180,33 +180,50 @@ it uses private loopback in T9's network namespace, with no published MCP port.
 Research use still requires enabling the existing settings. See
 [Docker research setup](QUICKSTART-Docker.md#translation-research-tools).
 
-Research uses seven existing tools: glossary list/search, entity context, chapter
-reads/summaries, book grep, and historical notes. The server enforces the book and
-current-or-earlier chapter boundary supplied by T9 on every request, including
-queued source text. The boundary must identify a stored or queued chapter.
-Missing/invalid/unverifiable scope, another book, future chapter reads, and
-unscoped tools are refused. Broad chapter queries are intersected with the boundary.
-Only book-local entities with a known origin and a rendering witnessed in stored
-source/translation within that boundary are returned. Notes require a complete,
-dated, ordered revision chain; unverifiable notes and unversioned gender/category/
-correction metadata are omitted; category filters are refused because categories
-have no history. Global entities and unknown origins are excluded.
-This can make older glossaries sparse. Stored chapter text itself is not versioned;
-later human edits to an earlier chapter remain visible. Review clients using stdio
-or the full MCP server keep their existing access. Scope headers are a trusted-local
-contract, not remote authentication; keep the service on loopback.
+Research uses nine existing tools: glossary list/search, entity context, chapter
+reads/summaries/search, book metadata, book grep, and historical notes. The server
+enforces the book and current-or-earlier chapter boundary supplied by T9 on every
+request, including queued source text. The boundary must identify a stored or
+queued chapter. Missing/invalid/unverifiable scope, another book, future chapter
+reads, and unscoped tools are refused. Broad chapter queries are intersected with
+the boundary; chapter search applies the boundary in SQL before matching.
 
-Entity verification scans bounded chapter text with a shared literal matcher,
-preserving overlapping names and requiring source/rendering evidence in the same
-chapter. Exact glossary/note queries narrow candidates before verification; no
-chapter content or verification results are cached across requests. Reproduce the
-synthetic performance check with `python benchmark_research_scope.py` (900 chapters,
-5,000 entries, including 1,000 unwitnessed corrections; no real database).
+Glossary tools reuse T9's existing queries with `origin_chapter <= current chapter`.
+They retain current renderings, gender and category, including category filters.
+Book entries and global entries follow the existing glossary query semantics;
+unknown origins do not satisfy the boundary. Notes use the existing `notes_as_of()`
+rewind: undated corrections stay applied, and legacy notes keep the closest known
+state. Renderings and gender are never rewound. No chapter prose is fetched to
+verify entity records. Stored chapter text itself is not versioned; later human
+edits to an earlier chapter remain visible. Review clients using stdio or the full
+MCP server keep their existing access. Scope headers are a trusted-local contract,
+not remote authentication; keep the service on loopback.
 
-Providers check `/health` for read-only mode and scope support. A missing, outdated,
-or incompatible service disables research for that call; restart the service after
-upgrading. MCP initialization/tool failures remain optional and the model is told to
-return only the translation. Usage is recorded in `logs/mcp_usage.log`.
+Reproduce the synthetic performance check with `python benchmark_research_scope.py`
+(900 chapters, 5,000 entries; no real database). The benchmark asserts current fields,
+corrected renderings, historical notes, and zero chapter-prose queries. On local
+SQLite fixtures matching the review's two reported book sizes, three-run medians
+were:
+
+| Chapters / entities | Full list before → after | Single-name search before → after |
+| --- | --- | --- |
+| 685 / 12,000 | 510 → 58 ms | 77 → 57 ms |
+| 1,754 / 7,700 | 701 → 40 ms | 123 → 34 ms |
+
+These synthetic results are not production MySQL latency estimates. The maintainer's
+production measurements remain the baseline: 22.2–26.2 seconds for large scoped
+lists, 2.5–2.8 seconds for one-name search, versus the existing search median of
+112 ms (p95 465 ms). Removing chapter transfers/scans addresses that regression
+without increasing timeouts or adding a cache.
+
+Providers check `/health` for read-only mode and scope support. An unreachable
+service retains the existing fallback without tools. A reachable service with an
+outdated, missing or incompatible health contract raises an actionable translation
+error instead of silently disabling research: restart the read-only service after
+upgrading, then retry. No tools are sent to an incompatible or full-access server.
+MCP initialization/tool failures remain optional and the model is told to return
+only the translation. Usage is recorded in `logs/mcp_usage.log`; Docker explicitly
+uses `/data/logs/mcp_usage.log` on its persistent data mount.
 
 Codex receives only the T9 server and its research-tool allowlist through explicit
 `-c` overrides, while retaining `--ignore-user-config`, its login, the read-only
@@ -221,6 +238,16 @@ chunk through the usual retry path without saving partial output. Claude Code ke
 its existing native turn cap. Both providers exclude tool output and intermediate
 reasoning from translations.
 
+Codex CLI 0.162.1 supports `features.code_mode.direct_only_tool_namespaces`:
+strict configuration parsing accepts `["mcp__t9"]` and rejects an invented sibling
+key. This matches the [official configuration reference](https://developers.openai.com/codex/config-reference).
+The CLI also requires `agents.enabled=false` to hide agent tools; the legacy
+`features.multi_agent=false` override is retained for older versions. Real CLI
+smoke tests verified direct T9 lookups with agent tools absent.
+Successful calls allow up to five seconds for normal CLI exit before termination,
+so post-turn shutdown can persist refreshed subscription credentials. Errors,
+lookup-budget failures and canceled streams still terminate the isolated process
+group immediately; a stalled successful shutdown uses the same bounded cleanup.
 
 Providers can be configured and new models added by editing `providers/models.json`.
 

@@ -61,6 +61,7 @@ _DISABLED_FEATURES = (
 
 _CONFIG_OVERRIDES = (
     'web_search="disabled"',
+    "agents.enabled=false",  # 0.162.1 agent-tool switch; also retain the legacy feature flag
     "include_permissions_instructions=false",
     "include_apps_instructions=false",
     "include_environment_context=false",
@@ -348,6 +349,12 @@ class CodexProvider(ModelProvider):
                     if lookup_budget is not None and not last_message:
                         raise RuntimeError("codex CLI research turn completed without a final answer")
                     answer = (last_message, event.get("usage") or {})
+                    # Let the CLI finish its normal shutdown, including any
+                    # refreshed subscription credentials, before group cleanup.
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        logger.warning("codex CLI did not exit within 5s after success; terminating")
                     break
                 elif etype in ("turn.failed", "error"):
                     message = (event.get("error") or {}).get("message") or event.get("message") or ""

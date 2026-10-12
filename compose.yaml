@@ -43,6 +43,8 @@ services:
         restart: true
     volumes:
       - ./data:/data
+    environment:
+      MCP_USAGE_LOG: /data/logs/mcp_usage.log
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]

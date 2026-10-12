@@ -3,6 +3,7 @@ import json
 import re
 import time
 from urllib.parse import urlsplit, urlunsplit
+from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MCP_SERVER_NAME = "t9"
@@ -10,9 +11,13 @@ RESEARCH_SCOPE_VERSION = 1
 RESEARCH_TOOLS = (
     "t9_search_entities", "t9_list_entities", "t9_grep_book",
     "t9_get_chapter_summaries", "t9_get_chapter", "t9_entity_context",
-    "t9_notes_as_of",
+    "t9_notes_as_of", "t9_search_chapters", "t9_get_book",
 )
 _reachable_cache = {}
+
+
+class ResearchCompatibilityError(RuntimeError):
+    """Reachable research service cannot enforce the required access limits."""
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -46,13 +51,20 @@ def _mcp_reachable(url):
 
     A TCP connection alone also succeeds against an old or full-access server.
     Probe its health contract, with a short timeout and a brief per-URL cache.
-    Never follow redirects to a different server.
+    Connection failures return False; incompatible responses raise so an upgrade
+    cannot silently disable existing research. Never follow redirects.
     """
     now = time.monotonic()
     cached = _reachable_cache.get(url)
     if cached and now - cached[1] < 30:
+        if isinstance(cached[0], ResearchCompatibilityError):
+            raise cached[0]
         return cached[0]
     ok = False
+    incompatibility = ResearchCompatibilityError(
+        "Research MCP service is incompatible: expected read_only=true and "
+        f"research_scope_version={RESEARCH_SCOPE_VERSION}. Restart the read-only "
+        "MCP service after upgrading T9, then retry translation.")
     try:
         parsed = urlsplit(url)
         health = urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
@@ -62,9 +74,15 @@ def _mcp_reachable(url):
                 data = json.loads(response.read(4096))
                 ok = (data.get("ok") is True and data.get("read_only") is True
                       and data.get("research_scope_version") == RESEARCH_SCOPE_VERSION)
-    except (OSError, ValueError, TypeError, AttributeError):
+        if not ok:
+            ok = incompatibility
+    except (HTTPError, ValueError, TypeError, AttributeError):
+        ok = incompatibility
+    except OSError:
         pass
     _reachable_cache[url] = (ok, now)
+    if isinstance(ok, ResearchCompatibilityError):
+        raise ok
     return ok
 
 
@@ -92,13 +110,15 @@ def mcp_tools_section(tools: dict) -> str:
         "whenever they would make the translation more accurate or more consistent "
         "with earlier chapters. Lookups are quick and cheap; a wrong or inconsistent "
         "rendering is not.\n"
-        "- t9_search_entities / t9_list_entities: the verified glossary within this "
+        "- t9_search_entities / t9_list_entities: the glossary within this "
         "chapter boundary. The PRE-TRANSLATED "
         "ENTITIES above list only terms matched in this text, so search here for a "
         "name, title, place, technique, rank or item that is not listed there. "
-        "Unverifiable records and notes may be omitted. Omit the category parameter "
-        "on both tools during scoped translation research: historical category "
-        "filtering is unavailable. Search by term or list without a category filter.\n"
+        "Gender and category reflect current truth; renderings stay consistent "
+        "book-wide. Notes use T9's existing point-in-time history, including "
+        "legacy notes. Filter by category when useful.\n"
+        "- t9_get_book: this book's metadata and entity categories.\n"
+        "- t9_search_chapters: search earlier source and translated chapter text.\n"
         "- t9_grep_book: how an earlier chapter rendered a recurring phrase, form of "
         "address, rank or title (field=\"both\" to see source and translation).\n"
         "- t9_get_chapter_summaries: short plot summaries of earlier chapters"

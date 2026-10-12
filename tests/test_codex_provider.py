@@ -55,11 +55,19 @@ elif mode == "no_answer":
     ev(type="item.completed", item={"id": "a0", "type": "agent_message", "text": "Let me check."})
     ev(type="item.completed", item={"id": "lookup", "type": "mcp_tool_call", "server": "t9", "tool": "t9_search_entities"})
     ev(type="turn.completed", usage={})
-elif mode == "ok":
+elif mode in ("ok", "auth_flush", "success_hanging"):
     ev(type="item.completed", item={"id": "item_1", "type": "agent_message", "text": "thinking aloud"})
     ev(type="item.completed", item={"id": "item_2", "type": "agent_message",
        "text": '```json\n{"title": "Chapter 1", "content": ["Zhang San entered the city gate."]}\n```'})
     ev(type="turn.completed", usage={"input_tokens": 4100, "cached_input_tokens": 3000, "output_tokens": 52})
+    if mode == "auth_flush":
+        time.sleep(0.25)
+        with open(os.environ["FAKE_AUTH_FILE"], "w") as f:
+            json.dump({"refreshed": True}, f)
+            f.flush()
+            os.fsync(f.fileno())
+    elif mode == "success_hanging":
+        time.sleep(60)
 elif mode == "limit":
     ev(type="error", message="You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
        "to purchase more credits or try again at 3:45 PM.")
@@ -246,6 +254,7 @@ def test_research_filters_events_and_preserves_isolation(fake, monkeypatch, stre
     for feature in ("shell_tool", "apps", "plugins", "multi_agent"):
         assert f"features.{feature}=false" in overrides
     assert 'approval_policy="never"' in overrides
+    assert 'agents.enabled=false' in overrides
     assert 'web_search="disabled"' in overrides
     assert "book_id=7" in logged["instructions"] and "chapter 3" in logged["instructions"]
 
@@ -334,3 +343,20 @@ def test_stream_disconnect_reaps_codex_and_removes_prompt(fake, monkeypatch, whe
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert _sys_tempfiles() <= before
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_success_allows_auth_persistence_after_turn_completed(fake, monkeypatch, tmp_path, stream):
+    auth = tmp_path / "synthetic-auth.json"
+    monkeypatch.setenv("FAKE_AUTH_FILE", str(auth))
+    fake("auth_flush", stream=stream)
+    assert json.loads(auth.read_text()) == {"refreshed": True}
+    with pytest.raises(ProcessLookupError):
+        os.kill(fake.log()["pid"], 0)
+
+
+def test_success_shutdown_timeout_still_reaps_process(fake, caplog):
+    fake("success_hanging")
+    assert "did not exit within 5s after success" in caplog.text
+    with pytest.raises(ProcessLookupError):
+        os.kill(fake.log()["pid"], 0)

@@ -78,7 +78,10 @@ def register(mcp) -> None:
         db = get_db()
         require_book(db, book_id)
         _compile(query, regex)
-        hits = db.search_book_chapters(book_id, query, scope=scope, is_regex=regex)
+        from ..research_scope import scope as research_scope
+        current = research_scope.get()
+        hits = db.search_book_chapters(book_id, query, scope=scope, is_regex=regex,
+                                      max_chapter=current.chapter if current else None)
         total = sum(h.get("match_count", 0) for h in hits)
         lines = [f"{total} match(es) in {len(hits)} chapter(s)"]
         for h in hits[:max_chapters]:

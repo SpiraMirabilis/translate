@@ -127,7 +127,11 @@ The image includes Codex 0.162.1; Claude Code still requires installing its CLI.
 For a published release containing this feature, omit `--build`. Normal Compose
 upgrades also update the MCP service. Starting it does not enable research:
 translation calls attach tools only when the existing global/per-book settings
-allow them. If the service is down, translations proceed without research. Scope restrictions
+allow them. If the service is down, translations proceed without research. A reachable
+service with an incompatible scope/health contract raises a translation error with
+restart instructions; it never silently switches research off during an upgrade.
+Usage logs persist at `data/logs/mcp_usage.log` even though the research container
+root is read-only. Scope restrictions
 and the legacy setting/module IDs are the same as outside Docker; see
 [research tools](README.md#supported-providers).
 
