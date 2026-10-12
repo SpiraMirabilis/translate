@@ -170,7 +170,7 @@ def note_update_chapters(db_manager, book_id, chapter_expr):
 
 
 def fetch_entities(db_manager, book_id, chapter_clause, chapter_params,
-                   as_of_chapter=None, note_chapters=None):
+                   as_of_chapter=None, note_chapters=None, origin_boundary=None):
     """Query entities for the given book with optional origin_chapter filter.
 
     With as_of_chapter set, each note is replaced by the note in force at the end
@@ -180,6 +180,8 @@ def fetch_entities(db_manager, book_id, chapter_clause, chapter_params,
     note_chapters ({entity_id: [chapter, ...]}, from note_update_chapters) widens
     the chapter filter to entities whose *note* changed in the range, and tags
     them so it is obvious why they are in the list.
+    origin_boundary is an independent SQL ceiling for translation research;
+    matching a note update can never bypass it.
     """
     note_chapters = note_chapters or {}
     query = """
@@ -199,6 +201,10 @@ def fetch_entities(db_manager, book_id, chapter_clause, chapter_params,
         else:
             query += f" AND {chapter_clause}"
             params.extend(chapter_params)
+
+    if origin_boundary is not None:
+        query += " AND origin_chapter <= ?"
+        params.append(origin_boundary)
 
     query += " ORDER BY category, COALESCE(origin_chapter, 0), untranslated"
 
@@ -255,7 +261,7 @@ def resolve_as_of(origin_chapter=None, as_of_chapter=None, current_notes=False):
 
 def build_entities_payload(db_manager, book, origin_chapter=None, *,
                            as_of_chapter=None, current_notes=False,
-                           origin_only=False):
+                           origin_only=False, origin_boundary=None):
     """Everything main() dumps: {book, filter, notes_as_of_chapter, entities}.
 
     `book` is a book dict (see resolve_book) with at least "id" and "title".
@@ -270,8 +276,13 @@ def build_entities_payload(db_manager, book, origin_chapter=None, *,
     note_chapters = ({} if origin_only
                      else note_update_chapters(db_manager, book["id"], origin_chapter))
 
+    if origin_boundary is not None:
+        note_chapters = {eid: bounded for eid, chapters in note_chapters.items()
+                        if (bounded := [ch for ch in chapters if ch <= origin_boundary])}
+
     grouped = fetch_entities(db_manager, book["id"], chapter_clause, chapter_params,
-                             as_of_chapter=as_of, note_chapters=note_chapters)
+                             as_of_chapter=as_of, note_chapters=note_chapters,
+                             origin_boundary=origin_boundary)
     return {
         "book": {"id": book["id"], "title": book.get("title")},
         "filter": origin_chapter,

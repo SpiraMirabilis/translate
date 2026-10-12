@@ -1,6 +1,8 @@
 """claudecode provider + read-only MCP tools: who gets them, what the CLI is
 told, and that lookup-turn prose never reaches the streamed JSON."""
+import io
 import json
+from pathlib import Path
 import types
 
 import pytest
@@ -22,10 +24,10 @@ class _Log:
         pass
 
 
-def _kwargs(db, book, global_on, provider=None):
+def _kwargs(db, book, global_on, provider=None, chapter=12):
     stub = types.SimpleNamespace(config=_Cfg(global_on), entity_manager=db, logger=_Log())
     provider = provider or types.SimpleNamespace(supports_mcp_tools=True)
-    return TranslationEngine._mcp_tools_kwargs(stub, provider, book, 12)
+    return TranslationEngine._mcp_tools_kwargs(stub, provider, book, chapter)
 
 
 @pytest.fixture
@@ -44,10 +46,14 @@ def _set_module(db, book, value):
     (True, False, True),    # a book set On wins over the global off
     (False, True, False),   # a book set Off wins over the global on
 ])
-def test_book_override_beats_global(db, book, override, global_on, expected):
+@pytest.mark.parametrize("provider_name", ["claudecode", "codex"])
+def test_book_override_beats_global(db, book, override, global_on, expected, provider_name):
+    from providers.codex_provider import CodexProvider
+    cls = ClaudeCodeProvider if provider_name == "claudecode" else CodexProvider
+    provider = cls(bin_path="/bin/true")
     if override is not None:
         book = _set_module(db, book, override)
-    got = _kwargs(db, book, global_on)
+    got = _kwargs(db, book, global_on, provider=provider)
     assert bool(got) is expected
     if expected:
         tools = got["mcp_tools"]
@@ -58,6 +64,21 @@ def test_book_override_beats_global(db, book, override, global_on, expected):
 def test_other_providers_never_get_the_kwarg(db, book):
     book = _set_module(db, book, True)
     assert _kwargs(db, book, True, provider=types.SimpleNamespace()) == {}
+
+
+@pytest.mark.parametrize("chapter", [None, "abc", 0, -1, True, 1.5])
+def test_unknown_scope_disables_research(db, book, chapter):
+    book = _set_module(db, book, True)
+    assert _kwargs(db, book, True, chapter=chapter) == {}
+
+
+def test_legacy_module_identifier_and_settings_are_preserved(db, book):
+    from modules import REGISTRY
+    assert MODULE_ID == "claude_code_tools"
+    assert REGISTRY[MODULE_ID].name == "Research tools"
+    book = _set_module(db, book, True)
+    db.set_module_settings(book["id"], MODULE_ID, {"max_turns": 4})
+    assert _kwargs(db, book, False)["mcp_tools"]["max_turns"] == 4
 
 
 def test_tools_section_names_book_and_chapter():
@@ -113,17 +134,23 @@ TOOL_RUN = [
     _text("Let me check the glossary first."),
     _ev({"type": "content_block_start", "content_block": {"type": "tool_use"}}),
     _ev({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
-    {"type": "user", "message": {}},
+    {"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": "private lookup result"}]}},
     _ev({"type": "message_start"}),
+    _ev({"type": "content_block_delta", "delta": {
+        "type": "thinking_delta", "thinking": "private reasoning"}}),
     _text('{"content": '),
     _text('["x"]}'),
     _ev({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+    {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": '{"content": ["x"]}'}]}},
     {"type": "result", "result": "", "is_error": False},
 ]
 
 
 @pytest.fixture
-def provider(tmp_path):
+def provider(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_KEEP_SESSIONS", "1")
     return ClaudeCodeProvider(bin_path="/bin/true")
 
 
@@ -146,37 +173,123 @@ def test_non_json_final_answer_is_still_delivered(provider):
     assert _collect(provider, events, tools=True) == "plain answer"
 
 
-def test_unreachable_server_drops_tools(provider, monkeypatch):
+def test_assistant_only_answer_after_failed_lookup(provider):
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Let me check."}, {"type": "tool_use"}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "is_error": True, "content": "MCP unavailable"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": '{"content": ["x"]}'}]}},
+        {"type": "result", "is_error": False},
+    ]
+    assert _collect(provider, events, tools=True) == '{"content": ["x"]}'
+
+
+@pytest.fixture
+def cli_call(provider, monkeypatch):
+    """Exercise both subprocess paths without a CLI, login, or network."""
     import providers.claude_code_provider as mod
-    monkeypatch.setattr(mod, "_mcp_reachable", lambda url: False)
+    monkeypatch.delenv("CLAUDE_CODE_DEBUG", raising=False)
     seen = {}
 
+    def capture(cmd, kw):
+        seen.update(cmd=cmd, kwargs=kw)
+        seen["system_path"] = Path(cmd[cmd.index("--system-prompt-file") + 1])
+        seen["system"] = seen["system_path"].read_text(encoding="utf-8")
+
     def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        capture(cmd, kw)
+        seen["input"] = kw["input"]
+        return types.SimpleNamespace(returncode=0, stdout='```json\n{"content": ["x"]}\n```', stderr="")
+
+    class Input(io.StringIO):
+        def close(self):
+            seen["input"] = self.getvalue()
+            super().close()
+
+    def fake_popen(cmd, **kw):
+        capture(cmd, kw)
+        events = TOOL_RUN if "--allowedTools" in cmd else [
+            _text('{"content": ["x"]}'), {"type": "result", "is_error": False}]
+        proc = _Proc(events)
+        proc.stdin, proc.stderr = Input(), []
+        return proc
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    provider.chat_completion([{"role": "user", "content": "hi"}], model="m",
-                             mcp_tools={"url": "http://127.0.0.1:1/mcp", "book_id": 1})
-    assert "--allowedTools" not in seen["cmd"]
-    assert seen["cmd"][seen["cmd"].index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    def call(stream, tools):
+        result = provider.chat_completion(
+            [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+            model="m", stream=stream, response_format={"type": "json_object"}, mcp_tools=tools)
+        if stream:
+            chunks = list(result)
+            assert provider.is_stream_complete(chunks[-1])
+            text = "".join(provider.get_streaming_content(c) or "" for c in chunks)
+        else:
+            text = provider.get_response_content(result)
+        assert json.loads(text) == {"content": ["x"]}
+        assert not seen["system_path"].exists()
+        return seen
+
+    return call
 
 
-def test_reachable_server_adds_tools(provider, monkeypatch):
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("changes", [None, {}, {"chapter_number": None},
+    {"url": "http://user:pass@localhost/mcp"}],
+    ids=["disabled", "unreachable", "missing-chapter", "unsafe-url"])
+def test_disabled_or_unavailable_research_still_translates(cli_call, monkeypatch, stream, changes):
+    import providers.claude_code_provider as mod
+    probes = []
+    monkeypatch.setattr(mod, "_mcp_reachable", lambda url: probes.append(url) or False)
+    tools = None if changes is None else {
+        "url": "http://127.0.0.1:1/mcp", "book_id": 1, "chapter_number": 2, **changes}
+    seen = cli_call(stream, tools)
+    cmd = seen["cmd"]
+    assert probes == ([tools["url"]] if changes == {} else [])
+    assert "--allowedTools" not in cmd and "--max-turns" not in cmd
+    assert cmd[cmd.index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    assert seen["system"] == "SYS"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_reachable_server_adds_tools(cli_call, monkeypatch, stream):
     import providers.claude_code_provider as mod
     monkeypatch.setattr(mod, "_mcp_reachable", lambda url: True)
-    seen = {}
-
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
-
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    provider.chat_completion([{"role": "system", "content": "SYS"},
-                              {"role": "user", "content": "hi"}], model="m",
-                             mcp_tools={"url": "http://127.0.0.1:8766/mcp", "book_id": 7,
-                                        "chapter_number": 3, "max_turns": 5})
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT", "high")
+    tools = {"url": "http://127.0.0.1:8766/mcp", "book_id": 7,
+             "chapter_number": 3, "max_turns": 5}
+    seen = cli_call(stream, tools)
     cmd = seen["cmd"]
     assert cmd[cmd.index("--allowedTools") + 1] == "mcp__t9"
     assert cmd[cmd.index("--max-turns") + 1] == "5"
     assert "--tools" in cmd and cmd[cmd.index("--tools") + 1] == ""
+    assert "-p" in cmd and "--no-session-persistence" in cmd and "--strict-mcp-config" in cmd
+    assert cmd[cmd.index("--model") + 1] == "m"
+    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert ("--output-format" in cmd) is stream
+    if stream:
+        assert cmd[cmd.index("--output-format") + 1] == "stream-json"
+        assert "--verbose" in cmd and "--include-partial-messages" in cmd
+    else:
+        assert seen["kwargs"]["timeout"] == 1800
+    assert "env" not in seen["kwargs"]  # inherit the user's CLI authentication
+    assert json.loads(cmd[cmd.index("--mcp-config") + 1])["mcpServers"]["t9"] == {
+        "type": "http", "url": tools["url"], "headers": {
+            "X-T9-Caller": "translation", "X-T9-Book": "7", "X-T9-Chapter": "3"}}
+    assert seen["system"].startswith("SYS") and "book_id=7" in seen["system"]
+    assert "chapter 3" in seen["system"] and "If research is unavailable" in seen["system"]
+    assert seen["input"].startswith("hi") and "valid JSON only" in seen["input"]
+
+
+@pytest.mark.parametrize("name", ["cc", "claudecode"])
+def test_factory_requires_no_api_key(monkeypatch, name):
+    from providers.factory import ProviderFactory
+    for key in ("ANTHROPIC_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_BIN", "/synthetic/claude")
+    provider = ProviderFactory().create_provider(name)
+    assert isinstance(provider, ClaudeCodeProvider)
+    assert provider.bin_path == "/synthetic/claude"

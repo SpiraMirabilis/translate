@@ -16,7 +16,7 @@ RUN npm run build
 # binary is kept. Not --platform=$BUILDPLATFORM: npm must fetch the binary for
 # the image's own architecture.
 FROM node:22-slim AS codex
-ARG CODEX_VERSION=0.160.1
+ARG CODEX_VERSION=0.162.1
 RUN npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
  && bin=$(find /usr/local/lib/node_modules/@openai -path '*/vendor/*/bin/codex' -type f | head -n1) \
  && test -n "$bin" && install -m 755 "$bin" /codex

@@ -32,10 +32,11 @@ from logger import Logger
 from get_entities import parse_chapter_filter, resolve_book
 
 
-def fetch_entities(db_manager, book_id, category, chapter_clause, chapter_params):
+def fetch_entities(db_manager, book_id, category, chapter_clause, chapter_params, *,
+                   as_of_chapter=None):
     """Query entities for the given book with optional category + origin_chapter filters."""
     query = """
-        SELECT category, untranslated, translation, origin_chapter,
+        SELECT id, category, untranslated, translation, origin_chapter,
                last_chapter, gender, note, book_id
         FROM entities
         WHERE (book_id = ? OR book_id IS NULL)
@@ -52,15 +53,17 @@ def fetch_entities(db_manager, book_id, category, chapter_clause, chapter_params
 
     query += " ORDER BY category, COALESCE(origin_chapter, 0), untranslated"
 
-    conn = db_manager.backend.get_connection()
-    try:
+    with db_manager._conn() as conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
         rows = cursor.fetchall()
-    finally:
-        conn.close()
 
-    return rows
+    notes = (db_manager.notes_as_of(book_id, as_of_chapter,
+                                  entity_ids=[row[0] for row in rows] if len(rows) <= 500 else None)
+             if as_of_chapter is not None and rows else {})
+    return [(row[1], row[2], row[3], row[4], row[5], row[6],
+             notes.get(row[0]) if as_of_chapter is not None else row[7], row[8])
+            for row in rows]
 
 
 def build_matcher(pattern, use_regex, ignore_case):
@@ -112,8 +115,8 @@ def render(matches, category_filter):
     grouped = {}
     for row in matches:
         (category, untranslated, translation, origin_chapter,
-         _last_chapter, _gender, note, _book_id) = row
-        grouped.setdefault(category, []).append((untranslated, translation, origin_chapter, note))
+         _last_chapter, gender, note, _book_id) = row
+        grouped.setdefault(category, []).append((untranslated, translation, origin_chapter, gender, note))
 
     lines = []
     if category_filter:
@@ -133,11 +136,12 @@ def render(matches, category_filter):
 
 
 def _emit_entries(lines, entries):
-    for untranslated, translation, origin_chapter, note in entries:
+    for untranslated, translation, origin_chapter, gender, note in entries:
         origin_str = f"ch{origin_chapter}" if origin_chapter is not None else "ch?"
         # Notes are shown because the translation model may now revise them; a
         # search is often the first place a bad rewrite would be noticed.
-        suffix = f"  [note={note}]" if note else ""
+        extra = ([gender] if gender else []) + ([f"note={note}"] if note else [])
+        suffix = f"  [{', '.join(extra)}]" if extra else ""
         lines.append(f"  {origin_str:>6}  {untranslated} : {translation or ''}{suffix}")
 
 

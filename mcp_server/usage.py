@@ -6,7 +6,7 @@ File: logs/mcp_usage.log (JSON lines; gitignored by *.log). MCP_USAGE_LOG
 overrides the path; MCP_USAGE_LOG=off disables it. Summarise with
 `python3 -m mcp_server.usage [--days N]`.
 
-The claudecode provider tags its calls with X-T9-Caller / X-T9-Book /
+The CLI translation providers tag their calls with X-T9-Caller / X-T9-Book /
 X-T9-Chapter headers, so each lookup records which chapter it was made for.
 """
 import datetime

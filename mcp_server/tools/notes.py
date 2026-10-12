@@ -6,6 +6,7 @@ from pydantic import Field
 
 from ..deps import db as get_db
 from ..formatting import json_out, page_footer, paginate, truncate
+from ..research_scope import scope
 from ._common import Format, require_book, resolve_entity, tool
 
 
@@ -27,11 +28,28 @@ def register(mcp) -> None:
         edits, script sweeps) count as present-day and are not rewound."""
         db = get_db()
         require_book(db, book_id)
+        current = scope.get()
+        if current is not None and not entity:
+            from get_entities import fetch_entities
+            grouped = fetch_entities(db, book_id, "origin_chapter <= ?",
+                                     [min(chapter, current.chapter)], as_of_chapter=chapter)
+            items = [{"category": cat, **ent} for cat, entries in grouped.items()
+                     for ent in entries if (not category or cat == category)
+                     and ent.get("note")]
+            page, meta = paginate(items, limit, offset)
+            return truncate(json_out({**meta, "chapter": chapter, "entities": page}))
         if entity:
             ent = resolve_entity(db, book_id, entity, category)
+            if current is not None and (ent["origin_chapter"] is None
+                                        or ent["origin_chapter"] > min(chapter, current.chapter)):
+                raise ToolError("No entity matches within the chapter boundary")
             note = db.notes_as_of(book_id, chapter, entity_ids=[ent["id"]]).get(ent["id"])
             out = {"untranslated": entity, "translation": ent["translation"],
                    "chapter": chapter, "note": note, "current_note": ent.get("note")}
+            if current is not None:
+                out.pop("current_note")
+                out.update(category=ent["category"], gender=ent["gender"],
+                           origin_chapter=ent["origin_chapter"])
             return json_out(out)
         notes = db.notes_as_of(book_id, chapter, key_by="untranslated")
         items = sorted((k, v) for k, v in notes.items() if v)

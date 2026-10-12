@@ -290,8 +290,8 @@ export default function Settings() {
                 checked={settings.claude_code_mcp_tools === true}
                 onChange={e => setSettings(s => ({ ...s, claude_code_mcp_tools: e.target.checked }))}
               />
-              Let the claudecode model use lookup tools
-              <span className="text-xs text-slate-500 font-normal">— read-only T9 MCP tools (glossary, note history, other chapters) while translating. This is the default for books whose "Claude Code research tools" module is on Auto; setting a book to On or Off under Modules overrides it. Only the claudecode provider uses them. Every lookup is logged to logs/mcp_usage.log.</span>
+              Let CLI translation models use research tools
+              <span className="text-xs text-slate-500 font-normal">— read-only T9 MCP tools (glossary, note history, other chapters) while translating. This is the default for books whose "Research tools" module is on Auto; setting a book to On or Off under Modules overrides it. Supported by the claudecode and codex providers. Every lookup is logged to logs/mcp_usage.log.</span>
             </label>
           </div>
         </section>

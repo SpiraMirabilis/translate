@@ -1,9 +1,9 @@
-"""Per-book opt-in: let the claudecode translation model look things up.
+"""Per-book opt-in: let CLI translation models look things up.
 
-When on, a translation call made through the `claudecode` provider is given
+When on, a translation call made through the `claudecode` or `codex` provider is given
 the read-only T9 MCP
 server (t9-mcp-readonly.service): the book's glossary, note history, other
-chapters, footnotes. The model is told which book and chapter it is on and to
+chapters. The model is told which book and chapter it is on and to
 look up only what the prompt's glossary does not already settle.
 
 Auto follows the global `claude_code_mcp_tools` setting (default off); a book
@@ -22,10 +22,10 @@ DEFAULT_MAX_TURNS = 8
 
 class ClaudeCodeToolsModule(TranslationModule):
     id = MODULE_ID
-    name = "Claude Code research tools"
-    description = ("Gives the claudecode translation model read-only lookup tools "
+    name = "Research tools"
+    description = ("Gives Claude Code and Codex translation models read-only lookup tools "
                    "(glossary, note history, other chapters) while it translates. "
-                   "Only affects books translated with the claudecode provider.")
+                   "Only affects the claudecode and codex providers.")
     auto_url_patterns = []
     default_enabled = False
     has_auto = True
@@ -39,7 +39,7 @@ class ClaudeCodeToolsModule(TranslationModule):
 
     @property
     def auto_hint(self):
-        return "follows the global 'Let the claudecode model use lookup tools' setting"
+        return "follows the global 'Let CLI translation models use research tools' setting"
 
     settings_schema = [
         {
@@ -47,7 +47,8 @@ class ClaudeCodeToolsModule(TranslationModule):
             "type": "number",
             "label": "Max model turns per call",
             "help": "Caps tool round-trips per translation call (each lookup is one "
-                    "turn; the answer is one more). A call that hits the cap fails "
+                    "turn; the answer is one more). Codex counts MCP calls; "
+                    "Claude Code caps model turns. A call that exceeds the budget fails "
                     "and is retried like any other failed chunk.",
             "default": DEFAULT_MAX_TURNS,
         },

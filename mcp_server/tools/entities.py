@@ -11,6 +11,7 @@ from ..deps import app
 from ..deps import db as get_db
 from ..formatting import json_out, page_footer, paginate, truncate
 from ..guard import ensure_book_idle
+from ..research_scope import scope
 from ._common import (CHAPTERS_DESC, Format, chapter_predicate, report, require_book,
                       resolve_entity, tool)
 
@@ -110,7 +111,7 @@ def register_read_tools(mcp) -> None:
         as_of_chapter: Annotated[Optional[int], Field(description="Show notes as they read at the end of this chapter (default: the filter's upper bound)")] = None,
         current_notes: Annotated[bool, Field(description="Show today's notes even with a chapter filter")] = False,
         origin_only: bool = False,
-        category: Optional[str] = None,
+        category: Annotated[Optional[str], Field(description="Filter by current category.")] = None,
         limit: Annotated[int, Field(ge=1, le=2000)] = 300,
         offset: Annotated[int, Field(ge=0)] = 0,
         format: Format = "text",
@@ -123,11 +124,17 @@ def register_read_tools(mcp) -> None:
         from get_entities import build_entities_payload, render_entities_text
         db = get_db()
         book = require_book(db, book_id)
+        current = scope.get()
+        if current is not None:
+            from get_entities import resolve_as_of
+            as_of = resolve_as_of(origin_chapter, as_of_chapter)
+            as_of_chapter = min(current.chapter, as_of) if as_of is not None else current.chapter
         try:
             payload = build_entities_payload(db, book, origin_chapter,
                                              as_of_chapter=as_of_chapter,
                                              current_notes=current_notes,
-                                             origin_only=origin_only)
+                                             origin_only=origin_only,
+                                             origin_boundary=current.chapter if current else None)
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
         items = _flatten(payload["entities"])
@@ -150,7 +157,7 @@ def register_read_tools(mcp) -> None:
         field: Literal["untranslated", "translated", "both"] = "both",
         regex: bool = False,
         case_sensitive: bool = False,
-        category: Optional[str] = None,
+        category: Annotated[Optional[str], Field(description="Filter by current category.")] = None,
         origin_chapter: Annotated[Optional[str], Field(description="N, N-M, >N … (one term)")] = None,
         limit: Annotated[int, Field(ge=1, le=1000)] = 200,
         offset: Annotated[int, Field(ge=0)] = 0,
@@ -167,7 +174,12 @@ def register_read_tools(mcp) -> None:
             matcher = build_matcher(pattern, regex, not case_sensitive)
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
-        rows = filter_rows(fetch_entities(db, book_id, category, clause, params), matcher, field)
+        current = scope.get()
+        if current is not None:
+            clause = f"({clause}) AND origin_chapter <= ?" if clause else "origin_chapter <= ?"
+            params.append(current.chapter)
+        rows = filter_rows(fetch_entities(db, book_id, category, clause, params,
+                                          as_of_chapter=current.chapter if current else None), matcher, field)
         page, meta = paginate(rows, limit, offset)
         return truncate(render(page, category) + page_footer(meta))
 

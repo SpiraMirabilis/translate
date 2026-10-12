@@ -28,6 +28,33 @@ services:
       T9_FORWARDED_ALLOW_IPS: 127.0.0.1,172.30.57.1
     networks: [t9]
 
+  # Always-on read-only MCP service; research use remains opt-in in T9 settings.
+  # Share only T9's network namespace and bind
+  # MCP to loopback: no published port and no access from the public reader or
+  # other containers. The provider's default http://127.0.0.1:8766/mcp works.
+  t9-research:
+    image: ghcr.io/spiramirabilis/translate:${T9_VERSION:-latest}
+    command: ["python", "-m", "mcp_server", "--read-only", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"]
+    restart: unless-stopped
+    network_mode: "service:t9"
+    depends_on:
+      t9:
+        condition: service_healthy
+        restart: true
+    volumes:
+      - ./data:/data
+    environment:
+      MCP_USAGE_LOG: /data/logs/mcp_usage.log
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; h=json.load(urllib.request.urlopen('http://127.0.0.1:8766/health', timeout=8)); assert h['ok'] and h['read_only'] and h['research_scope_version']==1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
   # Optional: the public reader as its own process, as on the production host.
   # Start with `docker compose --profile public up -d`; it serves on :8001.
   t9-public:

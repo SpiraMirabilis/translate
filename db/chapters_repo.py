@@ -486,7 +486,7 @@ class ChaptersRepo:
     SEARCH_MAX_TEXT_LEN = 500
 
     def search_book_chapters(self, book_id, query, scope='both', is_regex=False,
-                             published_only=False):
+                             published_only=False, max_chapter=None):
         """Search all chapters of a book for a query string.
 
         Args:
@@ -495,6 +495,7 @@ class ChaptersRepo:
             scope: 'translated', 'untranslated', or 'both'
             is_regex: Whether query is a regex pattern
             published_only: Only search publicly-visible chapters (public API gate)
+            max_chapter: Optional inclusive boundary for translation research
 
         Returns:
             list of dicts with chapter_number, title, match_count, matches.
@@ -505,6 +506,9 @@ class ChaptersRepo:
             pub_clause, pub_param = self._published_filter()
             gate = f" AND {pub_clause}" if published_only else ""
             gate_params = (pub_param,) if published_only else ()
+            if max_chapter is not None:
+                gate += " AND chapter_number >= 1 AND chapter_number <= ?"
+                gate_params += (max_chapter,)
             with self._conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute(f'''

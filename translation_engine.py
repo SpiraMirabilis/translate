@@ -1086,13 +1086,19 @@ class TranslationEngine:
     def _mcp_tools_kwargs(self, provider, book_info, chapter_number):
         """``{"mcp_tools": {...}}`` for a provider call, or ``{}``.
 
-        Non-empty only when the provider can take MCP tools (claudecode) and the
+        Non-empty only when the provider can take MCP tools (claudecode/codex) and the
         book's claude_code_tools module is on — explicitly, or on Auto with the
         global ``claude_code_mcp_tools`` setting on. The kwarg is never passed
         otherwise: OpenAI-compatible providers forward unknown kwargs to the API.
         """
         if not book_info or not getattr(provider, "supports_mcp_tools", False):
             return {}
+        from research_tools import scope_number
+        try:
+            scope_number(book_info.get("id"))
+            scope_number(chapter_number)
+        except ValueError:
+            return {}  # an inferred/unknown chapter cannot safely research
         try:
             from modules import module_config
             from modules.claude_code_tools_module import DEFAULT_MAX_TURNS, MODULE_ID
