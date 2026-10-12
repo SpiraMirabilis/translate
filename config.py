@@ -82,8 +82,8 @@ class TranslationConfig:
         # See TranslationEngine._recover_unparseable_chunk / json_recovery.py.
         self.json_auto_repair = os.getenv("JSON_AUTO_REPAIR", "1").lower() in ("1", "true", "yes")
 
-        # claudecode provider: read-only MCP lookup tools. This is the default a
-        # book's claude_code_tools module follows on Auto; On/Off per book win.
+        # CLI providers: read-only MCP lookup tools (legacy names retained).
+        # Books follow this default on Auto; On/Off per book win.
         self.claude_code_mcp_tools = os.getenv("CLAUDE_CODE_MCP_TOOLS", "0").lower() in ("1", "true", "yes")
         self.claude_code_mcp_url = os.getenv("CLAUDE_CODE_MCP_URL", "http://127.0.0.1:8766/mcp")
 

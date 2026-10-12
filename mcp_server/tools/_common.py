@@ -86,9 +86,14 @@ def chapter_predicate(spec: Optional[str]):
     """footnote_scan.parse_chapter_spec as a ToolError-raising predicate (None = all)."""
     from footnote_scan import parse_chapter_spec
     try:
-        return parse_chapter_spec(spec)
+        pred = parse_chapter_spec(spec)
     except ValueError as exc:
         raise ToolError(f"Bad chapters spec {spec!r}: {exc}") from exc
+    from ..research_scope import scope
+    current = scope.get()
+    if current is not None:
+        return lambda number: 1 <= number <= current.chapter and (pred is None or pred(number))
+    return pred
 
 
 def chapter_numbers(db, book_id: int, spec: Optional[str]) -> Optional[list[int]]:

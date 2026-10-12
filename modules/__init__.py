@@ -48,7 +48,7 @@ REGISTRY = {m.id: m for m in [
     # it always reads the persisted post-transform source (see
     # test_scan_input_is_post_transform_source).
     FootnoteScanModule(),
-    # No hooks — the engine reads it via module_config (claudecode MCP tools).
+    # No hooks — the engine reads it via module_config (CLI research tools).
     ClaudeCodeToolsModule(),
 ]}
 

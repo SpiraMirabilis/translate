@@ -6,6 +6,7 @@ from pydantic import Field
 
 from ..deps import db as get_db
 from ..formatting import json_out, page_footer, paginate, truncate
+from ..research_scope import scope, verified_entities
 from ._common import Format, require_book, resolve_entity, tool
 
 
@@ -27,6 +28,16 @@ def register(mcp) -> None:
         edits, script sweeps) count as present-day and are not rewound."""
         db = get_db()
         require_book(db, book_id)
+        if scope.get() is not None:
+            items = verified_entities(db, chapter=chapter,
+                                      matches=lambda ent: not entity or ent["untranslated"] == entity)
+            if entity:
+                if not items:
+                    raise ToolError("No historically verified entity matches")
+                return json_out({"chapter": chapter, "entities": items})
+            items = [item for item in items if item.get("note")]
+            page, meta = paginate(items, limit, offset)
+            return truncate(json_out({**meta, "chapter": chapter, "entities": page}))
         if entity:
             ent = resolve_entity(db, book_id, entity, category)
             note = db.notes_as_of(book_id, chapter, entity_ids=[ent["id"]]).get(ent["id"])

@@ -1,13 +1,13 @@
 # T9 read-only MCP server — systemd user service
 #
 # The getters-only half of mcp_server/ (python3 -m mcp_server --read-only),
-# always on so the claudecode translation provider can hand its model lookup
+# always on so CLI translation providers can give their models lookup
 # tools without starting a server per call (~10s of imports + entity cache
 # and a fresh MySQL pool each time). Streamable HTTP on 127.0.0.1:8766,
 # stateless, loopback only. No write tool exists in this process.
 #
-# Which books use it: the "Claude Code research tools" module (Auto follows
-# Settings → "Let the claudecode model use lookup tools"; On/Off per book win).
+# Which books use it: the "Research tools" module (Auto follows
+# Settings → "Let CLI translation models use research tools"; On/Off per book win).
 # Every call is logged to logs/mcp_usage.log — summarise with
 #   python3 -m mcp_server.usage [--days N]
 #

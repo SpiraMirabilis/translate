@@ -20,13 +20,11 @@ import json
 import logging
 import os
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
 import time
 from collections import deque
-from urllib.parse import urlparse
 from typing import Dict, List, Optional, Any, Union
 
 from .base import (
@@ -37,6 +35,9 @@ from .base import (
     SessionLimitError,
     looks_session_limited,
 )
+
+from research_tools import (MCP_SERVER_NAME, _mcp_reachable, mcp_tools_section,
+                            valid_research_config)
 
 logger = logging.getLogger(__name__)
 
@@ -97,80 +98,6 @@ class _Chunk:
         self.done = done
 
 
-MCP_SERVER_NAME = "t9"
-_REACHABLE_TTL = 30.0
-_reachable_cache: Dict[str, tuple] = {}
-
-
-def _mcp_reachable(url: str) -> bool:
-    """Is the read-only MCP server listening? Cached briefly per URL.
-
-    A dead server must not cost a translation: the CLI would log a failed MCP
-    connection and the model would be told about tools it cannot call, so an
-    unreachable server means the call goes out without tools.
-    """
-    now = time.monotonic()
-    hit = _reachable_cache.get(url)
-    if hit and now - hit[1] < _REACHABLE_TTL:
-        return hit[0]
-    ok = False
-    try:
-        u = urlparse(url)
-        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=0.5):
-            ok = True
-    except OSError:
-        ok = False
-    _reachable_cache[url] = (ok, now)
-    return ok
-
-
-def mcp_tools_section(tools: Dict[str, Any]) -> str:
-    """System-prompt addendum telling the model which book it is on and that it
-    is welcome to look things up. The per-book prompt carries only the chapter
-    number, so without this the model could not pass book_id."""
-    book_id = tools.get("book_id")
-    title = tools.get("book_title") or ""
-    ch = tools.get("chapter_number")
-    where = f"chapter {ch}" if ch else "the current chapter"
-    lookups = max(1, int(tools.get("max_turns") or 8) - 1)
-    notes_hint = (f"pass chapter={ch} so they read as of this chapter" if ch
-                  else "pass the current chapter so they read as of it")
-    try:
-        n = int(ch)
-    except (TypeError, ValueError):
-        n = 0
-    summaries_hint = (f' (chapters="<{n}" for everything so far, or a range such as '
-                      f'"{max(1, n - 20)}-{n - 1}")' if n > 1 else "")
-    return (
-        "\n\nRESEARCH TOOLS (read-only):\n"
-        f'You are translating book_id={book_id} ("{title}"), {where}. You have tools '
-        "that look up this book's own records, and you are encouraged to use them "
-        "whenever they would make the translation more accurate or more consistent "
-        "with earlier chapters. Lookups are quick and cheap; a wrong or inconsistent "
-        "rendering is not.\n"
-        "- t9_search_entities / t9_list_entities: the full glossary. The PRE-TRANSLATED "
-        "ENTITIES above list only terms matched in this text, so search here for a "
-        "name, title, place, technique, rank or item that is not listed there.\n"
-        "- t9_grep_book: how an earlier chapter rendered a recurring phrase, form of "
-        "address, rank or title (field=\"both\" to see source and translation).\n"
-        "- t9_get_chapter_summaries: short plot summaries of earlier chapters"
-        f"{summaries_hint} — the fast way to find who a returning character is, "
-        "where an earlier event happened, or which chapter to open with "
-        "t9_get_chapter.\n"
-        "- t9_get_chapter / t9_entity_context: what happened in an event the text "
-        "refers back to, or how a term was used before.\n"
-        f"- t9_notes_as_of: character and entity notes; {notes_hint}.\n"
-        "Good reasons to look something up: a proper noun or term missing from the "
-        "glossary above, a callback to an earlier scene, a recurring expression whose "
-        "established wording you are unsure of, or ambiguity about who a pronoun or "
-        "title refers to.\n"
-        f"- Always pass book_id={book_id}. Do not read chapters after {where}.\n"
-        f"- At most {lookups} lookups per response.\n"
-        "- Make any lookups BEFORE writing your answer, and write nothing else: your "
-        "final message must be the response in the required format and nothing more."
-    )
-
-
 class ClaudeCodeProvider(ModelProvider):
     """Provider that invokes the local `claude` CLI in print mode."""
 
@@ -222,7 +149,8 @@ class ClaudeCodeProvider(ModelProvider):
     ) -> Union[Dict[str, Any], StreamingResponse]:
         json_mode = bool(response_format and response_format.get("type") == "json_object")
         mcp_tools = kwargs.pop("mcp_tools", None)
-        if mcp_tools and not _mcp_reachable(mcp_tools.get("url", "")):
+        if mcp_tools and (not valid_research_config(mcp_tools)
+                          or not _mcp_reachable(mcp_tools.get("url", ""))):
             logger.warning("claude CLI: MCP server %s unreachable — translating without tools",
                            mcp_tools.get("url"))
             mcp_tools = None

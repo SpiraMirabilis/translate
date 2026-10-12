@@ -166,7 +166,61 @@ Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `cc:sonnet
 
 The `cc` and `cx` providers shell out to the Claude Code and Codex CLIs, so translation costs come out of a Claude or ChatGPT subscription instead of API billing. When a usage limit is hit mid-queue, T9 parks the job and resumes automatically when the limit resets.
 
-`cx` runs each call as an ephemeral `codex exec` turn in an empty directory with a read-only sandbox, your Codex config ignored, and Codex's agent tools switched off. That keeps Codex's own per-call overhead to about 4k input tokens. `CODEX_EFFORT` sets the reasoning effort (default `medium`), and `CODEX_BIN` points at a non-default binary. Codex returns each response whole rather than token by token, so the progress bar jumps once per chunk. The MCP research tools (see the Claude Code research tools module) are `cc`-only for now.
+`cx` runs each call as an ephemeral `codex exec` turn in an empty directory with a read-only sandbox, your Codex config ignored, and Codex's agent tools switched off. That keeps Codex's own per-call overhead to about 4k input tokens. `CODEX_EFFORT` sets the reasoning effort (default `medium`), and `CODEX_BIN` points at a non-default binary. Codex returns each response whole rather than token by token, so the progress bar jumps once per chunk. Both `cx` and `cc` support the optional Research tools module described below.
+
+To enable research, run the existing read-only MCP service (`deploy/t9-mcp-readonly.service`,
+or `python3 -m mcp_server --read-only --transport streamable-http --port 8766`). In a
+book's **Modules**, set **Research tools** to **On**. **Auto** follows Settings →
+**Let CLI translation models use research tools**; **Off** overrides that default.
+The feature is disabled by default. The legacy `claude_code_tools` module ID,
+`claude_code_mcp_tools` / `CLAUDE_CODE_MCP_TOOLS` toggle, and
+`claude_code_mcp_url` / `CLAUDE_CODE_MCP_URL` endpoint are retained for compatibility.
+The standard Docker Compose deployment starts this same server automatically;
+it uses private loopback in T9's network namespace, with no published MCP port.
+Research use still requires enabling the existing settings. See
+[Docker research setup](QUICKSTART-Docker.md#translation-research-tools).
+
+Research uses seven existing tools: glossary list/search, entity context, chapter
+reads/summaries, book grep, and historical notes. The server enforces the book and
+current-or-earlier chapter boundary supplied by T9 on every request, including
+queued source text. The boundary must identify a stored or queued chapter.
+Missing/invalid/unverifiable scope, another book, future chapter reads, and
+unscoped tools are refused. Broad chapter queries are intersected with the boundary.
+Only book-local entities with a known origin and a rendering witnessed in stored
+source/translation within that boundary are returned. Notes require a complete,
+dated, ordered revision chain; unverifiable notes and unversioned gender/category/
+correction metadata are omitted; category filters are refused because categories
+have no history. Global entities and unknown origins are excluded.
+This can make older glossaries sparse. Stored chapter text itself is not versioned;
+later human edits to an earlier chapter remain visible. Review clients using stdio
+or the full MCP server keep their existing access. Scope headers are a trusted-local
+contract, not remote authentication; keep the service on loopback.
+
+Entity verification scans bounded chapter text with a shared literal matcher,
+preserving overlapping names and requiring source/rendering evidence in the same
+chapter. Exact glossary/note queries narrow candidates before verification; no
+chapter content or verification results are cached across requests. Reproduce the
+synthetic performance check with `python benchmark_research_scope.py` (900 chapters,
+5,000 entries, including 1,000 unwitnessed corrections; no real database).
+
+Providers check `/health` for read-only mode and scope support. A missing, outdated,
+or incompatible service disables research for that call; restart the service after
+upgrading. MCP initialization/tool failures remain optional and the model is told to
+return only the translation. Usage is recorded in `logs/mcp_usage.log`.
+
+Codex receives only the T9 server and its research-tool allowlist through explicit
+`-c` overrides, while retaining `--ignore-user-config`, its login, the read-only
+sandbox, and disabled shell/web/apps/plugins. MCP connections are made by the CLI
+outside the command sandbox; they do not require enabling sandbox network access.
+Codex CLI must support Streamable HTTP MCP, headers, and `enabled_tools` (validated
+locally with CLI 0.162.1). No CLI `--max-turns` equivalent exists: Codex gets a prompt
+budget of `max_turns - 1` lookups and the provider aborts/reaps a call that exceeds it.
+Code-mode models receive T9 as a direct tool namespace so lookups stay observable.
+An excess read may already be in flight when its JSON event arrives. This fails the
+chunk through the usual retry path without saving partial output. Claude Code keeps
+its existing native turn cap. Both providers exclude tool output and intermediate
+reasoning from translations.
+
 
 Providers can be configured and new models added by editing `providers/models.json`.
 

@@ -9,12 +9,22 @@ from mcp.server.fastmcp import FastMCP
 
 from . import usage
 from .deps import DEFAULT_ADMIN_URL, AdminClient, AppContext, set_app
+from .research_scope import check_call, request_scope, scope, verify_scope
+from research_tools import RESEARCH_SCOPE_VERSION, RESEARCH_TOOLS
 
 
 class T9MCP(FastMCP):
     """FastMCP that writes every tool call to the usage log."""
 
     t9_read_only = False
+
+    async def list_tools(self):
+        tools = await super().list_tools()
+        current = request_scope(self.get_context(), read_only=self.t9_read_only)
+        if current is not None:
+            from .deps import db
+            verify_scope(current, db())
+        return [tool for tool in tools if tool.name in RESEARCH_TOOLS] if current else tools
 
     async def call_tool(self, name, arguments):
         started = time.monotonic()
@@ -26,12 +36,21 @@ class T9MCP(FastMCP):
             entry.update(usage.caller_headers(self.get_context()))
         except Exception:
             pass
+        token = None
         try:
+            current = request_scope(self.get_context(), read_only=self.t9_read_only)
+            if current is not None:
+                from .deps import db
+                check_call(current, name, arguments, db())
+            token = scope.set(current)
             result = await super().call_tool(name, arguments)
         except Exception as exc:
             usage.record({**entry, "ok": False, "error": str(exc)[:300],
                           "ms": round((time.monotonic() - started) * 1000)})
             raise
+        finally:
+            if token is not None:
+                scope.reset(token)
         size = 0
         try:
             size = sum(len(getattr(c, "text", "") or "") for c in result)
@@ -96,7 +115,8 @@ def build_server(db: Any = None, admin: Any = None, config: Any = None, logger: 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request):
         from starlette.responses import JSONResponse
-        return JSONResponse({"ok": True, "read_only": read_only})
+        return JSONResponse({"ok": True, "read_only": read_only,
+                             "research_scope_version": RESEARCH_SCOPE_VERSION})
 
     from .tools import register_all
     register_all(mcp)

@@ -473,10 +473,10 @@ are enforced by the server rather than remembered by the agent.
   methods (books, chapters, notes_as_of, search/replace/undo, candidate list/decide, reindex).
 - Covered by `tests/test_mcp_server.py` (a `FakeAdmin`; no HTTP, no model calls) plus
   `tests/test_{entity,read,footnote}_script_libs.py` for the extracted functions.
-- **Translation lookups (claudecode provider)**: `t9-mcp-readonly.service` runs the
+- **Translation lookups (claudecode and codex providers)**: `t9-mcp-readonly.service` runs the
   read-only server always-on at `127.0.0.1:8766/mcp` (stateless streamable HTTP, DB warmed at
   start, `MYSQL_POOL_SIZE=5`; unit in `deploy/`, deliberately not in the watchdog). A book
-  gets the tools when its **"Claude Code research tools"** module (`claude_code_tools`) is
+  gets the tools when its **"Research tools"** module (`claude_code_tools`) is
   on — *Auto* follows the global `claude_code_mcp_tools` setting (default **off**), *On* /
   *Off* per book override it. `TranslationEngine._mcp_tools_kwargs` passes
   `mcp_tools={url, book_id, book_title, chapter_number, max_turns}` only to providers with
@@ -488,7 +488,34 @@ are enforced by the server rather than remembered by the agent.
   turn's "let me check…" never reaches the JSON. The section *encourages* lookups (full
   glossary search for terms the matched glossary lacks, earlier renderings of recurring
   phrases, callbacks) — the first, cautious wording drew zero lookups on book 106. Server down → the call goes out without
-  tools (0.5s TCP probe, cached 30s).
+  tools (0.5s health probe, cached 30s). `/health` must report `read_only=true` and
+  `research_scope_version=1`; older services must be restarted. Shared provider helpers
+  live in `research_tools.py` (no MCP SDK dependency). Codex supplies only `t9` via
+  explicit `-c mcp_servers=...` overrides, with seven allowed research tools, optional
+  initialization, and short tool timeouts; `--ignore-user-config` and sandbox/tool
+  restrictions stay in place. T9 is a direct tool namespace for code-mode models.
+  Its JSON event reader enforces the lookup budget and
+  reaps the CLI before returning a final answer.
+  Standard Docker Compose starts this same server in T9's network namespace on
+  loopback; no MCP port is published and the URL is unchanged. Research use remains
+  disabled by default through the existing global/per-book settings.
+  The Docker image pins the integration-tested Codex CLI 0.162.1.
+- **Research scope** (`mcp_server/research_scope.py`): read-only HTTP requests require
+  `X-T9-Caller: translation` plus positive `X-T9-Book` / `X-T9-Chapter` headers. A
+  `ContextVar` holds the scope for one tool dispatch, reset in `finally`; no process-wide
+  book/chapter state. The server verifies the book and a stored/queued boundary
+  chapter, checks tool arguments, rejects
+  future single-chapter requests, and intersects broad queries (including queued grep)
+  with the boundary. Only verified book-local glossary renderings and complete dated
+  note histories are exposed; unknown/global/future records and unversioned fields are
+  omitted. Existing stdio/full-server review access is unchanged. Headers rely on the
+  existing trusted-local deployment; they are not authentication. Tests use synthetic
+  SQLite data: `tests/test_mcp_research_scope.py`, `tests/test_research_tools.py`, and the
+  Codex/Claude research provider tests.
+  Entity verification uses a shared literal matcher per lookup, checks overlaps and
+  same-chapter evidence, and narrows candidates for specific queries. No chapter or
+  verification cache crosses requests. `benchmark_research_scope.py` exercises 900
+  synthetic chapters and 5,000 glossary entries without application configuration.
 - **Usage log**: `logs/mcp_usage.log`, one JSON line per tool call, both servers (tool,
   args, book, ms, ok/error, result size). Translation lines carry caller/book/chapter from
   the `X-T9-*` headers. `python3 -m mcp_server.usage [--days N]` reports calls by caller and
@@ -833,7 +860,7 @@ consumed one of the two automatic retries. `TranslationEngine._recover_unparseab
 - **xAI**: grok-4.5 (default), grok-4.3, grok-4.20 variants — OpenAI-compatible chat-completions API at api.x.ai, reuses OpenAIProvider (max_chars: 8000, alias `grok`, key: `XAI_KEY`)
 - **Meta**: muse-spark-1.1 — OpenAI-compatible Meta Model API at api.meta.ai, reuses OpenAIProvider (max_chars: 12000, alias `muse`, key: `META_KEY`; 1M context / 131k max output)
 - **Moonshot**: kimi-k3 (default) — OpenAI-compatible API at api.moonshot.ai, reuses OpenAIProvider (max_chars: 8000, alias `kimi`, key: `MOONSHOT_KEY`)
-- **Codex CLI** (`codex`, alias `cx`): `providers/codex_provider.py` shells out to `codex exec --json --ephemeral` on the user's ChatGPT login — the counterpart of `claudecode`. System prompt goes in via `-c model_instructions_file=` (replaces Codex's coding-agent base prompt); runs in an empty temp dir, read-only sandbox, `--ignore-user-config`. Agent features are disabled with `-c features.X=false`, **never `--disable X`** — an unknown name is a hard error for `--disable` but only a warning for `-c`, so a Codex release that renames a feature can't break translation. Usage limits ("…or try again at 3:45 PM", every plan's wording) raise `SessionLimitError`; workspace out-of-credits / spend cap too (no reset time → fallback interval); capacity/5xx → `OverloadedError`. No token deltas in `exec --json`: streaming yields the whole answer at turn end. No MCP research tools yet. Tests: `tests/test_codex_provider.py` (fake CLI).
+- **Codex CLI** (`codex`, alias `cx`): `providers/codex_provider.py` shells out to `codex exec --json --ephemeral` on the user's ChatGPT login — the counterpart of `claudecode`. System prompt goes in via `-c model_instructions_file=` (replaces Codex's coding-agent base prompt); runs in an empty temp dir, read-only sandbox, `--ignore-user-config`. Agent features are disabled with `-c features.X=false`, **never `--disable X`** — an unknown name is a hard error for `--disable` but only a warning for `-c`, so a Codex release that renames a feature can't break translation. Usage limits ("…or try again at 3:45 PM", every plan's wording) raise `SessionLimitError`; workspace out-of-credits / spend cap too (no reset time → fallback interval); capacity/5xx → `OverloadedError`. No token deltas in `exec --json`: streaming yields the whole answer at turn end. Optional scoped research uses the existing read-only MCP server; see README.md for configuration and historical-data limits. Tests: `tests/test_codex_provider.py` (fake CLI).
 - **Google Gemini**: Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 1.5 Pro/Flash (max_chars: 6000)
 - **Custom**: Easy to add new providers via configuration
 

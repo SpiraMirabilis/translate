@@ -105,6 +105,32 @@ so on) translates on a ChatGPT subscription. It needs a Codex login. Pick one:
 Check it with `docker compose exec t9 codex login status`, or with the
 **Test** button on the Codex card on the Settings page.
 
+## Translation research tools
+
+The standard deployment automatically starts the existing read-only MCP server
+alongside T9:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Once `t9-research` is healthy, set a book's **Modules → Research tools** to **On**.
+Research remains disabled by default; **Auto** follows the existing global setting.
+The `t9-research` service runs `python -m mcp_server --read-only` from the same image and data
+as T9. It shares T9's network namespace and binds only to loopback, so the existing
+`http://127.0.0.1:8766/mcp` endpoint works for both CLI providers without publishing
+an unauthenticated MCP port. The separate public reader cannot reach that listener.
+Keep the default MCP URL, or restore it in Settings if it points at a host service.
+The image includes Codex 0.162.1; Claude Code still requires installing its CLI.
+
+For a published release containing this feature, omit `--build`. Normal Compose
+upgrades also update the MCP service. Starting it does not enable research:
+translation calls attach tools only when the existing global/per-book settings
+allow them. If the service is down, translations proceed without research. Scope restrictions
+and the legacy setting/module IDs are the same as outside Docker; see
+[research tools](README.md#supported-providers).
+
 ## Exposing it beyond this machine
 
 By default, the port is bound to `127.0.0.1` only. Before opening it up:
