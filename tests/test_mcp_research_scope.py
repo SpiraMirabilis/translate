@@ -161,6 +161,30 @@ def test_notes_use_existing_rewind_semantics(research, db, history):
         assert expected in call(server, headers(book), name, book_id=book, **args)
 
 
+def test_scoped_search_rewinds_only_the_returned_page(research, db, monkeypatch):
+    """Notes are rewound after matching and paging, for the page's ids alone —
+    never for the whole glossary (a full rewind was the scoped-search cost)."""
+    server, book, _ = research
+    for n in range(5):
+        db.add_entity("places", f"地{n}", f"Place {n}", book_id=book, origin_chapter=1)
+    asked = []
+    real = db.notes_as_of
+    monkeypatch.setattr(db, "notes_as_of",
+                        lambda *a, **k: asked.append(k.get("entity_ids")) or real(*a, **k))
+
+    text = call(server, headers(book), "t9_search_entities", book_id=book, pattern="Chen")
+    assert "EARLIER_NOTE" in text and "FUTURE_NOTE" not in text
+    assert asked == [[db.get_entity_id(book, "陈元")]]
+
+    asked.clear()
+    call(server, headers(book), "t9_search_entities", book_id=book, pattern="Place", limit=2)
+    assert len(asked) == 1 and len(asked[0]) == 2
+
+    asked.clear()
+    call(server, headers(book), "t9_search_entities", book_id=book, pattern="NO_SUCH_TERM")
+    assert asked == []
+
+
 @pytest.mark.parametrize("name,args", [("t9_list_entities", {}),
     ("t9_search_entities", {"pattern": "*"}), ("t9_notes_as_of", {"chapter": 2})])
 def test_category_filters_and_global_entities_keep_existing_semantics(research, db, name, args):

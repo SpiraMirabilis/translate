@@ -166,7 +166,8 @@ def register_read_tools(mcp) -> None:
         (search_entities.py) — e.g. every record whose translation contains
         "Sect", to check a convention is applied consistently."""
         from get_entities import parse_chapter_filter
-        from search_entities import build_matcher, fetch_entities, filter_rows, render
+        from search_entities import (build_matcher, fetch_entities, render, rewind_notes,
+                                     row_matches)
         db = get_db()
         require_book(db, book_id)
         try:
@@ -178,10 +179,14 @@ def register_read_tools(mcp) -> None:
         if current is not None:
             clause = f"({clause}) AND origin_chapter <= ?" if clause else "origin_chapter <= ?"
             params.append(current.chapter)
-        rows = filter_rows(fetch_entities(db, book_id, category, clause, params,
-                                          as_of_chapter=current.chapter if current else None), matcher, field)
-        page, meta = paginate(rows, limit, offset)
-        return truncate(render(page, category) + page_footer(meta))
+        # Match and page first, then rewind notes for the page alone: rewinding
+        # the whole glossary first cost scoped searches 150-450 ms on big books.
+        rows = fetch_entities(db, book_id, category, clause, params, with_ids=True)
+        hits = [row for row in rows if row_matches(row[1:], matcher, field)]
+        page, meta = paginate(hits, limit, offset)
+        if current is not None:
+            page = rewind_notes(db, book_id, current.chapter, page)
+        return truncate(render([row[1:] for row in page], category) + page_footer(meta))
 
     @tool(mcp, "t9_entity_context", "Entity usage in context", read_only=True)
     def t9_entity_context(

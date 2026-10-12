@@ -33,8 +33,13 @@ from get_entities import parse_chapter_filter, resolve_book
 
 
 def fetch_entities(db_manager, book_id, category, chapter_clause, chapter_params, *,
-                   as_of_chapter=None):
-    """Query entities for the given book with optional category + origin_chapter filters."""
+                   with_ids=False):
+    """Query entities for the given book with optional category + origin_chapter filters.
+
+    Rows are (category, untranslated, translation, origin_chapter, last_chapter,
+    gender, note, book_id); with_ids=True prefixes each with the entity id, for a
+    caller that will rewind notes (rewind_notes) once it knows which rows it keeps.
+    """
     query = """
         SELECT id, category, untranslated, translation, origin_chapter,
                last_chapter, gender, note, book_id
@@ -58,12 +63,23 @@ def fetch_entities(db_manager, book_id, category, chapter_clause, chapter_params
         cursor.execute(query, params)
         rows = cursor.fetchall()
 
-    notes = (db_manager.notes_as_of(book_id, as_of_chapter,
-                                  entity_ids=[row[0] for row in rows] if len(rows) <= 500 else None)
-             if as_of_chapter is not None and rows else {})
-    return [(row[1], row[2], row[3], row[4], row[5], row[6],
-             notes.get(row[0]) if as_of_chapter is not None else row[7], row[8])
-            for row in rows]
+    rows = [tuple(row) for row in rows]
+    return rows if with_ids else [row[1:] for row in rows]
+
+
+def rewind_notes(db_manager, book_id, chapter, rows):
+    """Id-prefixed rows (fetch_entities(with_ids=True)) with each note replaced
+    by the note as it read at the end of `chapter` (notes_as_of).
+
+    Run it on the rows being returned, not on the whole glossary: notes_as_of
+    narrows its revision scan only for a short id list, and a big book's full
+    rewind costs ~150-400 ms per call.
+    """
+    if not rows:
+        return rows
+    ids = [row[0] for row in rows]
+    notes = db_manager.notes_as_of(book_id, chapter, entity_ids=ids if len(ids) <= 500 else None)
+    return [row[:7] + (notes.get(row[0]),) + row[8:] for row in rows]
 
 
 def build_matcher(pattern, use_regex, ignore_case):
@@ -90,21 +106,17 @@ def build_matcher(pattern, use_regex, ignore_case):
     return lambda text: bool(text) and fnmatch.fnmatchcase(text, glob_pat)
 
 
+def row_matches(row, matcher, field):
+    """Does the matcher hit the chosen field(s) of one row?"""
+    _category, untranslated, translation, *_ = row
+    if field in ("untranslated", "both") and matcher(untranslated or ""):
+        return True
+    return field in ("translated", "both") and matcher(translation or "")
+
+
 def filter_rows(rows, matcher, field):
     """Apply matcher to the chosen field(s); return list of matching row tuples."""
-    matches = []
-    for row in rows:
-        _category, untranslated, translation, *_ = row
-        hit = False
-        if field in ("untranslated", "both"):
-            if matcher(untranslated or ""):
-                hit = True
-        if not hit and field in ("translated", "both"):
-            if matcher(translation or ""):
-                hit = True
-        if hit:
-            matches.append(row)
-    return matches
+    return [row for row in rows if row_matches(row, matcher, field)]
 
 
 def render(matches, category_filter):
