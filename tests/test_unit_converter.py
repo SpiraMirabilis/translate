@@ -437,3 +437,18 @@ def test_gongli_left_alone_without_a_count():
     assert _conv("dozens of gongli") == "dozens of gongli"
     assert _conv("Gongli Village") == "Gongli Village"
 
+
+# ── Names built from a real measurement (2026-10-12) ───────────────
+# Any capitalised unit word is part of a name, whatever follows it — Jev and
+# the cleaning model called "Ten-Thousand-Li Pool" a unit at 0.90-0.94.
+
+def test_capitalised_unit_inside_a_name_is_never_converted():
+    for line in ("the Ten-Thousand-Li Pool of Thunder was still.",
+                 "II. Orb of Nine Li: by pouring spiritual power into it",
+                 'he cast the "Orb of Nine Li" again.',
+                 "Twelve Shichen Grass grows here."):
+        assert convert_units([line], use_jev=False) == [line]
+
+
+def test_all_caps_unit_is_shouting_not_a_name():
+    assert convert_units(["THREE LI AWAY!"], use_jev=False) == ["THREE LI (1.5 km) AWAY!"]

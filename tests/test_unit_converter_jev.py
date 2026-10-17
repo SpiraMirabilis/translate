@@ -13,10 +13,13 @@ import settings_store
 import unit_converter
 from unit_converter import convert_units
 
-# The regex alone converts all four; the capitalised two are names.
+# The regex alone matches five. The capitalised two are names, settled before
+# any classifier sees them (_name_rejects); of the three that reach Jev, "dan"
+# is an elixir, a false positive only a classifier can catch.
 LINES = [
     "Three Jin brothers came; the sword weighed three jin.",
     "The two Li sisters walked thirty li.",
+    "He swallowed two dan pills.",
 ]
 
 
@@ -46,9 +49,12 @@ def stub_jev(monkeypatch, verdict, calls=None):
 
 
 def name_or_place(sentence):
-    """Capitalised Jin/Li inside the markers is a name; lowercase is a unit."""
+    """Dan before "pills" is an elixir; capitalised Jin/Li inside the markers
+    is a name (never sent, but answered correctly); the rest are units."""
     word = re.search(r">>>(.*?)<<<", sentence).group(1)
-    return ("not_unit", 0.99) if re.search(r"\b(Jin|Li)\b", word) else ("unit", 0.99)
+    if "pills" in sentence or re.search(r"\b(Jin|Li)\b", word):
+        return ("not_unit", 0.99)
+    return ("unit", 0.99)
 
 
 def test_jev_drops_confident_false_positives(monkeypatch, jev_on):
@@ -58,7 +64,8 @@ def test_jev_drops_confident_false_positives(monkeypatch, jev_on):
                         lambda ctx, model, **kw: llm.append(ctx) or set())
     out = convert_units(LINES, cleaning_model="claude:haiku")
     assert out == ["Three Jin brothers came; the sword weighed three jin (1.5 kg).",
-                   "The two Li sisters walked thirty li (15 km)."]
+                   "The two Li sisters walked thirty li (15 km).",
+                   "He swallowed two dan pills."]
     assert llm == []  # Jev decided everything; the LLM was never called
 
 
@@ -70,11 +77,24 @@ def test_unsure_matches_escalate_to_cleaning_model(monkeypatch, jev_on):
 
     def llm(ctx, model, **kw):
         seen.update(ctx)
-        return {int(k) for k, s in ctx.items() if re.search(r"(Jin|Li)<<<", s)}
+        return {int(k) for k, s in ctx.items() if "pills" in s}
     monkeypatch.setattr(unit_converter, "_filter_false_positives", llm)
     out = convert_units(LINES, cleaning_model="claude:haiku")
-    assert len(seen) == 4  # everything escalated
+    assert len(seen) == 3  # everything Jev was asked escalated
     assert out[0] == "Three Jin brothers came; the sword weighed three jin (1.5 kg)."
+    assert out[2] == LINES[2]
+
+
+def test_capitalised_names_never_reach_a_classifier(monkeypatch, jev_on):
+    calls = []
+    stub_jev(monkeypatch, lambda s: ("unit", 0.99), calls)  # would convert anything
+    llm = []
+    monkeypatch.setattr(unit_converter, "_filter_false_positives",
+                        lambda ctx, model, **kw: llm.append(ctx) or set())
+    out = convert_units(LINES, cleaning_model="claude:haiku")
+    asked = [_sentence(q["instructions"]) for c in calls for q in c.values()]
+    assert not any(re.search(r">>>[^<]*\b(Jin|Li)<<<", s) for s in asked)
+    assert out[0].startswith("Three Jin brothers") and out[1].startswith("The two Li sisters")
 
 
 def test_only_unsure_matches_reach_the_llm(monkeypatch, jev_on):
@@ -103,7 +123,7 @@ def test_jev_failure_falls_back_to_cleaning_model(monkeypatch, jev_on):
     monkeypatch.setattr(unit_converter, "_filter_false_positives",
                         lambda ctx, model, **kw: seen.append(ctx) or set())
     out = convert_units(LINES, cleaning_model="claude:haiku")
-    assert len(seen) == 1 and len(seen[0]) == 4  # every match went to the LLM
+    assert len(seen) == 1 and len(seen[0]) == 3  # every classifiable match went to the LLM
     assert "three jin (" in out[0]
 
 
@@ -147,7 +167,7 @@ def test_batches_into_one_request_per_chunk(monkeypatch, jev_on):
     calls = []
     stub_jev(monkeypatch, name_or_place, calls)
     convert_units(LINES)
-    assert [len(q) for q in calls] == [2, 2]
+    assert [len(q) for q in calls] == [2, 1]
 
 
 def test_lowercase_time_units_skip_jev(monkeypatch, jev_on):

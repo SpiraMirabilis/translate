@@ -935,22 +935,6 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
     numfill_str = gd.get("numfill")
     unit_text = gd["unit"]
 
-    # A unit word immediately followed by a capitalised word is part of a
-    # personal name, not a measurement. Several Chinese surnames romanise onto
-    # unit names (李 -> li, 张 -> zhang, 梁 -> liang), and the article or numeral
-    # in front of them reads as a quantity, so "a Zhang Juzheng", "one Li
-    # Sancai" and "another Li Zaiting" all match perfectly well and came out
-    # annotated as distances. A genuine measurement is never followed directly
-    # by a capitalised word, so the check costs nothing.
-    #
-    # Only a CAPITALISED unit word can be that surname. A lowercase one is the
-    # unit, whatever follows it: "in less than two ke Zhao Xing saw a city" and
-    # "the two shichen Zhao Xing spent with them" are durations followed by the
-    # sentence's subject, and the unconditional check left them as pinyin
-    # (book 106). "Twelve Shichen Grass" still stands — its unit is capitalised.
-    if unit_text[:1].isupper() and re.match(r"\s+[A-Z][a-z]", match.string[match.end():]):
-        return full
-
     unit_info = uset.lookup(unit_text)
     if unit_info is None:
         return full
@@ -1439,6 +1423,26 @@ def _strict_rejects(match: re.Match, uset: _UnitSet) -> bool:
     return count in _ARTICLE_COUNTS
 
 
+def _name_rejects(match: re.Match) -> bool:
+    """True when the unit word is capitalised: part of a name, not a measurement.
+
+    The count in front of a unit is part of the match, so a measurement's unit
+    word is never sentence-initial and has no reason to carry a capital. A
+    capitalised one is a surname that romanises onto a unit (李 -> Li, 张 ->
+    Zhang: "a Zhang Juzheng", "one Li Sancai") or a name built from a real
+    measurement ("Ten-Thousand-Li Pool", "Twelve Shichen Grass", "the Orb of
+    Nine Li"). The second kind reads as a unit to Jev and the cleaning model
+    alike — they called "Ten-Thousand-Li Pool" a unit at 0.90-0.94 — and every
+    one of its mentions came out annotated, so it is settled here, before them.
+
+    A lowercase unit is the unit whatever follows it: "in less than two ke Zhao
+    Xing saw a city" is a duration followed by the sentence's subject (book 106).
+    An all-caps unit is shouting ("THREE LI AWAY!") and is left to the filters.
+    """
+    unit_text = match.group("unit")
+    return unit_text[:1].isupper() and not (len(unit_text) > 1 and unit_text.isupper())
+
+
 def convert_units(lines: List[str], cleaning_model: Optional[str] = None,
                   use_jev: Optional[bool] = None,
                   source_language: Optional[str] = DEFAULT_LANGUAGE) -> List[str]:
@@ -1488,6 +1492,11 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None,
                 continue  # part of a point-in-time expression; skip
             if _strict_rejects(match, uset):
                 continue  # the English word ("a ping", "ping-pong"), not the unit
+            if _name_rejects(match):
+                # A name ("one Li Sancai", "Ten-Thousand-Li Pool"). The span still
+                # blocks the bare pass, or "Twelve Shichen Grass" -> "Twelve Hour Grass".
+                main_spans.append((match.start(), match.end()))
+                continue
             main_spans.append((match.start(), match.end()))
             match_kind[len(all_matches)] = "main"
             all_matches.append((line_idx, match, len(all_matches)))
@@ -1519,7 +1528,7 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None,
     if cleaning_model or use_jev:
         # Lowercase time units skip the classifier too. "shichen", "ke" and
         # "double-hour" have no English or surname reading in lowercase (the
-        # surname Ke is capitalised and caught by _convert_match's name check),
+        # surname Ke is capitalised and dropped by _name_rejects in pass 1),
         # so there is nothing for the model to filter — yet it vetoed them,
         # leaving ~30 durations as pinyin across book 106 even after
         # unit_cleaning_prompt.txt was told 'ke' is genuine.
