@@ -27,9 +27,11 @@ export default function FootnoteCandidates() {
         <h1 className="text-xl font-semibold">Footnote candidates</h1>
       </div>
       <p className="text-sm text-slate-400 mb-6">
-        Cultural-referent suggestions collected by the scanner (CLI bulk scans, or the
-        Footnote Candidate Scanner module on chapter ingest). Review keeps or rejects
-        suggestions — nothing is ever placed in a chapter from here.
+        Cultural-referent suggestions collected by the scanner (CLI bulk scans, the
+        Footnote Candidate Scanner module on chapter ingest, or the translation pass
+        itself). In translation mode the translator&apos;s candidates are placed straight
+        into the chapter as footnotes — those show as <em>placed</em> until reviewed:
+        keep leaves the footnote, reject removes it from the chapter.
       </p>
 
       {isPending && (
@@ -58,6 +60,9 @@ export default function FootnoteCandidates() {
               </div>
             </div>
             <div className="flex items-center gap-2 text-xs shrink-0">
+              {b.applied > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">{b.applied} placed</span>
+              )}
               {b.pending > 0 && (
                 <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400">{b.pending} pending</span>
               )}

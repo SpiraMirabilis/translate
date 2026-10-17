@@ -154,15 +154,19 @@ class UserInterface(ABC):
                                   f"{upd.get('untranslated')}: {e}")
         return applied
 
-    def _store_footnote_candidates(self, chapter_number, chapter_title, chapter_text):
+    def _store_footnote_candidates(self, chapter_number, chapter_title, chapter_text,
+                                   chapter_id=None):
         """Persist candidates this translation pass collected (scan_mode
-        "translation"), and record the chapter as scanned.
+        "translation"), record the chapter as scanned, and — unless the book
+        turned auto-apply off — place them into the saved chapter as footnotes
+        (footnote_scan_core.apply_inline_candidates). One that can't be placed
+        stays a pending candidate.
 
         Runs after save_chapter because ``chapter_number`` is only settled
-        there. Reviewed rows survive: unlike the on-ingest scan this path fires
-        on every retranslation, and a keep/reject decision must outlive one.
-        Every failure is swallowed — a footnote suggestion is never worth losing
-        a translated chapter over.
+        there, and placement needs the saved translation. Reviewed rows survive:
+        unlike the on-ingest scan this path fires on every retranslation, and a
+        keep/reject decision must outlive one. Every failure is swallowed — a
+        footnote suggestion is never worth losing a translated chapter over.
         """
         found = getattr(self, '_pending_footnote_candidates', None)
         self._pending_footnote_candidates = None  # one-shot, never leak to the next item
@@ -181,19 +185,43 @@ class UserInterface(ABC):
             self.logger.error(f"Failed to store footnote candidates for chapter "
                               f"{chapter_number}: {e}")
             return 0
-        if kept:
+        applied = {"placed": [], "unplaced": [], "reanchored": []}
+        try:
+            from footnote_scan_core import apply_inline_candidates
+            # incoming is the translator's own (validated) list, not `kept`:
+            # persist drops a term the book already footnoted, and that is
+            # exactly the term an orphaned placement needs to re-anchor.
+            applied = apply_inline_candidates(
+                self.entity_manager, self.book_id, chapter_number, chapter_id,
+                incoming=found)
+        except Exception as e:  # noqa: BLE001
+            self.logger.error(f"Failed to auto-apply footnotes for chapter "
+                              f"{chapter_number}: {e}")
+        placed, reanchored = applied["placed"], applied["reanchored"]
+        if kept or reanchored:
             self.logger.info(f"footnote_candidates: stored {len(kept)} for chapter "
-                             f"{chapter_number}")
+                             f"{chapter_number}, placed {len(placed)}"
+                             + (f", re-anchored {len(reanchored)}" if reanchored else ""))
             try:
                 from modules.activity import log_module_activity
                 book = self.entity_manager.get_book(book_id=self.book_id)
-                terms = ", ".join(c["term_en"] or c["term_zh"] for c in kept)
-                log_module_activity(
-                    self.entity_manager, "info",
-                    f"Footnote scan found {len(kept)} candidate(s) in chapter "
-                    f"{chapter_number} of "
-                    f"{(book or {}).get('title') or f'book {self.book_id}'}: {terms}",
-                    self.book_id)
+                title = (book or {}).get('title') or f'book {self.book_id}'
+
+                def names(rows):
+                    return ", ".join(c.get("term_en") or c.get("term_zh") or "?"
+                                     for c in rows)
+                msg = (f"Footnote scan found {len(kept)} candidate(s) in chapter "
+                       f"{chapter_number} of {title}")
+                if placed:
+                    msg += f"; placed {len(placed)}: {names(placed)}"
+                left = [r for r, _why in applied["unplaced"]]
+                if left:
+                    msg += f"; left {len(left)} for review: {names(left)}"
+                elif not placed and kept:
+                    msg += f": {names(kept)}"
+                if reanchored:
+                    msg += f"; re-anchored {len(reanchored)}: {names(reanchored)}"
+                log_module_activity(self.entity_manager, "info", msg, self.book_id)
             except Exception:  # noqa: BLE001 - an activity line is cosmetic
                 pass
         return len(kept)
@@ -730,7 +758,8 @@ class UserInterface(ABC):
                     if chapter_id:
                         print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
                         self._store_footnote_candidates(
-                            chapter_number, end_object.get('title'), chapter_text)
+                            chapter_number, end_object.get('title'), chapter_text,
+                            chapter_id=chapter_id)
                     else:
                         # The save failed, so there is no chapter to hang them
                         # on. Drop them rather than let them ride to whatever

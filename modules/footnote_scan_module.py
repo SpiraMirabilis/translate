@@ -41,8 +41,9 @@ import threading
 
 # Cheap import — footnote_scan_core's own imports are stdlib only, and the
 # provider SDKs it uses are imported lazily inside the scan call.
-from footnote_scan_core import (MODE_INLINE, MODE_SETTING, PROMPT_SETTING,
-                                SCAN_MODES, stock_scan_rules)
+from footnote_scan_core import (AUTO_APPLY_MAX_DEFAULT, AUTO_APPLY_MAX_SETTING,
+                                AUTO_APPLY_SETTING, MODE_INLINE, MODE_SETTING,
+                                PROMPT_SETTING, SCAN_MODES, stock_scan_rules)
 from footnote_scan_core import DEFAULT_MODEL as DEFAULT_SCAN_MODEL
 
 from .activity import log_module_activity
@@ -146,6 +147,29 @@ class FootnoteScanModule(TranslationModule):
                         "cheaper scan model should pick. Same rules, same "
                         "anchoring, same review queue either way.",
                 "default": MODE_INLINE,
+            },
+            # Neither auto-apply field hides behind show_if in ingest mode, for
+            # the reason given on "model" below.
+            {
+                "key": AUTO_APPLY_SETTING,
+                "type": "bool",
+                "label": "Auto-apply footnotes (translation mode)",
+                "help": "When scanning during translation, place each candidate "
+                        "straight into the chapter as a footnote, anchored on the "
+                        "English the translator wrote. A candidate that can't be "
+                        "placed (no exact match, already footnoted, over the cap) "
+                        "stays pending. Placed ones show as 'Applied' in the "
+                        "review: keep leaves the footnote, reject removes it. "
+                        "Ignored when scanning on ingest.",
+                "default": True,
+            },
+            {
+                "key": AUTO_APPLY_MAX_SETTING,
+                "type": "number",
+                "label": "Auto-apply: max footnotes per chapter",
+                "help": "At most this many are placed per chapter, in reading "
+                        "order; the rest stay pending for review. 0 places none.",
+                "default": AUTO_APPLY_MAX_DEFAULT,
             },
             {
                 "key": "model",

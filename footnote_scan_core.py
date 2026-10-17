@@ -29,6 +29,11 @@ DEFAULT_MODEL = "deepseek:deepseek-v4-pro"
 SCAN_MODULE_ID = "footnote_scan"
 PROMPT_SETTING = "system_prompt"
 MODE_SETTING = "scan_mode"
+# Inline mode only: place the candidates the translator returns straight into
+# the chapter (status "applied") instead of leaving them for a manual pass.
+AUTO_APPLY_SETTING = "auto_apply"
+AUTO_APPLY_MAX_SETTING = "auto_apply_max"
+AUTO_APPLY_MAX_DEFAULT = 4
 
 # When a chapter gets scanned. "ingest" is the historical behaviour: a second
 # model call on its own, after the chapter is first saved. "translation" folds
@@ -127,6 +132,11 @@ chapter genuinely holds nothing, never a missing key. Each element is
   {"term_zh": "...", "term_en": "...", "body": "...", "sentence": "..."}
 where "sentence" is the source sentence containing the referent, copied
 verbatim. Never reply with a bare array.
+In this mode "term_en" is NOT a guess: it must be the exact English words your
+own translation uses for the referent at its first mention in this chapter,
+copied character for character with the same casing — the footnote marker is
+attached directly after those words in your translation. If the referent is
+paraphrased away and no such words exist, leave it out.
 This is a real pass over the chapter, not an afterthought: apply the COVERAGE
 rule above as written, working through the whole passage rather than noting
 whatever happened to catch your eye while translating. Translating the chapter
@@ -800,6 +810,312 @@ def persist_inline_candidates(db, book_id, chapter_number, chapter_title,
 
 
 # ── single-chapter scan (the module's on-ingest path) ─────────────────────────
+
+# ── auto-apply (inline candidates become real footnotes) ─────────────────────
+#
+# The translator that flagged a referent also wrote the English it is anchored
+# to, so in inline mode term_en is not a guess (OUTPUT_INLINE says so) and the
+# candidate can be placed without a reviewer hunting for the anchor. A placement
+# that doesn't work out — no exact match, already footnoted, over the per-chapter
+# cap — just leaves the row pending, which is where every candidate used to end
+# up. Placed rows are "applied" and link their footnote, so the review curates
+# them: keep leaves the footnote, reject takes it back out (decide_candidates).
+
+class CandidateActionError(ValueError):
+    """A review action that cannot be carried out (the message says why)."""
+
+
+def auto_apply_settings(db, book_id, ctx=None):
+    """(enabled, cap) for a book's auto-apply. Never raises: a settings lookup
+    that fails means "don't place", not a failed translation."""
+    try:
+        from modules import module_config
+        book = db.get_book(book_id=book_id)
+        _, settings = module_config(book, SCAN_MODULE_ID, db=db, ctx=ctx)
+    except Exception:  # noqa: BLE001
+        return False, 0
+    enabled = settings.get(AUTO_APPLY_SETTING, True)
+    raw = settings.get(AUTO_APPLY_MAX_SETTING)
+    try:
+        cap = AUTO_APPLY_MAX_DEFAULT if raw in (None, "") else max(0, int(raw))
+    except (TypeError, ValueError):
+        cap = AUTO_APPLY_MAX_DEFAULT
+    return bool(enabled), cap
+
+
+def chapter_prose(db, chapter_id):
+    """A chapter's translated prose exactly as render_footnotes searches it:
+    markers and the definition block stripped. None when there is no chapter."""
+    from footnotes import content_to_list, strip_footnotes
+    ch = db.get_chapter(chapter_id=chapter_id)
+    if not ch:
+        return None
+    return strip_footnotes(content_to_list(ch.get("content")))
+
+
+def locate_anchor(prose, term, languages=None):
+    """(line_idx, marker_col, occurrence) of the first match of ``term``, or
+    None. Case-sensitive, like render_footnotes.
+
+    Line 0 is skipped only when it reads as a heading (footnotes.is_heading_line
+    in ``languages``; None = any language) — most chapters open straight into
+    prose. render_footnotes counts a skipped heading's matches, so a term that
+    is also in the title is stored as occurrence 2."""
+    from footnotes import is_heading_line, marker_position
+    if not term or not prose:
+        return None
+    start = 1 if is_heading_line(prose[0], languages) else 0
+    head = prose[0].count(term) if start else 0
+    for li in range(start, len(prose)):
+        idx = prose[li].find(term)
+        if idx != -1:
+            return li, marker_position(prose[li], idx, idx + len(term)), head + 1
+    return None
+
+
+def book_heading_languages(db, book_id):
+    from footnotes import heading_languages
+    return heading_languages(db.get_book(book_id))
+
+
+def _placement(row, prose, anchors, bodies, languages=None):
+    """(location, None) when ``row`` can be placed in ``prose``, else
+    (None, reason). ``anchors`` are the book's footnote anchors (lower-cased),
+    ``bodies`` its footnote bodies, ``languages`` the book's heading
+    languages (see locate_anchor)."""
+    term = (row.get("term_en") or "").strip()
+    if len(term) < 2:
+        return None, "no English term"
+    if term.lower() in anchors:
+        return None, "already footnoted in this book"
+    if (row.get("body") or "").strip() in bodies:
+        return None, "the same note is already in this book"
+    loc = locate_anchor(prose, term, languages)
+    if loc is None:
+        return None, "term not found in the translation"
+    return loc, None
+
+
+def _book_footnote_index(db, book_id):
+    rows = db.get_book_footnotes(book_id)
+    anchors = {(f.get("anchor") or "").strip().lower() for f in rows} - {""}
+    bodies = {(f.get("body") or "").strip() for f in rows} - {""}
+    return rows, anchors, bodies
+
+
+def apply_inline_candidates(db, book_id, chapter_number, chapter_id, incoming=(),
+                            cap=None, ctx=None):
+    """Place this chapter's pending candidates as real footnotes.
+
+    Runs right after persist_inline_candidates. Up to ``cap`` placeable rows
+    (reading order) become footnotes and turn "applied"; the rest stay pending
+    for the manual review. ``cap=None`` reads the book's settings, and returns
+    without doing anything when auto-apply is off for it.
+
+    ``incoming`` is the translation's own candidate list — the unfiltered one,
+    not persist_inline_candidates' return, which drops any term the book has
+    already footnoted. On a retranslation an already-placed footnote may have
+    orphaned (the prose was reworded), and a fresh candidate for the same term
+    re-points it.
+
+    Returns {"placed": [rows], "unplaced": [(row, reason)], "reanchored": [rows]}.
+    """
+    out = {"placed": [], "unplaced": [], "reanchored": []}
+    if cap is None:
+        enabled, cap = auto_apply_settings(db, book_id, ctx=ctx)
+        if not enabled:
+            return out
+    if not chapter_id:
+        return out
+    prose = chapter_prose(db, chapter_id)
+    if prose is None:
+        return out
+    footnotes, anchors, bodies = _book_footnote_index(db, book_id)
+    langs = book_heading_languages(db, book_id)
+    by_id = {f["id"]: f for f in footnotes}
+    rows = db.list_footnote_candidates(book_id, chapter=chapter_number)
+    changed = False
+
+    # 1. Re-point placements this retranslation orphaned.
+    fresh = {}
+    for c in incoming or ():
+        fresh.setdefault(first_mention_key(c), c)
+    for r in rows:
+        fn = by_id.get(r.get("footnote_id")) if r.get("footnote_id") else None
+        if not fn or fn.get("status") != "orphaned" or fn.get("chapter_id") != chapter_id:
+            continue
+        term = ((fresh.get(first_mention_key(r)) or {}).get("term_en") or "").strip()
+        if not term or term.lower() in anchors:
+            continue
+        loc = locate_anchor(prose, term, langs)
+        if loc is None:
+            continue
+        if db.update_footnote(fn["id"], anchor=term, occurrence=loc[2]):
+            db.update_footnote_candidate(r["id"], term_en=term)
+            anchors.add(term.lower())
+            out["reanchored"].append(dict(r, term_en=term))
+            changed = True
+
+    # 2. Place the pending rows, reading order, up to the cap.
+    placeable = []
+    for r in rows:
+        if r["status"] != "pending" or r.get("footnote_id"):
+            continue
+        loc, reason = _placement(r, prose, anchors, bodies, langs)
+        if reason:
+            out["unplaced"].append((r, reason))
+            continue
+        # Two candidates sharing one English term would upsert one footnote.
+        anchors.add(r["term_en"].strip().lower())
+        placeable.append((loc, r))
+    placeable.sort(key=lambda p: (p[0][0], p[0][1], p[1]["id"]))
+    for i, (loc, r) in enumerate(placeable):
+        if i >= cap:
+            out["unplaced"].append((r, f"over the per-chapter cap of {cap}"))
+            continue
+        term = r["term_en"].strip()
+        fid = db.add_footnote(book_id, chapter_id, term, r["body"].strip(),
+                              source_term=(r.get("term_zh") or "").strip() or None,
+                              occurrence=loc[2])
+        if fid is None:
+            out["unplaced"].append((r, "footnote write failed"))
+            continue
+        db.update_footnote_candidate(r["id"], status="applied", footnote_id=fid)
+        out["placed"].append(dict(r, status="applied", footnote_id=fid))
+        changed = True
+
+    if changed:
+        db.rerender_chapter_footnotes(chapter_id)
+    return out
+
+
+# ── curation (the review acting on placed candidates) ────────────────────────
+#
+# The only code that knows a candidate can own a footnote. The web review, the
+# MCP decide tool and the CLI TUI all go through here, so "reject" means the
+# same thing everywhere: the footnote leaves the chapter.
+
+REVIEW_STATUSES = ("pending", "accepted", "rejected")
+
+
+def footnote_link_status(row, footnotes_by_id):
+    """'active' | 'orphaned' | 'missing' for a row with a footnote_id, else None."""
+    fid = row.get("footnote_id")
+    if not fid:
+        return None
+    fn = footnotes_by_id.get(fid)
+    if fn is None:
+        return "missing"
+    return fn.get("status") or "active"
+
+
+def decide_candidates(db, ids, status):
+    """Set the review status of candidates, carrying placed footnotes along.
+
+    accepted  — the footnote (if any) stays.
+    rejected  — the footnote (if any) is deleted and its chapter re-rendered.
+    pending   — on a placed row this means "undecided", which for a placed
+                row is "applied": a footnote in the chapter never hides behind
+                a row that looks unplaced.
+    Returns the number of rows updated."""
+    if status not in REVIEW_STATUSES:
+        raise CandidateActionError(f"Invalid status {status!r}.")
+    rows = [r for r in (db.get_footnote_candidate(i) for i in dict.fromkeys(ids)) if r]
+    by_book = {}
+    rerender = set()
+    n = 0
+    for r in rows:
+        fid = r.get("footnote_id")
+        if not fid:
+            n += bool(db.update_footnote_candidate(r["id"], status=status))
+            continue
+        if r["book_id"] not in by_book:
+            by_book[r["book_id"]] = {f["id"]: f for f in db.get_book_footnotes(r["book_id"])}
+        fn = by_book[r["book_id"]].get(fid)
+        if fn is None:  # deleted by hand: the row is just an unplaced candidate now
+            n += bool(db.update_footnote_candidate(r["id"], status=status, footnote_id=None))
+        elif status == "rejected":
+            db.delete_footnote(fid)
+            rerender.add((fn["chapter_id"], r["book_id"]))
+            n += bool(db.update_footnote_candidate(r["id"], status="rejected", footnote_id=None))
+        else:
+            n += bool(db.update_footnote_candidate(
+                r["id"], status="applied" if status == "pending" else status))
+    if rerender:
+        # Not db.rerender_chapter_footnotes: it skips a chapter with no rows
+        # left, which would strand the marker of the chapter's last footnote.
+        from delete_footnote import rerender_side
+        for chapter_id, book_id in rerender:
+            rerender_side(db, chapter_id, book_id, 0)
+    return n
+
+
+def edit_candidate(db, cand_id, term_en=None, body=None):
+    """Review edit of term_en / body. On a placed row the footnote follows: a
+    new body is rewritten in place, a new term re-anchors the marker — and a
+    term that isn't in the chapter's translation is refused with both rows
+    left as they were. Returns the updated row."""
+    row = db.get_footnote_candidate(cand_id)
+    if not row:
+        raise CandidateActionError("Candidate not found.")
+    term = term_en.strip() if term_en is not None else None
+    fn = None
+    if row.get("footnote_id"):
+        fn = next((f for f in db.get_book_footnotes(row["book_id"])
+                   if f["id"] == row["footnote_id"]), None)
+    if fn is not None:
+        changes = {}
+        if term is not None and term != fn.get("anchor"):
+            others = {(f.get("anchor") or "").strip().lower()
+                      for f in db.get_book_footnotes(row["book_id"])
+                      if f["id"] != fn["id"]}
+            if term.lower() in others:
+                raise CandidateActionError(f"{term!r} is already footnoted in this book.")
+            loc = locate_anchor(chapter_prose(db, fn["chapter_id"]) or [], term,
+                                book_heading_languages(db, row["book_id"]))
+            if loc is None:
+                raise CandidateActionError(
+                    f"{term!r} is not in chapter {row['chapter_number']}'s translation"
+                    " (the match is case-sensitive and skips a heading line).")
+            changes.update(anchor=term, occurrence=loc[2])
+        if body is not None and body.strip() != (fn.get("body") or ""):
+            changes["body"] = body.strip()
+        if changes:
+            db.update_footnote(fn["id"], **changes)
+            db.rerender_chapter_footnotes(fn["chapter_id"])
+    db.update_footnote_candidate(cand_id, term_en=term, body=body)
+    return db.get_footnote_candidate(cand_id)
+
+
+def place_candidate(db, cand_id):
+    """Place one candidate by hand (the review's "Place" action): the same
+    checks as auto-apply, no cap. The row becomes "accepted" — a person chose
+    it. Raises CandidateActionError saying why it can't be placed."""
+    row = db.get_footnote_candidate(cand_id)
+    if not row:
+        raise CandidateActionError("Candidate not found.")
+    if row["status"] == "rejected":
+        raise CandidateActionError("Candidate is rejected; unmark it first.")
+    footnotes, anchors, bodies = _book_footnote_index(db, row["book_id"])
+    if row.get("footnote_id") and any(f["id"] == row["footnote_id"] for f in footnotes):
+        raise CandidateActionError("Candidate is already placed.")
+    ch = db.get_chapter(book_id=row["book_id"], chapter_number=row["chapter_number"])
+    if not ch or not ch.get("id"):
+        raise CandidateActionError(f"Chapter {row['chapter_number']} is not in this book.")
+    loc, reason = _placement(row, chapter_prose(db, ch["id"]) or [], anchors, bodies,
+                             book_heading_languages(db, row["book_id"]))
+    if reason:
+        raise CandidateActionError(f"Cannot place: {reason}.")
+    fid = db.add_footnote(row["book_id"], ch["id"], row["term_en"].strip(),
+                          row["body"].strip(),
+                          source_term=(row.get("term_zh") or "").strip() or None,
+                          occurrence=loc[2])
+    if fid is None:
+        raise CandidateActionError("Footnote write failed.")
+    db.update_footnote_candidate(cand_id, status="accepted", footnote_id=fid)
+    db.rerender_chapter_footnotes(ch["id"])
+    return db.get_footnote_candidate(cand_id)
+
 
 def scan_single_chapter(db, config, book, chapter_number, model_spec=None,
                         max_chars=20000, force=False, registry=None,

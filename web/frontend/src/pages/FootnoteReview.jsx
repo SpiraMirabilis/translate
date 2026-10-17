@@ -1,35 +1,57 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, Asterisk, Check, X, Loader2, Pencil, RotateCcw, Search,
+  Anchor, ArrowLeft, Asterisk, Check, X, Loader2, Pencil, RotateCcw, Search,
 } from 'lucide-react'
 import { api } from '../services/api'
 import { useSite } from '../App'
 
 const STATUS_STYLES = {
+  applied:  'bg-indigo-500/20 text-indigo-300',
   pending:  'bg-blue-500/20 text-blue-400',
   accepted: 'bg-emerald-500/20 text-emerald-400',
   rejected: 'bg-slate-500/20 text-slate-500 line-through',
 }
 
+const STATUS_LABELS = { accepted: 'kept', applied: 'placed · unreviewed' }
+
 const TABS = [
-  { value: null,       label: 'All' },
+  { value: 'applied',  label: 'Applied' },
   { value: 'pending',  label: 'Pending' },
   { value: 'accepted', label: 'Kept' },
   { value: 'rejected', label: 'Rejected' },
   { value: 'flagged',  label: 'Flagged' },
+  { value: null,       label: 'All' },
 ]
+
+// A row owns a footnote in the chapter (auto-applied by the translation pass,
+// or placed from here). "missing" = the footnote was deleted by hand since.
+const isPlaced = (r) => !!r.footnote_id && r.footnote_status !== 'missing'
+
+// What a review decision does to a row's local state — mirrors
+// footnote_scan_core.decide_candidates: rejecting a placed row removes its
+// footnote; "unmarking" one returns it to applied, never to plain pending.
+const applyDecision = (r, status) => {
+  if (!r.footnote_id) return { ...r, status }
+  if (r.footnote_status === 'missing' || status === 'rejected') {
+    return { ...r, status, footnote_id: null, footnote_status: null }
+  }
+  return { ...r, status: status === 'pending' ? 'applied' : status }
+}
 
 // Per-book footnote-candidate review: keep / reject / edit suggestions.
 // Mirrors the CLI TUI's semantics — dup = later repeat of a term first seen in
 // an earlier chapter; already = term is already a real footnote in this book;
 // unreviewed (pending) rows still export, rejection is the only veto.
+// "Applied" rows were placed into the chapter by the translation pass: keep
+// leaves the footnote, reject removes it, editing rewrites/re-anchors it.
 export default function FootnoteReview() {
   const { bookId } = useParams()
   const { site_name } = useSite()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState('pending')
+  const tabTouched = useRef(false)
   const [firstOnly, setFirstOnly] = useState(true)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState(() => new Set())
@@ -50,6 +72,12 @@ export default function FootnoteReview() {
   const bookTitle = bookData?.title || `Book ${bookId}`
   const rows = useMemo(() => data?.candidates || [], [data])
 
+  // Open on Applied when the translator has placed anything awaiting review.
+  useEffect(() => {
+    if (!tabTouched.current && rows.some(r => r.status === 'applied')) setTab('applied')
+  }, [rows])
+  const chooseTab = (value) => { tabTouched.current = true; setTab(value) }
+
   useEffect(() => {
     document.title = `Footnotes — ${bookTitle} | ${site_name}`
     return () => { document.title = site_name }
@@ -62,6 +90,12 @@ export default function FootnoteReview() {
   }
 
   const setStatus = async (ids, status) => {
+    if (status === 'rejected') {
+      const placed = rows.filter(r => ids.includes(r.id) && isPlaced(r) && r.status !== 'rejected')
+      if (placed.length && !window.confirm(placed.length === 1
+        ? `Reject this footnote? It will be removed from chapter ${placed[0].chapter_number}.`
+        : `Reject ${placed.length} placed footnotes? They will be removed from their chapters.`)) return
+    }
     setActionError(null)
     setBusy(true)
     try {
@@ -71,7 +105,7 @@ export default function FootnoteReview() {
         await api.batchFootnoteCandidates(bookId, ids, status)
       }
       const idSet = new Set(ids)
-      patchRows(r => (idSet.has(r.id) ? { ...r, status } : r))
+      patchRows(r => (idSet.has(r.id) ? applyDecision(r, status) : r))
       setSelected(prev => {
         const next = new Set(prev)
         ids.forEach(i => next.delete(i))
@@ -79,6 +113,20 @@ export default function FootnoteReview() {
       })
     } catch (e) {
       setActionError(`Failed to update: ${e.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const place = async (id) => {
+    setActionError(null)
+    setBusy(true)
+    try {
+      await api.placeFootnoteCandidate(id)
+      // Placing changes other rows' "already footnoted" flags too — refetch.
+      await queryClient.invalidateQueries({ queryKey })
+    } catch (e) {
+      setActionError(`Failed to place: ${e.message}`)
     } finally {
       setBusy(false)
     }
@@ -125,7 +173,7 @@ export default function FootnoteReview() {
   }, [visible])
 
   const counts = useMemo(() => {
-    const c = { pending: 0, accepted: 0, rejected: 0 }
+    const c = { applied: 0, pending: 0, accepted: 0, rejected: 0 }
     rows.forEach(r => { c[r.status] = (c[r.status] || 0) + 1 })
     return c
   }, [rows])
@@ -152,7 +200,9 @@ export default function FootnoteReview() {
         <h1 className="text-xl font-semibold truncate">{bookTitle}</h1>
       </div>
       <div className="text-sm text-slate-400 mb-4 ml-9">
-        {rows.length} candidate{rows.length === 1 ? '' : 's'} · {counts.pending} pending ·{' '}
+        {rows.length} candidate{rows.length === 1 ? '' : 's'} ·{' '}
+        {counts.applied > 0 && <>{counts.applied} placed awaiting review · </>}
+        {counts.pending} pending ·{' '}
         {counts.accepted} kept · {counts.rejected} rejected
         {data?.scan?.chapters_scanned > 0 && <> · {data.scan.chapters_scanned} chapters scanned</>}
       </div>
@@ -164,7 +214,7 @@ export default function FootnoteReview() {
             <button
               key={t.label}
               className={`px-3 py-1 rounded text-xs ${((tab ?? null) === t.value) ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
-              onClick={() => setTab(t.value)}
+              onClick={() => chooseTab(t.value)}
             >
               {t.label}
             </button>
@@ -254,8 +304,23 @@ export default function FootnoteReview() {
                         r.term_en && <span className="text-indigo-300">{r.term_en}</span>
                       )}
                       <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${STATUS_STYLES[r.status] || ''}`}>
-                        {r.status === 'accepted' ? 'kept' : r.status}
+                        {STATUS_LABELS[r.status] || r.status}
                       </span>
+                      {isPlaced(r) && (
+                        <Link
+                          to={`/books/${bookId}/chapters/${r.chapter_number}/edit?search=${encodeURIComponent(r.term_en || '')}&searchScope=translated`}
+                          className={`px-1.5 py-0.5 rounded-full text-[10px] ${r.footnote_status === 'orphaned' ? 'bg-rose-500/20 text-rose-400' : 'bg-indigo-500/20 text-indigo-300'} hover:underline`}
+                          title={r.footnote_status === 'orphaned'
+                            ? 'Placed, but its anchor is no longer in the chapter (orphaned) — edit the term to re-anchor it'
+                            : 'Footnote is in the chapter — open it in the editor'}
+                        >
+                          {r.footnote_status === 'orphaned' ? 'orphaned' : 'in chapter'}
+                        </Link>
+                      )}
+                      {r.footnote_status === 'missing' && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-400"
+                              title="Was placed, but the footnote has since been deleted">footnote deleted</span>
+                      )}
                       {r.dup && (
                         <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-500/20 text-amber-400"
                               title="Repeat — this term was first collected in an earlier chapter">dup</span>
@@ -306,6 +371,13 @@ export default function FootnoteReview() {
                       >
                         <X size={15} />
                       </button>
+                      {!isPlaced(r) && r.status !== 'rejected' && (
+                        <button className="btn-ghost p-1.5 text-slate-400 hover:text-indigo-300"
+                                title="Place as a footnote (anchored on the English term, first match below the heading)"
+                                disabled={busy || !r.term_en} onClick={() => place(r.id)}>
+                          <Anchor size={13} />
+                        </button>
+                      )}
                       <button className="btn-ghost p-1.5 text-slate-400 hover:text-indigo-300" title="Edit term / body"
                               onClick={() => startEdit(r)}>
                         <Pencil size={13} />

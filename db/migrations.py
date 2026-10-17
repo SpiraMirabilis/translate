@@ -775,6 +775,22 @@ def _m023_reader_log_viewed_book_index(conn, cursor, backend, logger):
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
 
 
+def _m024_footnote_candidates_footnote_id(conn, cursor, backend, logger):
+    """Link a footnote candidate to the real footnote it was placed as.
+
+    The inline scan (scan_mode "translation") now places its candidates
+    straight into the chapter; the review then curates them, and rejecting one
+    has to know which footnote row to take back out. No FK: a footnote deleted
+    by hand (delete_footnote.py) leaves the link dangling, and the review shows
+    that as "missing" rather than cascading anything. NULL on every existing
+    row — nothing was ever auto-placed before this."""
+    if add_column_if_missing(
+            conn, cursor, backend, "footnote_candidates", "footnote_id",
+            "ALTER TABLE footnote_candidates ADD COLUMN footnote_id INTEGER",
+            "ALTER TABLE footnote_candidates ADD COLUMN footnote_id INT NULL"):
+        logger.info("Added footnote_id column to footnote_candidates table")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -799,6 +815,7 @@ MIGRATIONS = [
     Migration(21, "error_reports", _m021_error_reports),
     Migration(22, "books_ebook_invalidated_at", _m022_books_ebook_invalidated_at),
     Migration(23, "reader_log_viewed_book_index", _m023_reader_log_viewed_book_index),
+    Migration(24, "footnote_candidates_footnote_id", _m024_footnote_candidates_footnote_id),
 ]
 
 

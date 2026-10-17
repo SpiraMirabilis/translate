@@ -421,6 +421,23 @@ def test_candidates_list_and_decide(server, db, book):
              decision="rejected")
 
 
+def test_place_and_reject_a_candidate_through_mcp(server, db, book):
+    """Place puts the footnote in; rejecting a placed candidate takes it out."""
+    save_chapter(db, book, 1, ["第一章", "他练太极。"], ["Chapter 1", "He practised Taiji daily."])
+    a = _candidate(db, book, 1, "太极", "Taiji")
+    out = call_json(server, "t9_place_footnote_candidate", book_id=book, candidate_id=a)
+    assert out["candidate"]["status"] == "accepted" and out["candidate"]["footnote_id"]
+    listed = call(server, "t9_list_footnote_candidates", book_id=book, status="accepted")
+    assert "footnote #" in listed
+    with pytest.raises(ToolError, match="already placed"):
+        call(server, "t9_place_footnote_candidate", book_id=book, candidate_id=a)
+    call_json(server, "t9_decide_footnote_candidates", book_id=book, ids=[a],
+              decision="rejected")
+    assert db.get_book_footnotes(book) == []
+    content = db.get_chapter(book_id=book, chapter_number=1)["content"]
+    assert "[1]" not in "\n".join(content)
+
+
 # ── read-side entity tools ───────────────────────────────────────────────────
 
 @pytest.fixture

@@ -23,6 +23,8 @@ the CLI instructions in this doc apply unchanged.
 | Scan (model calls) | `t9_scan_footnotes(book_id, chapters)`. Dry run by default; ≤200 chapters per call; skips chapters already scanned with unchanged source | `footnote_scan.py -b N --chapters …` |
 | What's collected | `t9_footnote_candidate_report(book_id, chapters)` | `footnote_scan.py --report` |
 | Review queue | `t9_list_footnote_candidates(status="pending", first_mentions_only=true)` + `t9_decide_footnote_candidates(ids, "accepted"\|"rejected")` | the `--review` TUI (or the admin GUI, same queue) |
+| Auto-placed footnotes | `t9_list_footnote_candidates(status="applied")` + `t9_decide_footnote_candidates` — rejecting one **deletes its footnote** from the chapter | the Applied tab / `a` filter in the TUI |
+| Place one candidate | `t9_place_footnote_candidate(book_id, candidate_id)` — exact `term_en`, first match below the heading; refuses with the reason | `add_footnotes.py` for a one-off |
 | Hallucination prune | `t9_prune_footnote_candidates` (`apply=true` to delete) | `footnote_scan.py --prune-unverified` |
 | Export | `t9_export_footnote_candidates` returns a `footnotes` list ready for `t9_add_footnotes`, plus `not_in_translation` (terms to fix first: the anchor pass) | `footnote_scan.py --export map.json` |
 | Anchor pass | `t9_grep_book(field="en", …)` prints whole lines with the matched substring bracketed; `t9_get_chapter(side="both")` gives both line arrays with indices | ad-hoc greps, `db.get_chapter(...)` |
@@ -278,11 +280,12 @@ To fix a bad placement: `delete_footnote.py` then re-add with a better anchor.
 ## Workflow
 
 0. **Before the first pull** — make sure `origin_chapter` has been refreshed for this batch (owned by `TranslationRepairTask.md` → **Refreshing `origin_chapter`**), or the entity pull's `--origin-chapter` ranges will be incomplete. Then `footnote_scan.py -b N --report` (tools: `t9_footnote_candidate_report`) to see what the on-ingest module has already collected, and sweep only the chapters it missed (`t9_scan_footnotes`, dry run first).
+0.5. **Curate what the translator already placed.** Books scanning in translation mode auto-apply their candidates (up to 4 per chapter): those rows are `applied` and their footnotes are **already live in the chapter**. Review them first — `t9_list_footnote_candidates(status="applied")` (or the admin review's Applied tab) — against the same three questions. `accepted` keeps the footnote; `rejected` **removes it from the chapter**; there is no "leave undecided" for these beyond leaving them `applied`. Fix a wrong body or anchor by editing the candidate (the footnote follows). Anything the auto-apply couldn't place stays `pending` and goes through steps 1–8 as before; `t9_place_footnote_candidate` places one after you've corrected its `term_en`.
 1. **Collect** — entity pull for the batch (`t9_list_entities`), plus the candidate report.
 2. **Triage** with the three questions. Most candidates die here. With the tools, record verdicts as you go (`t9_decide_footnote_candidates`), so they survive a retranslation's rescan.
 3. **Verify** the source context of every survivor (coincidence trap). Tools: `t9_entity_context` / `t9_get_chapter(side="src")`.
 4. **Anchor** in the *translated* text; drop the paraphrased-away and the title-only. Print full lines — greps lie. Tools: `t9_grep_book(field="en")`.
-5. **Dedupe** against footnotes already placed in earlier ranges (`t9_list_footnotes`; the export already drops terms that are footnoted).
+5. **Dedupe** against footnotes already placed in earlier ranges (`t9_list_footnotes`; the export already drops terms that are footnoted, and every auto-placed row).
 6. **Present** the curated set for approval (`AskUserQuestion`, grouped strong vs optional).
 7. **Verify anchors programmatically** — for each term, confirm the book-wide first occurrence is the chapter you intend, and eyeball any that land earlier than expected. The `t9_add_footnotes` dry run reports each note's chapter and line, which covers this step.
 8. **Dry-run**, then apply (`t9_add_footnotes`, then again with `dry_run=false`).

@@ -437,11 +437,13 @@ class TranslationEngine:
 
         # Optional footnote_candidates channel (scan_mode "translation"). Shown
         # as one worked element; the rules that govern it are the FOOTNOTE
-        # CANDIDATES section, which is the book's own scan prompt.
+        # CANDIDATES section, which is the book's own scan prompt. term_en is
+        # the literal anchor: candidates are auto-placed on it (see
+        # footnote_scan_core.apply_inline_candidates), so the example says so.
         if footnote_candidates_enabled and mode != 'translate_only':
             template["footnote_candidates"] = [{
                 "term_zh": self._placeholder_entity_key("references", source_language),
-                "term_en": "Example Referent",
+                "term_en": "The exact words your translation uses for it",
                 "body": "English Name (中文): one or two sentences saying what "
                         "the referent points at.",
                 "sentence": "The source sentence containing it, copied verbatim.",

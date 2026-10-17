@@ -3,9 +3,14 @@ import traceback
 
 _CANDIDATE_COLS = ("id", "book_id", "chapter_number", "chapter_title",
                    "term_zh", "term_en", "body", "sentence", "model",
-                   "status", "created_date")
+                   "status", "created_date", "footnote_id")
 
-_VALID_STATUSES = ("pending", "accepted", "rejected")
+# "applied" = placed into the chapter by the translation pass (scan_mode
+# "translation"), not yet curated. Set only by code — see
+# footnote_scan_core.apply_inline_candidates — never chosen by a reviewer.
+_VALID_STATUSES = ("pending", "applied", "accepted", "rejected")
+
+_UNSET = object()
 
 
 class FootnoteCandidatesRepo:
@@ -96,30 +101,33 @@ class FootnoteCandidatesRepo:
         a reviewed chapter silently discards that review — which was harmless
         while only first-time ingest scanned, and is not once a chapter is
         rescanned on every retranslation (scan_mode "translation") or by
-        `footnote_scan.py --force`."""
+        `footnote_scan.py --force`.
+
+        A row linked to a placed footnote (``footnote_id``) survives either
+        way, and an incoming duplicate of it is dropped."""
         now = scanned_at or datetime.datetime.now().isoformat(timespec="seconds")
         try:
             with self._conn() as conn:
                 cursor = conn.cursor()
+                # A row that owns a placed footnote always survives: dropping
+                # it would leave the footnote in the chapter with nothing in
+                # the review queue that can take it back out.
+                survivors = ("(status <> 'pending' OR footnote_id IS NOT NULL)"
+                             if preserve_reviewed else "footnote_id IS NOT NULL")
+                cursor.execute(
+                    "SELECT term_zh, term_en FROM footnote_candidates"
+                    " WHERE book_id = ? AND chapter_number = ?"
+                    f" AND {survivors}", (book_id, chapter_number))
                 kept_keys = set()
-                if preserve_reviewed:
-                    cursor.execute(
-                        "SELECT term_zh, term_en FROM footnote_candidates"
-                        " WHERE book_id = ? AND chapter_number = ?"
-                        " AND status <> 'pending'", (book_id, chapter_number))
-                    for row in cursor.fetchall():
-                        zh = (row[0] or "").strip()
-                        en = (row[1] or "").strip().lower()
-                        kept_keys.add(zh or en)
-                    kept_keys.discard("")
-                    cursor.execute(
-                        "DELETE FROM footnote_candidates WHERE book_id = ?"
-                        " AND chapter_number = ? AND status = 'pending'",
-                        (book_id, chapter_number))
-                else:
-                    cursor.execute(
-                        "DELETE FROM footnote_candidates WHERE book_id = ?"
-                        " AND chapter_number = ?", (book_id, chapter_number))
+                for row in cursor.fetchall():
+                    zh = (row[0] or "").strip()
+                    en = (row[1] or "").strip().lower()
+                    kept_keys.add(zh or en)
+                kept_keys.discard("")
+                cursor.execute(
+                    "DELETE FROM footnote_candidates WHERE book_id = ?"
+                    f" AND chapter_number = ? AND NOT {survivors}",
+                    (book_id, chapter_number))
                 for f in found:
                     if kept_keys:
                         key = (f.get("term_zh") or "").strip() or \
@@ -158,9 +166,11 @@ class FootnoteCandidatesRepo:
                 raise
             return False
 
-    def update_footnote_candidate(self, cand_id, status=None, term_en=None, body=None):
-        """Review edit: any subset of status / term_en / body. Returns True
-        when a row was updated."""
+    def update_footnote_candidate(self, cand_id, status=None, term_en=None, body=None,
+                                  footnote_id=_UNSET):
+        """Review edit: any subset of status / term_en / body / footnote_id.
+        ``footnote_id=None`` clears the link (omit it to leave it alone).
+        Returns True when a row was updated."""
         if status is not None and status not in _VALID_STATUSES:
             self.logger.error(f"Invalid footnote candidate status: {status!r}")
             return False
@@ -169,6 +179,9 @@ class FootnoteCandidatesRepo:
             if val is not None:
                 sets.append(f"{col} = ?")
                 params.append(val)
+        if footnote_id is not _UNSET:
+            sets.append("footnote_id = ?")
+            params.append(footnote_id)
         if not sets:
             return False
         try:
@@ -238,8 +251,8 @@ class FootnoteCandidatesRepo:
     def footnote_candidate_book_counts(self):
         """Per-book candidate counts for the review GUI's book list.
 
-        Returns a list of {book_id, book_title, pending, accepted, rejected,
-        total, chapters_scanned, last_scanned_at}, ordered by pending desc
+        Returns a list of {book_id, book_title, pending, applied, accepted,
+        rejected, total, chapters_scanned, last_scanned_at}, ordered by pending desc
         then book id, including only books that have candidates or scans.
         """
         try:
@@ -248,6 +261,7 @@ class FootnoteCandidatesRepo:
                 cursor.execute("""
                     SELECT b.id, b.title,
                         COALESCE(SUM(CASE WHEN fc.status = 'pending' THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN fc.status = 'applied' THEN 1 ELSE 0 END), 0),
                         COALESCE(SUM(CASE WHEN fc.status = 'accepted' THEN 1 ELSE 0 END), 0),
                         COALESCE(SUM(CASE WHEN fc.status = 'rejected' THEN 1 ELSE 0 END), 0),
                         COUNT(fc.id)
@@ -261,15 +275,16 @@ class FootnoteCandidatesRepo:
                     " FROM footnote_scans GROUP BY book_id")
                 scan_rows = {r[0]: (r[1], r[2]) for r in cursor.fetchall()}
             out = []
-            for bid, title, pending, accepted, rejected, total in cand_rows:
+            for bid, title, pending, applied, accepted, rejected, total in cand_rows:
                 scanned, last = scan_rows.get(bid, (0, None))
                 out.append({
                     "book_id": bid, "book_title": title,
-                    "pending": int(pending), "accepted": int(accepted),
+                    "pending": int(pending), "applied": int(applied),
+                    "accepted": int(accepted),
                     "rejected": int(rejected), "total": int(total),
                     "chapters_scanned": scanned, "last_scanned_at": last,
                 })
-            out.sort(key=lambda r: (-r["pending"], r["book_id"]))
+            out.sort(key=lambda r: (-(r["pending"] + r["applied"]), r["book_id"]))
             return out
         except Exception as e:
             self.logger.error(f"Error counting footnote candidates: {e}")

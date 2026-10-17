@@ -240,13 +240,15 @@ export const api = {
   wpCancelPublish:  (bookId)         => post(`/api/wordpress/books/${bookId}/cancel`, {}),
   wpPublishChapter: (bookId, num, body = {}) => post(`/api/wordpress/books/${bookId}/chapters/${num}/publish`, body),
 
-  // Footnote candidates (review GUI — suggestions only, never placement)
+  // Footnote candidates (review GUI; "applied" rows were auto-placed by the
+  // translation pass, and reject/edit/place act on the chapter's footnotes)
   listFootnoteCandidateBooks: () => get('/api/footnote-candidates/books'),
   listFootnoteCandidates: (bookId, status) =>
     get(`/api/books/${bookId}/footnote-candidates${status ? '?status=' + status : ''}`),
   updateFootnoteCandidate: (id, body) => put(`/api/footnote-candidates/${id}`, body),
   batchFootnoteCandidates: (bookId, ids, status) =>
     post(`/api/books/${bookId}/footnote-candidates/batch`, { ids, status }),
+  placeFootnoteCandidate: (id) => post(`/api/footnote-candidates/${id}/place`, {}),
 
   // Recommendations
   listRecommendations: (status) => get(`/api/recommendations${status ? '?status=' + status : ''}`),

@@ -11,11 +11,15 @@ Keys:
     PgUp/PgDn   page            SPACE        mark keep
     x           mark reject     u            unmark (back to pending)
     a           cycle filter    /            substring filter (Enter apply,
-                (all/pending/                Esc clear)
-                rejected/flagged)
+                (all/applied/                Esc clear)
+                pending/rejected/
+                flagged)
     q Ctrl-C    quit            Esc          clear filter, or quit
 
 Only 'rejected' is excluded from export — kept AND unmarked rows both export.
+'applied' rows were placed in the chapter by the inline scan: keep leaves the
+footnote, reject removes it from the chapter, unmark returns the row to
+'applied' (footnote_scan_core.decide_candidates does the work).
 
 Invoked from footnote_scan.py --review; rows arrive with "dup" (later repeat
 of an earlier first-mention) and "already" (anchor already in the book's real
@@ -44,7 +48,7 @@ STYLE = Style.from_dict({
     "zh": "fg:ansicyan",
 })
 
-FILTERS = ("all", "pending", "rejected", "flagged")
+FILTERS = ("all", "applied", "pending", "rejected", "flagged")
 PAGE = 15
 
 
@@ -82,6 +86,8 @@ class ReviewApp:
         f = FILTERS[self.filter_idx]
         if f == "pending" and r["status"] != "pending":
             return False
+        if f == "applied" and r["status"] != "applied":
+            return False
         if f == "rejected" and r["status"] != "rejected":
             return False
         if f == "flagged" and not (r.get("dup") or r.get("already")):
@@ -110,6 +116,13 @@ class ReviewApp:
         r = self.current()
         if r is None:
             return
+        if r.get("footnote_id"):
+            # Mirror decide_candidates: a placed row is never plain "pending",
+            # and rejecting it takes the footnote out of the chapter.
+            if status == "pending":
+                status = "applied"
+            elif status == "rejected":
+                r["footnote_id"] = None
         r["status"] = status
         self._set_status_fn(r["id"], status)
         # vim-like flow: marking advances to the next row (unless the filter
@@ -125,7 +138,7 @@ class ReviewApp:
 
     # ── rendering ────────────────────────────────────────────────────────────
     def counts(self):
-        c = {"accepted": 0, "rejected": 0, "pending": 0}
+        c = {"applied": 0, "accepted": 0, "rejected": 0, "pending": 0}
         for r in self.rows:
             c[r["status"]] = c.get(r["status"], 0) + 1
         return c
@@ -135,7 +148,8 @@ class ReviewApp:
         pos = f"{self.cursor + 1}/{len(self.visible)}" if self.visible else "0/0"
         return [("class:titlebar",
                  f" Footnote review — {self.book_label} · {len(self.rows)} candidates"
-                 f" · {c['accepted']} kept · {c['rejected']} rejected"
+                 f" · {c['applied']} placed · {c['accepted']} kept"
+                 f" · {c['rejected']} rejected"
                  f" · filter:{FILTERS[self.filter_idx]}"
                  + (f" /{self.search}" if self.search else "")
                  + f" · {pos} ")]
@@ -158,6 +172,8 @@ class ReviewApp:
                 frags.append((base + " class:keep", "✓keep "))
             elif r["status"] == "rejected":
                 frags.append((base + " class:rej", "✗rej  "))
+            elif r["status"] == "applied":
+                frags.append((base + " class:warn", "↳plcd "))
             else:
                 frags.append((base, "      "))
             if r.get("dup"):
@@ -178,9 +194,14 @@ class ReviewApp:
                   + (f" — {r['chapter_title']}" if r.get("chapter_title") else "")
                   + f"  ·  {r.get('model') or ''}\n")]
         status_style = {"accepted": "class:keep", "rejected": "class:rej",
-                        "pending": "class:dim"}[r["status"]]
+                        "pending": "class:dim",
+                        "applied": "class:warn"}.get(r["status"], "class:dim")
         marks = {"accepted": "✓ keep", "rejected": "✗ rejected",
-                 "pending": "unmarked (exports)"}[r["status"]]
+                 "pending": "unmarked (exports)",
+                 "applied": "↳ placed in the chapter — keep, or reject to remove"
+                 }.get(r["status"], r["status"])
+        if r.get("footnote_id") and r["status"] == "accepted":
+            marks += " (placed)"
         frags.append((status_style, marks + "\n"))
         if r.get("already"):
             frags.append(("class:warn", "⚠ already footnoted in this book\n"))

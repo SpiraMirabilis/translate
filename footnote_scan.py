@@ -364,7 +364,8 @@ def build_export_map(db, book_id, pred=None):
     """The --export {term_en: body} map for add_footnotes.py.
 
     Every non-rejected candidate's first mention, minus terms already in the
-    book's real footnotes and rows with no English term.
+    book's real footnotes, rows the inline scan already placed (footnote_id),
+    and rows with no English term.
 
     Returns (mapping, warnings); warnings is a dict of lists:
       skipped_already:    terms already footnoted in the book
@@ -380,6 +381,8 @@ def build_export_map(db, book_id, pred=None):
 
     out, skipped_already, no_term = {}, [], []
     for r in firsts:
+        if r.get("footnote_id"):
+            continue  # already placed in its chapter; nothing to export
         term = (r.get("term_en") or "").strip()
         if not term:
             no_term.append(r["term_zh"] or f"#{r['id']}")
@@ -554,11 +557,14 @@ def cmd_review(args, db, book):
     already = footnoted_anchors(db, book["id"])
     for r in rows:
         r["dup"] = r["id"] in dup_ids
-        r["already"] = (r.get("term_en") or "").strip().lower() in already
+        r["already"] = (not r.get("footnote_id")
+                        and (r.get("term_en") or "").strip().lower() in already)
 
     from footnote_review_tui import run_review
+    from footnote_scan_core import decide_candidates
     counts = run_review(
-        lambda cand_id, status: db.update_footnote_candidate(cand_id, status=status),
+        lambda cand_id, status: decide_candidates(
+            db, [cand_id], "pending" if status == "applied" else status),
         rows, book_label=f"Book {book['id']} — {book.get('title', '')}")
     print(f"Reviewed: {counts['accepted']} kept, {counts['rejected']} rejected, "
           f"{counts['pending']} unmarked (unmarked rows still export).")
