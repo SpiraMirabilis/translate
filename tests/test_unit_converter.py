@@ -273,6 +273,9 @@ def test_qualified_bare_ke_is_a_quarter_hour():
             "Nearly every quarter hour it grew two nodes.",
         "Over the next ke, he ran.": "Over the next quarter hour, he ran.",
         "Two strokes per ke.": "Two strokes per quarter hour.",
+        "After that ke, she would be left weak.":
+            "After that quarter hour, she would be left weak.",
+        "This ke passed slowly.": "This quarter hour passed slowly.",
     }
     for src, want in cases.items():
         assert convert_units([src]) == [want]

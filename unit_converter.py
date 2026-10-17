@@ -664,11 +664,11 @@ _POINT_RE = re.compile(
 )
 
 # A bare "ke" with a qualifier but no count ("every ke", "the next ke", "per
-# ke", "the first ke" … "the ninth ke") is a quarter hour, as a span or a slot
-# in a countdown. Counted forms ("two ke", "a ke") go through the unit pattern, and
+# ke", "that ke", "the first ke" … "the ninth ke") is a quarter hour, as a span
+# or a slot in a countdown. Counted forms ("two ke", "a ke") go through the unit pattern, and
 # "third ke of the wu hour" through _POINT_RE; this catches what both miss.
 _KE_QUALIFIED_RE = re.compile(
-    r"(?<![\w'])(?P<q>(?:every|each|next|last|final|extra|per|another|same|single|whole|entire|"
+    r"(?<![\w'])(?P<q>(?:every|each|next|last|final|extra|per|another|same|single|whole|entire|that|this|"
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\s+)"
     r"(?-i:ke)(?![\w'(])",
     re.IGNORECASE,
