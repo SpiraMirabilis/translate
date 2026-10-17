@@ -57,7 +57,7 @@ describe('buildMatcher', () => {
 
   it('builds a global regex; case-insensitive only for translation field', () => {
     expect(buildMatcher(entities, 'untranslated').regex.flags).toBe('g')
-    expect(buildMatcher(entities, 'translation').regex.flags).toBe('gi')
+    expect(buildMatcher(entities, 'translation').regex.flags).toBe('giu')
   })
 
   it('escapes regex metacharacters in entity text', () => {
@@ -90,6 +90,14 @@ describe('highlightSegments', () => {
     const segs = highlightSegments('then ZHANG YU left', m)
     expect(segs[1].text).toBe('ZHANG YU')
     expect(segs[1].entity.untranslated).toBe('张羽')
+  })
+
+  it('word-bounds translation matches but not source matches', () => {
+    const m = buildMatcher([{ untranslated: '任', translation: 'Ren' }, { untranslated: '安然', translation: 'An' }], 'translation')
+    expect(highlightSegments('the strength of Ren', m).filter(s => s.entity).map(s => s.text)).toEqual(['Ren'])
+    expect(highlightSegments('An began. Ren\'s turn', m).filter(s => s.entity).map(s => s.text)).toEqual(['An', 'Ren'])
+    const zh = buildMatcher([{ untranslated: '张羽', translation: 'Zhang Yu' }], 'untranslated')
+    expect(highlightSegments('看着张羽离开', zh).filter(s => s.entity).length).toBe(1)
   })
 
   it('falls back to nbsp for empty lines and passes lines with no matcher through', () => {

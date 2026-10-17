@@ -54,6 +54,8 @@ export function pinyinToMarked(pinyin) {
 
 // ── Entity highlighting helpers ──────────────────────────────────────
 
+const WORD_CHAR = /[\p{L}\p{N}]/u
+
 /**
  * Build a matcher object from entities.
  * Returns { lookup (Map), regex (RegExp), list (array) } for fast matching.
@@ -79,9 +81,18 @@ export function buildMatcher(entities, field) {
 
   if (!list.length) return { lookup: new Map(), regex: null, list }
 
-  // Build a single regex from all entity texts (longest first for greedy matching)
-  const escaped = list.map(m => m.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-  const regex = new RegExp(`(${escaped.join('|')})`, 'g' + (field === 'translation' ? 'i' : ''))
+  // Build a single regex from all entity texts (longest first for greedy matching).
+  // English renderings are word-bounded: without it "Ren" lit up inside
+  // "strength" and "An" inside "began". Chinese has no word boundaries.
+  const bounded = field === 'translation'
+  const escaped = list.map(m => {
+    const e = m.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (!bounded) return e
+    const lead = WORD_CHAR.test(m.text[0]) ? '(?<![\\p{L}\\p{N}])' : ''
+    const trail = WORD_CHAR.test(m.text[m.text.length - 1]) ? '(?![\\p{L}\\p{N}])' : ''
+    return lead + e + trail
+  })
+  const regex = new RegExp(`(${escaped.join('|')})`, bounded ? 'giu' : 'g')
 
   // Build a lookup map (lowercased key -> entity) for O(1) match identification
   const lookup = new Map()
