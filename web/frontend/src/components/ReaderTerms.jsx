@@ -11,11 +11,24 @@ const GENDER_LABEL = { male: 'male', female: 'female', unknown: 'unknown' }
  *
  * Terms come from the server pre-indexed (chapter_entities), so opening this is
  * one small request rather than a scan of the book's whole glossary. Notes are
- * the notes as they read AT this chapter, so nothing here spoils a later one.
+ * the notes as they read BEFORE this chapter, so nothing here spoils the page
+ * being read; a note this chapter rewrites arrives as `note_after`, behind a
+ * "note updated" chip the reader opens on purpose.
  */
 export default function ReaderTerms({ open, onClose, bookId, chapterNumber, theme,
                                       api, scope, canEdit = false, onEditEntity }) {
   const [filter, setFilter] = useState('')
+  // Keyed by chapter too: the panel stays mounted across chapters, and a
+  // reveal must not carry over to another chapter's rewrite of the same term.
+  const [revealed, setRevealed] = useState(() => new Set())
+  const revealKey = id => `${chapterNumber}:${id}`
+  const toggleReveal = id => setRevealed(prev => {
+    const next = new Set(prev)
+    const key = revealKey(id)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
 
   const isDark = theme === 'dark'
   const panelBg = isDark ? 'bg-slate-800' : 'bg-white'
@@ -130,6 +143,7 @@ export default function ReaderTerms({ open, onClose, bookId, chapterNumber, them
               </div>
               {group.items.map(term => {
                 const clickable = canEdit && onEditEntity
+                const isRevealed = term.note_after && revealed.has(revealKey(term.id))
                 return (
                   <div
                     key={term.id}
@@ -153,10 +167,23 @@ export default function ReaderTerms({ open, onClose, bookId, chapterNumber, them
                       {/* Not shown together with "new": a brand-new entity's
                           first note is not an update to anything. */}
                       {term.note_changed && !term.first_seen && (
-                        <span className="inline-flex items-center gap-0.5 text-[11px] text-amber-500"
-                              title="This term's note changed in this chapter">
-                          <History size={11} /> note updated
-                        </span>
+                        term.note_after ? (
+                          <button
+                            type="button"
+                            onClick={e => { e.stopPropagation(); toggleReveal(term.id) }}
+                            aria-expanded={!!isRevealed}
+                            className="inline-flex items-center gap-0.5 text-[11px] text-amber-500 hover:underline"
+                            title={isRevealed ? 'Hide the updated note'
+                              : 'This term’s note changes in this chapter — show the note as it reads after it (may spoil)'}
+                          >
+                            <History size={11} /> note updated{isRevealed ? '' : ' · show'}
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-0.5 text-[11px] text-amber-500"
+                                title="This term's note changed in this chapter">
+                            <History size={11} /> note updated
+                          </span>
+                        )
                       )}
                       {term.occurrences > 1 && (
                         <span className={`ml-auto text-[11px] ${textMuted}`}>×{term.occurrences}</span>
@@ -164,6 +191,11 @@ export default function ReaderTerms({ open, onClose, bookId, chapterNumber, them
                     </div>
                     {term.note && (
                       <p className={`mt-1 text-xs leading-snug ${textSecondary}`}>{term.note}</p>
+                    )}
+                    {isRevealed && (
+                      <p className={`mt-1 text-xs leading-snug ${textSecondary} border-l-2 border-amber-500/60 pl-2`}>
+                        <span className="text-amber-500">After this chapter: </span>{term.note_after}
+                      </p>
                     )}
                   </div>
                 )

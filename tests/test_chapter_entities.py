@@ -176,6 +176,71 @@ class TestTermPayload:
         assert db.get_chapter_terms(book_id, 9)[0]["note_changed"] is False
         assert db.get_chapter_terms(book_id, 1)[0]["note_changed"] is False
 
+    def test_rewritten_note_shows_the_earlier_note_first(self, db):
+        """The chapter that rewrites a note is read before the rewrite happens:
+        its panel and highlights show the old note, the new one is held back."""
+        book_id = _seed_book(db)
+        for n in (1, 8):
+            _save(db, book_id, n, ["陈元。"])
+
+        entity_id = db.get_entity_id(book_id, "陈元")
+        db.set_entity_note(entity_id, "Broke through to Golden Core in ch8.",
+                           author="model", chapter_number=8)
+
+        term = db.get_chapter_terms(book_id, 8)[0]
+        assert term["note"] == "Protagonist at ch1."
+        assert term["note_after"] == "Broke through to Golden Core in ch8."
+
+    def test_unchanged_note_carries_no_after(self, db):
+        book_id = _seed_book(db)
+        _save(db, book_id, 3, ["陈元。"])
+
+        term = db.get_chapter_terms(book_id, 3)[0]
+        assert term["note"] == "Protagonist at ch1."
+        assert "note_after" not in term
+
+    def test_entity_introduced_here_shows_its_creation_note(self, db):
+        """Nothing earlier exists to show, so a new entity keeps the note it
+        was created with in this chapter."""
+        book_id = _seed_book(db)
+        db.add_entity("characters", "林月", "Lin Yue", book_id=book_id,
+                      origin_chapter=5, note="Chen Yuan's senior sister.",
+                      note_author="model", note_chapter=5)
+        _save(db, book_id, 5, ["林月。"])
+
+        term = db.get_chapter_terms(book_id, 5)[0]
+        assert term["first_seen"] is True
+        assert term["note"] == "Chen Yuan's senior sister."
+        assert term["note_changed"] is False
+        assert "note_after" not in term
+
+    def test_first_note_on_an_older_entity_is_shown(self, db):
+        """An entity that existed but had no note gains one here: there is no
+        earlier note to prefer, so the new one is the note."""
+        book_id = _seed_book(db)
+        _save(db, book_id, 6, ["青云宗。"])
+
+        entity_id = db.get_entity_id(book_id, "青云宗")
+        db.set_entity_note(entity_id, "The protagonist's sect.",
+                           author="model", chapter_number=6)
+
+        term = db.get_chapter_terms(book_id, 6)[0]
+        assert term["note"] == "The protagonist's sect."
+        assert term["note_changed"] is False
+
+    def test_rewrite_reverted_within_the_chapter_is_not_flagged(self, db):
+        book_id = _seed_book(db)
+        _save(db, book_id, 8, ["陈元。"])
+
+        entity_id = db.get_entity_id(book_id, "陈元")
+        db.set_entity_note(entity_id, "A wrong guess.", author="model", chapter_number=8)
+        db.set_entity_note(entity_id, "Protagonist at ch1.", author="model", chapter_number=8)
+
+        term = db.get_chapter_terms(book_id, 8)[0]
+        assert term["note"] == "Protagonist at ch1."
+        assert term["note_changed"] is False
+        assert "note_after" not in term
+
     def test_note_creation_is_not_a_change(self, db):
         """The seeded note was written at ch1 — the chip must not double up
         with "new" on the chapter that introduced the entity."""

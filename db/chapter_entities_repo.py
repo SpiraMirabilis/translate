@@ -271,12 +271,21 @@ class ChapterEntitiesRepo:
         Each row: id, category, untranslated, translation, occurrences,
         first_seen (the chapter introduced this entity), note_changed (the note
         was rewritten during it), gender (only for categories this book
-        gender-tracks) and note.
+        gender-tracks), note, and note_after when note_changed is set.
 
-        The note is the note **as it read at this chapter** (notes_as_of), not
-        the current one. A note tracks the present state of a character — age,
-        realm, rank, allegiance — so handing a reader on chapter 12 the note
-        written at chapter 900 would spoil the book with its own glossary.
+        The note is point-in-time, never the current one. A note tracks the
+        present state of a character — age, realm, rank, allegiance — so handing
+        a reader on chapter 12 the note written at chapter 900 would spoil the
+        book with its own glossary.
+
+        It is also the note as it read **before** this chapter, not at its end
+        (notes_as_of is end-of-chapter). The panel and the prose highlights are
+        consulted mid-chapter, and a breakthrough on the last page would
+        otherwise be on the first page's hover. Two exceptions fall back to the
+        end-of-chapter note, because there is no earlier one to show: an entity
+        this chapter introduced, and one whose first note was written here.
+        When the chapter rewrote a note, the rewrite is returned separately as
+        `note_after`, for the reader to reveal deliberately.
 
         Returns [] for an unindexed chapter, which is also what an unindexed
         chapter looks like to the panel: no terms, no error.
@@ -308,15 +317,22 @@ class ChapterEntitiesRepo:
             return []
 
         gendered = set(self.get_book_gendered_categories(book_id))
-        notes = {}
+        before, after = {}, {}
         note_changed = set()
         if include_notes:
             try:
                 entity_ids = [r[0] for r in rows]
-                notes = self.notes_as_of(book_id, chapter_number,
-                                         entity_ids=entity_ids) or {}
+                if chapter_number > 1:
+                    before = self.notes_as_of(book_id, chapter_number - 1,
+                                              entity_ids=entity_ids) or {}
                 note_changed = self.entities_with_note_change_at(book_id, chapter_number,
                                                                  entity_ids)
+                # The end-of-chapter note is only needed where the chapter has
+                # something to add: no earlier note, or a rewrite to reveal.
+                need_after = [i for i in entity_ids if not before.get(i) or i in note_changed]
+                if need_after:
+                    after = self.notes_as_of(book_id, chapter_number,
+                                             entity_ids=need_after) or {}
             except Exception as e:
                 self.logger.error(f"Error resolving point-in-time notes: {e}")
 
@@ -332,12 +348,21 @@ class ChapterEntitiesRepo:
             }
             if category in gendered and gender:
                 term["gender"] = gender
-            note = notes.get(entity_id)
+            note = before.get(entity_id)
+            note_after = after.get(entity_id)
             if note:
                 term["note"] = note
-                # Only meaningful alongside a note the reader can see: a
-                # revision that cleared a note leaves nothing to flag.
-                term["note_changed"] = entity_id in note_changed
+                # Only meaningful alongside a note the reader can see and a
+                # rewrite worth revealing: a revision that cleared the note, or
+                # one the same chapter reverted, leaves nothing to flag.
+                changed = (entity_id in note_changed and bool(note_after)
+                           and note_after != note)
+                term["note_changed"] = changed
+                if changed:
+                    term["note_after"] = note_after
+            elif note_after:
+                term["note"] = note_after
+                term["note_changed"] = False
             terms.append(term)
 
         # Book's own category order first (that is the order the Entities page

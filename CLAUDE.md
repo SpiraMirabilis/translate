@@ -193,10 +193,16 @@ fine once per translation and not fine once per reader click in the public proce
   to move only when the model re-listed a known entity — 43k of the corpus's values were
   behind (book 112's protagonist read ch184 at ch193). An entity with no index rows keeps
   its old value; queued chapters don't count.
-- **Notes are point-in-time.** `get_chapter_terms` resolves them through
-  `notes_as_of(book_id, chapter)`, so a reader on ch12 gets the note as it read at ch12.
-  A note tracks a character's *present* state (age, realm, rank, allegiance), so serving
-  the current note would let the glossary spoil the book. `notes_as_of` narrows its
+- **Notes are point-in-time, as of the chapter *before*.** `get_chapter_terms` resolves
+  them through `notes_as_of(book_id, n-1)`: the panel and highlights are read mid-chapter,
+  and `notes_as_of` is end-of-chapter, so ch12's own breakthrough would sit on its first
+  page's hover. A note tracks a character's *present* state (age, realm, rank,
+  allegiance), so serving the current note would let the glossary spoil the book. Two
+  fallbacks to the end-of-chapter note, since nothing earlier exists: an entity the
+  chapter introduced, and an older entity whose first note was written in it. A note the
+  chapter rewrote comes back as `note_after`, which `ReaderTerms.jsx` reveals only when the
+  reader clicks the "note updated" chip; highlights only ever use `note`. A rewrite the
+  same chapter reverted is not flagged. `notes_as_of` narrows its
   revision scan by `entity_ids` when the list is short (≤500), which is what makes this
   a ~45ms endpoint instead of a ~140ms one.
 - **Endpoints**: `GET /api/public/books/{id}/chapters/{n}/terms` (published-gated, 5-min
