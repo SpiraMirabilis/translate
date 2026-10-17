@@ -77,8 +77,9 @@ def register(mcp) -> None:
     ) -> str:
         """Place footnotes at each term's first mention (add_footnotes.py) and
         re-render the chapters. The dry run shows chapter, line, the [n] each gets,
-        and warnings (e.g. an anchor landing in the heading, line 0 — pick a longer
-        anchor or force a chapter). A term whose exact body is already in the book
+        and warnings (e.g. an anchor landing in a line 0 that reads as the chapter
+        heading — pick a longer anchor or force a chapter; a line 0 that is
+        plain prose takes markers normally). A term whose exact body is already in the book
         is skipped, so a re-run is safe. Anchors are exact and case-sensitive;
         plurals are not automatic."""
         from add_footnotes import apply_footnote_plan, load_book_text, plan_footnotes
@@ -92,7 +93,8 @@ def register(mcp) -> None:
         try:
             plan, skipped, not_found = plan_footnotes(
                 {f.term: f.body for f in footnotes}, text["chapters"], text["content"],
-                text["full_text"], chapter=chapter)
+                text["full_text"], chapter=chapter,
+                heading_languages=text["heading_languages"])
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
         written = None

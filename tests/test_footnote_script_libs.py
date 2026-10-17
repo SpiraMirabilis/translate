@@ -95,6 +95,37 @@ def test_plan_warns_when_first_occurrence_is_the_heading(book):
     assert plan[0]["warning"]
 
 
+def test_plan_does_not_warn_when_line_0_is_prose(db):
+    # Most chapters store no heading: line 0 is the first paragraph.
+    book_id = db.create_book("No Headings", "Author")
+    db.save_chapter(book_id, 1, "One", ["第一章 开始", "葫芦兄弟。"],
+                    ["The Calabash Brothers rushed in.", "Then silence."])
+    text = af.load_book_text(db, book_id)
+    plan, _, _ = af.plan_footnotes(
+        {"Calabash Brothers": "Calabash Brothers (葫芦兄弟): a cartoon."},
+        text["chapters"], text["content"], text["full_text"],
+        heading_languages=text["heading_languages"])
+    assert plan[0]["line_idx"] == 0 and plan[0]["warning"] is None
+
+
+@pytest.mark.parametrize("line, langs, expected", [
+    ("Chapter 12 - The Return", ("zh", "en"), True),
+    ("# Prologue", ("zh", "en"), True),
+    ("# 第70章 清閒的假期", ("zh", "en"), True),
+    ("第一百二十回 尾声", ("zh",), True),
+    ("제12화 귀환", ("ko",), True),
+    ("Глава 3. Начало", ("ru",), True),
+    ("He uploaded two more chapters of the novel.", ("zh", "en"), False),
+    ("Did Xie An not want a job like that?", ("zh", "en"), False),
+    ("他写了一篇文章。", ("zh",), False),           # bare 章 is prose
+    ("Chapter 12 - The Return", ("ko",), False),  # English word, Korean book side
+    ("", None, False),
+])
+def test_is_heading_line(line, langs, expected):
+    from footnotes import is_heading_line
+    assert is_heading_line(line, langs) is expected
+
+
 def test_plan_numbers_new_footnote_ahead_of_existing(book):
     db, book_id = book
     text = af.load_book_text(db, book_id)

@@ -82,10 +82,10 @@ def register(mcp) -> None:
         book_id: int,
         chapter_number: int,
         side: Annotated[Literal["en", "src", "both"], Field(description="en = translation, src = Chinese source, both = interleaved by line index")] = "en",
-        line_start: Annotated[int, Field(ge=0, description="First line index (line 0 is the chapter heading)")] = 0,
+        line_start: Annotated[int, Field(ge=0, description="First line index (line 0 is the heading when the chapter stores one)")] = 0,
         line_count: Annotated[int, Field(ge=1, le=2000)] = 400,
     ) -> str:
-        """Read a stored chapter with line indices (`[i] text`). Line 0 is the heading.
+        """Read a stored chapter with line indices (`[i] text`). Line 0 is the heading when the chapter stores one; often it is prose.
         Source and translation are separate line arrays; indices do not align
         one-to-one, so `both` prints each side's block in turn."""
         db = get_db()

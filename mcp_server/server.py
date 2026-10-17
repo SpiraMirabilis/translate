@@ -77,7 +77,8 @@ Safety rules the server enforces or you must follow:
   longer phrase first; later corrections reporting 0 substitutions is then normal.
 - Footnotes: 0-4 per chapter, first mention book-wide; the anchor is a case-sensitive
   exact substring of the translated line (quote-internal punctuation included, plurals
-  not automatic). Never anchor in the chapter heading (line 0). The [n] marker hops
+  not automatic). Never anchor in a chapter heading (line 0 when it names a chapter; many
+  chapters have none, and then line 0 is prose). The [n] marker hops
   closing brackets like 》」) automatically — never put the bracket in the anchor.
   A referent the translation paraphrased away gets no footnote.
 - origin_chapter filters are a floor until t9_backfill_origin_chapter runs; each moved

@@ -58,8 +58,8 @@ Usage:
 import argparse
 import json
 
-from footnotes import (content_to_list, marker_position, prose_end_index,
-                       renumber_chapter)
+from footnotes import (content_to_list, heading_languages, is_heading_line,
+                       marker_position, prose_end_index, renumber_chapter)
 
 
 # ── importable library (no printing, no exits) ────────────────────────────────
@@ -74,6 +74,8 @@ def load_book_text(db, book_id, source=False):
       full_text:         {chapter_number: "\n".join(lines)} — for the
                          idempotency (exact-body) check
       chapter_id_by_num: {chapter_number: chapter_id}
+      heading_languages: the book's source/target languages — what a heading line 0
+                         would be written in; see footnotes.is_heading_line
     """
     chapter_rows = db.list_chapters(book_id)
     chapter_id_by_num = {c["chapter"]: c["id"] for c in chapter_rows}
@@ -92,6 +94,7 @@ def load_book_text(db, book_id, source=False):
         "content": content,
         "full_text": full_text,
         "chapter_id_by_num": chapter_id_by_num,
+        "heading_languages": heading_languages(db.get_book(book_id)),
     }
 
 
@@ -99,7 +102,8 @@ HEADING_WARNING = ("first occurrence is in the chapter heading (line 0) — the 
                    "marker will land in the title")
 
 
-def plan_footnotes(footnotes, chapters, content, full_text, *, chapter=None):
+def plan_footnotes(footnotes, chapters, content, full_text, *, chapter=None,
+                   heading_languages=None):
     """Decide where each {term: body} footnote goes.
 
     Placement rules:
@@ -117,8 +121,10 @@ def plan_footnotes(footnotes, chapters, content, full_text, *, chapter=None):
                   renumbers_existing, warning}. `number` is the previewed [n]
                  after the chapter is renumbered; `renumbers_existing` is true
                  when existing markers in that chapter shift; `warning` is a
-                 string when the anchor's first occurrence is the heading line
-                 (content[0]), else None.
+                 string when the anchor's first occurrence is line 0 AND that
+                 line reads as a heading (footnotes.is_heading_line, in
+                 `heading_languages`; None = any language), else None. Most
+                 chapters open straight into prose, where line 0 is fair game.
       skipped:   terms whose body is already in the book
       not_found: terms with no prose occurrence in the searched chapters
     """
@@ -166,7 +172,8 @@ def plan_footnotes(footnotes, chapters, content, full_text, *, chapter=None):
                 "insert_at": pos,
                 "number": final_for_item.get(k),
                 "renumbers_existing": bool(changed),
-                "warning": HEADING_WARNING if li == 0 else None,
+                "warning": (HEADING_WARNING if li == 0 and is_heading_line(
+                    content[cn][0], heading_languages) else None),
             })
     return plan, skipped, not_found
 
@@ -269,7 +276,8 @@ def main():
 
     # Find first prose occurrence per term; skip already-footnoted (idempotent).
     plan, skipped, not_found = plan_footnotes(
-        footnotes, chapters, content, text["full_text"], chapter=args.chapter)
+        footnotes, chapters, content, text["full_text"], chapter=args.chapter,
+        heading_languages=text["heading_languages"])
 
     by_ch = {}
     for item in plan:

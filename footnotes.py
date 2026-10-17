@@ -65,6 +65,48 @@ def marker_position(line, start, end):
     return end
 
 
+# The word for "chapter", per language. Most stored chapters start straight
+# into prose — the title lives in chapters.title — so line 0 is only treated as
+# a heading (and kept free of markers) when it names a chapter. CJK forms need
+# the number in front: a bare 章 is ordinary prose (文章, 印章, 规章).
+_CJK_NUM = r"[0-9０-９零〇一二三四五六七八九十百千万萬两兩]+"
+CHAPTER_WORDS = {
+    "zh": rf"第?\s*{_CJK_NUM}\s*[章回节節]",
+    "ja": rf"第?\s*{_CJK_NUM}\s*[章話话]",
+    "ko": r"제?\s*\d+\s*[장화]",
+    "ru": r"(?i:\bглава\b)",
+    "en": r"(?i:\bchapter\b)",
+}
+# A Markdown heading ("# Prologue") is a heading whatever it says.
+_MD_HEADING_RE = re.compile(r"^\s*#{1,6}\s")
+
+
+def is_heading_line(line, languages=None):
+    """True when ``line`` — a chapter's line 0 — reads as its heading: a
+    Markdown heading, or a line naming a chapter in one of ``languages``
+    (codes as in books.source_language / books.language). None checks every
+    known language. Not perfect: prose that mentions "the previous chapter"
+    on line 0 reads as a heading too, which only costs a marker that line."""
+    if not line:
+        return False
+    if _MD_HEADING_RE.match(line):
+        return True
+    langs = CHAPTER_WORDS if languages is None else languages
+    return any(re.search(CHAPTER_WORDS[lang], line)
+               for lang in dict.fromkeys(langs) if lang in CHAPTER_WORDS)
+
+
+def heading_languages(book):
+    """The languages a book's heading line could be written in: its source
+    language (the source side, or a heading left untranslated) and its target
+    language. None when the book row carries neither."""
+    book = book or {}
+    langs = tuple(dict.fromkeys(
+        l for l in (book.get("source_language"), book.get("target_language"),
+                    book.get("language")) if l))
+    return langs or None
+
+
 def content_to_list(raw):
     """Normalize chapter content (JSON string / list / str) to a list of lines."""
     if isinstance(raw, list):

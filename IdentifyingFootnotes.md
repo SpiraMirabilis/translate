@@ -32,8 +32,11 @@ the CLI instructions in this doc apply unchanged.
 Differences worth knowing:
 - **Every write defaults to a dry run** (`dry_run=true` / `apply=false`).
 - **The heading audit is built in.** A plan whose anchor falls on `content[0]` comes back with
-  a warning, so check `warnings` before applying rather than grepping for `^Chapter …[n]`
-  afterwards. Still audit the rendered `↳` lines for plural artifacts.
+  a warning **only when that line reads as a heading** (a Markdown `#` line, or one naming a
+  chapter in the book's source or target language: `Chapter 12`, `第12章`, `제12화`, `Глава`).
+  Most stored chapters have no heading line, so line 0 is the first paragraph and takes a
+  marker like any other. Check `warnings` before applying rather than grepping for
+  `^Chapter …[n]` afterwards. Still audit the rendered `↳` lines for plural artifacts.
 - **No map files.** Candidates flow export → edit the list → `t9_add_footnotes` in context.
 - **The `db.get_chapter` argument-order trap** (see *DB gotcha*) cannot happen through
   `t9_get_chapter`, which takes `book_id` and `chapter_number` by name.
@@ -235,7 +238,8 @@ The `footnotes` table is the source of truth; the inline `[n]` marker and the tr
   ```
   python3 add_footnotes.py --book-id N --chapter 457 --term "human skin" --footnote "..."
   ```
-- ⚠️ **The chapter heading is `content[0]`.** If the term also appears in the chapter title, `add_footnotes.py` will happily anchor there and put a marker *inside the chapter heading*. Footnotes live in prose. Anchor on a body-only phrase instead ("selected as a Model Worker", "called the Blessing Sarira"). **Audit after every batch** — scan content lines matching `^Chapter ` for a `[\d+]` marker.
+- ⚠️ **When a chapter has a heading line, it is `content[0]`** (many don't: line 0 is often the
+  first paragraph, and then it is fair game). If the term also appears in the chapter title, `add_footnotes.py` will happily anchor there and put a marker *inside the chapter heading*. Footnotes live in prose. Anchor on a body-only phrase instead ("selected as a Model Worker", "called the Blessing Sarira"). **Audit after every batch** — scan content lines matching `^Chapter ` for a `[\d+]` marker.
 - **A referent that appears ONLY in a chapter title gets no footnote.** (Xiang Yu's "walking in brocade by night", "money can reach the gods".) Flag it for the repair pass if it's worth rescuing.
 - **Brackets and quotes are handled automatically.** `footnotes.marker_position()` puts the marker *outside* a matching pair: anchor `Rhapsody on the Epang Palace` and it renders `《Rhapsody on the Epang Palace》[2]`. Handles `《》「」『』〈〉（）〔〕 "" '' () [] {}` and nests them. **Never bake a closing bracket into the anchor.** Ordinary punctuation does *not* hop, so `"Decree Extending Grace[2]."` correctly keeps its marker before the period. Anchor the **whole** title — a partial anchor ends mid-title with no closer to hop.
 - ⚠️ **Plurals are NOT automatic.** Anchoring `Licentiate` against "Licentiates" yields `Licentiate[2]s`. Anchor the plural the prose actually uses ("Yellow Turban Strongmen").
