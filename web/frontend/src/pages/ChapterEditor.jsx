@@ -155,10 +155,11 @@ export default function ChapterEditor() {
     if (gutterInnerRef.current) {
       gutterInnerRef.current.style.transform = `translateY(-${top}px)`
     }
-    // EnglishBackdrop's root div is the wrapper's only child — scroll it
-    // directly instead of re-rendering it with a new scrollTop prop.
-    const backdropEl = backdropWrapRef.current?.firstElementChild
-    if (backdropEl) backdropEl.scrollTop = top
+    // Translate EnglishBackdrop's content div directly instead of re-rendering
+    // the backdrop with a new scrollTop prop (and not via scrollTop, which
+    // clamps to the backdrop's own height).
+    const backdropContent = backdropWrapRef.current?.querySelector('[data-backdrop-content]')
+    if (backdropContent) backdropContent.style.transform = `translateY(-${top}px)`
   }, [])
 
   const textareaRef = useRef(null)
@@ -361,7 +362,10 @@ export default function ChapterEditor() {
     const cs = getComputedStyle(ta)
     const padL = parseFloat(cs.paddingLeft) || 0
     const padR = parseFloat(cs.paddingRight) || 0
-    mirror.style.width = (ta.clientWidth - padL - padR) + 'px'
+    // clientWidth is rounded to an integer; use the fractional box width, or a
+    // line that just fits in the textarea can measure as wrapped.
+    const scrollbar = ta.offsetWidth - ta.clientWidth
+    mirror.style.width = (ta.getBoundingClientRect().width - scrollbar - padL - padR) + 'px'
     mirror.style.font = cs.font
     mirror.style.letterSpacing = cs.letterSpacing
     mirror.style.lineHeight = cs.lineHeight
@@ -382,7 +386,9 @@ export default function ChapterEditor() {
       nodes.push(node)
     }
     mirror.appendChild(frag)
-    const heights = nodes.map(node => node.offsetHeight)
+    // Fractional heights: offsetHeight rounds each 22.75px row to 23, and the
+    // gutter crept ~1 line out of step per 100 lines.
+    const heights = nodes.map(node => node.getBoundingClientRect().height)
     mirror.textContent = ''
     setLineHeights(heights)
   }, []) // stable — reads textLines from ref
@@ -392,11 +398,18 @@ export default function ChapterEditor() {
     measureTimerRef.current = setTimeout(measureLineHeightsNow, 300)
   }, [measureLineHeightsNow])
 
-  // Resize: remeasure immediately
+  // Resize: remeasure immediately. Same when a webfont finishes loading — the
+  // first measure can run against the fallback font (Firefox loads JetBrains
+  // Mono after the chapter arrives), which wraps more and stayed baked into
+  // the gutter until the next edit.
   useEffect(() => {
     window.addEventListener('resize', measureLineHeightsNow)
+    const fonts = document.fonts
+    fonts?.addEventListener?.('loadingdone', measureLineHeightsNow)
+    fonts?.ready?.then(measureLineHeightsNow)
     return () => {
       window.removeEventListener('resize', measureLineHeightsNow)
+      fonts?.removeEventListener?.('loadingdone', measureLineHeightsNow)
       clearTimeout(measureTimerRef.current)
     }
   }, [measureLineHeightsNow])
@@ -1482,6 +1495,8 @@ export default function ChapterEditor() {
                   // textarea's default white background.
                   background: 'transparent',
                   caretColor: '#e2e8f0',
+                  // Same gutter as EnglishBackdrop, so both wrap at one width.
+                  scrollbarGutter: 'stable',
                 }}
                 value={text}
                 onChange={handleChange}
