@@ -148,15 +148,16 @@ export function continueReading(books, progress, { limit = 12 } = {}) {
   return out.slice(0, limit)
 }
 
-// Shelves dedupe top-down: a book on Continue reading or Recently updated is
-// not repeated on New this month (a young catalog had the same seven books on
-// both rows). Editor's choice stays complete — it is a showcase, not a feed.
+// New this month skips books already on Continue reading (the reader has found
+// them), but not ones on Recently updated: a new book that also got chapters
+// belongs on both — "new" and "updated" answer different questions. Editor's
+// choice stays complete — it is a showcase, not a feed.
 export function buildShelves(books, progress, now = Date.now()) {
   const cont = continueReading(books, progress)
   const updated = books.filter(b => hasRecentUpdate(b.last_chapter_date, now))
     .sort(byDateDesc('last_chapter_date'))
-  const seen = new Set([...cont.map(c => c.book.id), ...updated.map(b => b.id)])
-  const fresh = books.filter(b => !seen.has(b.id) && isNewlyAdded(b.created_date, now))
+  const reading = new Set(cont.map(c => c.book.id))
+  const fresh = books.filter(b => !reading.has(b.id) && isNewlyAdded(b.created_date, now))
     .sort(byDateDesc('created_date'))
   const picks = books.filter(b => hasEditorsChoice(b.tags || []))
   return { continue: cont, updated, fresh, picks }

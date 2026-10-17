@@ -70,14 +70,14 @@ describe('shelves', () => {
   it('builds updated / new / picks rows', () => {
     const s = buildShelves(books, {}, NOW)
     expect(ids(s.updated)).toEqual([1, 3])   // within 48h, newest first
-    expect(ids(s.fresh)).toEqual([])         // 3 is new but already on Updated
+    expect(ids(s.fresh)).toEqual([3])        // new AND updated: on both shelves
     expect(ids(s.picks)).toEqual([3])        // showcase: never deduped
     expect(s.continue).toEqual([])
   })
-  it('New this month keeps books no earlier shelf shows', () => {
+  it('New this month skips books already on Continue reading', () => {
     const quiet = { ...books[2], id: 4, last_chapter_date: iso(24 * 10) }
-    const s = buildShelves([...books, quiet], {}, NOW)
-    expect(ids(s.fresh)).toEqual([4])
+    expect(ids(buildShelves([...books, quiet], {}, NOW).fresh)).toEqual([3, 4])
+    expect(ids(buildShelves([...books, quiet], { 3: 1 }, NOW).fresh)).toEqual([4])
   })
   it('continueReading reads both progress shapes and skips unknown books', () => {
     const progress = { 1: { chapter: 45, scrollRatio: 0.3 }, '2': 10, 99: 5 }
