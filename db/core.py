@@ -174,6 +174,7 @@ class DatabaseCore:
         full_path = os.path.join(self.config.script_dir, filepath)
         
         try:
+            os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
             with open(full_path, 'w', encoding='utf-8') as file:
                 json.dump(data, file, indent=4, ensure_ascii=False)
         except OSError as e:

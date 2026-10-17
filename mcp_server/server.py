@@ -6,6 +6,10 @@ from typing import Any, Optional
 import time
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import Settings
+
+# MCP 1.12.4 defines Settings before FastMCP, leaving lifespan unresolved.
+Settings.model_rebuild()
 
 from . import usage
 from .deps import DEFAULT_ADMIN_URL, AdminClient, AppContext, set_app

@@ -4,8 +4,97 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+
+
+def test_mcp_startup_resolves_lifespan_settings():
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-W", "error:Field 'lifespan'", "-c",
+         "from mcp_server.server import build_server; "
+         "[build_server(read_only=ro, stateless_http=http) "
+         "for ro in (False, True) for http in (False, True)]"],
+        cwd=root, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_mcp_stdio_initialization_and_readonly_inventory():
+    import anyio
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    async def run():
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-W", "error:Field 'lifespan'", "-m", "mcp_server", "--read-only"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env={**os.environ, "MCP_USAGE_LOG": "off"},
+        )
+        with anyio.fail_after(15):
+            async with stdio_client(params) as (reader, writer):
+                async with ClientSession(reader, writer) as session:
+                    initialized = await session.initialize()
+                    assert initialized.serverInfo.name == "t9"
+                    tools = (await session.list_tools()).tools
+                    assert tools and all(tool.annotations.readOnlyHint for tool in tools)
+                    assert "t9_list_entities" in {tool.name for tool in tools}
+
+    anyio.run(run)
+
+
+@pytest.mark.parametrize("mounted_logs", [False, True])
+def test_debug_prompts_use_writable_logs(tmp_path, mounted_logs):
+    from db.core import DatabaseCore
+    from translation_engine import TranslationEngine
+
+    app = tmp_path / "app"
+    app.mkdir()
+    if mounted_logs:
+        data_logs = tmp_path / "data" / "logs"
+        data_logs.mkdir(parents=True)
+        (app / "logs").symlink_to(data_logs, target_is_directory=True)
+    config = SimpleNamespace(script_dir=str(app) + "/")
+    manager = DatabaseCore()
+    manager.config, manager.logger = config, Mock()
+    engine = TranslationEngine(config, manager.logger, manager)
+    if mounted_logs:
+        app.chmod(0o555)
+    try:
+        for book_id, name in [(1, "prompt-book1.tmp"), (2, "prompt-book2.tmp"),
+                              (None, "prompt.tmp")]:
+            path = Path(engine._debug_prompt_path(book_id))
+            assert path == app / "logs" / name
+            manager.save_json_file(str(path), f"Prompt for {book_id}")
+            assert json.loads(path.read_text()) == f"Prompt for {book_id}"
+        manager.logger.error.assert_not_called()
+    finally:
+        app.chmod(0o755)
+
+
+def test_debug_prompt_directory_errors_are_logged(tmp_path):
+    from db.core import DatabaseCore
+
+    (tmp_path / "logs").write_text("not a directory")
+    manager = DatabaseCore()
+    manager.config = SimpleNamespace(script_dir=str(tmp_path))
+    manager.logger = Mock()
+    manager.save_json_file("logs/prompt-book1.tmp", "prompt")
+    manager.logger.error.assert_called_once()
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_entity_json_exports_preserve_existing_behavior(db, tmp_path, absolute):
+    payload = {"characters": {"张三": {"translation": "Zhang San"}}}
+    db.entities = payload
+    path = tmp_path / "entities.json"
+    path.write_text("old export")
+    assert db.export_to_json(str(path) if absolute else path.name)
+    assert json.loads(path.read_text()) == payload
 
 
 def test_research_compose_reuses_server_on_private_loopback():

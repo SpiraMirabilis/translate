@@ -1400,12 +1400,13 @@ class TranslationEngine:
     def _debug_prompt_path(self, book_id):
         """Where to dump the system prompt for debugging.
 
+        logs is writable in Docker, where the application directory is not.
         Per book, because concurrent jobs would otherwise overwrite each
         other's dump (and the write is not atomic, so a reader could see a
         torn mix of two books' prompts).
         """
         suffix = f"-book{book_id}" if book_id else ""
-        return f"{self.config.script_dir}/prompt{suffix}.tmp"
+        return os.path.join(self.config.script_dir, "logs", f"prompt{suffix}.tmp")
 
     def extract_entities(self, chapter_text, book_id=None, chapter_number=None,
                          progress_callback=None, retranslation_reason=None, should_cancel=None,

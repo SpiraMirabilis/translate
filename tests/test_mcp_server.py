@@ -103,6 +103,52 @@ def tools_by_name(server):
     return {t.name: t for t in asyncio.run(server.list_tools())}
 
 
+def test_rebuilt_settings_preserve_environment_loading_and_validation(monkeypatch):
+    from mcp.server.fastmcp.server import Settings
+    from pydantic import ValidationError
+
+    values = build_server().settings.model_dump()
+    for name in ("host", "port", "debug"):
+        values.pop(name)
+    monkeypatch.setenv("FASTMCP_HOST", "localhost")
+    monkeypatch.setenv("FASTMCP_PORT", "9876")
+    monkeypatch.setenv("FASTMCP_DEBUG", "true")
+    settings = Settings(**values)
+    assert (settings.host, settings.port, settings.debug) == ("localhost", 9876, True)
+    monkeypatch.setenv("FASTMCP_PORT", "invalid")
+    with pytest.raises(ValidationError):
+        Settings(**values)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_rebuilt_settings_preserve_custom_lifespan_and_cleanup(fail):
+    from contextlib import asynccontextmanager, nullcontext
+    from mcp.server.fastmcp import FastMCP
+
+    events = []
+
+    @asynccontextmanager
+    async def lifespan(app):
+        events.append(("start", app.name))
+        try:
+            yield {"ready": True}
+        finally:
+            events.append(("stop", app.name))
+
+    server = FastMCP("lifecycle-test", lifespan=lifespan)
+    assert server.settings.lifespan is lifespan
+
+    async def run():
+        async with server._mcp_server.lifespan(server._mcp_server) as state:
+            assert state == {"ready": True}
+            if fail:
+                raise RuntimeError("tool failed")
+
+    with pytest.raises(RuntimeError, match="tool failed") if fail else nullcontext():
+        asyncio.run(run())
+    assert events == [("start", "lifecycle-test"), ("stop", "lifecycle-test")]
+
+
 def test_every_tool_is_prefixed_and_annotated(server):
     tools = tools_by_name(server)
     assert tools
