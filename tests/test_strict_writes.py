@@ -86,8 +86,8 @@ def test_strict_save_entities_still_writes_backup_then_raises(strict_db, tmp_pat
     with pytest.raises(BoomError):
         strict_db.save_entities()
 
-    # The entities_backup.json fallback must have run before the re-raise.
-    backup = tmp_path / "entities_backup.json"
+    # The logs/entities_backup.json fallback must have run before the re-raise.
+    backup = tmp_path / "logs" / "entities_backup.json"
     assert backup.exists()
 
 

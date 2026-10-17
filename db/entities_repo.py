@@ -185,8 +185,9 @@ class EntitiesRepo:
         except Exception as e:
             self.logger.error(f"Error saving entities to database: {e}\n{traceback.format_exc()}")
             # Consider creating a backup JSON in this case
-            self.save_json_file("entities_backup.json", snapshot)
-            self.logger.info("Created backup of entities in entities_backup.json")
+            # logs/ is writable in Docker, where the application directory is not.
+            self.save_json_file("logs/entities_backup.json", snapshot)
+            self.logger.info("Created backup of entities in logs/entities_backup.json")
             if self.strict_writes:
                 raise
 
