@@ -238,6 +238,10 @@ def _number_to_words(value: float) -> str:
     return _format_number(value)
 
 
+# A replaced value below one, in front of a singular unit: "half a kilometer".
+_FRACTION_OF_ONE = {0.25: "a quarter of a", 0.5: "half a", 0.75: "three-quarters of a"}
+
+
 # ── Word-to-number parser ──────────────────────────────────────────
 
 _ONES = {
@@ -1091,6 +1095,17 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
         if (numeral == "english" and scaled == 1.0 and final_unit == "hour"
                 and not is_another and not filler and not lead):
             output = "about an hour" if was_rounded else "an hour"
+        elif (numeral == "english" and scaled in _FRACTION_OF_ONE
+                and not is_another and not filler and not lead):
+            # Hours scale down to minutes before they get here; a unit with no
+            # smaller step (kilometer) reads "half a kilometer", not "half kilometers".
+            body = f"{_FRACTION_OF_ONE[scaled]} {final_unit}"
+            output = f"about {body}" if was_rounded else body
+        elif (numeral == "english" and scaled == 1.0 and not was_rounded
+                and num_str.strip().lower() in ("a", "an")
+                and not is_another and not filler and not lead):
+            # Keep the source's article: "only a gongli" -> "only a kilometer".
+            output = f"{'an' if final_unit[0] in 'aeiou' else 'a'} {final_unit}"
         elif lead and scaled == 1.0:
             # The lead phrase's article already says "one" ("a full hour").
             body = f"{lead} {final_unit}"

@@ -411,3 +411,29 @@ def test_a_leading_and_is_not_part_of_the_count():
 
 def test_and_inside_a_number_still_counts():
     assert convert_units(["one hundred and twenty li"]) == ["one hundred and twenty li (60 km)"]
+
+
+# ── gongli (公里): replaced outright, never annotated ──────────────
+
+
+def _conv(s):
+    return convert_units([s], cleaning_model=None, use_jev=False)[0]
+
+
+def test_gongli_is_replaced_with_kilometers():
+    assert _conv("Three gongli further on.") == "Three kilometers further on."
+    assert _conv("It was 15 gongli away.") == "It was fifteen kilometers away."
+    assert _conv("two or three gongli") == "two or three kilometers"
+    assert _conv("three gonglis") == "three kilometers"
+
+
+def test_gongli_keeps_the_article_and_reads_fractions():
+    assert _conv("only a gongli off") == "only a kilometer off"
+    assert _conv("Half a gongli later") == "Half a kilometer later"
+    assert _conv("a quarter of a gongli") == "a quarter of a kilometer"
+
+
+def test_gongli_left_alone_without_a_count():
+    assert _conv("dozens of gongli") == "dozens of gongli"
+    assert _conv("Gongli Village") == "Gongli Village"
+
