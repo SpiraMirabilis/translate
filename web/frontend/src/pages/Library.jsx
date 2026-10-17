@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
-import { BookOpen, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, Sparkles, Clock, Star, BookMarked, LibraryBig, Flag, Info } from 'lucide-react'
+import { BookOpen, BookText, Sun, Moon, Sunset, MessageSquarePlus, Rss, Sparkles, Clock, Star, BookMarked, LibraryBig, Flag, Info, ChevronLeft } from 'lucide-react'
 import { useReaderPrefs } from '../hooks/useReaderPrefs'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import RecommendModal from '../components/RecommendModal'
@@ -45,6 +45,9 @@ function readFilters(sp) {
     tags: (sp.get('tag') || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     status: sp.get('status') || '',
     lang: (sp.get('lang') || '').toLowerCase(),
+    // ?view=all collapses the shelves into the one sorted grid. Picking a sort
+    // sets it: re-sorting the grid below the shelves is invisible from the top.
+    view: sp.get('view') === 'all' ? 'all' : '',
   }
 }
 
@@ -60,7 +63,9 @@ export default function Library() {
   const [progress] = useLocalStorage('reader-progress', {})
 
   const filters = useMemo(() => readFilters(searchParams), [searchParams])
-  const updateFilters = useCallback((patch) => {
+  // Typing and chip toggles replace the history entry; leaving the shelves
+  // pushes one, so Back brings them back.
+  const updateFilters = useCallback((patch, { push = false } = {}) => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
       const f = { ...readFilters(prev), ...patch }
@@ -68,14 +73,20 @@ export default function Library() {
       f.tags?.length ? next.set('tag', f.tags.join(',')) : next.delete('tag')
       f.status ? next.set('status', f.status) : next.delete('status')
       f.lang ? next.set('lang', f.lang) : next.delete('lang')
+      f.view ? next.set('view', f.view) : next.delete('view')
       return next
-    }, { replace: true })
+    }, { replace: !push })
   }, [setSearchParams])
   const addTag = useCallback((tag) => {
     const lower = tag.toLowerCase()
     updateFilters({ tags: filters.tags.includes(lower) ? filters.tags : [...filters.tags, lower] })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [filters.tags, updateFilters])
+  const showAll = useCallback((nextSort) => {
+    setSort(nextSort)
+    if (filters.view !== 'all') updateFilters({ view: 'all' }, { push: true })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [filters.view, setSort, updateFilters])
 
   // The /library shell carries the default sort's payload inline (see
   // _index_for_library in web/app_factory.py), so the first paint needs no
@@ -89,8 +100,9 @@ export default function Library() {
   })
   const books = useMemo(() => data?.books || [], [data])
   const filtering = hasActiveFilters(filters)
+  const listView = filtering || filters.view === 'all'
   const filtered = useMemo(() => (filtering ? applyFilters(books, filters) : books), [books, filters, filtering])
-  const shelves = useMemo(() => (filtering ? null : buildShelves(books, progress)), [books, progress, filtering])
+  const shelves = useMemo(() => (listView ? null : buildShelves(books, progress)), [books, progress, listView])
   const stats = useMemo(() => libraryStats(books), [books])
   const now = Date.now()
 
@@ -112,6 +124,28 @@ export default function Library() {
       <h3 className={`mt-2 font-semibold ${t.title} text-sm leading-tight ${t.titleHover} transition-colors`}>Recommend a Novel</h3>
       <p className={`mt-0.5 text-xs ${t.chapters}`}>Suggest one for translation</p>
     </button>
+  )
+
+  // The full grid: the last section under the shelves, or the whole page in
+  // list view (where `action` is the way back to the shelves).
+  const allBooks = (action) => (
+    <section>
+      <div className="flex items-baseline justify-between mb-4">
+        <h2 className={`flex items-center gap-2 text-base font-semibold ${t.shelfTitle}`}>
+          <LibraryBig size={16} className="text-indigo-500" /> All books
+          <span className={`text-xs font-normal ${t.shelfMeta}`}>{SORT_OPTIONS.find(o => o.id === sort)?.label}</span>
+        </h2>
+        {action}
+      </div>
+      {books.length === 0 ? (
+        <div className="text-center py-32">
+          <BookText size={48} className="mx-auto mb-4 opacity-30" />
+          <p className={`${t.subtitle} text-lg`}>No books available yet</p>
+        </div>
+      ) : (
+        <div className={GRID}>{books.map(card)}{recommendCard}</div>
+      )}
+    </section>
   )
 
   return (
@@ -172,7 +206,7 @@ export default function Library() {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3">
           <LibraryToolbar
             books={books} filters={filters} onChange={updateFilters}
-            sort={sort} setSort={setSort} sortOptions={SORT_OPTIONS}
+            sort={sort} setSort={showAll} sortOptions={SORT_OPTIONS}
             resultCount={filtering ? filtered.length : null} t={t}
           />
         </div>
@@ -197,6 +231,13 @@ export default function Library() {
           ) : (
             <div className={GRID}>{filtered.map(card)}{recommendCard}</div>
           )
+        ) : listView ? (
+          allBooks(
+            <button onClick={() => updateFilters({ view: '' }, { push: true })}
+              className={`inline-flex items-center gap-0.5 text-xs ${t.shelfMeta} hover:text-indigo-500 transition-colors`}>
+              <ChevronLeft size={12} /> Back to shelves
+            </button>
+          )
         ) : (
           <>
             {shelves.continue.length > 0 && (
@@ -208,38 +249,26 @@ export default function Library() {
             )}
             {shelves.updated.length > 0 && (
               <BookShelf title="Recently updated" icon={Clock} count={shelves.updated.length} t={t}
-                action={{ label: 'Sort by updated', onClick: () => setSort('updated') }}>
+                action={{ label: 'Sort by updated', onClick: () => showAll('updated') }}>
                 {shelves.updated.map(card)}
               </BookShelf>
             )}
             {shelves.fresh.length > 0 && (
               <BookShelf title="New this month" icon={Sparkles} count={shelves.fresh.length} t={t}
-                action={{ label: 'Sort by newest', onClick: () => setSort('newly_added') }}>
+                action={{ label: 'Sort by newest', onClick: () => showAll('newly_added') }}>
                 {shelves.fresh.map(card)}
               </BookShelf>
             )}
             {shelves.picks.length > 0 && (
               <BookShelf title="Editor's choice" icon={Star} count={shelves.picks.length} t={t}
-                action={{ label: 'See all', onClick: () => updateFilters({ tags: ["editor's choice"] }) }}>
+                action={{ label: 'See all', onClick: () => {
+                  updateFilters({ tags: ["editor's choice"] }, { push: true })
+                  window.scrollTo({ top: 0, behavior: 'smooth' })
+                } }}>
                 {shelves.picks.map(card)}
               </BookShelf>
             )}
-            <section>
-              <div className="flex items-baseline justify-between mb-4">
-                <h2 className={`flex items-center gap-2 text-base font-semibold ${t.shelfTitle}`}>
-                  <LibraryBig size={16} className="text-indigo-500" /> All books
-                  <span className={`text-xs font-normal ${t.shelfMeta}`}>{SORT_OPTIONS.find(o => o.id === sort)?.label}</span>
-                </h2>
-              </div>
-              {books.length === 0 ? (
-                <div className="text-center py-32">
-                  <BookText size={48} className="mx-auto mb-4 opacity-30" />
-                  <p className={`${t.subtitle} text-lg`}>No books available yet</p>
-                </div>
-              ) : (
-                <div className={GRID}>{books.map(card)}{recommendCard}</div>
-              )}
-            </section>
+            {allBooks()}
           </>
         )}
       </main>
