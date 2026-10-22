@@ -2,16 +2,17 @@
 Email dispatch for novel-translation recommendation requests.
 
 Three requester-facing email types, all routed through the shared SES/Postfix
-sender (email_sender.send_email) and all carrying an unsubscribe link:
+sender (email_sender.send_logged) and all carrying an unsubscribe link:
 
   - send_admin_message   : admin-composed free-text message ("we need more info…")
   - send_submit_confirmation : auto "we received your request" on submit
   - send_status_change   : auto notice when a request is accepted or dismissed
 
 Unlike reply-notifications, these are deliberate single-shot sends (one admin
-action, one submit, one status transition), so there's no idempotency log — we
-only honour the global email suppression list, which is shared with the comment
-system. An unsubscribe from ANY email type suppresses the address for all of
+action, one submit, one status transition), so there's no idempotency gate —
+we only honour the global email suppression list, which is shared with the
+comment system. Every attempt (suppressed ones included) is written to
+email_log, which is where a bounce lands and what the admin page lists. An unsubscribe from ANY email type suppresses the address for all of
 them (the suppression table is keyed on email alone).
 
 Replies to these emails go to EMAIL_FROM via an explicit Reply-To header, so a
@@ -23,7 +24,7 @@ import os
 import uuid
 from html import escape
 
-from .email_sender import send_email
+from .email_sender import send_logged, log_email_attempt
 from .email_tokens import sign_rec
 # Reuse the comment system's site/unsubscribe helpers — the unsubscribe token is
 # email-only and its endpoint is generic per-address, so it works unchanged here.
@@ -75,7 +76,7 @@ def _footer_text(unsub_url: str) -> str:
     )
 
 
-def _deliver(db_manager, rec: dict, subject: str,
+def _deliver(db_manager, rec: dict, kind: str, subject: str,
              text_main: str, html_main: str) -> tuple[bool, str]:
     """Shared gate + send. Returns (ok, detail)."""
     recipient = (rec.get("requester_email") or "").strip().lower()
@@ -84,6 +85,8 @@ def _deliver(db_manager, rec: dict, subject: str,
     if not _from_address():
         return (False, "email disabled (EMAIL_FROM unset)")
     if db_manager.is_email_suppressed(recipient):
+        log_email_attempt(db_manager, kind, recipient, subject, status="suppressed",
+                          recommendation_id=rec.get("id"))
         return (False, "suppressed")
 
     unsub_url = _build_unsubscribe_url(recipient)
@@ -91,7 +94,8 @@ def _deliver(db_manager, rec: dict, subject: str,
     html_body = _wrap_html(html_main, unsub_url)
     extra_headers = _reply_headers(rec.get("id"))
 
-    ok, msg = send_email(recipient, subject, text_body, html_body, extra_headers=extra_headers)
+    ok, msg = send_logged(db_manager, kind, recipient, subject, text_body, html_body,
+                          extra_headers=extra_headers, recommendation_id=rec.get("id"))
     if not ok:
         logger.warning("recommendation email to %s (rec %s) failed: %s",
                        recipient, rec.get("id"), msg)
@@ -126,7 +130,7 @@ def send_submit_confirmation(db_manager, rec_id: int) -> tuple[bool, str]:
         f"information, we'll reach out to you at this address.</p>"
         f"<p style='color:#666'>— {escape(site)}</p>"
     )
-    return _deliver(db_manager, rec, subject, text_main, html_main)
+    return _deliver(db_manager, rec, "rec_confirm", subject, text_main, html_main)
 
 
 def send_status_change(db_manager, rec_id: int, new_status: str) -> tuple[bool, str]:
@@ -174,7 +178,7 @@ def send_status_change(db_manager, rec_id: int, new_status: str) -> tuple[bool, 
             f"recommendation and hope you'll suggest others.</p>"
             f"<p style='color:#666'>— {escape(site)}</p>"
         )
-    return _deliver(db_manager, rec, subject, text_main, html_main)
+    return _deliver(db_manager, rec, f"rec_{new_status}", subject, text_main, html_main)
 
 
 def send_admin_message(db_manager, rec_id: int, message: str) -> tuple[bool, str]:
@@ -207,4 +211,4 @@ def send_admin_message(db_manager, rec_id: int, message: str) -> tuple[bool, str
         f"<em>{escape(title)}</em>. You can reply directly to this email.</p>"
         f"<p style='color:#666'>— {escape(site)}</p>"
     )
-    return _deliver(db_manager, rec, subject, text_main, html_main)
+    return _deliver(db_manager, rec, "rec_message", subject, text_main, html_main)

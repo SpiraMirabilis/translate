@@ -28,13 +28,21 @@ class RecommendationsRepo:
             rec_id = cursor.lastrowid
         return rec_id
 
-    # Correlated subqueries add reply_count / unread_reply_count to each row so
-    # the admin UI can render per-request badges without a second round-trip.
+    # Correlated subqueries add reply/email counts to each row so the admin UI
+    # can render per-request badges without a second round-trip.
     _REC_REPLY_COUNTS = (
         '(SELECT COUNT(*) FROM recommendation_replies rr '
         'WHERE rr.recommendation_id = r.id) AS reply_count, '
         '(SELECT COUNT(*) FROM recommendation_replies rr '
-        'WHERE rr.recommendation_id = r.id AND rr.is_read = 0) AS unread_reply_count'
+        'WHERE rr.recommendation_id = r.id AND rr.is_read = 0) AS unread_reply_count, '
+        # Same idea for outbound mail: how many went out, how many bounced, and
+        # whether the address is on the suppression list (bounce/unsubscribe).
+        '(SELECT COUNT(*) FROM email_log el '
+        'WHERE el.recommendation_id = r.id) AS email_count, '
+        '(SELECT COUNT(*) FROM email_log el '
+        "WHERE el.recommendation_id = r.id AND el.status = 'bounced') AS bounced_email_count, "
+        '(SELECT MAX(s.reason) FROM email_suppressions s '
+        'WHERE s.email = LOWER(r.requester_email)) AS email_suppressed_reason'
     )
 
     def list_recommendations(self, status: str = None) -> list:

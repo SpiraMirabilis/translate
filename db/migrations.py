@@ -791,6 +791,65 @@ def _m024_footnote_candidates_footnote_id(conn, cursor, backend, logger):
         logger.info("Added footnote_id column to footnote_candidates table")
 
 
+
+_EMAIL_LOG_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS email_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sent_at TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            subject TEXT,
+            message_id TEXT,
+            recommendation_id INTEGER,
+            comment_id INTEGER,
+            status TEXT NOT NULL,
+            detail TEXT,
+            bounced_at TEXT,
+            bounce_status TEXT,
+            bounce_diagnostic TEXT
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS email_log (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            sent_at VARCHAR(50) NOT NULL,
+            recipient VARCHAR(255) NOT NULL,
+            kind VARCHAR(32) NOT NULL,
+            subject TEXT,
+            message_id VARCHAR(255),
+            recommendation_id INTEGER,
+            comment_id INTEGER,
+            status VARCHAR(20) NOT NULL,
+            detail TEXT,
+            bounced_at VARCHAR(50),
+            bounce_status VARCHAR(20),
+            bounce_diagnostic TEXT,
+            KEY idx_email_log_recipient (recipient),
+            KEY idx_email_log_message_id (message_id),
+            KEY idx_email_log_rec (recommendation_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m025_email_log(conn, cursor, backend, logger):
+    """Outbound email log. Unsubscribe tokens are stateless, so until now the
+    only record of a send was Postfix's rotating mail.log — and a bounce never
+    reached the admin. Every send now writes a row keyed by its Message-ID,
+    which the mail monitor matches against incoming bounce notices. No FK to
+    recommendations: the log should outlive a deleted request."""
+    cursor.execute(_EMAIL_LOG_DDL[backend.name])
+    # SQLite needs its indexes created separately; MySQL declares them inline.
+    if backend.name == "sqlite":
+        for index_ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_email_log_recipient ON email_log(recipient)",
+            "CREATE INDEX IF NOT EXISTS idx_email_log_message_id ON email_log(message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_email_log_rec ON email_log(recommendation_id)",
+        ):
+            cursor.execute(index_ddl)
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -816,6 +875,7 @@ MIGRATIONS = [
     Migration(22, "books_ebook_invalidated_at", _m022_books_ebook_invalidated_at),
     Migration(23, "reader_log_viewed_book_index", _m023_reader_log_viewed_book_index),
     Migration(24, "footnote_candidates_footnote_id", _m024_footnote_candidates_footnote_id),
+    Migration(25, "email_log", _m025_email_log),
 ]
 
 

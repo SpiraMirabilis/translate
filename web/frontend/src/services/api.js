@@ -258,6 +258,7 @@ export const api = {
   deleteRecommendation: (id) => del(`/api/recommendations/${id}`),
   listReplies: (id) => get(`/api/recommendations/${id}/replies`),
   markRepliesRead: (id) => post(`/api/recommendations/${id}/replies/read`, {}),
+  listRecommendationEmails: (id) => get(`/api/recommendations/${id}/emails`),
   countUnreadReplies: () => get('/api/recommendations/replies/unread_count'),
   listUnmatchedReplies: () => get('/api/recommendations/replies/unmatched'),
 

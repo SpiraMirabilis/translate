@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { MessageSquarePlus, Trash2, ExternalLink, ChevronDown, ChevronUp, Loader2, Mail, CornerDownRight, Inbox } from 'lucide-react'
+import { MessageSquarePlus, Trash2, ExternalLink, ChevronDown, ChevronUp, Loader2, Mail, CornerDownRight, Inbox, MailWarning, Send } from 'lucide-react'
 import { api } from '../services/api'
 import { useSite } from '../App'
 
@@ -97,10 +97,12 @@ export default function Recommendations() {
       const result = res.sent
         ? { ok: true, text: 'Email sent.' }
         : { ok: false, text: res.detail === 'suppressed'
-            ? 'Not sent — this requester has unsubscribed.'
+            ? 'Not sent — this address is suppressed (unsubscribed or bounced).'
             : `Not sent (${res.detail || 'unknown error'}).` }
       setEmailState(prev => ({ ...prev, [id]: { sending: false, result } }))
       if (res.sent) setEmailDraft(prev => ({ ...prev, [id]: '' }))
+      queryClient.invalidateQueries({ queryKey: ['rec-emails', id] })
+      invalidate()
     } catch (e) {
       setEmailState(prev => ({ ...prev, [id]: { sending: false, result: { ok: false, text: 'Request failed.' } } }))
     }
@@ -193,6 +195,12 @@ export default function Recommendations() {
                     {rec.unread_reply_count > 0 && (
                       <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-rose-500/20 text-rose-400">
                         <CornerDownRight size={11} /> {rec.unread_reply_count} new
+                      </span>
+                    )}
+                    {rec.bounced_email_count > 0 && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400"
+                        title="An email to this requester bounced">
+                        <MailWarning size={11} /> bounced
                       </span>
                     )}
                     {rec.unread_reply_count === 0 && rec.reply_count > 0 && (
@@ -302,10 +310,21 @@ export default function Recommendations() {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-600 mt-1">
-                      Sends from the site address; replies come back to you. Includes an unsubscribe link.
-                    </p>
+                    {rec.email_suppressed_reason ? (
+                      <p className="text-xs text-amber-400 mt-1">
+                        {rec.email_suppressed_reason === 'bounce'
+                          ? 'This address bounced, so nothing more will be sent to it.'
+                          : 'This requester unsubscribed, so nothing more will be sent to them.'}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-slate-600 mt-1">
+                        Sends from the site address; replies come back to you. Includes an unsubscribe link.
+                      </p>
+                    )}
                   </div>
+
+                  {/* Outbound emails (email_log) */}
+                  <EmailsSent recId={rec.id} />
 
                   {/* Replies (ingested from the editor mailbox) */}
                   <RepliesThread recId={rec.id} onRead={invalidate} />
@@ -407,6 +426,56 @@ function RepliesThread({ recId, onRead }) {
       </div>
       <div className="space-y-2">
         {replies.map(r => <ReplyCard key={r.id} reply={r} />)}
+      </div>
+    </div>
+  )
+}
+
+const EMAIL_KIND_LABELS = {
+  rec_confirm:   'Request received',
+  rec_accepted:  'Accepted notice',
+  rec_dismissed: 'Dismissed notice',
+  rec_message:   'Message from you',
+}
+const EMAIL_STATUS_STYLES = {
+  sent:       'text-emerald-400',
+  bounced:    'text-amber-400',
+  failed:     'text-rose-400',
+  suppressed: 'text-slate-500',
+}
+
+// Every email sent (or blocked) for a request, with bounce details.
+function EmailsSent({ recId }) {
+  const { data, isPending } = useQuery({
+    queryKey: ['rec-emails', recId],
+    queryFn: () => api.listRecommendationEmails(recId),
+  })
+  const emails = data?.items || []
+
+  if (isPending) {
+    return <div className="text-xs text-slate-500 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Loading emails…</div>
+  }
+  if (emails.length === 0) {
+    return <div className="text-xs text-slate-600">No emails sent yet.</div>
+  }
+  return (
+    <div>
+      <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+        <Send size={12} /> Emails sent ({emails.length})
+      </div>
+      <div className="space-y-1">
+        {emails.map(e => (
+          <div key={e.id} className="text-xs flex flex-wrap items-baseline gap-x-2">
+            <span className="text-slate-500">{e.sent_at?.replace('T', ' ').replace('Z', '').slice(0, 16)}</span>
+            <span className="text-slate-300">{EMAIL_KIND_LABELS[e.kind] || e.kind}</span>
+            <span className={EMAIL_STATUS_STYLES[e.status] || 'text-slate-400'}>
+              {e.status}{e.bounce_status ? ` (${e.bounce_status})` : ''}
+            </span>
+            {(e.bounce_diagnostic || e.detail) && (
+              <span className="text-slate-500 basis-full pl-2 break-words">{e.bounce_diagnostic || e.detail}</span>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )

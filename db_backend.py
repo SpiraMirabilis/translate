@@ -580,6 +580,28 @@ _COMMON_DDL_SQLITE = [
     'CREATE INDEX IF NOT EXISTS idx_rec_replies_rec ON recommendation_replies(recommendation_id)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_rec_replies_msgid ON recommendation_replies(message_id)',
 
+    # email_log — one row per outbound email attempt (recommendation emails,
+    # comment reply notifications). message_id is what a bounce notice quotes
+    # back, so a DSN can be tied to the exact send; status moves to 'bounced'.
+    '''CREATE TABLE IF NOT EXISTS email_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sent_at TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        subject TEXT,
+        message_id TEXT,
+        recommendation_id INTEGER,
+        comment_id INTEGER,
+        status TEXT NOT NULL,
+        detail TEXT,
+        bounced_at TEXT,
+        bounce_status TEXT,
+        bounce_diagnostic TEXT
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_email_log_recipient ON email_log(recipient)',
+    'CREATE INDEX IF NOT EXISTS idx_email_log_message_id ON email_log(message_id)',
+    'CREATE INDEX IF NOT EXISTS idx_email_log_rec ON email_log(recommendation_id)',
+
     # comments — reader comment threads on chapters
     '''CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1055,6 +1077,26 @@ _COMMON_DDL_MYSQL = [
         UNIQUE KEY uq_rec_replies_msgid (message_id),
         KEY idx_rec_replies_rec (recommendation_id),
         FOREIGN KEY(recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+
+    # email_log — one row per outbound email attempt (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS email_log (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        sent_at VARCHAR(50) NOT NULL,
+        recipient VARCHAR(255) NOT NULL,
+        kind VARCHAR(32) NOT NULL,
+        subject TEXT,
+        message_id VARCHAR(255),
+        recommendation_id INTEGER,
+        comment_id INTEGER,
+        status VARCHAR(20) NOT NULL,
+        detail TEXT,
+        bounced_at VARCHAR(50),
+        bounce_status VARCHAR(20),
+        bounce_diagnostic TEXT,
+        KEY idx_email_log_recipient (recipient),
+        KEY idx_email_log_message_id (message_id),
+        KEY idx_email_log_rec (recommendation_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
     # comments — reader comment threads on chapters

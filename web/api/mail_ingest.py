@@ -6,6 +6,10 @@ messages from /var/mail/editor, and POSTs the parsed fields here. This endpoint
 correlates each reply back to a recommendation, dedups by Message-ID, and stores
 it in recommendation_replies.
 
+Bounce notices (Postfix DSNs returned to EMAIL_FROM, which is the same mailbox)
+come in on /ingest-bounce: the send they quote is marked bounced in email_log,
+and a permanent failure (5.x.x) suppresses the address.
+
 Auth is a dedicated shared secret (MAIL_INGEST_TOKEN) in the X-Ingest-Token
 header — NOT the admin session cookie — so the daemon never holds the master
 password. The /api/mail/ prefix is listed in web/auth._ALWAYS_PUBLIC_PREFIXES so
@@ -127,3 +131,55 @@ def ingest_reply(payload: IngestReply, request: Request):
         "duplicate": not inserted,
         "reply_id": reply_id,
     }
+
+
+# ------------------------------------------------------------------
+# Bounces
+# ------------------------------------------------------------------
+
+class BounceRecipient(BaseModel):
+    email: str
+    action: Optional[str] = None
+    status: Optional[str] = None
+    diagnostic: Optional[str] = None
+
+
+class IngestBounce(BaseModel):
+    original_message_id: Optional[str] = None
+    recipients: List[BounceRecipient] = []
+
+
+@router.post("/ingest-bounce")
+def ingest_bounce(payload: IngestBounce, request: Request):
+    """Record a delivery-status notification against the send it reports on.
+
+    Only a bounce that quotes a Message-ID we logged *for that recipient* has
+    any effect. Anyone can mail a fake DSN to the editor mailbox; what they
+    can't do is guess a Message-ID we minted, so this check is what stops a
+    forged bounce from silencing someone else's notifications. A permanent
+    failure (status 5.x.x) suppresses the address; a temporary one that
+    Postfix eventually gave up on (4.x.x, action "failed") is recorded as
+    bounced but not suppressed — the next send may well get through.
+    """
+    _check_token(request)
+    message_id = (payload.original_message_id or "").strip()
+    results = []
+    for r in payload.recipients:
+        if (r.action or "").strip().lower() != "failed":
+            continue  # "delayed" / "delivered" / "relayed" are not bounces
+        email = (r.email or "").strip().lower()
+        status = (r.status or "").strip()
+        # bounced_at is stamped server-side: the DSN's Date is RFC 2822, and
+        # the daemon polls every minute, so receipt time is close enough.
+        rows = _db.record_bounce(message_id, email, status, r.diagnostic)
+        hard = status.startswith("5.")
+        suppressed = False
+        if rows and hard:
+            suppressed = _db.add_email_suppression(email, reason="bounce")
+        results.append({
+            "email": email,
+            "matched": bool(rows),
+            "hard": hard,
+            "suppressed": suppressed,
+        })
+    return {"status": "ok", "results": results}

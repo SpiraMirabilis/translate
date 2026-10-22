@@ -14,6 +14,11 @@ Two delivery backends, selected at send time by the EMAIL_BACKEND env var
 
 Callers only depend on the (ok: bool, message: str) return contract, which is
 identical across backends.
+
+send_logged() is the entry point for app mail: it stamps a fresh Message-ID and
+writes an email_log row for the attempt, so a later bounce notice (which quotes
+the Message-ID) can be tied back to the exact send. Bounce correlation assumes
+Postfix: SES rewrites Message-ID and reports bounces through SNS instead.
 """
 
 import logging
@@ -21,6 +26,7 @@ import os
 import smtplib
 import threading
 from email.message import EmailMessage
+from email.utils import make_msgid
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -137,3 +143,45 @@ def send_email(to_addr: str, subject: str, text_body: str,
         # SES selected but unconfigured: degrade to Postfix rather than error.
         logger.warning("EMAIL_BACKEND=ses but SES is not configured; falling back to Postfix")
     return _send_via_postfix(msg, to_addr)
+
+
+def _msgid_domain() -> str:
+    addr = _from_address()
+    return addr.rsplit("@", 1)[1] if "@" in addr else "localhost"
+
+
+def send_logged(db_manager, kind: str, to_addr: str, subject: str, text_body: str,
+                html_body: Optional[str] = None,
+                extra_headers: Optional[dict] = None, *,
+                recommendation_id: Optional[int] = None,
+                comment_id: Optional[int] = None) -> tuple[bool, str]:
+    """send_email + an email_log row. A caller-supplied Message-ID is kept
+    (recommendation mail uses its own rec<id>.… form); otherwise one is minted.
+    Logging failures are swallowed — a broken log must never block a send."""
+    headers = dict(extra_headers or {})
+    if not headers.get("Message-ID"):
+        headers["Message-ID"] = make_msgid(domain=_msgid_domain())
+    ok, detail = send_email(to_addr, subject, text_body, html_body, extra_headers=headers)
+    log_email_attempt(db_manager, kind, to_addr, subject,
+                      status="sent" if ok else "failed",
+                      detail=None if ok else detail,
+                      message_id=headers["Message-ID"],
+                      recommendation_id=recommendation_id, comment_id=comment_id)
+    return (ok, detail)
+
+
+def log_email_attempt(db_manager, kind: str, to_addr: str, subject: Optional[str], *,
+                      status: str, detail: Optional[str] = None,
+                      message_id: Optional[str] = None,
+                      recommendation_id: Optional[int] = None,
+                      comment_id: Optional[int] = None) -> None:
+    """Write one email_log row; also used for sends a caller blocked itself
+    (status 'suppressed'). Never raises."""
+    try:
+        db_manager.log_email({
+            "recipient": to_addr, "kind": kind, "subject": subject,
+            "message_id": message_id, "status": status, "detail": detail,
+            "recommendation_id": recommendation_id, "comment_id": comment_id,
+        })
+    except Exception as e:
+        logger.warning("email_log write failed for %s (%s): %s", to_addr, kind, e)

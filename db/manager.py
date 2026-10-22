@@ -11,6 +11,7 @@ from db.footnotes_repo import FootnotesRepo
 from db.comments_repo import CommentsRepo
 from db.recommendations_repo import RecommendationsRepo
 from db.recommendation_replies_repo import RecommendationRepliesRepo
+from db.email_log_repo import EmailLogRepo
 from db.error_reports_repo import ErrorReportsRepo
 from db.logs_repo import LogsRepo
 from db.wp_repo import WpStateRepo
@@ -22,7 +23,7 @@ from db.chapter_entities_repo import ChapterEntitiesRepo
 
 class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
                       FootnotesRepo, CommentsRepo, RecommendationsRepo,
-                      RecommendationRepliesRepo, ErrorReportsRepo,
+                      RecommendationRepliesRepo, EmailLogRepo, ErrorReportsRepo,
                       LogsRepo, WpStateRepo,
                       ChapterRevisionsRepo, PolishJobsRepo,
                       FootnoteCandidatesRepo, ChapterEntitiesRepo, DatabaseCore):

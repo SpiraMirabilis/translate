@@ -148,3 +148,14 @@ def list_replies(rec_id: int):
 def mark_replies_read(rec_id: int):
     _db.mark_replies_read(rec_id)
     return {"status": "ok"}
+
+
+@router.get("/{rec_id}/emails")
+def list_emails(rec_id: int):
+    """Every email sent (or blocked) for this request, newest first, with bounce
+    details once the mail monitor has seen the bounce notice."""
+    rec = _db.get_recommendation(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    items = _db.list_email_log(recommendation_id=rec_id)
+    return {"items": items, "count": len(items)}

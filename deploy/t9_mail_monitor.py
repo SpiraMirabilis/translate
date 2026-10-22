@@ -17,6 +17,12 @@ a Delivered-To/To header, or our <rec<id>.…> Message-ID echoed in In-Reply-To 
 References. That filter keeps unrelated mail (e.g. comment-notification replies,
 which share the editor@ From) out of the pipeline.
 
+Bounce notices land in the same mailbox (EMAIL_FROM is the envelope sender).
+A delivery-status report (multipart/report; report-type=delivery-status) is
+parsed into its failed recipients plus the Message-ID of the message it returns,
+and POSTed to /api/mail/ingest-bounce; the server marks that send bounced and,
+on a permanent failure, suppresses the address.
+
 Environment variables:
     T9_API_URL            App base URL            (default: http://127.0.0.1:8000)
     MAIL_INGEST_TOKEN     Shared ingest secret    (required)
@@ -162,7 +168,68 @@ def _parse(msg):
     }
 
 
+def _is_dsn(msg):
+    return (msg.get_content_type() == "multipart/report"
+            and (msg.get_param("report-type") or "").lower() == "delivery-status")
+
+
+def _strip_addr_type(value):
+    """'rfc822; user@example.com' -> 'user@example.com'."""
+    value = (value or "").strip()
+    if ";" in value:
+        value = value.split(";", 1)[1]
+    return value.strip().strip("<>")
+
+
+def _parse_dsn(msg):
+    """Failed/delayed recipients and the returned message's Message-ID."""
+    from email.parser import HeaderParser
+    recipients, original_mid = [], None
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status":
+            # First block is per-message, the rest per-recipient.
+            for block in part.get_payload() or []:
+                if not block.get("Final-Recipient"):
+                    continue
+                recipients.append({
+                    "email": _strip_addr_type(block.get("Final-Recipient")),
+                    "action": (block.get("Action") or "").strip(),
+                    "status": (block.get("Status") or "").strip(),
+                    "diagnostic": " ".join((block.get("Diagnostic-Code") or "").split()),
+                })
+        elif ctype in ("message/rfc822", "text/rfc822-headers") and original_mid is None:
+            payload = part.get_payload()
+            if isinstance(payload, list) and payload:
+                original_mid = payload[0].get("Message-ID")
+            elif isinstance(payload, str):
+                original_mid = HeaderParser().parsestr(payload).get("Message-ID")
+    return {
+        "original_message_id": (original_mid or "").strip() or None,
+        "recipients": recipients,
+    }
+
+
 # ── Ingest ───────────────────────────────────────────────────────────
+
+def post_bounce(payload):
+    """POST one parsed bounce notice to the app. Returns True on 2xx."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{API_URL}/api/mail/ingest-bounce", data=data, method="POST",
+        headers={"Content-Type": "application/json", "X-Ingest-Token": INGEST_TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            log.info("ingested bounce for %s: %s",
+                     payload.get("original_message_id"), body.get("results"))
+            return True
+    except urllib.error.HTTPError as e:
+        log.error("bounce ingest HTTP %s: %s", e.code, e.read()[:200])
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log.error("bounce ingest failed: %s", e)
+    return False
+
 
 def post_reply(payload):
     """POST one parsed reply to the app. Returns True on 2xx."""
@@ -218,6 +285,12 @@ def poll_once(state):
                 parsed_from = parseaddr(msg.get("From", ""))[1]
                 uid = _msg_uid(msg, parsed_from, msg.get("Subject", ""), msg.get("Date", ""))
                 if uid in seen:
+                    continue
+                if _is_dsn(msg):
+                    if post_bounce(_parse_dsn(msg)):
+                        seen.add(uid)
+                        new_ids.append(uid)
+                        forwarded += 1
                     continue
                 if not _looks_correlated(msg):
                     # Not a request reply — remember it so we don't re-scan it,

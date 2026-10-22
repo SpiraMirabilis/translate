@@ -25,7 +25,7 @@ import logging
 import os
 from html import escape
 
-from .email_sender import send_email
+from .email_sender import send_logged
 from .email_tokens import make_unsubscribe_token
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,8 @@ def notify_reply(db_manager, reply_id: int) -> bool:
     book = db_manager.get_book(book_id=reply["book_id"]) or {}
     subject, text_body, html_body = _render(parent, reply, book, recipient)
 
-    ok, msg = send_email(recipient, subject, text_body, html_body)
+    ok, msg = send_logged(db_manager, "comment_reply", recipient, subject, text_body,
+                          html_body, comment_id=reply_id)
     if not ok:
         logger.warning("notify_reply: send failed to %s for reply %s: %s",
                        recipient, reply_id, msg)
