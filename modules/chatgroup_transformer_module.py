@@ -40,6 +40,15 @@ shapes are matched:
         小埋:开什么玩笑！……   →   【小埋:开什么玩笑！……】   (only if 小埋 is a gendered entity)
         Umaru: You've got to be kidding!……   →   【Umaru: You've got to be kidding!……】
 
+    The username may also come **bracketed**, ``【username】:message``. The
+    brackets already delimit it, so the word-count and punctuation limits are
+    relaxed (anything but a bracket, colon, pipe or quote, up to 60 chars), but
+    the entity gate is the same — the bare name or the bracketed form must be an
+    entity. The brackets are folded into the wrapper, so the line comes out in
+    the same shape as an unbracketed chat line::
+
+        【Monkeys Have Dignity Too】: msg   →   【Monkeys Have Dignity Too: msg】
+
     The entity set is loaded from the DB via ``ctx['db']``. When it is
     unavailable (no db/book in context), the gate is skipped and matching falls
     back to the regex alone, preserving the module's prior behavior for those
@@ -65,7 +74,9 @@ Reversal is intentionally lossy-but-good-enough: 【…】 whose inner text star
 with ``叮！`` (or English ``Ding`` + punctuation) is turned back into a
 straight-quote-wrapped line (a trailing quote is always re-added, even if the
 original lacked one), and 【…】 whose inner text matches ``username:message``
-has its brackets removed. Other 【…】 lines are left untouched.
+has its brackets removed. A chat line whose username was bracketed in the
+source comes back unbracketed (``Name: msg``). Other 【…】 lines are left
+untouched.
 
 Forward and reverse are both idempotent: a wrapped line begins with 【 and so no
 longer matches either forward pattern, and an unwrapped line no longer matches
@@ -107,6 +118,17 @@ _DING_UNWRAP_RE = re.compile(r"^" + _DING_INNER)
 _NAME_TOKEN = r"[^\s:：【】|" + _DQUOTES + r"，。！？、,.!?]{1,20}"
 _USER_RE = re.compile(
     r"^\s*(" + _NAME_TOKEN + r"(?: " + _NAME_TOKEN + r"){0,3})[:：]\s?\S")
+
+# A chat line whose username is bracketed: 【username】:message. The brackets
+# delimit the name, so it may run longer and carry punctuation (the entity gate
+# still has to pass); it just can't hold a bracket, colon, pipe or quote. Groups:
+# the name (unstripped), then colon + gap + message.
+_BRACKET_NAME = r"[^【】:：|" + _DQUOTES + r"]{1,60}"
+_BRACKET_USER_RE = re.compile(
+    r"^\s*【(" + _BRACKET_NAME + r")】([:：]\s?\S.*)$")
+# The inner text of a wrapped line that came from a bracketed username — the
+# reverse of the above, after the forward transform dropped the inner brackets.
+_BRACKET_USER_UNWRAP_RE = re.compile(r"^(" + _BRACKET_NAME + r")[:：]\s?\S")
 
 # A whole-line 【…】 wrapper (what the forward transform produces). Greedy inner
 # so nested brackets — e.g. 【Umaru: hi 【Thumbs Up】】 — match through the LAST
@@ -160,6 +182,13 @@ def _username_ok(name, names):
     return True if names is None else name in names
 
 
+def _bracketed_username_ok(name, names):
+    """Gate for a bracketed username: the bare name or its 【…】 form."""
+    name = name.strip()
+    return bool(name) and (
+        _username_ok(name, names) or _username_ok("【" + name + "】", names))
+
+
 def _wrap_line(line, names):
     """Wrap a Ding-notification or chat line in 【…】; pass anything else through.
 
@@ -178,6 +207,9 @@ def _wrap_line(line, names):
     m = _USER_RE.match(line)
     if m and _username_ok(m.group(1), names):
         return "【" + line.strip() + "】"
+    m = _BRACKET_USER_RE.match(line)
+    if m and _bracketed_username_ok(m.group(1), names):
+        return "【" + m.group(1).strip() + m.group(2).rstrip() + "】"
     return line
 
 
@@ -196,6 +228,12 @@ def _unwrap_line(line, names):
     um = _USER_RE.match(inner)
     if um and _username_ok(um.group(1), names):
         return inner
+    # A username that was bracketed may not fit the plain shape (too many words,
+    # punctuation). Only with a gate: ungated, this would unwrap every 【X: y】.
+    if names is not None:
+        um = _BRACKET_USER_UNWRAP_RE.match(inner)
+        if um and _bracketed_username_ok(um.group(1), names):
+            return inner
     return line  # some other 【…】 — not ours, leave it
 
 
