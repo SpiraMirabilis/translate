@@ -86,8 +86,15 @@
 .chapter-markdown > :first-child { margin-top: 0; }
 .chapter-markdown > :last-child { margin-bottom: 0; }
 /* ~2rem inter-paragraph gap to match the pre-Markdown reader, which paired a
-   1rem paragraph margin with a 1rem blank-line spacer div. */
-.chapter-markdown p { margin: 0 0 2rem; }
+   1rem paragraph margin with a 1rem blank-line spacer div. The Reader's
+   Paragraph Spacing setting overrides it via --para-gap (0 = single-spaced). */
+.chapter-markdown p { margin: 0 0 var(--para-gap, 2rem); }
+/* With no gap, a first-line indent is what marks a new paragraph (set by the
+   Reader at Paragraph Spacing 0). Book convention: none on a chapter's first
+   paragraph or one right after a heading or rule. */
+.chapter-markdown > p { text-indent: var(--para-indent, 0); }
+.chapter-markdown > p:first-child,
+.chapter-markdown > :is(h1, h2, h3, h4, h5, h6, hr) + p { text-indent: 0; }
 .chapter-markdown h1,
 .chapter-markdown h2,
 .chapter-markdown h3,

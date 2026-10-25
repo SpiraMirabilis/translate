@@ -646,9 +646,12 @@ export default function Reader({ isPublic = false }) {
         // inline markers instead of linkifying them.
         if (hideAnnotations && isFootnoteDef(line, fnIds)) line = ''
         const isEmpty = (!line || !line.trim()) && (!src || !src.trim())
-        if (isEmpty) return <div key={i} className="h-4" />
+        // Both mode splits the paragraph gap between the pair margin and the
+        // blank-line spacer (1rem + 1rem at the default), so it follows the
+        // Paragraph Spacing setting too and collapses to nothing at 0.
+        if (isEmpty) return <div key={i} style={{ height: 'calc(var(--para-gap, 2rem) / 2)' }} />
         return (
-          <div key={i} className="cv-auto mb-4">
+          <div key={i} className="cv-auto" style={{ marginBottom: 'calc(var(--para-gap, 2rem) / 2)' }}>
             {src && src.trim() && (
               <p className={`mb-1 text-[0.85em] ${isDark ? 'text-slate-500' : prefs.theme === 'sepia' ? 'text-amber-800/50' : 'text-gray-400'}`}>
                 {src}

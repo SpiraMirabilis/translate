@@ -5,6 +5,9 @@ const DEFAULTS = {
   fontFamily: 'serif',
   theme: 'dark',
   lineHeight: 1.8,
+  // Gap between paragraphs, in rem. 2 is the long-standing reader default;
+  // 0 drops the blank line entirely (single-spaced, book-style).
+  paragraphSpacing: 2,
   margins: 'medium',
   disableAnnotations: false,
   // Glossary term highlights: on by default, scoped to characters — the
@@ -41,6 +44,8 @@ export function useReaderPrefs() {
   const contentStyle = {
     fontSize: `${merged.fontSize}px`,
     lineHeight: merged.lineHeight,
+    '--para-gap': `${merged.paragraphSpacing}rem`,
+    '--para-indent': merged.paragraphSpacing === 0 ? '1.5em' : '0',
     fontFamily: FONT_MAP[merged.fontFamily] || FONT_MAP.serif,
   }
 

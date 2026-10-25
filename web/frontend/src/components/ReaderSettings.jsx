@@ -130,6 +130,24 @@ export default function ReaderSettings({ open, onClose, prefs, setPrefs, hasSour
             </div>
           </div>
 
+          {/* Paragraph Spacing */}
+          <div>
+            <label className={`text-xs font-medium ${textSecondary} uppercase tracking-wider`}>
+              Paragraph Spacing — {prefs.paragraphSpacing === 0 ? 'Single' : prefs.paragraphSpacing.toFixed(2)}
+            </label>
+            <input
+              type="range"
+              min={0} max={4} step={0.25}
+              value={prefs.paragraphSpacing}
+              onChange={e => update('paragraphSpacing', +e.target.value)}
+              className="w-full mt-2 accent-indigo-500"
+            />
+            <div className={`flex justify-between text-xs ${textSecondary} mt-1`}>
+              <span>Single</span>
+              <span>Spacious</span>
+            </div>
+          </div>
+
           {/* Margins */}
           <div>
             <label className={`text-xs font-medium ${textSecondary} uppercase tracking-wider`}>Margins</label>
