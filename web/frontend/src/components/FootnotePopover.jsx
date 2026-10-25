@@ -32,8 +32,12 @@ export default function FootnotePopover({ footnote, theme, onClose, onMouseEnter
     if (!rect || !box) return
     const margin = 8
     const gap = 6
-    // Measure unconstrained — a previous placement may have left a cap on the box.
+    // Measure unconstrained — a previous placement may have left a cap on the box,
+    // and a fixed box shrinks to the room right of its `left`, so measured at the
+    // anchor's x a term near the right edge yielded a sliver that the clamp below
+    // then moved left without widening. Measure from x=0 (it's hidden until placed).
     box.style.maxHeight = ''
+    box.style.left = '0px'
     const { width, height } = box.getBoundingClientRect()
     const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin))
 
@@ -88,6 +92,18 @@ export default function FootnotePopover({ footnote, theme, onClose, onMouseEnter
       ? 'bg-amber-50 border-amber-300 text-amber-900'
       : 'bg-white border-stone-300 text-gray-800'
 
+  const headerBg = isDark ? 'bg-slate-800' : isSepia ? 'bg-amber-50' : 'bg-white'
+
+  const closeButton = (
+    <button
+      onClick={onClose}
+      aria-label="Close"
+      className={`shrink-0 sticky top-0 -mr-1 -mt-0.5 rounded p-0.5 ${isDark ? 'hover:bg-slate-700' : 'hover:bg-black/10'}`}
+    >
+      <X size={14} />
+    </button>
+  )
+
   return (
     <div
       ref={boxRef}
@@ -103,19 +119,26 @@ export default function FootnotePopover({ footnote, theme, onClose, onMouseEnter
         visibility: pos ? 'visible' : 'hidden',
       }}
     >
-      <div className="flex items-start gap-2 p-3">
-        <span className="font-semibold shrink-0 text-indigo-500">
-          {footnote.label ? footnote.label : `[${footnote.n}]`}
-        </span>
-        <span className="min-w-0 break-words">{footnote.text}</span>
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          className={`shrink-0 sticky top-0 -mr-1 -mt-0.5 rounded p-0.5 ${isDark ? 'hover:bg-slate-700' : 'hover:bg-black/10'}`}
-        >
-          <X size={14} />
-        </button>
-      </div>
+      {footnote.label ? (
+        // Term note: the label is a whole term ("Immortal Venerable Subtle
+        // Wisdom"), too wide to sit beside the note the way "[n]" does — in one
+        // row it starved the note down to a few letters per line. It gets its
+        // own header line instead, sticky so the close button stays reachable
+        // when a long note scrolls.
+        <>
+          <div className={`sticky top-0 flex items-start gap-2 px-3 pt-3 pb-1 rounded-t-lg ${headerBg}`}>
+            <span className="font-semibold min-w-0 flex-1 break-words text-indigo-500">{footnote.label}</span>
+            {closeButton}
+          </div>
+          <p className="px-3 pb-3 break-words">{footnote.text}</p>
+        </>
+      ) : (
+        <div className="flex items-start gap-2 p-3">
+          <span className="font-semibold shrink-0 text-indigo-500">[{footnote.n}]</span>
+          <span className="min-w-0 break-words">{footnote.text}</span>
+          {closeButton}
+        </div>
+      )}
     </div>
   )
 }
