@@ -25,7 +25,7 @@ export const TASK_STATUS_CHIP = {
 }
 
 export function taskLabel(t) {
-  if (t.kind === 'toc') return { sweep: 'Daily TOC check', forced: 'TOC check (now)' }[t.reason] || 'TOC check'
+  if (t.kind === 'toc') return { sweep: 'Daily TOC check', forced: 'TOC check (now)', onboard: 'TOC check (new site)' }[t.reason] || 'TOC check'
   if (t.kind === 'autostart') return 'Auto-translate start'
   const what = t.reason === 'backfill' ? 'Backfill' : 'Scrape new'
   return t.max_chapters ? `${what} (≤${t.max_chapters} ch)` : what

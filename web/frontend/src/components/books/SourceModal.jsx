@@ -128,6 +128,13 @@ export default function SourceModal({ bookId, onClose }) {
               <div className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-700/50 text-sm text-rose-300">{error}</div>
             )}
 
+            {data.site_supported === false && (
+              <div className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-300">
+                The scraper doesn&apos;t service <span className="font-mono">{data.site}</span> yet. The daily check
+                skips this book; once the site is supported, its TOC is read automatically.
+              </div>
+            )}
+
             {state.hold_reason && (
               <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-700/50 text-sm text-amber-200 flex gap-3 items-start">
                 <AlertTriangle size={15} className="mt-0.5 shrink-0" />

@@ -63,6 +63,8 @@ export default function Scraping() {
           Start it with <code className="text-rose-200">systemctl --user start t9-scraper.service</code>.
         </div>
       )}
+      <SupportedSites known={data.supported_sites} onRefreshed={refresh} setError={setError} />
+
       {!settings.has_token && (
         <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-700/50 text-sm text-amber-200">
           No scraper token configured — add it in Settings → Scraping.
@@ -178,6 +180,7 @@ export default function Scraping() {
                       {b.hold_reason ? <span className="text-amber-300 truncate block" title={b.hold_reason}>held: {b.hold_reason}</span>
                         : b.consecutive_failures >= settings.failure_limit ? <span className="text-rose-300 truncate block" title={b.last_error}>failing: {b.last_error}</span>
                           : b.last_error ? <span className="text-rose-300/80 truncate block" title={b.last_error}>{b.last_error}</span>
+                            : b.site_supported === false ? <span className="text-slate-500">site not supported by the scraper</span>
                             : !b.linked ? <span className="text-slate-500">not linked</span>
                               : <span className="text-slate-500">ok</span>}
                     </td>
@@ -201,6 +204,29 @@ export default function Scraping() {
       )}
 
       {openBook != null && <SourceModal bookId={openBook} onClose={() => { setOpenBook(null); refresh() }} />}
+    </div>
+  )
+}
+
+// The domains the scraper services (its /supported_sites, re-read daily by
+// the worker). A site that appears onboards its books with a TOC check.
+function SupportedSites({ known, onRefreshed, setError }) {
+  const [busy, setBusy] = useState(false)
+  const refresh = async () => {
+    setBusy(true)
+    try { await api.refreshScrapeSites(); onRefreshed() } catch (e) { setError(e.detail || e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="text-xs text-slate-400 flex items-center gap-2 flex-wrap">
+      <span className="text-slate-500">Scraper supports:</span>
+      {known?.sites?.length
+        ? known.sites.map(d => <span key={d} className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">{d}</span>)
+        : <span className="text-slate-500">unknown yet</span>}
+      {known?.fetched_at && <span className="text-slate-600">· read {relativeTime(known.fetched_at)}</span>}
+      <button className="btn-ghost text-xs text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1"
+              disabled={busy} onClick={refresh}>
+        {busy ? <Loader2 size={11} className="animate-spin" /> : null} Refresh
+      </button>
     </div>
   )
 }

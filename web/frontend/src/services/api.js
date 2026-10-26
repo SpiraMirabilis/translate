@@ -277,6 +277,7 @@ export const api = {
   scrapeCheckNow:     (bookId) => post(`/api/books/${bookId}/scrape/check`, { like_daily: true }),
   scrapeLink:         (bookId, index, chapterNumber) => post(`/api/books/${bookId}/scrape/link`, { index, chapter_number: chapterNumber ?? null }),
   scrapeBackfill:     (bookId, fromIndex, toIndex) => post(`/api/books/${bookId}/scrape/backfill`, { from_index: fromIndex, to_index: toIndex ?? null }),
+  refreshScrapeSites: () => post('/api/scrape/sites/refresh', {}),
   cancelScrapeTask:   (taskId) => post(`/api/scrape/tasks/${taskId}/cancel`, {}),
   retryScrapeTask:    (taskId) => post(`/api/scrape/tasks/${taskId}/retry`, {}),
   setScraperToken:    (token) => post('/api/settings/scraper-token', { api_key: token }),

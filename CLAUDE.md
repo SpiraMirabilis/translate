@@ -375,8 +375,14 @@ job at a time**, so t9 owns the lane:
   candidate book (supported site, not completed/dropped, `--skip` ids) — confident
   title matches link themselves, no mode changes; `report [--json plan.json]` suggests
   auto/queue/review per book; `apply plan.json [--yes]` links and sets modes.
-- Supported sites are the scraper's adapters (twkan, wfxs, novellunar, 69shuba as of
-  2026-10-26); others fail on submit. Tests: `tests/test_scrape_sync.py` (fake
+- **Supported sites come from the scraper** (`GET /supported_sites`, a sorted array of
+  domains), re-read daily by the worker into `logs/scraper_sites.json` (last good list
+  kept on failure, retried hourly; Scraping page → Refresh = `POST
+  /api/scrape/sites/refresh`). The sweep skips books on unlisted sites. A **newly
+  listed** site onboards its unlinked, unfinished books with a read-only TOC check
+  (`reason="onboard"`, priority 35 — after catch-ups, before backfills); title matches
+  link themselves, modes stay off. The first read ever onboards nothing. The rollout
+  script takes its default `--sites` from the same endpoint. Tests: `tests/test_scrape_sync.py` (fake
   scraper that asserts one-job-in-flight), `tests/test_scrape_api.py`.
 
 ### Queue Processing

@@ -82,3 +82,15 @@ def test_migration_26_mysql_ddl_is_mysql():
     for ddl in _SCRAPE_DDL["mysql"]:
         assert "AUTOINCREMENT" not in ddl and "ENGINE=InnoDB" in ddl
         assert norm(ddl) in baseline
+
+
+def test_book_state_reports_site_support(admin_client, db, tmp_path, monkeypatch):
+    import scrape_sync
+    monkeypatch.setattr(scrape_sync, "SITES_CACHE", str(tmp_path / "sites.json"))
+    book_id = _book_with_toc(db)
+    assert admin_client.get(f"/api/books/{book_id}/scrape").json()["site_supported"] is None
+    scrape_sync.save_supported_sites(["69shuba.com"], "2026-10-26T00:00:00")
+    assert admin_client.get(f"/api/books/{book_id}/scrape").json()["site_supported"] is False
+    overview = admin_client.get("/api/scrape/overview").json()
+    assert overview["supported_sites"]["sites"] == ["69shuba.com"]
+    assert next(b for b in overview["books"] if b["book_id"] == book_id)["site_supported"] is False

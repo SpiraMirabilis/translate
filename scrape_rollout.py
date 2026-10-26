@@ -5,8 +5,8 @@
     python3 scrape_rollout.py report [--json plan.json]
     python3 scrape_rollout.py apply plan.json [--yes]
 
-`check` queues a read-only TOC check for every candidate (books on a
-supported site, not completed/dropped, not --skip'ed); t9-scraper.service runs
+`check` queues a read-only TOC check for every candidate (books on a site
+the scraper's /supported_sites lists, not completed/dropped, not --skip'ed); t9-scraper.service runs
 them one at a time. A book whose recent source titles match its TOC links
 itself on that read — nothing else changes, every mode stays as it was.
 
@@ -25,7 +25,6 @@ import json
 import sys
 import time
 
-DEFAULT_SITES = ("twkan.com", "69shuba.com")
 
 
 def build_db():
@@ -42,8 +41,7 @@ def candidates(db, sites, skip, include_finished):
     for b in db.list_book_scrapes():
         if b["book_id"] in skip or not b.get("source_url"):
             continue
-        site = scrape_sync.site_of(b["source_url"])
-        if not any(site == s or site.endswith("." + s) for s in sites):
+        if not scrape_sync.site_supported(b["source_url"], sites):
             continue
         if not include_finished and (b.get("book_status") or "") in ("completed", "dropped"):
             continue
@@ -217,8 +215,8 @@ def cmd_apply(db, args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--sites", default=",".join(DEFAULT_SITES),
-                    help=f"comma-separated source sites (default {','.join(DEFAULT_SITES)})")
+    ap.add_argument("--sites", default=None,
+                    help="comma-separated source sites (default: the scraper's /supported_sites)")
     ap.add_argument("--skip", default="", help="comma-separated book ids to leave out")
     ap.add_argument("--book", type=int, action="append", help="only these books (repeatable)")
     ap.add_argument("--include-finished", action="store_true", help="include completed/dropped books")
@@ -242,7 +240,18 @@ def main(argv=None):
     if getattr(args, "gap", 0) is None:
         args.gap = int(scrape_sync.setting("scrape_default_gap"))
     skip = {int(x) for x in args.skip.split(",") if x.strip()}
-    sites = [s.strip().lower() for s in args.sites.split(",") if s.strip()]
+    if args.sites:
+        sites = [s.strip().lower() for s in args.sites.split(",") if s.strip()]
+    else:
+        try:
+            sites = scrape_sync.fetch_supported_sites(scrape_sync.make_client(timeout=10))
+        except Exception as e:
+            known = scrape_sync.load_supported_sites()
+            if not known:
+                print(f"could not read the scraper's supported sites ({e}); pass --sites", file=sys.stderr)
+                return 1
+            sites = known["sites"]
+            print(f"scraper unreachable ({e}); using the list cached {known.get('fetched_at')}")
     books = candidates(db, sites, skip, args.include_finished)
     if args.book:
         books = [b for b in books if b["book_id"] in set(args.book)]

@@ -36,6 +36,9 @@ MODES = ("off", "queue", "auto")
 PRIORITY_TOC = 10
 PRIORITY_CATCHUP_AUTO = 20
 PRIORITY_CATCHUP = 30
+# A read-only TOC read for a book whose site the scraper just learned: after
+# the catch-ups (new chapters for books already on), before backfills.
+PRIORITY_ONBOARD = 35
 PRIORITY_BACKFILL = 40
 
 # A book whose checks failed this many times in a row is skipped by the daily
@@ -46,6 +49,10 @@ RETRY_BACKOFF_MINUTES = (30, 120, 480)
 # A scraper that can't be reached is not the task's fault: retry without
 # spending an attempt.
 UNREACHABLE_RETRY_MINUTES = 5
+# The scraper's /supported_sites list is re-read this often (and retried
+# this often after a failed read, keeping the last good list meanwhile).
+SITES_REFRESH_HOURS = 24
+SITES_RETRY_MINUTES = 60
 # A translation start refused because every job slot is busy.
 AUTOSTART_RETRY_MINUTES = 15
 AUTOSTART_GIVE_UP_HOURS = 6
@@ -89,6 +96,56 @@ def scraper_token():
 
 def make_client(timeout: float = 30) -> ScraperClient:
     return ScraperClient(str(setting("scraper_url")), token=scraper_token(), timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Which sites the scraper services (GET /supported_sites)
+# ---------------------------------------------------------------------------
+
+SITES_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "scraper_sites.json")
+
+
+def fetch_supported_sites(sc):
+    """The scraper's sorted list of domains it will service. scraper_client.py
+    is synced verbatim from ~/scraper, so call its own method when it has one."""
+    if hasattr(sc, "supported_sites"):
+        sites = sc.supported_sites()
+    else:
+        sites = sc._req("GET", "/supported_sites")[1]
+    if not isinstance(sites, list):
+        raise ScraperError(f"/supported_sites returned {type(sites).__name__}, not a list")
+    return sorted({str(d).strip().lower().removeprefix("www.") for d in sites if str(d).strip()})
+
+
+def load_supported_sites():
+    """The cached list: {"sites": [...], "fetched_at": iso} or None if the
+    worker has never read it. Unknown means "don't block anything"."""
+    try:
+        with open(SITES_CACHE) as f:
+            data = json.load(f)
+        return data if isinstance(data.get("sites"), list) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def save_supported_sites(sites, fetched_at):
+    try:
+        os.makedirs(os.path.dirname(SITES_CACHE), exist_ok=True)
+        tmp = SITES_CACHE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"sites": sites, "fetched_at": fetched_at}, f)
+        os.replace(tmp, SITES_CACHE)
+    except OSError:
+        pass
+
+
+def site_supported(url, sites):
+    """True/False against a known list (a subdomain of a listed domain counts);
+    None when the list is unknown."""
+    if sites is None:
+        return None
+    site = site_of(url)
+    return any(site == d or site.endswith("." + d) for d in sites)
 
 
 def _minutes_from_now(minutes, now=None):
@@ -414,6 +471,7 @@ class ScrapeEngine:
         self.admin = admin or AdminAPI()
         self.logger = logger
         self.clock = clock or datetime.datetime.now
+        self._sites_retry_at = None
 
     # -- helpers -------------------------------------------------------------
 
@@ -444,9 +502,66 @@ class ScrapeEngine:
         scraper job is in flight, else 'idle'."""
         if not setting("scrape_enabled"):
             return "disabled"
+        self.refresh_sites()
         self.schedule_sweep()
         self.run_autostarts()
         return self.step_lane()
+
+    # -- supported sites -----------------------------------------------------
+
+    def refresh_sites(self, force=False):
+        """Re-read /supported_sites once a day. A site that appears onboards
+        its books: each gets a read-only TOC check, which links it when its
+        titles line up — no mode changes, that stays the admin's call. The
+        first read ever onboards nothing (the rollout script is for that)."""
+        now = self.clock()
+        cached = load_supported_sites()
+        if not force:
+            if self._sites_retry_at and now < self._sites_retry_at:
+                return None
+            if cached and cached.get("fetched_at"):
+                try:
+                    age = now - datetime.datetime.fromisoformat(cached["fetched_at"])
+                    if age < datetime.timedelta(hours=SITES_REFRESH_HOURS):
+                        return cached["sites"]
+                except ValueError:
+                    pass
+        try:
+            sites = fetch_supported_sites(self.client_factory())
+        except (ScraperError, urllib.error.URLError, OSError, ValueError) as e:
+            self._sites_retry_at = now + datetime.timedelta(minutes=SITES_RETRY_MINUTES)
+            self._log("warning", f"could not read /supported_sites (keeping the last list): {e}")
+            return cached["sites"] if cached else None
+        self._sites_retry_at = None
+        save_supported_sites(sites, self._now())
+        if cached is not None:
+            added = sorted(set(sites) - set(cached["sites"]))
+            removed = sorted(set(cached["sites"]) - set(sites))
+            if removed:
+                self._log("warning", f"scraper dropped site(s): {', '.join(removed)}")
+            if added:
+                self.onboard_sites(added)
+        return sites
+
+    def onboard_sites(self, domains):
+        books = []
+        for b in self.db.list_book_scrapes():
+            if not b.get("source_url") or not site_supported(b["source_url"], domains):
+                continue
+            if (b.get("book_status") or "") in ("completed", "dropped") or b.get("linked"):
+                continue
+            if self.db.has_open_scrape_task(b["book_id"], kinds=("toc",)):
+                continue
+            enqueue_check(self.db, b["book_id"], reason="onboard", priority=PRIORITY_ONBOARD)
+            books.append(b["book_id"])
+        msg = f"scraper now supports {', '.join(domains)}"
+        msg += f" — checking {len(books)} book(s)" if books else " — no books use it yet"
+        self._log("info", msg)
+        try:
+            self.db.add_activity_log("scrape", f"Scrape: {msg}")
+        except Exception:
+            pass
+        return books
 
     # -- daily sweep ---------------------------------------------------------
 
@@ -458,10 +573,16 @@ class ScrapeEngine:
             return 0
         sweep_iso = sweep_at.isoformat(timespec="seconds")
         spacing = int(setting("scrape_toc_spacing_seconds"))
+        known = load_supported_sites()
+        sites = known["sites"] if known else None
         per_site = {}
         queued = 0
         for b in self.db.list_book_scrapes():
             if b["mode"] not in ("queue", "auto") or not b.get("source_url"):
+                continue
+            # A site the scraper doesn't service would only fail and burn a
+            # lane slot; the book comes back the day its site is listed.
+            if site_supported(b["source_url"], sites) is False:
                 continue
             if b["consecutive_failures"] >= FAILURE_LIMIT:
                 continue
@@ -854,11 +975,11 @@ class ScrapeEngine:
 # Entry points the admin API shares with the worker
 # ---------------------------------------------------------------------------
 
-def enqueue_check(db, book_id, *, catchup=False, reason="manual"):
+def enqueue_check(db, book_id, *, catchup=False, reason="manual", priority=PRIORITY_TOC):
     """Queue a TOC check now (front of the lane). Resets the failure streak —
     "Check now" is how a book that the sweep gave up on comes back."""
     db.update_book_scrape(book_id, consecutive_failures=0)
-    return db.create_scrape_task(book_id, "toc", reason=reason, priority=PRIORITY_TOC,
+    return db.create_scrape_task(book_id, "toc", reason=reason, priority=priority,
                                  options={"catchup": True} if catchup else None)
 
 

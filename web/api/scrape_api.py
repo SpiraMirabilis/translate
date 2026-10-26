@@ -51,6 +51,11 @@ def _book_or_404(book_id):
 
 @router.get("/api/scrape/overview")
 def overview():
+    known = scrape_sync.load_supported_sites()
+    sites = known["sites"] if known else None
+    books = _db.list_book_scrapes()
+    for b in books:
+        b["site_supported"] = scrape_sync.site_supported(b.get("source_url") or "", sites)
     return {
         "settings": {
             "enabled": bool(scrape_sync.setting("scrape_enabled")),
@@ -62,13 +67,25 @@ def overview():
             "failure_limit": scrape_sync.FAILURE_LIMIT,
         },
         "worker": _worker_status(),
+        "supported_sites": known,
         "lane": _db.lane_task(),
         "queued": _db.list_scrape_tasks(statuses=("queued",), order="t.priority, t.id", limit=200),
         "recent": _db.list_scrape_tasks(
             statuses=("done", "failed", "cancelled", "skipped"), limit=40,
             order="t.finished_at DESC, t.id DESC"),
-        "books": _db.list_book_scrapes(),
+        "books": books,
     }
+
+
+@router.post("/api/scrape/sites/refresh")
+def refresh_sites():
+    """Re-read the scraper's /supported_sites now (the worker does it daily).
+    A newly listed site onboards its books exactly as the worker's read would."""
+    sites = scrape_sync.ScrapeEngine(_db, admin=object()).refresh_sites(force=True)
+    known = scrape_sync.load_supported_sites()
+    if sites is None or not known:
+        raise HTTPException(status_code=502, detail="Could not read the scraper's supported sites.")
+    return known
 
 
 @router.get("/api/scrape/count")
@@ -90,6 +107,8 @@ def get_book_scrape(book_id: int):
         "book_id": book_id,
         "source_url": book.get("source_url"),
         "site": scrape_sync.site_of(book.get("source_url") or ""),
+        "site_supported": scrape_sync.site_supported(
+            book.get("source_url") or "", (scrape_sync.load_supported_sites() or {}).get("sites")),
         "state": state,
         "translated_max": heads.get("translated_max"),
         "queued_max": heads.get("queued_max"),

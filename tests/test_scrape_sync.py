@@ -26,6 +26,15 @@ class FakeScraper:
         self.calls = []
         self.fail_next = 0
         self._n = 0
+        self.sites = ["twkan.com"]
+        self.sites_calls = 0
+
+    def supported_sites(self):
+        # Not a job: the real endpoint answers directly, outside the lane.
+        self.sites_calls += 1
+        if self.sites is None:
+            raise OSError("unreachable")
+        return list(self.sites)
 
     def _active(self):
         return [j for j in self.jobs.values() if j["status"] not in ("done", "failed", "cancelled")]
@@ -120,8 +129,9 @@ SETTINGS = {
 
 
 @pytest.fixture(autouse=True)
-def fixed_settings(monkeypatch):
+def fixed_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(scrape_sync, "setting", lambda k: SETTINGS[k])
+    monkeypatch.setattr(scrape_sync, "SITES_CACHE", str(tmp_path / "scraper_sites.json"))
 
 
 @pytest.fixture
@@ -427,3 +437,73 @@ def test_unlinked_book_auto_links_by_title_on_first_toc(db, book):
     assert toc_task["result_summary"]["auto_linked"] == 2   # #3 = our ch3
     assert queued_numbers(db, book) == [1, 2, 3, 4, 5]
     assert db.get_book_scrape(book)["cursor_number"] == 5
+
+
+# -- /supported_sites ----------------------------------------------------------
+
+def _book_on(db, url, status=None):
+    book_id = db.create_book(f"Book at {url}")
+    db.update_book(book_id, source_url=url, **({"status": status} if status else {}))
+    return book_id
+
+
+def test_first_sites_read_caches_and_onboards_nothing(db, book):
+    scraper = FakeScraper([entry(1)])
+    engine = make_engine(db, scraper)
+    assert engine.refresh_sites() == ["twkan.com"]
+    assert scrape_sync.load_supported_sites()["sites"] == ["twkan.com"]
+    assert db.list_scrape_tasks(book_id=book) == []
+    engine.refresh_sites()
+    assert scraper.sites_calls == 1  # cached for a day
+
+
+def test_new_site_onboards_its_unlinked_books(db, book):
+    scraper = FakeScraper([entry(1)])
+    clock = Clock()
+    engine = make_engine(db, scraper, clock=clock)
+    engine.refresh_sites()
+    new_book = _book_on(db, "https://www.69shuba.com/book/5.htm")
+    finished = _book_on(db, "https://69shuba.com/book/6.htm", status="completed")
+    other = _book_on(db, "https://ixdzs8.com/read/7/")
+    scraper.sites = ["69shuba.com", "twkan.com"]
+    clock.advance(hours=25)
+    engine.refresh_sites()
+    tasks = db.list_scrape_tasks(book_id=new_book)
+    assert [(t["kind"], t["reason"], t["priority"]) for t in tasks] == \
+        [("toc", "onboard", scrape_sync.PRIORITY_ONBOARD)]
+    assert db.list_scrape_tasks(book_id=finished) == []
+    assert db.list_scrape_tasks(book_id=other) == []
+    assert db.list_scrape_tasks(book_id=book) == []  # twkan was already listed
+
+
+def test_sweep_skips_books_on_unsupported_sites(db, book):
+    scraper = FakeScraper([entry(1)])
+    engine = make_engine(db, scraper)
+    unsupported = _book_on(db, "https://ixdzs8.com/read/7/")
+    db.update_book_scrape(book, mode="queue")
+    db.update_book_scrape(unsupported, mode="queue")
+    engine.refresh_sites()
+    engine.schedule_sweep()
+    assert [t["kind"] for t in db.list_scrape_tasks(book_id=book)] == ["toc"]
+    assert db.list_scrape_tasks(book_id=unsupported) == []
+
+
+def test_unreachable_sites_endpoint_keeps_the_last_list(db, book):
+    scraper = FakeScraper([entry(1)])
+    clock = Clock()
+    engine = make_engine(db, scraper, clock=clock)
+    engine.refresh_sites()
+    scraper.sites = None
+    clock.advance(hours=25)
+    assert engine.refresh_sites() == ["twkan.com"]
+    calls = scraper.sites_calls
+    clock.advance(minutes=10)
+    engine.refresh_sites()
+    assert scraper.sites_calls == calls  # waits out the retry interval
+
+
+def test_site_supported_matches_subdomains():
+    assert scrape_sync.site_supported("https://www.twkan.com/book/1.html", ["twkan.com"])
+    assert scrape_sync.site_supported("https://m.twkan.com/book/1.html", ["twkan.com"])
+    assert scrape_sync.site_supported("https://nottwkan.com/x", ["twkan.com"]) is False
+    assert scrape_sync.site_supported("https://x.com/", None) is None
