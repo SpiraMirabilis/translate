@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Trash2, Edit2, Download, ChevronDown, Loader2, ScrollText, Sparkles, Globe, Tags, ListChecks, Code, Boxes, RefreshCw, Asterisk
+  Trash2, Edit2, Download, ChevronDown, Loader2, ScrollText, Sparkles, Globe, Tags, ListChecks, Code, Boxes, RefreshCw, Asterisk, CloudDownload, Radar
 } from 'lucide-react'
 
-export default function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache, onFootnotes }) {
+export default function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache, onFootnotes, onSource, onCheckSource }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -77,6 +77,8 @@ export default function BookActionsMenu({ book, exporting, onExport, onPublish, 
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Settings</div>
           {isTranslation && item(<ScrollText size={12} />, 'System Prompt', onPrompt)}
           {isTranslation && item(<Boxes size={12} />, 'Modules', onModules)}
+          {isTranslation && onSource && item(<CloudDownload size={12} />, 'Source Scraping', onSource)}
+          {isTranslation && onCheckSource && book.source_url && item(<Radar size={12} />, 'Check Source Now', onCheckSource)}
           {isTranslation && item(<Code size={12} />, 'API Logs', onApiLogs)}
           {item(<Edit2 size={12} />, 'Edit Book', onEdit)}
           {item(<Trash2 size={12} />, 'Delete', onDelete, 'text-rose-400 hover:text-rose-300')}

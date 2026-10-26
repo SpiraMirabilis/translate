@@ -16,6 +16,7 @@ import BookActionsMenu from '../components/books/BookActionsMenu'
 import BookFormModal from '../components/books/BookFormModal'
 import PromptEditorModal from '../components/books/PromptEditorModal'
 import BookModulesModal from '../components/books/BookModulesModal'
+import SourceModal from '../components/books/SourceModal'
 import WordPressPublishModal from '../components/books/WordPressPublishModal'
 import CategoryManagerModal from '../components/books/CategoryManagerModal'
 import PronounRepairBookModal from '../components/books/PronounRepairBookModal'
@@ -41,6 +42,7 @@ export default function Books() {
   const reviewModal = useUrlModal('review', { idKey: 'book' })
   const pronounRepairModal = useUrlModal('pronounRepair', { idKey: 'book' })
   const modulesModal = useUrlModal('modules', { idKey: 'book' })
+  const sourceModal = useUrlModal('source', { idKey: 'book' })
 
   // Chapter selection for batch retranslate — too large to live in the URL,
   // so it's kept local and keyed by book id.
@@ -172,6 +174,20 @@ export default function Books() {
       alert(res?.spaces_purged ? 'EPUB cache cleared (disk + Spaces).' : 'EPUB cache cleared (disk).')
     } catch (e) {
       alert(`Failed to clear EPUB cache: ${e.message}`)
+    }
+  }
+
+  // The daily source check, run now: reads the TOC and, when the book's
+  // scraping mode is on, queues anything new (and may auto-translate it).
+  const handleCheckSource = async (book) => {
+    try {
+      await api.scrapeCheckNow(book.id)
+      const state = await api.getBookScrape(book.id)
+      alert(state.state?.mode === 'off'
+        ? 'TOC check queued. Scraping is off for this book, so it will only refresh the TOC — open Source Scraping to link it and pick a mode.'
+        : 'Source check queued — new chapters will be scraped into the queue. Progress is on the Scraping page.')
+    } catch (e) {
+      alert(`Could not queue the check: ${e.message}`)
     }
   }
 
@@ -413,6 +429,8 @@ export default function Books() {
                     onDelete={() => handleDelete(book.id)}
                     onPronounRepair={() => pronounRepairModal.open(book.id)}
                     onModules={() => modulesModal.open(book.id)}
+                    onSource={() => sourceModal.open(book.id)}
+                    onCheckSource={() => handleCheckSource(book)}
                     onInvalidateCache={() => handleInvalidateCache(book.id)}
                   />
                 </div>
@@ -612,6 +630,10 @@ export default function Books() {
         if (!book) return null
         return <PronounRepairBookModal book={book} onClose={pronounRepairModal.close} />
       })()}
+
+      {sourceModal.isOpen && (
+        <SourceModal bookId={parseInt(sourceModal.id, 10)} onClose={sourceModal.close} />
+      )}
 
       {/* Global search modal */}
       {searchModal.isOpen && (

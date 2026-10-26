@@ -268,6 +268,20 @@ export const api = {
   updateErrorReport: (id, body) => put(`/api/error-reports/${id}`, body),
   deleteErrorReport: (id) => del(`/api/error-reports/${id}`),
 
+  // Automated scraping (scrape_worker.py owns the lane; these queue work for it)
+  scrapeOverview:     () => get('/api/scrape/overview'),
+  scrapeCount:        () => get('/api/scrape/count'),
+  getBookScrape:      (bookId) => get(`/api/books/${bookId}/scrape`),
+  updateBookScrape:   (bookId, body) => put(`/api/books/${bookId}/scrape`, body),
+  scrapeCheck:        (bookId, catchup = false) => post(`/api/books/${bookId}/scrape/check`, { catchup }),
+  scrapeCheckNow:     (bookId) => post(`/api/books/${bookId}/scrape/check`, { like_daily: true }),
+  scrapeLink:         (bookId, index, chapterNumber) => post(`/api/books/${bookId}/scrape/link`, { index, chapter_number: chapterNumber ?? null }),
+  scrapeBackfill:     (bookId, fromIndex, toIndex) => post(`/api/books/${bookId}/scrape/backfill`, { from_index: fromIndex, to_index: toIndex ?? null }),
+  cancelScrapeTask:   (taskId) => post(`/api/scrape/tasks/${taskId}/cancel`, {}),
+  retryScrapeTask:    (taskId) => post(`/api/scrape/tasks/${taskId}/retry`, {}),
+  setScraperToken:    (token) => post('/api/settings/scraper-token', { api_key: token }),
+  testScraper:        () => post('/api/settings/scraper-test', {}),
+
   // Comments (admin moderation)
   listComments:    (params = {}) => {
     const q = new URLSearchParams()

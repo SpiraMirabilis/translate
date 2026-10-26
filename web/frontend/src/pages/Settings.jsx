@@ -542,6 +542,91 @@ export default function Settings() {
         </section>
       )}
 
+      {/* Automated scraping */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Scraping</h2>
+          <div className="card p-4 space-y-4">
+            <p className="text-xs text-slate-500">
+              Raw chapters are scraped by the home-server scraper and queued by <code>t9-scraper.service</code>.
+              Which books are checked, and whether they auto-translate, is set per book
+              (Books → Actions → Source Scraping, or the <a href="/scraping" className="text-indigo-400 hover:text-indigo-300">Scraping</a> page).
+            </p>
+            <ScraperTokenRow
+              hasToken={settings.has_scraper_token}
+              onSaved={() => setSettings(s => ({ ...s, has_scraper_token: true }))}
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="sm:col-span-3">
+                <label className="label">Scraper URL</label>
+                <input
+                  className="input font-mono text-sm"
+                  value={settings.scraper_url || ''}
+                  onChange={e => setSettings(s => ({ ...s, scraper_url: e.target.value }))}
+                  placeholder="http://100.65.58.103:8787"
+                />
+              </div>
+              <div>
+                <label className="label">Browser engine</label>
+                <select
+                  className="input text-sm"
+                  value={settings.scrape_engine || ''}
+                  onChange={e => setSettings(s => ({ ...s, scrape_engine: e.target.value }))}
+                >
+                  <option value="">Scraper default (Patchright)</option>
+                  <option value="patchright">Patchright</option>
+                  <option value="extension">Chrome extension (xvfb)</option>
+                </select>
+                <p className="text-xs text-slate-500 mt-1">Sent with every job; switch if one draws fewer Cloudflare challenges.</p>
+              </div>
+              <div>
+                <label className="label">Daily check (hour, server time)</label>
+                <input
+                  type="number" min="0" max="23"
+                  className="input text-sm"
+                  value={settings.scrape_daily_hour ?? 5}
+                  onChange={e => setSettings(s => ({ ...s, scrape_daily_hour: parseInt(e.target.value, 10) }))}
+                />
+              </div>
+              <div>
+                <label className="label">Chapters per scrape job</label>
+                <input
+                  type="number" min="1" max="500"
+                  className="input text-sm"
+                  value={settings.scrape_chunk_size ?? 50}
+                  onChange={e => setSettings(s => ({ ...s, scrape_chunk_size: parseInt(e.target.value, 10) }))}
+                />
+                <p className="text-xs text-slate-500 mt-1">Long backfills run in chunks of this size, so daily checks can slip in between.</p>
+              </div>
+              <div>
+                <label className="label">Default auto-translate gap</label>
+                <input
+                  type="number" min="0"
+                  className="input text-sm"
+                  value={settings.scrape_default_gap ?? 10}
+                  onChange={e => setSettings(s => ({ ...s, scrape_default_gap: parseInt(e.target.value, 10) }))}
+                />
+                <p className="text-xs text-slate-500 mt-1">An auto book only starts translating when its newest queued chapter is at most this far ahead of its newest translated one.</p>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={settings.scrape_enabled !== false}
+                onChange={e => setSettings(s => ({ ...s, scrape_enabled: e.target.checked }))}
+              />
+              Scraping enabled (off pauses the worker for every book)
+            </label>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                <Check size={13} />
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Unit Conversions */}
       <UnitsSection />
 
@@ -565,6 +650,63 @@ export default function Settings() {
   )
 }
 
+
+
+function ScraperTokenRow({ hasToken, onSaved }) {
+  const [token, setToken] = useState('')
+  const [busy, setBusy] = useState(null)   // 'save' | 'test'
+  const [result, setResult] = useState(null)   // { ok, text }
+
+  const save = async () => {
+    setBusy('save'); setResult(null)
+    try {
+      await api.setScraperToken(token)
+      setToken('')
+      onSaved()
+      setResult({ ok: true, text: 'Token saved to .env' })
+    } catch (e) {
+      setResult({ ok: false, text: e.message })
+    } finally { setBusy(null) }
+  }
+
+  // Tests the *saved* URL and token.
+  const test = async () => {
+    setBusy('test'); setResult(null)
+    try {
+      const r = await api.testScraper()
+      const h = r.response || {}
+      setResult({ ok: true, text: `Reachable${h.engine ? ` — engine ${h.engine}` : ''}` })
+    } catch (e) {
+      setResult({ ok: false, text: e.message })
+    } finally { setBusy(null) }
+  }
+
+  return (
+    <div>
+      <label className="label">
+        Scraper token <span className="text-slate-500 font-normal">(SCRAPER_TOKEN — {hasToken ? 'set' : 'not set'})</span>
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          type="password"
+          className="input font-mono text-sm flex-1"
+          value={token}
+          onChange={e => setToken(e.target.value)}
+          placeholder={hasToken ? '••••••••  (enter a new token to replace)' : 'SCRAPER_TOKEN'}
+        />
+        <button className="btn-secondary" disabled={!token.trim() || busy} onClick={save}>
+          {busy === 'save' ? 'Saving…' : 'Save token'}
+        </button>
+        <button className="btn-secondary" disabled={!hasToken || busy} onClick={test}>
+          {busy === 'test' ? 'Testing…' : 'Test'}
+        </button>
+      </div>
+      {result && (
+        <p className={`text-xs mt-1 ${result.ok ? 'text-emerald-400' : 'text-red-400'}`}>{result.text}</p>
+      )}
+    </div>
+  )
+}
 
 function JevKeyRow({ hasKey, openai, hasOpenaiKey, onSaved }) {
   const [key, setKey] = useState('')
