@@ -26,6 +26,7 @@ import os
 import re
 import unicodedata
 import urllib.error
+import uuid
 from urllib.parse import urlsplit
 
 from db.scrape_repo import now_iso
@@ -393,6 +394,11 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
             n = parse_title_number(title)
             if n is None:
                 report["skipped_unnumbered"].append(title or "(untitled)")
+                # Kept whole (text included) for ingest to classify and, if it
+                # isn't confidently an author's note, park for the admin.
+                report.setdefault("_unnumbered", []).append(
+                    {"title": title or "(untitled)", "url": urls[0] if urls else None,
+                     "text": ch.get("text") or "", "after": prev})
                 continue
             number = n + offset
         else:
@@ -842,6 +848,51 @@ class ScrapeEngine:
         self._activity(book_id, f"auto-linked {where} ({prop['matched']} title match(es))")
         return prop
 
+    def sort_unnumbered(self, book_id, report):
+        """Unnumbered entries in a numbered TOC are usually author's notes, but
+        not always (a recap, a 番外 side story). Jev classifies each from the
+        text already scraped: a confident `filler` is skipped, anything else —
+        story, unsure, or Jev unavailable — is parked on the book for the admin
+        to discard, append to the chapter before it, or queue under a number.
+        Parked entries block auto-translate until decided. Never raises."""
+        entries = report.pop("_unnumbered", None) or []
+        report["skipped_notes"], report["parked"] = [], []
+        if not entries:
+            return
+        import chapter_triage
+        import jev_client
+        threshold = chapter_triage.threshold()
+        items = self.db.get_unplaced(book_id)
+        known = {i.get("url") for i in items if i.get("url")}
+        changed = False
+        for e in entries:
+            if e["url"] and e["url"] in known:
+                continue                    # re-received on a retry: already sorted
+            verdict = None
+            if jev_client.is_configured():
+                try:
+                    verdict = chapter_triage.classify_chapter(e["title"], e["text"])
+                except Exception as err:
+                    self._log("warning", f"book {book_id}: classifying {e['title']!r} failed: {err}")
+            if verdict and verdict.get("choice") == "filler" and verdict.get("confidence", 0) >= threshold:
+                report["skipped_notes"].append(e["title"])
+                status = "skipped"
+            else:
+                report["parked"].append(e["title"])
+                status = "pending"
+            items.append({
+                "id": uuid.uuid4().hex[:12], "title": e["title"], "url": e["url"],
+                "after": e["after"], "status": status,
+                "verdict": (verdict or {}).get("choice"), "confidence": (verdict or {}).get("confidence"),
+                "classifier": jev_client.label() if verdict else None,
+                # A skipped note keeps no text: it's listed for the record only.
+                "text": e["text"] if status == "pending" else None,
+                "found_at": self._now(),
+            })
+            changed = True
+        if changed:
+            self.db.set_unplaced(book_id, _trim_unplaced(items))
+
     def ingest(self, task, result):
         book_id = task["book_id"]
         state = self.db.get_book_scrape(book_id, include_toc=True)
@@ -868,6 +919,7 @@ class ScrapeEngine:
         except Exception:
             pass
         report["added"] = added
+        self.sort_unnumbered(book_id, report)
         if result.get("job", {}).get("stopReason") == "stall":
             report["anomalies"].append("the scraper stalled (page navigation stopped moving)")
 
@@ -898,8 +950,11 @@ class ScrapeEngine:
         parts = [f"queued {len(added)} chapter(s)" + (f" (ch{format_ranges(added)})" if added else "")]
         if report["skipped_existing"]:
             parts.append(f"{len(report['skipped_existing'])} already present")
-        if report["skipped_unnumbered"]:
-            parts.append(f"skipped unnumbered: {', '.join(report['skipped_unnumbered'][:3])}")
+        if report.get("skipped_notes"):
+            parts.append(f"skipped author's note(s): {', '.join(report['skipped_notes'][:3])}")
+        if report.get("parked"):
+            parts.append(f"⚠ {len(report['parked'])} unnumbered entr{'y' if len(report['parked']) == 1 else 'ies'} "
+                         f"parked for you to place: {', '.join(report['parked'][:3])}")
         if report["anomalies"]:
             parts.append(f"⚠ {len(report['anomalies'])} warning(s) — book held for review")
         self._activity(book_id, "; ".join(parts),
@@ -952,6 +1007,10 @@ class ScrapeEngine:
             return False, "book is no longer in auto mode"
         if state.get("hold_reason"):
             return False, f"held: {state['hold_reason']}"
+        if state.get("unplaced_pending"):
+            return False, (f"{state['unplaced_pending']} unnumbered entr"
+                           f"{'y' if state['unplaced_pending'] == 1 else 'ies'} awaiting a decision "
+                           f"(Source Scraping)")
         rows = self.db.list_book_scrapes(book_id=book_id)
         if not rows or not rows[0].get("queued_count"):
             return False, "nothing queued"
@@ -1060,6 +1119,95 @@ class ScrapeEngine:
 # ---------------------------------------------------------------------------
 # Entry points the admin API shares with the worker
 # ---------------------------------------------------------------------------
+
+# Decided entries are kept (without text) so a retry re-receiving one doesn't
+# park it again; the oldest beyond this many are dropped.
+UNPLACED_KEEP_DECIDED = 50
+
+
+def _trim_unplaced(items):
+    pending = [i for i in items if i.get("status") == "pending"]
+    decided = [i for i in items if i.get("status") != "pending"][-UNPLACED_KEEP_DECIDED:]
+    keep = {id(i) for i in pending + decided}
+    return [i for i in items if id(i) in keep]
+
+
+class UnplacedError(ValueError):
+    """A resolution that can't be applied; .status is the HTTP code to answer with."""
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def resolve_unplaced(db, book_id, item_id, action, chapter_number=None):
+    """Decide one parked entry:
+      discard — it was a note after all
+      append  — add its text to the end of chapter `chapter_number` (default:
+                the chapter it followed). A queued chapter just grows; a saved
+                one has its stored source extended and is re-queued, so the
+                retranslation's source matches and the conflict check passes.
+      queue   — queue it as chapter `chapter_number` (must be free)
+    Returns a short description of what was done."""
+    items = db.get_unplaced(book_id)
+    item = next((i for i in items if i.get("id") == item_id), None)
+    if item is None or item.get("status") != "pending":
+        raise UnplacedError("No such pending entry.", status=404)
+    book = db.get_book(book_id=book_id) or {}
+    lines = (item.get("text") or "").splitlines()
+    if action == "discard":
+        done = "discarded"
+    elif action == "append":
+        target = chapter_number if chapter_number is not None else item.get("after")
+        if not isinstance(target, int) or target < 1:
+            raise UnplacedError("Which chapter should it be appended to?")
+        from modules import apply_source_ingest
+        extra = apply_source_ingest(book, [item["title"]] + lines, db.config, db.logger, db=db,
+                                    chapter_number=target)
+        row = db.queue_row_for_chapter(book_id, target)
+        if row and row[1] == "processing":
+            raise UnplacedError(f"Chapter {target} is being translated right now — try again once it's saved.",
+                                status=409)
+        if row:
+            db.set_queue_content(row[0], row[2] + [""] + list(extra))
+            done = f"appended to queued ch{target}"
+        else:
+            saved = db.chapter_source(book_id, target)
+            if not saved:
+                raise UnplacedError(f"There is no chapter {target}, queued or saved.")
+            title, source = saved
+            db.add_to_queue(book_id=book_id, content=source + [""] + list(extra), title=title,
+                            chapter_number=target, source="scrape:append",
+                            retranslation_reason=(f"The source posted an extra after this chapter "
+                                                  f"(“{item['title']}”); it has been appended to the "
+                                                  f"source. Translate the whole chapter, extra included."))
+            # Store exactly what was queued (after add_to_queue's own source
+            # transforms) as the chapter's source, so the retranslation's
+            # conflict check sees identical text and proceeds silently.
+            queued = db.queue_row_for_chapter(book_id, target)
+            if queued:
+                db.set_chapter_source(book_id, target, queued[2])
+            done = f"appended to saved ch{target} and re-queued it for translation"
+    elif action == "queue":
+        if not isinstance(chapter_number, int) or chapter_number < 1:
+            raise UnplacedError("Pick a chapter number to queue it as.")
+        if chapter_number in db.existing_chapter_numbers(book_id):
+            raise UnplacedError(f"Chapter {chapter_number} already exists.", status=409)
+        db.add_to_queue(book_id=book_id, content=lines, title=item["title"],
+                        chapter_number=chapter_number, source="scrape:unplaced")
+        done = f"queued as ch{chapter_number}"
+    else:
+        raise UnplacedError("action must be discard, append or queue")
+    item.update(status=action if action != "queue" else "queued", resolution=done,
+                resolved_at=datetime.datetime.now().isoformat(timespec="seconds"), text=None)
+    db.set_unplaced(book_id, _trim_unplaced(items))
+    try:
+        db.add_activity_log("scrape", f"Scrape ({book.get('title') or f'book {book_id}'}): "
+                                      f"unnumbered entry “{item['title']}” {done}",
+                            book_id=book_id, book_name=book.get("title"))
+    except Exception:
+        pass
+    return done
+
 
 def blocked_notice(db, payload):
     """Turn a verified scraper "blocked" notice into (book_id, title, line, url):

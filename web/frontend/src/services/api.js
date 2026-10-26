@@ -278,6 +278,8 @@ export const api = {
   scrapeLink:         (bookId, index, chapterNumber) => post(`/api/books/${bookId}/scrape/link`, { index, chapter_number: chapterNumber ?? null }),
   scrapeBackfill:     (bookId, fromIndex, toIndex) => post(`/api/books/${bookId}/scrape/backfill`, { from_index: fromIndex, to_index: toIndex ?? null }),
   refreshScrapeSites: () => post('/api/scrape/sites/refresh', {}),
+  resolveUnplaced:    (bookId, itemId, action, chapterNumber) =>
+    post(`/api/books/${bookId}/scrape/unplaced/${itemId}`, { action, chapter_number: chapterNumber ?? null }),
   cancelScrapeTask:   (taskId) => post(`/api/scrape/tasks/${taskId}/cancel`, {}),
   retryScrapeTask:    (taskId) => post(`/api/scrape/tasks/${taskId}/retry`, {}),
   setScraperToken:    (token) => post('/api/settings/scraper-token', { api_key: token }),

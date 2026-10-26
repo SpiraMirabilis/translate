@@ -347,7 +347,24 @@ job at a time**, so t9 owns the lane:
   with `fromUrl` = the first entry after it. Sites insert/delete notice "chapters"
   mid-TOC. A cursor that vanishes from the TOC **holds** the book (relink).
 - **Numbering**: 第N章 parsed from the title + `number_offset` (set by linking).
-  Unnumbered entries in a numbered TOC (leave notices) are skipped and listed.
+  (twkan prefixes every title with its *TOC position* — `342.第341章 …` — so the
+  position and the author's number can differ; numbering follows 第N章.)
+- **Unnumbered entries** in a numbered TOC (`341.十里坡案小结`) are never silently
+  dropped (`ScrapeEngine.sort_unnumbered`): Jev (`chapter_triage.classify_chapter`,
+  threshold `jev_conflict_confidence`) classifies the scraped text — a confident
+  `filler` is skipped and logged ("skipped author's note(s): …"); `story`, unsure, or
+  Jev unavailable → **parked** in `book_scrape.unplaced` (JSON, text kept;
+  `unplaced_pending` counts them — migration 27), which blocks auto-translate and
+  lights the nav badge. The Source modal offers per entry: **discard**; **append** to
+  chapter N (default: the chapter it followed) — a queued chapter's content just
+  grows, a saved chapter is re-queued with the extra appended and its stored source
+  set to *exactly* the queued text, so the retranslation passes the conflict check
+  silently; or **queue** as its own free chapter number. Resolved by
+  `scrape_sync.resolve_unplaced` (`POST /api/books/{id}/scrape/unplaced/{item_id}`).
+  Decided entries are kept without text (newest 50) so a retry never re-parks one.
+  ⚠️ No decimal/inserted chapter numbers: `chapter_number` is an integer identity
+  across ~15 columns, URLs, comments and `n±1` arithmetic (`notes_as_of(n-1)`, reader
+  prev/next). If in-between ordering is ever needed, add a separate sort key + label.
   Backwards/duplicate numbers are skipped, gaps are ingested — all of them set
   `hold_reason`, which blocks auto-translate until cleared. twkan's anti-scrape
   `secCanvasCount` lines are **not** an anomaly (the scraper recovers their text);

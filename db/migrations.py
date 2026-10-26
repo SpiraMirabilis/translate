@@ -970,6 +970,20 @@ def _m026_scraping(conn, cursor, backend, logger):
         cursor.execute(ddl)
 
 
+def _m027_book_scrape_unplaced(conn, cursor, backend, logger):
+    """Unnumbered TOC entries the scraper fetched that couldn't be placed:
+    `unplaced` holds them (JSON, text included) until the admin discards,
+    appends or queues each one; `unplaced_pending` counts the undecided ones
+    so the auto-translate gate and the nav badge needn't parse the JSON.
+    Not in the baseline book_scrape DDL (migration 26 copies it verbatim), so
+    fresh installs get the columns here too."""
+    add_column_if_missing(conn, cursor, backend, "book_scrape", "unplaced",
+                          "ALTER TABLE book_scrape ADD COLUMN unplaced TEXT",
+                          "ALTER TABLE book_scrape ADD COLUMN unplaced LONGTEXT")
+    add_column_if_missing(conn, cursor, backend, "book_scrape", "unplaced_pending",
+                          "ALTER TABLE book_scrape ADD COLUMN unplaced_pending INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -997,6 +1011,7 @@ MIGRATIONS = [
     Migration(24, "footnote_candidates_footnote_id", _m024_footnote_candidates_footnote_id),
     Migration(25, "email_log", _m025_email_log),
     Migration(26, "scraping", _m026_scraping),
+    Migration(27, "book_scrape_unplaced", _m027_book_scrape_unplaced),
 ]
 
 

@@ -134,6 +134,10 @@ def get_book_scrape(book_id: int):
     rows = _db.list_book_scrapes(book_id=book_id)
     heads = rows[0] if rows else {}
     toc = (state.pop("last_toc", None) or {}).get("chapters") or []
+    unplaced = state.pop("unplaced", None) or []
+    unplaced_pending = [i for i in unplaced if i.get("status") == "pending"]
+    unplaced_recent = [{k: v for k, v in i.items() if k != "text"}
+                       for i in unplaced if i.get("status") != "pending"][-10:][::-1]
     proposal = scrape_sync.propose_link(
         toc, heads.get("have_max"), state.get("number_offset") or 0,
         our_titles=_db.recent_source_titles(book_id)) if toc else None
@@ -156,6 +160,8 @@ def get_book_scrape(book_id: int):
         "default_model": _db.latest_translation_model(book_id),
         "default_gap": scrape_sync.setting("scrape_default_gap"),
         "tasks": _db.list_scrape_tasks(book_id=book_id, limit=15),
+        "unplaced": unplaced_pending,
+        "unplaced_recent": unplaced_recent,
     }
 
 
@@ -258,6 +264,23 @@ def backfill(book_id: int, req: BackfillRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "queued", "task_id": task_id}
+
+
+class UnplacedDecision(BaseModel):
+    action: str                         # discard | append | queue
+    chapter_number: Optional[int] = None
+
+
+@router.post("/api/books/{book_id}/scrape/unplaced/{item_id}")
+def resolve_unplaced(book_id: int, item_id: str, req: UnplacedDecision):
+    """Decide a parked unnumbered entry: discard it, append it to the end of a
+    chapter (default: the one it followed), or queue it as its own chapter."""
+    _book_or_404(book_id)
+    try:
+        done = scrape_sync.resolve_unplaced(_db, book_id, item_id, req.action, req.chapter_number)
+    except scrape_sync.UnplacedError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    return {"status": "ok", "done": done}
 
 
 @router.post("/api/scrape/tasks/{task_id}/cancel")

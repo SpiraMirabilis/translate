@@ -13,9 +13,11 @@ _BOOK_SCRAPE_FIELDS = {
     "mode", "auto_gap", "number_offset", "linked", "cursor_url", "cursor_number",
     "run_options", "last_toc", "toc_count", "toc_latest_title", "pending_count",
     "last_checked_at", "last_sweep_at", "last_new_at", "consecutive_failures",
-    "last_error", "hold_reason",
+    "last_error", "hold_reason", "unplaced", "unplaced_pending",
 }
-_BOOK_SCRAPE_JSON = {"run_options", "last_toc"}
+_BOOK_SCRAPE_JSON = {"run_options", "last_toc", "unplaced"}
+# Big JSON blobs left out of ordinary reads.
+_BOOK_SCRAPE_HEAVY = {"last_toc", "unplaced"}
 
 _TASK_FIELDS = {
     "status", "priority", "from_url", "to_url", "max_chapters", "options",
@@ -27,6 +29,22 @@ _TASK_JSON = {"options", "progress", "result_summary"}
 # A task in one of these states occupies the scraper lane.
 LANE_STATES = ("running", "blocked", "cancelling")
 OPEN_STATES = ("queued",) + LANE_STATES
+
+
+def _lines(content):
+    """Stored chapter/queue content -> list of lines (JSON array or plain text)."""
+    if isinstance(content, list):
+        return content
+    if not content:
+        return []
+    if content.lstrip().startswith("["):
+        try:
+            val = json.loads(content)
+            if isinstance(val, list):
+                return [str(x) for x in val]
+        except ValueError:
+            pass
+    return content.splitlines()
 
 
 def _decode(row, json_fields):
@@ -49,7 +67,7 @@ class ScrapeRepo:
     def get_book_scrape(self, book_id: int, include_toc: bool = False) -> dict:
         """The book's scrape row, or defaults (exists=False) if it has none."""
         cols = "*" if include_toc else ", ".join(
-            ["book_id"] + sorted(_BOOK_SCRAPE_FIELDS - {"last_toc"}) + ["updated_at"])
+            ["book_id"] + sorted(_BOOK_SCRAPE_FIELDS - _BOOK_SCRAPE_HEAVY) + ["updated_at"])
         with self._conn() as conn:
             cursor = conn.cursor()
             cursor.execute(f"SELECT {cols} FROM book_scrape WHERE book_id = ?", (book_id,))
@@ -59,7 +77,8 @@ class ScrapeRepo:
             return {"book_id": book_id, "exists": False, "mode": "off", "auto_gap": None,
                     "number_offset": 0, "linked": 0, "cursor_url": None,
                     "cursor_number": None, "run_options": None, "last_toc": None,
-                    "consecutive_failures": 0, "hold_reason": None}
+                    "consecutive_failures": 0, "hold_reason": None,
+                    "unplaced": None, "unplaced_pending": 0}
         out = _decode(dict(zip(names, row)), _BOOK_SCRAPE_JSON)
         out["exists"] = True
         return out
@@ -92,7 +111,7 @@ class ScrapeRepo:
         state (minus the stored TOC) and both chapter heads: the highest
         translated chapter and the highest chapter we hold at all (saved or
         queued) — the gap rule needs the first, the overview shows both."""
-        cols = ", ".join(f"s.{c}" for c in sorted(_BOOK_SCRAPE_FIELDS - {"last_toc", "run_options"}))
+        cols = ", ".join(f"s.{c}" for c in sorted(_BOOK_SCRAPE_FIELDS - _BOOK_SCRAPE_HEAVY - {"run_options"}))
         sql = (
             f"SELECT b.id AS book_id, b.title, b.source_url, b.status AS book_status, "
             f"s.book_id AS has_row, s.run_options, {cols}, "
@@ -113,6 +132,7 @@ class ScrapeRepo:
             r["linked"] = r.get("linked") or 0
             r["number_offset"] = r.get("number_offset") or 0
             r["consecutive_failures"] = r.get("consecutive_failures") or 0
+            r["unplaced_pending"] = r.get("unplaced_pending") or 0
             _decode(r, {"run_options"})
             heads = [h for h in (r["translated_max"], r["queued_max"]) if h is not None]
             r["have_max"] = max(heads) if heads else None
@@ -168,6 +188,49 @@ class ScrapeRepo:
                 if 0 < len(first) <= 40:
                     out[n] = first
         return out
+
+    # -- unplaced entries + the two places "append" can land -------------------
+
+    def get_unplaced(self, book_id: int) -> list:
+        state = self.get_book_scrape(book_id, include_toc=True)
+        return list(state.get("unplaced") or [])
+
+    def set_unplaced(self, book_id: int, items: list):
+        self.update_book_scrape(book_id, unplaced=items,
+                                unplaced_pending=sum(1 for i in items if i.get("status") == "pending"))
+
+    def queue_row_for_chapter(self, book_id: int, chapter_number: int):
+        """(queue id, status, content lines) of the queue row holding this chapter, or None."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, status, content FROM queue WHERE book_id = ? AND chapter_number = ? "
+                           "ORDER BY id LIMIT 1", (book_id, chapter_number))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return row[0], row[1] or "queued", _lines(row[2])
+
+    def set_queue_content(self, queue_id: int, lines: list):
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE queue SET content = ? WHERE id = ?",
+                           (json.dumps(lines, ensure_ascii=False), queue_id))
+
+    def chapter_source(self, book_id: int, chapter_number: int):
+        """(title, source lines) of a saved chapter, or None."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT title, untranslated_content FROM chapters "
+                           "WHERE book_id = ? AND chapter_number = ?", (book_id, chapter_number))
+            row = cursor.fetchone()
+        return (row[0], _lines(row[1])) if row else None
+
+    def set_chapter_source(self, book_id: int, chapter_number: int, lines: list):
+        """Rewrite a saved chapter's source text only (the translation is left as is)."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE chapters SET untranslated_content = ? WHERE book_id = ? AND chapter_number = ?",
+                           (json.dumps(lines, ensure_ascii=False), book_id, chapter_number))
 
     def latest_translation_model(self, book_id: int):
         """The model the book's most recent chapter was translated with."""
@@ -285,6 +348,7 @@ class ScrapeRepo:
             blocked = cursor.fetchone()[0]
             cursor.execute(
                 "SELECT COUNT(*) FROM book_scrape WHERE mode <> 'off' "
-                "AND (consecutive_failures >= ? OR hold_reason IS NOT NULL)", (failure_limit,))
+                "AND (consecutive_failures >= ? OR hold_reason IS NOT NULL OR unplaced_pending > 0)",
+                (failure_limit,))
             books = cursor.fetchone()[0]
         return blocked + books

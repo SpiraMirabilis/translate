@@ -149,6 +149,10 @@ export default function SourceModal({ bookId, onClose }) {
               </div>
             )}
 
+            {data.unplaced?.length > 0 && (
+              <UnplacedPanel bookId={bookId} items={data.unplaced} busy={busy} run={run} />
+            )}
+
             {/* Status line */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
               <Stat label="Source TOC" value={state.toc_count ?? '—'}
@@ -350,6 +354,77 @@ function LinkStatus({ toc, linked, cursorIdx, state, proposal: p, haveMax, busy,
       {!p && haveMax != null && !linked && (
         <div className="text-slate-500">No TOC entry lines up with ch {haveMax} — pick one below.</div>
       )}
+    </div>
+  )
+}
+
+// Unnumbered TOC entries the scraper fetched that weren't confidently an
+// author's note. Auto-translate waits until each is decided.
+function UnplacedPanel({ bookId, items, busy, run }) {
+  return (
+    <div className="px-3 py-3 rounded-lg bg-amber-500/10 border border-amber-700/50 text-sm space-y-3">
+      <div className="text-amber-200 flex items-center gap-2">
+        <AlertTriangle size={15} className="shrink-0" />
+        <span>
+          {items.length} unnumbered entr{items.length === 1 ? 'y' : 'ies'} to place — auto-translate waits until
+          {items.length === 1 ? ' it is' : ' each is'} decided.
+        </span>
+      </div>
+      {items.map(item => <UnplacedItem key={item.id} bookId={bookId} item={item} busy={busy} run={run} />)}
+    </div>
+  )
+}
+
+function UnplacedItem({ bookId, item, busy, run }) {
+  const [open, setOpen] = useState(false)
+  const [appendTo, setAppendTo] = useState(item.after != null ? String(item.after) : '')
+  const [queueAs, setQueueAs] = useState('')
+  const verdict = item.verdict
+    ? `${item.classifier || 'Jev'}: ${item.verdict}${item.confidence != null ? ` (${item.confidence.toFixed(2)})` : ''}`
+    : 'not classified'
+  const text = item.text || ''
+  const act = (action, n) => run(`unplaced-${item.id}`, () => api.resolveUnplaced(bookId, item.id, action, n))
+  return (
+    <div className="bg-slate-900/60 rounded p-3 space-y-2">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-slate-100 font-medium">{item.title}</span>
+        <span className="text-xs text-slate-500">
+          {item.after != null ? `after ch ${item.after}` : 'position unknown'} · {verdict} · {text.length.toLocaleString()} chars
+        </span>
+      </div>
+      <div className={`text-xs text-slate-400 whitespace-pre-wrap ${open ? 'max-h-64 overflow-y-auto' : 'line-clamp-3'}`}>
+        {text || '(no text)'}
+      </div>
+      {text.length > 200 && (
+        <button className="text-xs text-indigo-400 hover:text-indigo-300" onClick={() => setOpen(v => !v)}>
+          {open ? 'Show less' : 'Show all'}
+        </button>
+      )}
+      <div className="flex items-end gap-2 flex-wrap text-xs">
+        <button className="btn btn-secondary text-xs" disabled={!!busy} onClick={() => act('discard')}>
+          Discard
+        </button>
+        <span className="w-px h-6 bg-slate-700" />
+        <label className="flex items-center gap-1 text-slate-400">
+          Append to ch
+          <input className="input text-xs w-20" type="number" value={appendTo} onChange={e => setAppendTo(e.target.value)} />
+        </label>
+        <button className="btn btn-secondary text-xs" disabled={!!busy || !appendTo}
+                title="Add it to the end of that chapter. A translated chapter is re-queued for translation."
+                onClick={() => act('append', parseInt(appendTo, 10))}>
+          Append
+        </button>
+        <span className="w-px h-6 bg-slate-700" />
+        <label className="flex items-center gap-1 text-slate-400">
+          Queue as ch
+          <input className="input text-xs w-20" type="number" value={queueAs} onChange={e => setQueueAs(e.target.value)}
+                 placeholder="number" />
+        </label>
+        <button className="btn btn-secondary text-xs" disabled={!!busy || !queueAs}
+                onClick={() => act('queue', parseInt(queueAs, 10))}>
+          Queue
+        </button>
+      </div>
     </div>
   )
 }

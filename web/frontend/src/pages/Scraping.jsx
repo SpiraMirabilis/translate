@@ -38,7 +38,8 @@ export default function Scraping() {
 
   const { settings, worker, lane, queued = [], recent = [], books = [] } = data || {}
   const visibleBooks = books.filter(b => showOff || b.mode !== 'off')
-  const attention = (b) => b.mode !== 'off' && (b.hold_reason || b.consecutive_failures >= settings.failure_limit)
+  const attention = (b) => b.mode !== 'off'
+    && (b.hold_reason || b.unplaced_pending > 0 || b.consecutive_failures >= settings.failure_limit)
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -177,7 +178,8 @@ export default function Scraping() {
                     <td className="px-3 py-2 text-right text-sky-300">{b.linked ? (b.pending_count ?? '—') : ''}</td>
                     <td className="px-3 py-2 text-xs text-slate-500">{relativeTime(b.last_checked_at) || 'never'}</td>
                     <td className="px-3 py-2 text-xs max-w-[16rem]">
-                      {b.hold_reason ? <span className="text-amber-300 truncate block" title={b.hold_reason}>held: {b.hold_reason}</span>
+                      {b.unplaced_pending > 0 ? <span className="text-amber-300 truncate block">{b.unplaced_pending} unnumbered entr{b.unplaced_pending === 1 ? 'y' : 'ies'} to place</span>
+                        : b.hold_reason ? <span className="text-amber-300 truncate block" title={b.hold_reason}>held: {b.hold_reason}</span>
                         : b.consecutive_failures >= settings.failure_limit ? <span className="text-rose-300 truncate block" title={b.last_error}>failing: {b.last_error}</span>
                           : b.last_error ? <span className="text-rose-300/80 truncate block" title={b.last_error}>{b.last_error}</span>
                             : b.site_supported === false ? <span className="text-slate-500">site not supported by the scraper</span>

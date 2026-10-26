@@ -161,3 +161,20 @@ def test_scraper_notify_falls_back_to_the_setting_then_no_link(api_client, db, m
     assert r.status_code == 200
     entry = db.get_activity_log(limit=5)[-1]
     assert entry["type"] == "scrape_blocked" and not entry["entities"]
+
+
+def test_resolve_unplaced_endpoint(admin_client, db):
+    book_id = _book_with_toc(db)
+    db.set_unplaced(book_id, [{"id": "abc", "title": "小结", "url": "u", "after": 2,
+                               "status": "pending", "text": "回顾"}])
+    body = admin_client.get(f"/api/books/{book_id}/scrape").json()
+    assert [i["id"] for i in body["unplaced"]] == ["abc"]
+    assert admin_client.get("/api/scrape/count").json()["count"] == 0     # mode off: no badge
+    r = admin_client.post(f"/api/books/{book_id}/scrape/unplaced/abc", json={"action": "append"})
+    assert r.status_code == 400                                          # no ch2 queued or saved
+    r = admin_client.post(f"/api/books/{book_id}/scrape/unplaced/abc", json={"action": "discard"})
+    assert r.status_code == 200 and r.json()["done"] == "discarded"
+    body = admin_client.get(f"/api/books/{book_id}/scrape").json()
+    assert body["unplaced"] == [] and body["unplaced_recent"][0]["status"] == "discard"
+    assert admin_client.post(f"/api/books/{book_id}/scrape/unplaced/abc",
+                             json={"action": "discard"}).status_code == 404

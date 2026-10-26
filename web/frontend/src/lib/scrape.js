@@ -59,7 +59,8 @@ export function taskSummary(t) {
   if (t.kind === 'autostart') return s.started ? 'Translation started' : (s.reason || '')
   const parts = [`${(s.added || []).length} queued`]
   if (s.skipped_existing?.length) parts.push(`${s.skipped_existing.length} already present`)
-  if (s.skipped_unnumbered?.length) parts.push(`${s.skipped_unnumbered.length} unnumbered skipped`)
+  if (s.skipped_notes?.length) parts.push(`${s.skipped_notes.length} author's note(s) skipped`)
+  if (s.parked?.length) parts.push(`⚠ ${s.parked.length} to place`)
   if (s.anomalies?.length) parts.push(`⚠ ${s.anomalies.length} warning(s)`)
   return parts.join(' · ')
 }

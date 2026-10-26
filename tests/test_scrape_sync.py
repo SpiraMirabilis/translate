@@ -618,3 +618,123 @@ def test_blocked_link_prefers_the_scrapers_url_then_our_setting(db, book, monkey
     reported["vncUrl"] = "http://100.65.58.103:6080/vnc.html?autoconnect=1&resize=scale"
     engine.step_lane()
     assert db.lane_task()["vnc_url"] == reported["vncUrl"]
+
+
+# -- unnumbered TOC entries: skip a confident note, park the rest ----------------
+
+def _with_extra(title="十里坡案小结", text="案件回顾正文"):
+    entries = [entry(1), entry(2), entry(0, title), entry(3)]
+    entries[2]["url"] = "https://twkan.com/txt/1/extra.html"
+    entries[2]["text"] = text
+    return entries
+
+
+def _jev(monkeypatch, choice=None, confidence=0.99):
+    import chapter_triage
+    import jev_client
+    monkeypatch.setattr(jev_client, "is_configured", lambda: choice is not None)
+    monkeypatch.setattr(chapter_triage, "classify_chapter",
+                        lambda title, lines: {"choice": choice, "confidence": confidence})
+
+
+def _scrape_all(db, book, entries):
+    engine = make_engine(db, FakeScraper(entries))
+    check_and_link(db, engine, book)                 # empty book: linked before #1
+    db.update_book_scrape(book, mode="auto")
+    scrape_sync.enqueue_check(db, book, catchup=True)
+    drain(engine)
+    return engine
+
+
+def test_confident_note_is_skipped_and_logged(db, book, monkeypatch):
+    _jev(monkeypatch, "filler", 0.98)
+    _scrape_all(db, book, _with_extra("请假条", "今天请假一天"))
+    assert queued_numbers(db, book) == [1, 2, 3]
+    state = db.get_book_scrape(book)
+    assert state["unplaced_pending"] == 0
+    [item] = db.get_unplaced(book)
+    assert item["status"] == "skipped" and item["text"] is None
+    lines = [e["message"] for e in db.get_activity_log(limit=20)]
+    assert any("skipped author's note(s): 请假条" in m for m in lines)
+
+
+def test_story_or_unclassified_entry_is_parked_and_blocks_autostart(db, book, monkeypatch):
+    _jev(monkeypatch, "story", 0.97)
+    engine = _scrape_all(db, book, _with_extra())
+    [item] = db.get_unplaced(book)
+    assert item["status"] == "pending" and item["after"] == 2 and item["text"] == "案件回顾正文"
+    assert db.get_book_scrape(book)["unplaced_pending"] == 1
+    engine.run_autostarts(force=True)
+    assert engine.admin.started == []                # waits for the decision
+    task = [t for t in db.list_scrape_tasks(book_id=book) if t["kind"] == "autostart"][0]
+    assert task["status"] == "skipped" and "awaiting a decision" in task["result_summary"]["reason"]
+
+    other = db.create_book("Other")
+    db.update_book(other, source_url="https://twkan.com/book/2.html")
+    _jev(monkeypatch, None)                          # Jev unavailable: park, never drop
+    _scrape_all(db, other, _with_extra())
+    assert db.get_unplaced(other)[0]["status"] == "pending"
+
+
+def test_a_retry_does_not_park_the_same_entry_twice(db, book, monkeypatch):
+    _jev(monkeypatch, "story")
+    engine = make_engine(db, FakeScraper(_with_extra()))
+    check_and_link(db, engine, book)
+    for _ in range(2):
+        engine.sort_unnumbered(book, {"_unnumbered": [
+            {"title": "十里坡案小结", "url": "https://twkan.com/txt/1/extra.html", "text": "x", "after": 2}]})
+    assert len(db.get_unplaced(book)) == 1
+
+
+def _parked(db, book, after=2):
+    db.set_unplaced(book, [{"id": "abc", "title": "十里坡案小结", "url": "u", "after": after,
+                            "status": "pending", "text": "回顾第一行\n回顾第二行"}])
+
+
+def test_resolve_discard_and_queue(db, book):
+    _parked(db, book)
+    assert scrape_sync.resolve_unplaced(db, book, "abc", "discard") == "discarded"
+    assert db.get_book_scrape(book)["unplaced_pending"] == 0
+    with pytest.raises(scrape_sync.UnplacedError):
+        scrape_sync.resolve_unplaced(db, book, "abc", "discard")      # already decided
+
+    _parked(db, book)
+    seed_queue(db, book, [5])
+    with pytest.raises(scrape_sync.UnplacedError) as e:
+        scrape_sync.resolve_unplaced(db, book, "abc", "queue", 5)      # taken
+    assert e.value.status == 409
+    scrape_sync.resolve_unplaced(db, book, "abc", "queue", 900)
+    assert 900 in queued_numbers(db, book)
+
+
+def test_resolve_append_to_a_queued_chapter(db, book):
+    seed_queue(db, book, [2])
+    _parked(db, book)
+    scrape_sync.resolve_unplaced(db, book, "abc", "append")             # defaults to "after"
+    _, _, lines = db.queue_row_for_chapter(book, 2)
+    text = [ln for ln in lines if ln.strip()]       # source modules may space paragraphs
+    assert text[0] == "正文2" and text[-3:] == ["十里坡案小结", "回顾第一行", "回顾第二行"]
+
+
+def test_resolve_append_to_a_saved_chapter_requeues_with_matching_source(db, book):
+    db.save_chapter(book, 2, "Chapter Two", ["原文"], ["Translated"])
+    _parked(db, book)
+    done = scrape_sync.resolve_unplaced(db, book, "abc", "append", 2)
+    assert "re-queued" in done
+    qid, status, queued = db.queue_row_for_chapter(book, 2)
+    _, source = db.chapter_source(book, 2)
+    text = [ln for ln in source if ln.strip()]
+    assert queued == source and text[0] == "原文" and text[-1] == "回顾第二行"
+    row = [q for q in db.list_queue(book_id=book) if q["chapter_number"] == 2][0]
+    assert "appended" in (row.get("retranslation_reason") or "")
+
+
+def test_resolve_append_refuses_a_chapter_being_translated(db, book):
+    seed_queue(db, book, [2])
+    qid, _, _ = db.queue_row_for_chapter(book, 2)
+    with db._conn() as conn:
+        conn.cursor().execute("UPDATE queue SET status = 'processing' WHERE id = ?", (qid,))
+    _parked(db, book)
+    with pytest.raises(scrape_sync.UnplacedError) as e:
+        scrape_sync.resolve_unplaced(db, book, "abc", "append", 2)
+    assert e.value.status == 409
