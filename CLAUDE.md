@@ -322,6 +322,59 @@ the recommendations one — an abusive reporter has to be identifiable).
 - Covered by `tests/test_error_reports.py` (which stubs `turnstile.verify` — the
   suite must never make a live siteverify call).
 
+### Automated source scraping (`scrape_sync.py`, `scrape_worker.py`, added 2026-10-26)
+Raw chapters are scraped by a separate service on a home server (residential IP —
+data-center IPs get endless Cloudflare challenges; code in `~/scraper/`, client
+`scraper_client.py`, copied verbatim from `~/scraper/client/`). The scraper runs **one
+job at a time**, so t9 owns the lane:
+
+- **`t9-scraper.service`** (`deploy/`, user unit) runs `scrape_worker.py`: a loop that
+  keeps **at most one** toc/chapters job on the scraper, persisting the scraper job id
+  on submit (a restart resumes polling, never resubmits). It also runs the daily sweep
+  at `scrape_daily_hour` and translation auto-starts. Standalone, not a thread in the
+  admin app, so admin restarts never interrupt a backfill. `--status` prints the lane;
+  the admin UI reads its heartbeat from `logs/scrape_worker.json`.
+- **Tables** (migration 26): `book_scrape` (per book: `mode` off|queue|auto, `auto_gap`,
+  `number_offset`, the cursor, the last TOC read, hold/failure state, `run_options`) and
+  `scrape_tasks` (the lane; kinds `toc`, `chapters`, `autostart` — the last never
+  touches the scraper). Repo: `db/scrape_repo.py`.
+- **Order** = priority then age: TOC checks (10) → catch-ups for auto books (20) →
+  catch-ups for queue books (30) → backfills (40). Every chapters task is a chunk of
+  ≤ `scrape_chunk_size` (50); finishing one queues the next behind anything more
+  urgent. Backfills are also sent with the scraper's `priority: "low"`.
+- ⚠️ **The cursor is a URL, never a count or TOC position** — the source URL of the
+  last chapter ingested (`sourceUrls[0]` = the TOC entry's `url`); catch-ups scrape
+  with `fromUrl` = the first entry after it. Sites insert/delete notice "chapters"
+  mid-TOC. A cursor that vanishes from the TOC **holds** the book (relink).
+- **Numbering**: 第N章 parsed from the title + `number_offset` (set by linking).
+  Unnumbered entries in a numbered TOC (leave notices) are skipped and listed.
+  Backwards/duplicate numbers are skipped, gaps and twkan `secCanvasCount` lines are
+  ingested — all of them set `hold_reason`, which blocks auto-translate until
+  cleared. Numbers already saved or queued are never re-queued
+  (`existing_chapter_numbers`, also behind `queue_api._existing_chapter_numbers`).
+- **Auto-translate** (mode `auto`, after a catch-up chain that added rows): no hold,
+  book not already running, and newest queued − newest translated ≤ `auto_gap`
+  (default `scrape_default_gap`, 10 — the backstop for a book stopped on purpose).
+  Starts via `t9_client` → `POST /api/queue/process-next` with `no_review` (per-book
+  toggle, default on), `auto_process`, and **the model of the book's latest
+  translated chapter** — deliberately not a setting. 409 (cap full) retries every
+  15 min for 6 h.
+- **Failures**: retry after 30 min / 2 h / 8 h (chapters jobs resume via `retry`;
+  a failed job's partial result is ingested first), then the book's
+  `consecutive_failures` climbs; at 3 the sweep skips it until a manual check.
+  An HTTP error on submit (unsupported site) fails at once. A job **blocked** on a
+  challenge holds the lane; the scraper itself pings (ntfy) with the noVNC link, the
+  Scraping page shows it.
+- **UI**: Books → Actions → **Source Scraping** (`SourceModal.jsx`: mode, gap, offset,
+  TOC browser to link and backfill, recent tasks) and **Check Source Now** (the daily
+  check, now — `reason="forced"`); `/scraping` page (lane, queue, all books, recent)
+  with a `scrape` nav badge (blocked job + held/failing books); Settings → Scraping
+  (`scraper_url`, `scrape_engine` blank|patchright|extension, hour, chunk, gap, kill
+  switch `scrape_enabled`; `SCRAPER_TOKEN` in `.env`, re-read by the worker per call).
+- Supported sites are the scraper's adapters (twkan, wfxs, novellunar, 69shuba as of
+  2026-10-26); others fail on submit. Tests: `tests/test_scrape_sync.py` (fake
+  scraper that asserts one-job-in-flight), `tests/test_scrape_api.py`.
+
 ### Queue Processing
 - Batch processing of multiple files/chapters
 - Resume functionality for interrupted translations
