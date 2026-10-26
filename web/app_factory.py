@@ -70,7 +70,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             recommendations_admin, reader_stats_api, comments_admin,
             error_reports_admin,
             revisions, grammar, mail_ingest, deps, footnote_candidates,
-            sitemap,
+            sitemap, scrape_api,
         )
 
         # Shared engine for the non-job callers (entity advice, dictionary
@@ -131,6 +131,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         comments_admin.init(entity_manager)
         footnote_candidates.init(entity_manager)
         sitemap.init(entity_manager, config)
+        scrape_api.init(entity_manager)
 
     # Flush buffered reader views on clean shutdown (best-effort; up to a few
     # seconds of views are accepted-lost on a hard kill).
@@ -255,6 +256,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             recommendations_admin, reader_stats_api, comments_admin,
             error_reports_admin,
             revisions, grammar, mail_ingest, footnote_candidates, sitemap,
+            scrape_api,
         )
         app.include_router(translation.router)
         app.include_router(books.router)
@@ -276,6 +278,9 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # Sitemap generation — admin only, and absent from the public process
         # so no crawler can trigger a 38k-row build (see web/api/sitemap.py).
         app.include_router(sitemap.router)
+        # Automated scraping — the worker is t9-scraper.service; these only
+        # read its state and queue work for it.
+        app.include_router(scrape_api.router)
 
     # Public API routes — both processes
     app.include_router(health.router)

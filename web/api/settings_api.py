@@ -115,6 +115,43 @@ def test_typesafe_key():
 
 
 # ------------------------------------------------------------------
+# Scraper (scrape_worker.py) -- the bearer token for the home-server
+# scraper is a secret, so it goes to .env; the worker re-reads .env on
+# every call, so a new token needs no restart.
+# ------------------------------------------------------------------
+
+def _scraper_token():
+    import scrape_sync
+    return scrape_sync.scraper_token()
+
+
+@router.post("/scraper-token")
+def set_scraper_token(req: ApiKeyRequest):
+    key = req.api_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Token is empty.")
+    os.environ["SCRAPER_TOKEN"] = key
+    persist_env("SCRAPER_TOKEN", key)
+    return {"status": "ok", "env_var": "SCRAPER_TOKEN"}
+
+
+@router.post("/scraper-test")
+def test_scraper():
+    """Reach the scraper's /health and an authenticated route."""
+    import scrape_sync
+    from scraper_client import ScraperError
+    sc = scrape_sync.make_client(timeout=8)
+    try:
+        health = sc._req("GET", "/health")[1]
+        sc._req("GET", "/jobs?limit=1")
+    except ScraperError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"Scraper unreachable: {e}")
+    return {"status": "ok", "response": health}
+
+
+# ------------------------------------------------------------------
 # General settings
 # ------------------------------------------------------------------
 
@@ -168,6 +205,14 @@ def get_settings():
         "jev_unit_filter": settings_store.get("jev_unit_filter", True),
         "jev_unit_confidence": settings_store.get("jev_unit_confidence", 0.9),
         "has_typesafe_key": bool(os.getenv("TYPESAFE_KEY", "").strip()),
+        # Scraping: read from the store -- the scrape worker consults it live.
+        "scrape_enabled": settings_store.get("scrape_enabled", True),
+        "scraper_url": settings_store.get("scraper_url", "http://100.65.58.103:8787"),
+        "scrape_daily_hour": settings_store.get("scrape_daily_hour", 5),
+        "scrape_chunk_size": settings_store.get("scrape_chunk_size", 50),
+        "scrape_default_gap": settings_store.get("scrape_default_gap", 10),
+        "scrape_engine": settings_store.get("scrape_engine", ""),
+        "has_scraper_token": bool(_scraper_token()),
         "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
     }
 
@@ -207,6 +252,12 @@ class SettingsUpdate(BaseModel):
     jev_conflict_confidence: Optional[float] = None
     jev_unit_filter: Optional[bool] = None
     jev_unit_confidence: Optional[float] = None
+    scrape_enabled: Optional[bool] = None
+    scraper_url: Optional[str] = None
+    scrape_daily_hour: Optional[int] = None
+    scrape_chunk_size: Optional[int] = None
+    scrape_default_gap: Optional[int] = None
+    scrape_engine: Optional[str] = None
 
 
 @router.put("")
@@ -219,6 +270,14 @@ def update_settings(req: SettingsUpdate):
     for key in ("jev_conflict_confidence", "comment_automod_jev_confidence", "jev_unit_confidence"):
         if key in updates and not 0 < updates[key] <= 1:
             raise HTTPException(status_code=400, detail=f"{key} must be in (0, 1]")
+    if "scrape_daily_hour" in updates and not 0 <= updates["scrape_daily_hour"] <= 23:
+        raise HTTPException(status_code=400, detail="scrape_daily_hour must be 0-23")
+    if "scrape_chunk_size" in updates and not 1 <= updates["scrape_chunk_size"] <= 500:
+        raise HTTPException(status_code=400, detail="scrape_chunk_size must be 1-500")
+    if "scrape_engine" in updates and updates["scrape_engine"] not in ("", "patchright", "extension"):
+        raise HTTPException(status_code=400, detail="scrape_engine must be blank, patchright or extension")
+    if "scrape_default_gap" in updates and updates["scrape_default_gap"] < 0:
+        raise HTTPException(status_code=400, detail="scrape_default_gap must be >= 0")
     if updates:
         settings_store.update(updates)
     # Mirror onto the in-memory _config object so callers reading _config.X see

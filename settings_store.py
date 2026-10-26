@@ -88,6 +88,21 @@ SCHEMA = {
     "languagetool_url":        ("LANGUAGETOOL_URL",        "http://127.0.0.1:8081",   str),
     "grammar_language":        ("GRAMMAR_LANGUAGE",        "en-US",                   str),
     "polish_model":            ("POLISH_MODEL",            "claude:claude-sonnet-4-6", str),
+    # Automated source scraping (scrape_worker.py / t9-scraper.service). The
+    # scraper runs on a home server; its bearer token is a secret and lives in
+    # .env as SCRAPER_TOKEN. Which books are scraped is per book (book_scrape
+    # .mode); scrape_enabled only takes it all away. Read live by the worker.
+    "scrape_enabled":          ("SCRAPE_ENABLED",          True,                      bool),
+    "scraper_url":             ("SCRAPER_URL",             "http://100.65.58.103:8787", str),
+    "scrape_daily_hour":       ("SCRAPE_DAILY_HOUR",       5,                         int),
+    "scrape_chunk_size":       ("SCRAPE_CHUNK_SIZE",       50,                        int),
+    # Auto-translate only starts when the newest queued chapter is at most this
+    # far past the newest translated one (per-book override: book_scrape.auto_gap).
+    "scrape_default_gap":      ("SCRAPE_DEFAULT_GAP",      10,                        int),
+    "scrape_toc_spacing_seconds": ("SCRAPE_TOC_SPACING_SECONDS", 20,                 int),
+    # Browser engine per job: "" (the scraper's default), "patchright" or
+    # "extension" — which one draws fewer Cloudflare challenges is still open.
+    "scrape_engine":           ("SCRAPE_ENGINE",           "",                        str),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION

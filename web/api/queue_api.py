@@ -89,22 +89,10 @@ def _norm_on_conflict(val):
 
 def _existing_chapter_numbers(book_id):
     """Chapter numbers already present for a book — saved chapters OR queued rows."""
-    nums = set()
     try:
-        for ch in (_entity_manager.list_chapters(book_id) or []):
-            n = ch.get("chapter")
-            if isinstance(n, int):
-                nums.add(n)
+        return _entity_manager.existing_chapter_numbers(book_id)
     except Exception:
-        pass
-    try:
-        for it in (_entity_manager.list_queue(book_id=book_id, include_processing=True) or []):
-            n = it.get("chapter_number")
-            if isinstance(n, int):
-                nums.add(n)
-    except Exception:
-        pass
-    return nums
+        return set()
 
 
 def _format_number_ranges(nums):
