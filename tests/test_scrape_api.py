@@ -94,3 +94,58 @@ def test_book_state_reports_site_support(admin_client, db, tmp_path, monkeypatch
     overview = admin_client.get("/api/scrape/overview").json()
     assert overview["supported_sites"]["sites"] == ["69shuba.com"]
     assert next(b for b in overview["books"] if b["book_id"] == book_id)["site_supported"] is False
+
+
+def _signed(secret, body, t=None):
+    import hashlib
+    import hmac
+    import time
+    t = int(time.time()) if t is None else t
+    sig = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    return f"t={t},v1={sig}"
+
+
+def test_scraper_notify_logs_a_red_line_with_the_novnc_link(api_client, db, monkeypatch):
+    import scrape_sync
+    monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "s3cret")
+    monkeypatch.setattr(scrape_sync, "vnc_url", lambda: "http://100.65.58.103:6080")
+    book_id = _book_with_toc(db)
+    task_id = db.create_scrape_task(book_id, "chapters", reason="catchup", priority=20)
+    db.update_scrape_task(task_id, status="running", scraper_job_id="job-abc")
+    body = json.dumps({"title": "Scraper blocked (twkan)", "message": "…", "jobId": "job-abc",
+                       "site": "twkan", "vncUrl": "http://elsewhere"}).encode()
+
+    # api_client carries no session cookie: the signature is the only credential.
+    r = api_client.post("/api/scraper-notify", content=body,
+                        headers={"content-type": "application/json",
+                                 "X-Scraper-Signature": _signed("s3cret", body)})
+    assert r.status_code == 200 and r.json()["book_id"] == book_id
+    entry = db.get_activity_log(limit=5)[-1]
+    assert entry["type"] == "scrape_blocked"
+    assert entry["message"].startswith("Scrape (Scraped): blocked on a Cloudflare challenge at twkan")
+    assert entry["entities"] == [{"label": "Solve it in noVNC", "href": "http://100.65.58.103:6080"}]
+    assert db.get_scrape_task(task_id)["status"] == "blocked"
+
+
+def test_scraper_notify_rejects_bad_stale_or_unsigned_posts(api_client, monkeypatch):
+    import scrape_sync
+    monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "s3cret")
+    body = b'{"jobId": "x"}'
+    post = lambda headers: api_client.post("/api/scraper-notify", content=body, headers=headers)  # noqa: E731
+    assert post({}).status_code == 401
+    assert post({"X-Scraper-Signature": _signed("wrong", body)}).status_code == 401
+    assert post({"X-Scraper-Signature": _signed("s3cret", body, t=1)}).status_code == 401   # stale
+    monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "")
+    assert post({"X-Scraper-Signature": _signed("", body)}).status_code == 401   # no secret configured
+
+
+def test_scraper_notify_without_a_link_setting_shows_no_link(api_client, db, monkeypatch):
+    import scrape_sync
+    monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "s3cret")
+    monkeypatch.setattr(scrape_sync, "vnc_url", lambda: None)
+    body = json.dumps({"jobId": "unknown-job", "site": "69shuba"}).encode()
+    r = api_client.post("/api/scraper-notify", content=body,
+                        headers={"X-Scraper-Signature": _signed("s3cret", body)})
+    assert r.status_code == 200
+    entry = db.get_activity_log(limit=5)[-1]
+    assert entry["type"] == "scrape_blocked" and not entry["entities"]

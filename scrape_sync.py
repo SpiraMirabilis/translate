@@ -65,6 +65,8 @@ DEFAULTS = {
     "scrape_toc_spacing_seconds": 20,
     "scraper_url": "http://100.65.58.103:8787",
     "scrape_engine": "",
+    "scrape_notify_url": "",
+    "scraper_vnc_url": "",
 }
 
 
@@ -81,17 +83,43 @@ def _env_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 
-def scraper_token():
-    """SCRAPER_TOKEN, re-read from .env so a token saved in Settings reaches the
-    long-running worker without a restart."""
+def _env_secret(key):
+    """A secret from .env, re-read on every call so a value saved in Settings
+    (or edited by hand) reaches the long-running worker without a restart."""
     try:
         from dotenv import dotenv_values
-        val = dotenv_values(_env_path()).get("SCRAPER_TOKEN")
+        val = dotenv_values(_env_path()).get(key)
         if val:
             return val
     except Exception:
         pass
-    return os.environ.get("SCRAPER_TOKEN", "")
+    return os.environ.get(key, "")
+
+
+def scraper_token():
+    return _env_secret("SCRAPER_TOKEN")
+
+
+def notify_secret():
+    """Shared HMAC key the scraper signs its "blocked" notices with."""
+    return _env_secret("SCRAPER_NOTIFY_SECRET")
+
+
+def vnc_url():
+    """The noVNC page where a human solves a challenge, or None — a link is
+    shown only when the admin configured one."""
+    return (str(setting("scraper_vnc_url") or "")).strip() or None
+
+
+def notify_kwargs():
+    """Per-job callback so a blocked job reaches /api/scraper-notify. Sent
+    only when both the URL and the secret are configured: an unsigned notice
+    would be refused anyway."""
+    url = (str(setting("scrape_notify_url") or "")).strip()
+    secret = notify_secret()
+    if not url or not secret:
+        return {}
+    return {"notify_url": url, "notify_kind": "json", "notify_secret": secret}
 
 
 def make_client(timeout: float = 30) -> ScraperClient:
@@ -656,14 +684,16 @@ class ScrapeEngine:
     def _submit_fresh(self, sc, task, url):
         # Blank engine = the scraper's own default (Patchright today).
         engine = (str(setting("scrape_engine") or "")).strip() or None
+        notify = notify_kwargs()
         if task["kind"] == "toc":
-            return sc.submit_toc(url, engine=engine)
+            return sc.submit_toc(url, engine=engine, **notify)
         # Backfills go in at the scraper's low priority, so anything submitted
         # to it by hand (the CLI) runs ahead of them; t9's own lane already
         # orders what it sends.
         return sc.submit_chapters(url, from_url=task.get("from_url"),
                                   max_chapters=task.get("max_chapters"), engine=engine,
-                                  priority="low" if task.get("reason") == "backfill" else None)
+                                  priority="low" if task.get("reason") == "backfill" else None,
+                                  **notify)
 
     def poll(self, task):
         job_id = task.get("scraper_job_id")
@@ -685,7 +715,10 @@ class ScrapeEngine:
         if status in ("done", "failed", "cancelled"):
             self.finish(task, job, sc)
             return
-        fields = {"progress": job.get("progress") or {}, "vnc_url": job.get("vncUrl")}
+        # The challenge link is ours to configure (scraper_vnc_url), not
+        # whatever the scraper reports: no setting, no link.
+        fields = {"progress": job.get("progress") or {},
+                  "vnc_url": vnc_url() if status == "blocked" else None}
         if task["status"] != "cancelling":
             fields["status"] = "blocked" if status == "blocked" else "running"
         self.db.update_scrape_task(task["id"], **fields)
@@ -983,6 +1016,24 @@ class ScrapeEngine:
 # ---------------------------------------------------------------------------
 # Entry points the admin API shares with the worker
 # ---------------------------------------------------------------------------
+
+def blocked_notice(db, payload):
+    """Turn a verified scraper "blocked" notice into (book_id, title, line, url):
+    the activity-log line naming the book, and the noVNC link (None when the
+    admin set none). The task is matched by the scraper's job id."""
+    job_id = str(payload.get("jobId") or "")
+    task = db.find_scrape_task_by_job(job_id) if job_id else None
+    book_id = task["book_id"] if task else None
+    title = task.get("book_title") if task else None
+    site = payload.get("site") or "the source site"
+    what = {"toc": "reading the TOC", "chapters": "scraping chapters"}.get((task or {}).get("kind"), "a job")
+    line = (f"Scrape ({title or (f'book {book_id}' if book_id else 'unknown book')}): blocked on a "
+            f"Cloudflare challenge at {site} while {what} — it needs a human to solve it")
+    url = vnc_url()
+    if task:
+        db.update_scrape_task(task["id"], status="blocked", vnc_url=url)
+    return book_id, title, line, url
+
 
 def enqueue_check(db, book_id, *, catchup=False, reason="manual", priority=PRIORITY_TOC):
     """Queue a TOC check now (front of the lane). Resets the failure streak —

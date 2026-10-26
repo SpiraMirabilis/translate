@@ -103,6 +103,12 @@ SCHEMA = {
     # Browser engine per job: "" (the scraper's default), "patchright" or
     # "extension" — which one draws fewer Cloudflare challenges is still open.
     "scrape_engine":           ("SCRAPE_ENGINE",           "",                        str),
+    # Where the scraper POSTs a job's "blocked on a challenge" notice
+    # (…/api/scraper-notify on this admin site), signed with SCRAPER_NOTIFY_SECRET
+    # from .env; blank = jobs carry no callback. And the noVNC page where the
+    # challenge gets solved, linked from that notice; blank = no link.
+    "scrape_notify_url":       ("SCRAPE_NOTIFY_URL",       "",                        str),
+    "scraper_vnc_url":         ("SCRAPER_VNC_URL",         "",                        str),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION

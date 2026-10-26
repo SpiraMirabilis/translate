@@ -228,6 +228,12 @@ class ScrapeRepo:
         rows = self._select_tasks("t.id = ?", (task_id,))
         return rows[0] if rows else None
 
+    def find_scrape_task_by_job(self, scraper_job_id: str):
+        """The task a scraper job belongs to (newest first: a retried job keeps
+        its id, a resubmitted one gets a new one)."""
+        rows = self._select_tasks("t.scraper_job_id = ?", (scraper_job_id,), limit=1)
+        return rows[0] if rows else None
+
     def list_scrape_tasks(self, statuses=None, book_id: int = None, limit: int = 50,
                           order: str = "t.id DESC") -> list:
         where, params = ["1=1"], []

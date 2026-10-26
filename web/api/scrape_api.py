@@ -11,14 +11,16 @@ import os
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import scrape_sync
 
 router = APIRouter()
 
 _db = None
+_hub = None
 
 HEARTBEAT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                          "logs", "scrape_worker.json")
@@ -26,9 +28,10 @@ HEARTBEAT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 HEARTBEAT_STALE_SECONDS = 120
 
 
-def init(db_manager):
-    global _db
+def init(db_manager, hub=None):
+    global _db, _hub
     _db = db_manager
+    _hub = hub
 
 
 def _worker_status():
@@ -86,6 +89,36 @@ def refresh_sites():
     if sites is None or not known:
         raise HTTPException(status_code=502, detail="Could not read the scraper's supported sites.")
     return known
+
+
+@router.post("/api/scraper-notify")
+async def scraper_notify(request: Request):
+    """The scraper's "a human is needed" callback: a job stuck on a Cloudflare
+    challenge it couldn't clear by itself. Outside session auth (the scraper
+    has no cookie); instead every POST must carry X-Scraper-Signature, an
+    HMAC-SHA256 of the raw body under SCRAPER_NOTIFY_SECRET, with a timestamp
+    no older than five minutes. Writes a red activity-log line naming the book,
+    with a noVNC link when scraper_vnc_url is set."""
+    from scraper_client import verify_signature
+    secret = scrape_sync.notify_secret()
+    body = await request.body()
+    if not secret or not verify_signature(secret, body, request.headers.get("X-Scraper-Signature", "")):
+        raise HTTPException(status_code=401, detail="Bad or missing signature")
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body is not JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    book_id, title, line, url = await run_in_threadpool(scrape_sync.blocked_notice, _db, payload)
+    entities = [{"label": "Solve it in noVNC", "href": url}] if url else None
+    if _hub is not None:
+        await _hub.log_activity_async("scrape_blocked", line, book_id=book_id, book_name=title,
+                                      entities=entities)
+    else:
+        await run_in_threadpool(_db.add_activity_log, "scrape_blocked", line, book_id=book_id,
+                                book_name=title, entities=entities)
+    return {"status": "ok", "book_id": book_id}
 
 
 @router.get("/api/scrape/count")

@@ -47,12 +47,12 @@ class FakeScraper:
         self.calls.append((kind, params))
         return {"id": job["id"], "status": "queued"}
 
-    def submit_toc(self, url, engine=None):
-        return self._new("toc", url=url, engine=engine)
+    def submit_toc(self, url, engine=None, **notify):
+        return self._new("toc", url=url, engine=engine, **notify)
 
-    def submit_chapters(self, url, from_url=None, max_chapters=None, priority=None, engine=None, **kw):
+    def submit_chapters(self, url, from_url=None, max_chapters=None, priority=None, engine=None, **notify):
         return self._new("chapters", url=url, from_url=from_url, max_chapters=max_chapters,
-                         priority=priority, engine=engine)
+                         priority=priority, engine=engine, **notify)
 
     def retry(self, job_id):
         job = self.jobs[job_id]
@@ -124,7 +124,7 @@ class Clock:
 SETTINGS = {
     "scrape_enabled": True, "scrape_daily_hour": 5, "scrape_chunk_size": 2,
     "scrape_default_gap": 10, "scrape_toc_spacing_seconds": 0, "scraper_url": "http://x",
-    "scrape_engine": "",
+    "scrape_engine": "", "scrape_notify_url": "", "scraper_vnc_url": "",
 }
 
 
@@ -296,7 +296,7 @@ def test_failed_job_retries_with_backoff_and_resumes(db, book):
 
 def test_unsupported_site_fails_without_retry(db, book):
     class Rejecting(FakeScraper):
-        def submit_toc(self, url, engine=None):
+        def submit_toc(self, url, engine=None, **notify):
             raise ScraperError("POST /toc: HTTP 400: unsupported site")
     engine = make_engine(db, Rejecting([]))
     scrape_sync.enqueue_check(db, book)
@@ -525,3 +525,37 @@ def test_activity_lines_name_the_book(db, book):
     drain(engine)
     lines = [e["message"] for e in db.get_activity_log(limit=20)]
     assert any(m.startswith("Scrape (Test Book): queued 2 chapter(s)") for m in lines), lines
+
+
+# -- blocked-job callback ------------------------------------------------------
+
+def test_jobs_carry_the_callback_only_when_fully_configured(db, book, monkeypatch):
+    scraper = FakeScraper([entry(1)])
+    engine = make_engine(db, scraper)
+    monkeypatch.setitem(SETTINGS, "scrape_notify_url", "https://t9.example/api/scraper-notify")
+    monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "")
+    scrape_sync.enqueue_check(db, book)
+    drain(engine)
+    assert "notify_url" not in scraper.calls[-1][1]          # no secret: no callback
+    monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "s3cret")
+    scrape_sync.enqueue_check(db, book)
+    drain(engine)
+    params = scraper.calls[-1][1]
+    assert params["notify_url"] == "https://t9.example/api/scraper-notify"
+    assert params["notify_kind"] == "json" and params["notify_secret"] == "s3cret"
+
+
+def test_blocked_link_comes_from_our_setting_not_the_scraper(db, book, monkeypatch):
+    scraper = FakeScraper([entry(1)])
+    engine = make_engine(db, scraper)
+    scrape_sync.enqueue_check(db, book)
+    engine.step_lane()                                       # submitted
+    job_id = db.lane_task()["scraper_job_id"]
+    scraper.status = lambda jid: {"id": jid, "status": "blocked", "vncUrl": "http://scraper-side",
+                                  "progress": {}}
+    engine.step_lane()
+    assert db.lane_task()["status"] == "blocked" and db.lane_task()["vnc_url"] is None
+    monkeypatch.setitem(SETTINGS, "scraper_vnc_url", "http://100.65.58.103:6080")
+    engine.step_lane()
+    assert db.lane_task()["vnc_url"] == "http://100.65.58.103:6080"
+    assert job_id

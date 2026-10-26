@@ -366,6 +366,19 @@ job at a time**, so t9 owns the lane:
   An HTTP error on submit (unsupported site) fails at once. A job **blocked** on a
   challenge holds the lane; the scraper itself pings (ntfy) with the noVNC link, the
   Scraping page shows it.
+- **Blocked-job callback**: every job is submitted with `notify_url` =
+  `scrape_notify_url` (this admin site's `POST /api/scraper-notify`),
+  `notify_kind="json"` and `notify_secret` = `SCRAPER_NOTIFY_SECRET` (.env, re-read per
+  call) — only when both are set. The scraper signs the notice: `X-Scraper-Signature:
+  t=<unix>,v1=<HMAC-SHA256(secret, "<t>.<raw body>")>`. The endpoint sits outside
+  session auth (`web/auth.py::_ALWAYS_PUBLIC_PREFIXES`), verifies with
+  `scraper_client.verify_signature` against the **raw** body (5-min tolerance; no
+  secret configured → every POST is 401), matches the task by `jobId`, marks it
+  blocked, and writes a red `scrape_blocked` activity line ("Scrape (Book): blocked on
+  a Cloudflare challenge …") broadcast over the WS. The noVNC link is **ours**:
+  `scraper_vnc_url` (blank = no link), never the scraper's `vncUrl`; it's carried as an
+  activity entity `{label, href}`, which `Dashboard.jsx::ActivityEntry` renders as an
+  external `<a>`.
 - **UI**: Books → Actions → **Source Scraping** (`SourceModal.jsx`: mode, gap, offset,
   TOC browser to link and backfill, recent tasks) and **Check Source Now** (the daily
   check, now — `reason="forced"`); `/scraping` page (lane, queue, all books, recent)

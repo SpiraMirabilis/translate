@@ -510,6 +510,10 @@ function ActivityEntry({ entry }) {
     entity_edited:     'text-amber-300',
     entity_deleted:    'text-rose-300',
     entity_cleaned:    'text-slate-400',
+    // Scraping: a job stuck on a Cloudflare challenge waits on a human.
+    scrape_blocked:    'text-rose-400 font-semibold',
+    scrape_error:      'text-rose-300',
+    scrape_autostart:  'text-indigo-400',
   }
 
   return (
@@ -520,12 +524,20 @@ function ActivityEntry({ entry }) {
         <span key={i}>
           {i > 0 && ', '}
           {' '}
-          <Link
-            to={e.link || `/entities?search=${encodeURIComponent(e.name)}`}
-            className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
-          >
-            {e.label}
-          </Link>
+          {e.href ? (
+            // External page (the scraper's noVNC) — not an in-app route.
+            <a href={e.href} target="_blank" rel="noreferrer"
+               className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2">
+              {e.label}
+            </a>
+          ) : (
+            <Link
+              to={e.link || `/entities?search=${encodeURIComponent(e.name)}`}
+              className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
+            >
+              {e.label}
+            </Link>
+          )}
         </span>
       ))}
       {entry.type === 'complete' && entry.book_id && entry.chapter && (

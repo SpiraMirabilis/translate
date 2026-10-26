@@ -566,6 +566,33 @@ export default function Settings() {
                   placeholder="http://100.65.58.103:8787"
                 />
               </div>
+              <div className="sm:col-span-3">
+                <label className="label">noVNC URL <span className="text-slate-500 font-normal">(where a blocked challenge gets solved; blank = no link)</span></label>
+                <input
+                  className="input font-mono text-sm"
+                  value={settings.scraper_vnc_url || ''}
+                  onChange={e => setSettings(s => ({ ...s, scraper_vnc_url: e.target.value }))}
+                  placeholder="http://100.65.58.103:6080"
+                />
+              </div>
+              <div className="sm:col-span-3">
+                <label className="label">
+                  Blocked-job callback URL{' '}
+                  <span className="text-slate-500 font-normal">
+                    (this site&apos;s /api/scraper-notify; SCRAPER_NOTIFY_SECRET — {settings.has_scraper_notify_secret ? 'set' : 'not set'})
+                  </span>
+                </label>
+                <input
+                  className="input font-mono text-sm"
+                  value={settings.scrape_notify_url || ''}
+                  onChange={e => setSettings(s => ({ ...s, scrape_notify_url: e.target.value }))}
+                  placeholder="https://t9.example.com/api/scraper-notify"
+                />
+                <p className="text-xs text-slate-500 mt-1">
+                  Each job tells the scraper to POST its “stuck on a Cloudflare challenge” notice here, signed with
+                  the shared secret; it shows up red in the activity log. Blank, or no secret in .env, = no callback.
+                </p>
+              </div>
               <div>
                 <label className="label">Browser engine</label>
                 <select

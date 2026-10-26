@@ -102,8 +102,9 @@ def validate_cookie(cookie_value: str) -> bool:
 
 # ── Middleware ───────────────────────────────────────────────────────
 
-# Paths that never require auth
-_ALWAYS_PUBLIC_PREFIXES = ("/api/auth/", "/api/health", "/api/mail/")
+# Paths that never require auth. /api/scraper-notify authenticates itself:
+# every POST must carry the scraper's HMAC signature (web/api/scrape_api.py).
+_ALWAYS_PUBLIC_PREFIXES = ("/api/auth/", "/api/health", "/api/mail/", "/api/scraper-notify")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

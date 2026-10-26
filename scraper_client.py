@@ -45,6 +45,8 @@ Command line:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -53,6 +55,20 @@ import urllib.error
 import urllib.request
 
 FINAL = {"done", "failed", "cancelled"}
+
+
+def verify_signature(secret: str, body: bytes, header: str, tolerance: float = 300) -> bool:
+    """Check a json notice's X-Scraper-Signature ("t=<unix>,v1=<hex>") against
+    the raw request body (before any JSON parsing). Rejects stale timestamps."""
+    try:
+        parts = dict(p.split("=", 1) for p in header.split(","))
+        t = int(parts["t"])
+    except (ValueError, KeyError):
+        return False
+    if abs(time.time() - t) > tolerance:
+        return False
+    want = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, parts.get("v1", ""))
 
 
 class ScraperError(Exception):
@@ -90,17 +106,24 @@ class ScraperClient:
     def submit_chapters(self, url: str, from_chapter: int | None = None, to_chapter: int | None = None,
                         max_chapters: int | None = None, from_url: str | None = None,
                         delay_ms: int | None = None, priority: str | None = None,
-                        engine: str | None = None) -> dict:
-        """Queue a chapter scrape. priority="low" for backfills. Returns the
+                        engine: str | None = None, notify_url: str | None = None,
+                        notify_kind: str | None = None, notify_secret: str | None = None) -> dict:
+        """Queue a chapter scrape. priority="low" for backfills. notify_url also
+        gets the job's "blocked" notice (notify_kind "ntfy" or "json"); notify_secret
+        signs json notices (check with verify_signature) or is the ntfy token. Returns the
         job (an identical active job is returned instead, with deduped=True)."""
         body = {"url": url, "fromChapter": from_chapter, "toChapter": to_chapter,
                 "maxChapters": max_chapters, "fromUrl": from_url, "delayMs": delay_ms,
-                "priority": priority, "engine": engine}
+                "priority": priority, "engine": engine,
+                "notifyUrl": notify_url, "notifyKind": notify_kind, "notifySecret": notify_secret}
         return self._req("POST", "/jobs", {k: v for k, v in body.items() if v is not None})[1]
 
-    def submit_toc(self, url: str, engine: str | None = None) -> dict:
+    def submit_toc(self, url: str, engine: str | None = None, notify_url: str | None = None,
+                   notify_kind: str | None = None, notify_secret: str | None = None) -> dict:
         """Queue a table-of-contents lookup."""
-        return self._req("POST", "/toc", {"url": url, **({"engine": engine} if engine else {})})[1]
+        body = {"url": url, "engine": engine, "notifyUrl": notify_url, "notifyKind": notify_kind,
+                "notifySecret": notify_secret}
+        return self._req("POST", "/toc", {k: v for k, v in body.items() if v is not None})[1]
 
     def status(self, job_id: str) -> dict:
         return self._req("GET", f"/jobs/{job_id}")[1]
@@ -126,6 +149,10 @@ class ScraperClient:
 
     def cancel(self, job_id: str) -> dict:
         return self._req("DELETE", f"/jobs/{job_id}")[1]
+
+    def supported_sites(self) -> list[str]:
+        """Domains the scraper handles; a URL matches if its host is one of these or a subdomain."""
+        return self._req("GET", "/supported_sites")[1]
 
     def wait(self, job_id: str, poll: float = 15, timeout: float | None = None, on_update=None) -> dict:
         """Poll until the job finishes. Returns the final job. A blocked job

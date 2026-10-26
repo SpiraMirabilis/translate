@@ -131,7 +131,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         comments_admin.init(entity_manager)
         footnote_candidates.init(entity_manager)
         sitemap.init(entity_manager, config)
-        scrape_api.init(entity_manager)
+        scrape_api.init(entity_manager, job_hub)
 
     # Flush buffered reader views on clean shutdown (best-effort; up to a few
     # seconds of views are accepted-lost on a hard kill).

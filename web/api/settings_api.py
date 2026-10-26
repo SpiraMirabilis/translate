@@ -2,6 +2,7 @@
 Settings and provider configuration endpoints.
 """
 import os
+import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
@@ -125,6 +126,11 @@ def _scraper_token():
     return scrape_sync.scraper_token()
 
 
+def _scraper_notify_secret():
+    import scrape_sync
+    return scrape_sync.notify_secret()
+
+
 @router.post("/scraper-token")
 def set_scraper_token(req: ApiKeyRequest):
     key = req.api_key.strip()
@@ -212,6 +218,9 @@ def get_settings():
         "scrape_chunk_size": settings_store.get("scrape_chunk_size", 50),
         "scrape_default_gap": settings_store.get("scrape_default_gap", 10),
         "scrape_engine": settings_store.get("scrape_engine", ""),
+        "scrape_notify_url": settings_store.get("scrape_notify_url", ""),
+        "scraper_vnc_url": settings_store.get("scraper_vnc_url", ""),
+        "has_scraper_notify_secret": bool(_scraper_notify_secret()),
         "has_scraper_token": bool(_scraper_token()),
         "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
     }
@@ -258,6 +267,8 @@ class SettingsUpdate(BaseModel):
     scrape_chunk_size: Optional[int] = None
     scrape_default_gap: Optional[int] = None
     scrape_engine: Optional[str] = None
+    scrape_notify_url: Optional[str] = None
+    scraper_vnc_url: Optional[str] = None
 
 
 @router.put("")
@@ -274,6 +285,11 @@ def update_settings(req: SettingsUpdate):
         raise HTTPException(status_code=400, detail="scrape_daily_hour must be 0-23")
     if "scrape_chunk_size" in updates and not 1 <= updates["scrape_chunk_size"] <= 500:
         raise HTTPException(status_code=400, detail="scrape_chunk_size must be 1-500")
+    for key in ("scrape_notify_url", "scraper_vnc_url"):
+        if key in updates:
+            updates[key] = updates[key].strip()
+            if updates[key] and not re.match(r"^https?://", updates[key]):
+                raise HTTPException(status_code=400, detail=f"{key} must start with http:// or https://")
     if "scrape_engine" in updates and updates["scrape_engine"] not in ("", "patchright", "extension"):
         raise HTTPException(status_code=400, detail="scrape_engine must be blank, patchright or extension")
     if "scrape_default_gap" in updates and updates["scrape_default_gap"] < 0:
