@@ -636,6 +636,16 @@ export default function Settings() {
                 <p className="text-xs text-slate-500 mt-1">Auto-translate only starts a book while this many translation slots would stay free; waiting books start in the order they became ready.</p>
               </div>
               <div>
+                <label className="label">Auto-translate model</label>
+                <input
+                  className="input font-mono text-sm"
+                  value={settings.scrape_translation_model || ''}
+                  onChange={e => setSettings(s => ({ ...s, scrape_translation_model: e.target.value }))}
+                  placeholder="claudecode:claude-opus-5-5"
+                />
+                <p className="text-xs text-slate-500 mt-1">What auto-translate starts use, unless a book overrides it in Source Scraping.</p>
+              </div>
+              <div>
                 <label className="label">Default auto-translate gap</label>
                 <input
                   type="number" min="0"

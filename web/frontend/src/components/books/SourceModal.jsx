@@ -4,6 +4,7 @@ import {
   X, Loader2, RefreshCw, Link2, Download, AlertTriangle, ExternalLink, Ban, RotateCcw, Search,
 } from 'lucide-react'
 import { api } from '../../services/api'
+import ComboBox from '../ComboBox'
 import { relativeTime } from '../../lib/relativeTime'
 import { MODES, TASK_STATUS_CHIP, taskLabel, taskSummary, OPEN_TASK_STATES } from '../../lib/scrape'
 
@@ -29,6 +30,9 @@ export default function SourceModal({ bookId, onClose }) {
     refetchInterval: (q) =>
       (q.state.data?.tasks || []).some(t => OPEN_TASK_STATES.includes(t.status)) ? 4000 : false,
   })
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => api.listProviders() })
+  const modelOptions = useMemo(() => (providersQuery.data?.providers || []).flatMap(p =>
+    (p.models || []).map(m => `${p.name}:${m}`)), [providersQuery.data])
 
   const state = data?.state
   const toc = useMemo(() => data?.toc || [], [data])
@@ -39,6 +43,7 @@ export default function SourceModal({ bookId, onClose }) {
       mode: state.mode || 'off',
       auto_gap: state.auto_gap ?? '',
       number_offset: state.number_offset ?? 0,
+      translation_model: state.run_options?.translation_model || '',
       no_review: state.run_options?.no_review ?? true,
       save_as_draft: state.run_options?.save_as_draft ?? false,
     })
@@ -89,7 +94,11 @@ export default function SourceModal({ bookId, onClose }) {
     mode: form.mode,
     number_offset: parseInt(form.number_offset, 10) || 0,
     ...(form.auto_gap === '' ? { clear_auto_gap: true } : { auto_gap: parseInt(form.auto_gap, 10) }),
-    run_options: { no_review: form.no_review, save_as_draft: form.save_as_draft },
+    run_options: {
+      translation_model: form.translation_model.trim() || null,
+      no_review: form.no_review,
+      save_as_draft: form.save_as_draft,
+    },
   }))
 
   const filtered = useMemo(() => {
@@ -192,7 +201,13 @@ export default function SourceModal({ bookId, onClose }) {
                   <input className="input text-sm w-full" type="number" value={form.number_offset}
                          onChange={e => setForm(f => ({ ...f, number_offset: e.target.value }))} />
                 </div>
-                <div className="flex flex-col justify-end gap-1 text-sm text-slate-300">
+                <div>
+                  <label className="label">Auto-translate model</label>
+                  <ComboBox value={form.translation_model} options={modelOptions}
+                            placeholder={`default ${data.default_model}`}
+                            onChange={v => setForm(f => ({ ...f, translation_model: v }))} />
+                </div>
+                <div className="flex flex-col justify-end gap-1 text-sm text-slate-300 sm:col-span-2">
                   <label className="flex items-center gap-2">
                     <input type="checkbox" checked={form.no_review}
                            onChange={e => setForm(f => ({ ...f, no_review: e.target.checked }))} />
@@ -207,8 +222,10 @@ export default function SourceModal({ bookId, onClose }) {
               </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <p className="text-xs text-slate-500 flex-1">
-                  Auto-translate uses the model of the latest translated chapter
-                  {data.default_model ? <> (<span className="font-mono text-slate-400">{data.default_model}</span>)</> : ''}.
+                  Auto-translate uses <span className="font-mono text-slate-400">{form.translation_model.trim() || data.default_model}</span>
+                  {form.translation_model.trim() ? ' (this book\'s override)' : ' (the global default — Settings → Scraping)'}
+                  {data.latest_model && data.latest_model !== (form.translation_model.trim() || data.default_model)
+                    ? <>; the latest chapter used <span className="font-mono text-slate-400">{data.latest_model}</span></> : ''}.
                   The gap is how far the newest queued chapter may run past the newest translated one.
                 </p>
                 <button className="btn btn-primary text-xs" disabled={!!busy} onClick={save}>

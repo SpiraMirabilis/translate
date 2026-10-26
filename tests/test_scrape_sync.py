@@ -126,6 +126,7 @@ SETTINGS = {
     "scrape_enabled": True, "scrape_daily_hour": 5, "scrape_chunk_size": 2,
     "scrape_default_gap": 10, "scrape_toc_spacing_seconds": 0, "scraper_url": "http://x",
     "scrape_engine": "", "scrape_notify_url": "", "scraper_vnc_url": "", "scrape_reserved_slots": 1,
+    "scrape_translation_model": "claudecode:global-model",
 }
 
 
@@ -320,7 +321,7 @@ def test_restart_resumes_polling_instead_of_resubmitting(db, book):
     assert db.get_book_scrape(book)["toc_count"] == 1
 
 
-def test_autostart_respects_gap_and_uses_last_model(db, book):
+def test_autostart_respects_gap_and_uses_global_model(db, book):
     scraper = FakeScraper([entry(n) for n in range(1, 5)])
     admin = FakeAdmin()
     engine = make_engine(db, scraper, admin=admin)
@@ -335,7 +336,22 @@ def test_autostart_respects_gap_and_uses_last_model(db, book):
     payload = admin.started[0]
     assert payload["book_id"] == book and payload["no_review"] is True
     assert payload["auto_process"] is True
-    assert payload["translation_model"] == "claude:test-model"
+    # The global setting, not the model of the latest chapter: a book resumed
+    # after a break must not inherit a weaker model from when it stopped.
+    assert payload["translation_model"] == "claudecode:global-model"
+
+
+def test_autostart_model_per_book_override(db, book, monkeypatch):
+    engine = make_engine(db, FakeScraper([]))
+    db.save_chapter(book, 1, "第1章", ["a"], ["A"], translation_model="claude:old-model")
+    assert engine.run_options(book)["translation_model"] == "claudecode:global-model"
+    db.update_book_scrape(book, run_options={"translation_model": "deepseek:cheap", "no_review": True})
+    assert engine.run_options(book)["translation_model"] == "deepseek:cheap"
+    # A blank override follows the global setting; a blank global, its default.
+    db.update_book_scrape(book, run_options={"translation_model": "  "})
+    assert engine.run_options(book)["translation_model"] == "claudecode:global-model"
+    monkeypatch.setitem(SETTINGS, "scrape_translation_model", "")
+    assert engine.run_options(book)["translation_model"] == "claudecode:claude-opus-5-5"
 
 
 def test_autostart_skips_when_gap_too_large(db, book):

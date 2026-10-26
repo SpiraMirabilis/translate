@@ -71,6 +71,7 @@ DEFAULTS = {
     "scrape_notify_url": "",
     "scraper_vnc_url": "",
     "scrape_reserved_slots": 1,
+    "scrape_translation_model": "claudecode:claude-opus-5-5",
 }
 
 
@@ -81,6 +82,20 @@ def setting(key):
     except Exception:
         val = DEFAULTS[key]
     return DEFAULTS[key] if val is None else val
+
+
+def auto_translate_model(run_options=None):
+    """The model an auto-start uses: the book's override, else the global
+    scrape_translation_model (a blank setting falls back to its default)."""
+    override = ((run_options or {}).get("translation_model") or "").strip()
+    return override or (setting("scrape_translation_model") or "").strip() \
+        or DEFAULTS["scrape_translation_model"]
+
+
+def valid_model_spec(spec):
+    """provider:model, the shape TranslationConfig.parse_model_spec takes."""
+    provider, sep, model = (spec or "").strip().partition(":")
+    return bool(sep and provider and model and not any(c.isspace() for c in spec.strip()))
 
 
 def _env_path():
@@ -1025,14 +1040,16 @@ class ScrapeEngine:
         return True, None
 
     def run_options(self, book_id):
-        """The process-next payload. The model is whatever translated the
-        book's most recent chapter — the book's own continuity, not a setting
-        that could drift from it."""
+        """The process-next payload. The model is the book's own override
+        (run_options.translation_model) or else scrape_translation_model —
+        never the model of the book's latest chapter: a book picked back up
+        after a long break would resume on whatever weaker model was current
+        when it stopped."""
         state = self.db.get_book_scrape(book_id)
         opts = dict(state.get("run_options") or {})
         payload = {
             "book_id": book_id,
-            "translation_model": self.db.latest_translation_model(book_id),
+            "translation_model": auto_translate_model(opts),
             "no_review": opts.get("no_review", True),
             "save_as_draft": bool(opts.get("save_as_draft", False)),
             "auto_process": True,

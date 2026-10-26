@@ -35,8 +35,22 @@ def test_mode_and_run_options(admin_client, db):
     assert r.status_code == 200
     state = db.get_book_scrape(book_id)
     assert state["mode"] == "auto" and state["auto_gap"] == 5
-    assert state["run_options"] == {"no_review": False, "save_as_draft": True}
+    assert state["run_options"] == {"translation_model": None, "no_review": False, "save_as_draft": True}
     assert admin_client.put(f"/api/books/{book_id}/scrape", json={"mode": "bogus"}).status_code == 400
+
+
+def test_per_book_model_override(admin_client, db):
+    book_id = _book_with_toc(db)
+    r = admin_client.put(f"/api/books/{book_id}/scrape", json={
+        "run_options": {"translation_model": " deepseek:deepseek-chat "}})
+    assert r.status_code == 200
+    assert r.json()["state"]["run_options"]["translation_model"] == "deepseek:deepseek-chat"
+    assert r.json()["default_model"]   # the global default is reported alongside
+    r = admin_client.put(f"/api/books/{book_id}/scrape", json={
+        "run_options": {"translation_model": "not a model"}})
+    assert r.status_code == 400
+    r = admin_client.put(f"/api/books/{book_id}/scrape", json={"run_options": {"translation_model": ""}})
+    assert r.json()["state"]["run_options"]["translation_model"] is None
 
 
 def test_mode_requires_source_url(admin_client, db):

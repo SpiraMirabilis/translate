@@ -157,7 +157,10 @@ def get_book_scrape(book_id: int):
                 for i, c in enumerate(toc)],
         "cursor_index": scrape_sync.cursor_index(state, toc) if toc else None,
         "proposal": proposal,
-        "default_model": _db.latest_translation_model(book_id),
+        # What an auto-start would use with no per-book override (the
+        # override itself is state.run_options.translation_model).
+        "default_model": scrape_sync.auto_translate_model(),
+        "latest_model": _db.latest_translation_model(book_id),
         "default_gap": scrape_sync.setting("scrape_default_gap"),
         "tasks": _db.list_scrape_tasks(book_id=book_id, limit=15),
         "unplaced": unplaced_pending,
@@ -166,7 +169,8 @@ def get_book_scrape(book_id: int):
 
 
 class RunOptions(BaseModel):
-    # No model: auto-starts use the model of the book's latest chapter.
+    # Blank/None = follow the global scrape_translation_model.
+    translation_model: Optional[str] = None
     no_review: bool = True
     save_as_draft: bool = False
 
@@ -201,7 +205,12 @@ def update_book_scrape(book_id: int, req: BookScrapeUpdate):
     if req.number_offset is not None:
         fields["number_offset"] = req.number_offset
     if req.run_options is not None:
-        fields["run_options"] = req.run_options.model_dump()
+        opts = req.run_options.model_dump()
+        model = (opts.get("translation_model") or "").strip()
+        if model and not scrape_sync.valid_model_spec(model):
+            raise HTTPException(status_code=400, detail="Model must be provider:model")
+        opts["translation_model"] = model or None
+        fields["run_options"] = opts
     if req.clear_hold:
         fields["hold_reason"] = None
         fields["last_error"] = None

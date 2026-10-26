@@ -374,8 +374,13 @@ job at a time**, so t9 owns the lane:
   book not already running, and newest queued − newest translated ≤ `auto_gap`
   (default `scrape_default_gap`, 10 — the backstop for a book stopped on purpose).
   Starts via `t9_client` → `POST /api/queue/process-next` with `no_review` (per-book
-  toggle, default on), `auto_process`, and **the model of the book's latest
-  translated chapter** — deliberately not a setting.
+  toggle, default on), `auto_process`, and the model from
+  `scrape_sync.auto_translate_model`: the book's override
+  (`book_scrape.run_options.translation_model`, Source modal) else the global
+  `scrape_translation_model` (default `claudecode:claude-opus-5-5`, Settings → Scraping).
+  ⚠️ Deliberately **not** the model of the book's latest chapter (the original rule,
+  dropped 2026-10-26): a book resumed after a break would inherit whatever weaker
+  model was current when it stopped. Override per book only to pick a lesser model on purpose.
 - **Job slots**: auto-starts never take the last `scrape_reserved_slots` (default 1)
   of `max_concurrent_translations` — a start begins only while running jobs <
   cap − reserved (floored at 1, so a cap of 1 still auto-translates). Waiting books

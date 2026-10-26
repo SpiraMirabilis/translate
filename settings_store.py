@@ -99,6 +99,10 @@ SCHEMA = {
     # Auto-translate only starts when the newest queued chapter is at most this
     # far past the newest translated one (per-book override: book_scrape.auto_gap).
     "scrape_default_gap":      ("SCRAPE_DEFAULT_GAP",      10,                        int),
+    # The model auto-translate starts use (per-book override:
+    # book_scrape.run_options.translation_model). Deliberately not the model
+    # of the book's latest chapter, which goes stale over a break.
+    "scrape_translation_model": ("SCRAPE_TRANSLATION_MODEL", "claudecode:claude-opus-5-5", str),
     "scrape_toc_spacing_seconds": ("SCRAPE_TOC_SPACING_SECONDS", 20,                 int),
     # Browser engine per job: "" (the scraper's default), "patchright" or
     # "extension" — which one draws fewer Cloudflare challenges is still open.
