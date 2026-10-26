@@ -344,7 +344,8 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
     cursor candidate).
     """
     report = {"received": len(chapters), "skipped_existing": [], "skipped_unnumbered": [],
-              "skipped_empty": 0, "anomalies": [], "last_url": None, "last_number": None}
+              "skipped_empty": 0, "anomalies": [], "canvas_lines": 0,
+              "last_url": None, "last_number": None}
     to_queue = []
     seen = set()
     prev = base_number
@@ -376,9 +377,10 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
         prev = number
         report["last_number"] = number
 
+        # twkan's anti-scrape <canvas> lines: the scraper recovers their text,
+        # so they're counted for diagnostics only — never a reason to hold.
         if ch.get("secCanvasCount"):
-            report["anomalies"].append(
-                f"ch{number} has {ch['secCanvasCount']} anti-scrape canvas line(s) — text may be missing")
+            report["canvas_lines"] += ch["secCanvasCount"]
         text = ch.get("text") or ""
         if not text.strip():
             report["skipped_empty"] += 1

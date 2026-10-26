@@ -348,9 +348,10 @@ job at a time**, so t9 owns the lane:
   mid-TOC. A cursor that vanishes from the TOC **holds** the book (relink).
 - **Numbering**: 第N章 parsed from the title + `number_offset` (set by linking).
   Unnumbered entries in a numbered TOC (leave notices) are skipped and listed.
-  Backwards/duplicate numbers are skipped, gaps and twkan `secCanvasCount` lines are
-  ingested — all of them set `hold_reason`, which blocks auto-translate until
-  cleared. Numbers already saved or queued are never re-queued
+  Backwards/duplicate numbers are skipped, gaps are ingested — all of them set
+  `hold_reason`, which blocks auto-translate until cleared. twkan's anti-scrape
+  `secCanvasCount` lines are **not** an anomaly (the scraper recovers their text);
+  they're only tallied as `canvas_lines` in the task summary. Numbers already saved or queued are never re-queued
   (`existing_chapter_numbers`, also behind `queue_api._existing_chapter_numbers`).
 - **Auto-translate** (mode `auto`, after a catch-up chain that added rows): no hold,
   book not already running, and newest queued − newest translated ≤ `auto_gap`

@@ -507,3 +507,11 @@ def test_site_supported_matches_subdomains():
     assert scrape_sync.site_supported("https://m.twkan.com/book/1.html", ["twkan.com"])
     assert scrape_sync.site_supported("https://nottwkan.com/x", ["twkan.com"]) is False
     assert scrape_sync.site_supported("https://x.com/", None) is None
+
+
+def test_canvas_lines_are_counted_not_held():
+    chapters = [{"title": "第5章 x", "text": "正文", "sourceUrls": ["u5"], "secCanvasCount": 3}]
+    to_queue, report = scrape_sync.number_chapters(
+        chapters, offset=0, base_number=4, numbered=True, existing=set(), new_only=True)
+    assert [n for n, _, _ in to_queue] == [5]
+    assert report["anomalies"] == [] and report["canvas_lines"] == 3
