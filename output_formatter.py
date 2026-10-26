@@ -38,6 +38,7 @@ _MD_BLOCK_CSS = '''
     pre { background: #f4f4f4; padding: 0.75em; overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; margin: 1em 0; }
     th, td { border: 1px solid #999; padding: 0.4em 0.6em; text-align: left; }
+    th { font-weight: normal; }
     .illustration { text-align: center; margin: 1.5em 0; }
     .illustration img { max-width: 100%; }
     .footnote-ref { font-size: 0.75em; }
