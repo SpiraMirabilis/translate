@@ -515,3 +515,13 @@ def test_canvas_lines_are_counted_not_held():
         chapters, offset=0, base_number=4, numbered=True, existing=set(), new_only=True)
     assert [n for n, _, _ in to_queue] == [5]
     assert report["anomalies"] == [] and report["canvas_lines"] == 3
+
+
+def test_activity_lines_name_the_book(db, book):
+    scraper = FakeScraper([entry(n) for n in range(1, 3)])
+    engine = make_engine(db, scraper)
+    check_and_link(db, engine, book)
+    scrape_sync.enqueue_check(db, book, catchup=True)
+    drain(engine)
+    lines = [e["message"] for e in db.get_activity_log(limit=20)]
+    assert any(m.startswith("Scrape (Test Book): queued 2 chapter(s)") for m in lines), lines

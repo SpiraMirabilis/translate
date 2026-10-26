@@ -485,9 +485,16 @@ class ScrapeEngine:
             getattr(self.logger, level)(msg)
 
     def _activity(self, book_id, message, type_="scrape"):
+        """Log a line for one book as "Scrape (Book Title): message" — the
+        activity log mixes every book's events, so the line names its book."""
+        title = None
         try:
-            book = self.db.get_book(book_id=book_id) or {}
-            self.db.add_activity_log(type_, message, book_id=book_id, book_name=book.get("title"))
+            title = (self.db.get_book(book_id=book_id) or {}).get("title")
+        except Exception:
+            pass
+        line = f"Scrape ({title or f'book {book_id}'}): {message}"
+        try:
+            self.db.add_activity_log(type_, line, book_id=book_id, book_name=title)
         except Exception as e:
             self._log("warning", f"activity log failed: {e}")
         self._log("info", f"[book {book_id}] {message}")
@@ -732,7 +739,7 @@ class ScrapeEngine:
         self.db.update_book_scrape(task["book_id"],
                                    consecutive_failures=(state.get("consecutive_failures") or 0) + 1,
                                    last_error=error)
-        self._activity(task["book_id"], f"Scrape {task['kind']} failed: {error}", type_="scrape_error")
+        self._activity(task["book_id"], f"{task['kind']} job failed: {error}", type_="scrape_error")
 
     # -- results -------------------------------------------------------------
 
@@ -758,7 +765,7 @@ class ScrapeEngine:
             self.db.update_book_scrape(book_id, **fields)
             self.db.update_scrape_task(task["id"], status="done", finished_at=self._now(),
                                        result_summary={**summary, "error": msg})
-            self._activity(book_id, f"Scrape: {msg}", type_="scrape_error")
+            self._activity(book_id, msg, type_="scrape_error")
             return
         new = chs[idx + 1:] if idx is not None else []
         fields["pending_count"] = len(new) if idx is not None else None
@@ -790,7 +797,7 @@ class ScrapeEngine:
         apply_link(self.db, book_id, chs, prop["index"], prop["chapter_number"], prop["number_offset"])
         where = "before the first entry" if prop["index"] < 0 else \
             f"#{prop['index'] + 1} \u201c{chs[prop['index']].get('title')}\u201d = ch{have_max}"
-        self._activity(book_id, f"Scrape: auto-linked {where} ({prop['matched']} title match(es))")
+        self._activity(book_id, f"auto-linked {where} ({prop['matched']} title match(es))")
         return prop
 
     def ingest(self, task, result):
@@ -853,7 +860,7 @@ class ScrapeEngine:
             parts.append(f"skipped unnumbered: {', '.join(report['skipped_unnumbered'][:3])}")
         if report["anomalies"]:
             parts.append(f"⚠ {len(report['anomalies'])} warning(s) — book held for review")
-        self._activity(book_id, "Scrape: " + "; ".join(parts),
+        self._activity(book_id, "; ".join(parts),
                        type_="scrape_error" if report["anomalies"] else "scrape")
         return report
 
