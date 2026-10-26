@@ -190,6 +190,43 @@ def save_supported_sites(sites, fetched_at):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Pause (the Scraping page's Pause/Resume)
+# ---------------------------------------------------------------------------
+
+# A file, not a setting: it is operational state the worker reads every tick,
+# and it survives a restart of the worker — which is what it's for.
+PAUSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "scrape_paused.json")
+
+
+def load_pause():
+    """{"paused_at": iso} while the lane is paused, else None."""
+    try:
+        with open(PAUSE_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {"paused_at": None}
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"paused_at": None}  # unreadable: stay paused rather than guess
+
+
+def set_paused(paused):
+    if not paused:
+        try:
+            os.remove(PAUSE_FILE)
+        except FileNotFoundError:
+            pass
+        return None
+    state = load_pause() or {"paused_at": now_iso()}
+    os.makedirs(os.path.dirname(PAUSE_FILE), exist_ok=True)
+    tmp = PAUSE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, PAUSE_FILE)
+    return state
+
+
 def site_supported(url, sites):
     """True/False against a known list (a subdomain of a listed domain counts);
     None when the list is unknown."""
@@ -571,6 +608,8 @@ class ScrapeEngine:
         scraper job is in flight, else 'idle'."""
         if not setting("scrape_enabled"):
             return "disabled"
+        if load_pause():
+            return self.step_paused()
         self.refresh_sites()
         self.schedule_sweep()
         self.run_autostarts()
@@ -673,6 +712,24 @@ class ScrapeEngine:
 
     # -- the lane ------------------------------------------------------------
 
+    def step_paused(self):
+        """Paused: nothing new goes to the scraper, no sweep, no translation
+        starts. A job still on the scraper is suspended — cancelled there and
+        put back in the queue with its job id, so after Resume submit()
+        retries it and the scraper carries on after the last page it stored.
+        'busy' until the lane is clear, then 'paused'."""
+        task = self.db.lane_task()
+        if task is None:
+            return "paused"
+        if not task.get("scraper_job_id"):
+            self.db.update_scrape_task(task["id"], status="queued")
+            return "paused"
+        if task["status"] in ("running", "blocked"):
+            self.db.update_scrape_task(task["id"], status="suspending")
+            task["status"] = "suspending"
+        self.poll(task)
+        return "busy" if self.db.lane_task() else "paused"
+
     def step_lane(self):
         task = self.db.lane_task()
         if task is None:
@@ -735,8 +792,11 @@ class ScrapeEngine:
             return
         sc = self.client_factory()
         try:
-            if task["status"] == "cancelling":
-                sc.cancel(job_id)
+            if task["status"] in ("cancelling", "suspending"):
+                try:
+                    sc.cancel(job_id)
+                except ScraperError:
+                    pass  # already over (409): status() below says how it ended
             job = sc.status(job_id)
         except ScraperError as e:
             self._fail(task, f"scraper lost job {job_id}: {e}", retryable=True, drop_job=True)
@@ -749,12 +809,19 @@ class ScrapeEngine:
             return
         fields = {"progress": job.get("progress") or {},
                   "vnc_url": vnc_url(job.get("vncUrl")) if status == "blocked" else None}
-        if task["status"] != "cancelling":
+        if task["status"] not in ("cancelling", "suspending"):
             fields["status"] = "blocked" if status == "blocked" else "running"
         self.db.update_scrape_task(task["id"], **fields)
 
     def finish(self, task, job, sc):
         status = job.get("status")
+        if task["status"] == "suspending" and status != "done":
+            # Paused mid-job: nothing is ingested now — the resumed job's
+            # result carries these pages as well.
+            self.db.update_scrape_task(task["id"], status="queued", not_before=None,
+                                       progress=None, vnc_url=None)
+            self._log("info", f"task {task['id']} (book {task['book_id']}) suspended for the pause")
+            return
         if task["kind"] == "toc":
             if status == "done":
                 self.on_toc(task, sc.result(job["id"]))

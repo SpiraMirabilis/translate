@@ -71,6 +71,7 @@ def overview():
             "reserved_slots": scrape_sync.setting("scrape_reserved_slots"),
         },
         "worker": _worker_status(),
+        "paused": scrape_sync.load_pause(),
         "supported_sites": known,
         "lane": _db.lane_task(),
         "queued": _db.list_scrape_tasks(statuses=("queued",), order="t.priority, t.id", limit=200),
@@ -79,6 +80,35 @@ def overview():
             order="t.finished_at DESC, t.id DESC"),
         "books": books,
     }
+
+
+@router.post("/api/scrape/pause")
+def pause():
+    """Hold the whole lane, e.g. before restarting the worker or the scraper.
+    The worker suspends the job on the scraper (it resumes from its last page
+    on Resume), submits nothing new and starts no translations. Persisted, so
+    a paused worker comes back up paused."""
+    already = scrape_sync.load_pause()
+    state = scrape_sync.set_paused(True)
+    # The worker does this too on its next tick; doing it here makes the
+    # page show "suspending" at once.
+    lane = _db.lane_task()
+    if lane and lane["status"] in ("running", "blocked"):
+        _db.update_scrape_task(lane["id"], status="suspending")
+    if not already:
+        _db.add_activity_log("scrape", "Scrape: paused"
+                             + (f" — suspending {lane.get('book_title') or 'book ' + str(lane['book_id'])}'s job"
+                                if lane else ""))
+    return {"paused": state, "lane": _db.lane_task()}
+
+
+@router.post("/api/scrape/resume")
+def resume():
+    was = scrape_sync.load_pause()
+    scrape_sync.set_paused(False)
+    if was:
+        _db.add_activity_log("scrape", "Scrape: resumed")
+    return {"paused": None, "lane": _db.lane_task()}
 
 
 @router.post("/api/scrape/sites/refresh")
@@ -124,7 +154,9 @@ async def scraper_notify(request: Request):
 
 @router.get("/api/scrape/count")
 def attention_count():
-    return {"count": _db.count_scrape_attention(scrape_sync.FAILURE_LIMIT)}
+    # A forgotten pause stops everything, so it counts too.
+    return {"count": _db.count_scrape_attention(scrape_sync.FAILURE_LIMIT)
+            + (1 if scrape_sync.load_pause() else 0)}
 
 
 @router.get("/api/books/{book_id}/scrape")
@@ -299,7 +331,7 @@ def cancel_task(task_id: int):
         raise HTTPException(status_code=404, detail="Task not found")
     if task["status"] == "queued":
         _db.update_scrape_task(task_id, status="cancelled", finished_at=scrape_sync.now_iso())
-    elif task["status"] in ("running", "blocked"):
+    elif task["status"] in ("running", "blocked", "suspending"):
         # The worker cancels the scraper job on its next poll.
         _db.update_scrape_task(task_id, status="cancelling")
     else:
@@ -313,7 +345,7 @@ def retry_task(task_id: int):
     task = _db.get_scrape_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task["status"] in ("running", "blocked", "cancelling"):
+    if task["status"] in ("running", "blocked", "cancelling", "suspending"):
         raise HTTPException(status_code=409, detail="Task is on the scraper right now.")
     if task["status"] == "done":
         raise HTTPException(status_code=409, detail="Task already finished.")

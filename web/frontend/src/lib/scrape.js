@@ -18,6 +18,7 @@ export const TASK_STATUS_CHIP = {
   running:    'bg-indigo-500/20 text-indigo-300',
   blocked:    'bg-amber-500/20 text-amber-300',
   cancelling: 'bg-slate-500/20 text-slate-400',
+  suspending: 'bg-amber-500/20 text-amber-300',
   done:       'bg-emerald-500/20 text-emerald-300',
   skipped:    'bg-slate-500/20 text-slate-400',
   failed:     'bg-rose-500/20 text-rose-300',
@@ -65,4 +66,4 @@ export function taskSummary(t) {
   return parts.join(' · ')
 }
 
-export const OPEN_TASK_STATES = ['queued', 'running', 'blocked', 'cancelling']
+export const OPEN_TASK_STATES = ['queued', 'running', 'blocked', 'cancelling', 'suspending']

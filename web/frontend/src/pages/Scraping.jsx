@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CloudDownload, Loader2, AlertTriangle, ExternalLink, Ban } from 'lucide-react'
+import { CloudDownload, Loader2, AlertTriangle, ExternalLink, Ban, Pause, Play } from 'lucide-react'
 import { api } from '../services/api'
 import { useSite } from '../App'
 import { relativeTime } from '../lib/relativeTime'
@@ -18,6 +18,7 @@ export default function Scraping() {
   const [openBook, setOpenBook] = useState(null)
   const [error, setError] = useState(null)
   const [showOff, setShowOff] = useState(false)
+  const [pausing, setPausing] = useState(false)
 
   const { data, isPending } = useQuery({
     queryKey: ['scrape-overview'],
@@ -36,7 +37,16 @@ export default function Scraping() {
     return <div className="flex justify-center py-16"><Loader2 size={28} className="animate-spin text-indigo-400" /></div>
   }
 
-  const { settings, worker, lane, queued = [], recent = [], books = [] } = data || {}
+  const { settings, worker, paused, lane, queued = [], recent = [], books = [] } = data || {}
+
+  const togglePause = async () => {
+    setPausing(true)
+    try {
+      await (paused ? api.resumeScraping() : api.pauseScraping())
+      setError(null)
+      refresh()
+    } catch (e) { setError(e.detail || e.message) } finally { setPausing(false) }
+  }
   const visibleBooks = books.filter(b => showOff || b.mode !== 'off')
   const attention = (b) => b.mode !== 'off'
     && (b.hold_reason || b.unplaced_pending > 0 || b.consecutive_failures >= settings.failure_limit)
@@ -52,6 +62,13 @@ export default function Scraping() {
           worker {worker?.running ? 'running' : 'not running'}
         </span>
         {!settings.enabled && <span className="px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-300">disabled in Settings</span>}
+        {paused && <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-300">paused</span>}
+        <button className={`btn text-xs inline-flex items-center gap-1 ${paused ? 'btn-primary' : 'btn-secondary'}`}
+                disabled={pausing} onClick={togglePause}
+                title={paused ? 'Let the worker submit jobs again' : 'Hold every scrape job, e.g. before restarting the worker or the scraper'}>
+          {pausing ? <Loader2 size={12} className="animate-spin" /> : paused ? <Play size={12} /> : <Pause size={12} />}
+          {paused ? 'Resume' : 'Pause'}
+        </button>
         <span className="text-xs text-slate-500 ml-auto">
           Daily check at {String(settings.daily_hour).padStart(2, '0')}:00 · chunks of {settings.chunk_size} ·
           auto-translate gap {settings.default_gap} · {settings.reserved_slots} slot{settings.reserved_slots === 1 ? '' : 's'} kept free
@@ -62,6 +79,15 @@ export default function Scraping() {
         <div className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-700/50 text-sm text-rose-300">
           The scrape worker isn&apos;t running — tasks queue here but nothing runs them.
           Start it with <code className="text-rose-200">systemctl --user start t9-scraper.service</code>.
+        </div>
+      )}
+      {paused && (
+        <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-700/50 text-sm text-amber-200">
+          Paused {paused.paused_at ? relativeTime(paused.paused_at) : ''} — nothing new goes to the scraper and no
+          translations auto-start; queued work waits.{' '}
+          {lane
+            ? <>Suspending the job on the scraper… (it resumes from its last page on Resume)</>
+            : <>Nothing is on the scraper: it&apos;s safe to restart <code className="text-amber-100">t9-scraper.service</code> or the scraper.</>}
         </div>
       )}
       <SupportedSites known={data.supported_sites} onRefreshed={refresh} setError={setError} />
@@ -88,6 +114,7 @@ export default function Scraping() {
                 {lane.kind === 'toc' ? 'reading the TOC' : `${lane.reason === 'backfill' ? 'backfilling' : 'scraping new chapters'}`}
               </span>
               <span className="text-xs text-slate-500">started {relativeTime(lane.started_at)}</span>
+              {lane.status === 'suspending' && <span className="text-xs text-amber-300">suspending for the pause…</span>}
               <div className="flex-1" />
               <button className="btn btn-secondary text-xs inline-flex items-center gap-1"
                       disabled={lane.status === 'cancelling'}

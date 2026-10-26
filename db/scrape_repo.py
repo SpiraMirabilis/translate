@@ -26,8 +26,9 @@ _TASK_FIELDS = {
 }
 _TASK_JSON = {"options", "progress", "result_summary"}
 
-# A task in one of these states occupies the scraper lane.
-LANE_STATES = ("running", "blocked", "cancelling")
+# A task in one of these states occupies the scraper lane. "suspending" =
+# being cancelled for a pause, to be requeued (not finished) once it stops.
+LANE_STATES = ("running", "blocked", "cancelling", "suspending")
 OPEN_STATES = ("queued",) + LANE_STATES
 
 

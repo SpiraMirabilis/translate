@@ -1,6 +1,15 @@
 """Admin scraping endpoints: they only read state and queue rows for the worker."""
 import json
 
+import pytest
+
+import scrape_sync
+
+
+@pytest.fixture(autouse=True)
+def pause_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(scrape_sync, "PAUSE_FILE", str(tmp_path / "scrape_paused.json"))
+
 
 def _book_with_toc(db, n=5):
     book_id = db.create_book("Scraped")
@@ -192,3 +201,21 @@ def test_resolve_unplaced_endpoint(admin_client, db):
     assert body["unplaced"] == [] and body["unplaced_recent"][0]["status"] == "discard"
     assert admin_client.post(f"/api/books/{book_id}/scrape/unplaced/abc",
                              json={"action": "discard"}).status_code == 404
+
+
+def test_pause_and_resume(admin_client, db):
+    book_id = _book_with_toc(db)
+    task_id = db.create_scrape_task(book_id, "toc", reason="manual")
+    db.update_scrape_task(task_id, status="running", scraper_job_id="j1")
+
+    r = admin_client.post("/api/scrape/pause")
+    assert r.status_code == 200 and r.json()["paused"]["paused_at"]
+    assert db.get_scrape_task(task_id)["status"] == "suspending"
+    assert admin_client.get("/api/scrape/overview").json()["paused"]
+    assert admin_client.get("/api/scrape/count").json()["count"] == 1
+    assert admin_client.post(f"/api/scrape/tasks/{task_id}/retry").status_code == 409
+
+    r = admin_client.post("/api/scrape/resume")
+    assert r.status_code == 200 and r.json()["paused"] is None
+    assert admin_client.get("/api/scrape/overview").json()["paused"] is None
+    assert admin_client.get("/api/scrape/count").json()["count"] == 0

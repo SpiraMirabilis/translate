@@ -134,6 +134,7 @@ SETTINGS = {
 def fixed_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(scrape_sync, "setting", lambda k: SETTINGS[k])
     monkeypatch.setattr(scrape_sync, "SITES_CACHE", str(tmp_path / "scraper_sites.json"))
+    monkeypatch.setattr(scrape_sync, "PAUSE_FILE", str(tmp_path / "scrape_paused.json"))
 
 
 @pytest.fixture
@@ -319,6 +320,63 @@ def test_restart_resumes_polling_instead_of_resubmitting(db, book):
     engine2.step_lane()
     assert len(scraper.calls) == 1  # polled, not resubmitted
     assert db.get_book_scrape(book)["toc_count"] == 1
+
+
+def test_pause_suspends_the_job_and_resume_retries_it(db, book):
+    scraper = FakeScraper([entry(n) for n in range(1, 4)])
+    clock = Clock()
+    clock.now = clock.now.replace(hour=3)  # before the daily sweep
+    engine = make_engine(db, scraper, clock=clock)
+    check_and_link(db, engine, book)
+    db.update_book_scrape(book, mode="queue")
+    scrape_sync.queue_chapter_chunk(db, book, "catchup",
+                                    db.get_book_scrape(book, include_toc=True)["last_toc"]["chapters"],
+                                    base_number=None)
+    engine.step_lane()  # on the scraper
+    task = db.lane_task()
+    assert task["status"] == "running"
+
+    scrape_sync.set_paused(True)
+    assert engine.tick() == "paused"
+    task = db.get_scrape_task(task["id"])
+    assert task["status"] == "queued" and task["scraper_job_id"]
+    assert scraper.jobs[task["scraper_job_id"]]["status"] == "cancelled"
+    assert queued_numbers(db, book) == []  # nothing ingested from the suspended job
+
+    scrape_sync.enqueue_check(db, book)  # queued work waits while paused
+    for _ in range(3):
+        assert engine.tick() == "paused"
+    assert db.lane_task() is None
+    calls = len(scraper.calls)
+
+    scrape_sync.set_paused(False)
+    drain(engine)
+    kinds = [k for k, _ in scraper.calls[calls:]]
+    # The TOC check (priority 10) goes first; the suspended catch-up then
+    # resumes on the scraper rather than being submitted afresh.
+    assert kinds[:2] == ["toc", "retry"]  # then the next chunk (chunk size 2)
+    assert queued_numbers(db, book) == [1, 2, 3]
+
+
+def test_pause_survives_a_restart_and_repeat_cancels_are_harmless(db, book):
+    class Strict(FakeScraper):
+        def cancel(self, job_id):  # the real scraper 409s on a job that's already over
+            if self.jobs[job_id]["status"] in ("done", "failed", "cancelled"):
+                raise ScraperError(f"DELETE /jobs/{job_id}: HTTP 409")
+            super().cancel(job_id)
+    scraper = Strict([entry(1)])
+    engine = make_engine(db, scraper)
+    scrape_sync.enqueue_check(db, book)
+    engine.step_lane()
+    task = db.lane_task()
+    db.update_scrape_task(task["id"], status="suspending")
+    scraper.jobs[task["scraper_job_id"]]["status"] = "cancelled"  # cancel already landed
+    scrape_sync.set_paused(True)
+    engine2 = scrape_sync.ScrapeEngine(db, client_factory=lambda: scraper, admin=FakeAdmin(),
+                                       clock=Clock())
+    assert engine2.tick() == "paused"
+    assert db.get_scrape_task(task["id"])["status"] == "queued"
+    assert scrape_sync.load_pause()["paused_at"]
 
 
 def test_autostart_respects_gap_and_uses_global_model(db, book):

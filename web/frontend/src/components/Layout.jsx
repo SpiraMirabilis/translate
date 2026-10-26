@@ -49,7 +49,7 @@ export default function Layout() {
       api.countErrorReports('new')
         .then(data => setNewReportsCount(data.count || 0))
         .catch(e => console.warn('Failed to load error-report badge count:', e))
-      // A job blocked on a challenge, or a switched-on book failing or held.
+      // A job blocked on a challenge, a switched-on book failing or held, or a pause.
       api.scrapeCount()
         .then(data => setScrapeAttentionCount(data.count || 0))
         .catch(e => console.warn('Failed to load scrape badge count:', e))

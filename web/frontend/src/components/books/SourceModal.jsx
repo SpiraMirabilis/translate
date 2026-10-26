@@ -483,7 +483,7 @@ export function TaskRow({ task: t, onChanged, setError, showBook = false, onOpen
         </a>
       )}
       <span className="text-slate-600 shrink-0">{relativeTime(t.finished_at || t.started_at || t.created_at)}</span>
-      {['queued', 'running', 'blocked'].includes(t.status) && (
+      {['queued', 'running', 'blocked', 'suspending'].includes(t.status) && (
         <button className="text-slate-500 hover:text-rose-300 shrink-0" title="Cancel"
                 onClick={() => act(() => api.cancelScrapeTask(t.id))}><Ban size={12} /></button>
       )}
