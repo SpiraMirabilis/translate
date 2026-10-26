@@ -1,0 +1,39 @@
+# T9 Scraper worker — systemd USER service
+#
+# Feeds the home-server scraper one job at a time (scrape_tasks), runs the
+# daily TOC sweep, ingests scraped chapters into the queue and auto-starts
+# translations for books in auto mode. See scrape_sync.py.
+#
+# Needs SCRAPER_TOKEN in .env (Settings → Scraping writes it); the scraper URL
+# is the scraper_url setting. T9_PASSWORD (already in .env) mints the admin
+# cookie for translation starts.
+#
+# Install:
+#   cp deploy/t9-scraper.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now t9-scraper.service
+#
+# Logs:   journalctl --user -u t9-scraper.service -f
+# Status: python3 scrape_worker.py --status
+
+[Unit]
+Description=T9 Scraper worker
+After=network.target t9.service
+
+AssertFileNotEmpty=%h/t9/.env
+ConditionPathExists=%h/t9/.env
+
+[Service]
+Type=exec
+WorkingDirectory=%h/t9
+ExecStart=/usr/bin/python3 %h/t9/scrape_worker.py
+Restart=on-failure
+RestartSec=30
+
+EnvironmentFile=%h/t9/.env
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

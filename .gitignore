@@ -299,3 +299,6 @@ harvest_wp_redirects.py
 
 # Docker runtime state (compose.yaml bind-mounts ./data)
 /data/
+
+# scrape_worker.py heartbeat (read by the admin Scraping page)
+logs/scrape_worker.json

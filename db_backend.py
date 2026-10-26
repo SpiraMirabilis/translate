@@ -602,6 +602,64 @@ _COMMON_DDL_SQLITE = [
     'CREATE INDEX IF NOT EXISTS idx_email_log_message_id ON email_log(message_id)',
     'CREATE INDEX IF NOT EXISTS idx_email_log_rec ON email_log(recommendation_id)',
 
+    # book_scrape — per-book automated scraping config + state. cursor_url is
+    # the source URL of the last chapter we ingested (the TOC entry it matches
+    # is "where we are"); last_toc is the most recent TOC read, kept so the
+    # admin can link a book and plan backfills without another scraper trip.
+    '''CREATE TABLE IF NOT EXISTS book_scrape (
+        book_id INTEGER PRIMARY KEY,
+        mode TEXT NOT NULL DEFAULT 'off',
+        auto_gap INTEGER,
+        number_offset INTEGER NOT NULL DEFAULT 0,
+        linked INTEGER NOT NULL DEFAULT 0,
+        cursor_url TEXT,
+        cursor_number INTEGER,
+        run_options TEXT,
+        last_toc TEXT,
+        toc_count INTEGER,
+        toc_latest_title TEXT,
+        pending_count INTEGER,
+        last_checked_at TEXT,
+        last_sweep_at TEXT,
+        last_new_at TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        hold_reason TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+
+    # scrape_tasks — the single scraper lane, owned by t9 (scrape_worker.py).
+    # One toc/chapters task is on the scraper at a time; scraper_job_id is
+    # persisted on submit so a worker restart resumes polling, not resubmits.
+    # 'autostart' rows never touch the scraper: they are deferred
+    # translation starts (retried while the job cap is full).
+    '''CREATE TABLE IF NOT EXISTS scrape_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        reason TEXT,
+        priority INTEGER NOT NULL DEFAULT 50,
+        status TEXT NOT NULL DEFAULT 'queued',
+        from_url TEXT,
+        to_url TEXT,
+        max_chapters INTEGER,
+        options TEXT,
+        scraper_job_id TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        not_before TEXT,
+        last_error TEXT,
+        vnc_url TEXT,
+        progress TEXT,
+        result_summary TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    )''',
+    'CREATE INDEX IF NOT EXISTS idx_scrape_tasks_status ON scrape_tasks(status, priority, id)',
+    'CREATE INDEX IF NOT EXISTS idx_scrape_tasks_book ON scrape_tasks(book_id, status)',
+
     # comments — reader comment threads on chapters
     '''CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1097,6 +1155,57 @@ _COMMON_DDL_MYSQL = [
         KEY idx_email_log_recipient (recipient),
         KEY idx_email_log_message_id (message_id),
         KEY idx_email_log_rec (recommendation_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+
+    # book_scrape — per-book automated scraping config + state (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS book_scrape (
+        book_id INTEGER PRIMARY KEY,
+        mode VARCHAR(10) NOT NULL DEFAULT 'off',
+        auto_gap INTEGER,
+        number_offset INTEGER NOT NULL DEFAULT 0,
+        linked INTEGER NOT NULL DEFAULT 0,
+        cursor_url TEXT,
+        cursor_number INTEGER,
+        run_options TEXT,
+        last_toc LONGTEXT,
+        toc_count INTEGER,
+        toc_latest_title TEXT,
+        pending_count INTEGER,
+        last_checked_at VARCHAR(50),
+        last_sweep_at VARCHAR(50),
+        last_new_at VARCHAR(50),
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        hold_reason TEXT,
+        updated_at VARCHAR(50),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
+
+    # scrape_tasks — the single scraper lane (see SQLite note)
+    '''CREATE TABLE IF NOT EXISTS scrape_tasks (
+        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+        book_id INTEGER NOT NULL,
+        kind VARCHAR(16) NOT NULL,
+        reason VARCHAR(16),
+        priority INTEGER NOT NULL DEFAULT 50,
+        status VARCHAR(16) NOT NULL DEFAULT 'queued',
+        from_url TEXT,
+        to_url TEXT,
+        max_chapters INTEGER,
+        options TEXT,
+        scraper_job_id VARCHAR(64),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        not_before VARCHAR(50),
+        last_error TEXT,
+        vnc_url TEXT,
+        progress TEXT,
+        result_summary MEDIUMTEXT,
+        created_at VARCHAR(50) NOT NULL,
+        started_at VARCHAR(50),
+        finished_at VARCHAR(50),
+        KEY idx_scrape_tasks_status (status, priority, id),
+        KEY idx_scrape_tasks_book (book_id, status),
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci''',
 
     # comments — reader comment threads on chapters

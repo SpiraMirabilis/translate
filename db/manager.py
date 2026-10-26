@@ -19,6 +19,7 @@ from db.revisions_repo import ChapterRevisionsRepo
 from db.polish_repo import PolishJobsRepo
 from db.footnote_candidates_repo import FootnoteCandidatesRepo
 from db.chapter_entities_repo import ChapterEntitiesRepo
+from db.scrape_repo import ScrapeRepo
 
 
 class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
@@ -26,7 +27,8 @@ class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
                       RecommendationRepliesRepo, EmailLogRepo, ErrorReportsRepo,
                       LogsRepo, WpStateRepo,
                       ChapterRevisionsRepo, PolishJobsRepo,
-                      FootnoteCandidatesRepo, ChapterEntitiesRepo, DatabaseCore):
+                      FootnoteCandidatesRepo, ChapterEntitiesRepo, ScrapeRepo,
+                      DatabaseCore):
     """Class to manage database operations including entities, books, and chapters using SQLite"""
 
     def __init__(self, config: 'TranslationConfig', logger: 'Logger', *, strict_writes: bool = False):

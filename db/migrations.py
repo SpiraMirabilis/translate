@@ -850,6 +850,126 @@ def _m025_email_log(conn, cursor, backend, logger):
             cursor.execute(index_ddl)
 
 
+_SCRAPE_DDL = {
+    "sqlite": [
+        """
+        CREATE TABLE IF NOT EXISTS book_scrape (
+            book_id INTEGER PRIMARY KEY,
+            mode TEXT NOT NULL DEFAULT 'off',
+            auto_gap INTEGER,
+            number_offset INTEGER NOT NULL DEFAULT 0,
+            linked INTEGER NOT NULL DEFAULT 0,
+            cursor_url TEXT,
+            cursor_number INTEGER,
+            run_options TEXT,
+            last_toc TEXT,
+            toc_count INTEGER,
+            toc_latest_title TEXT,
+            pending_count INTEGER,
+            last_checked_at TEXT,
+            last_sweep_at TEXT,
+            last_new_at TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            hold_reason TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scrape_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            reason TEXT,
+            priority INTEGER NOT NULL DEFAULT 50,
+            status TEXT NOT NULL DEFAULT 'queued',
+            from_url TEXT,
+            to_url TEXT,
+            max_chapters INTEGER,
+            options TEXT,
+            scraper_job_id TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            not_before TEXT,
+            last_error TEXT,
+            vnc_url TEXT,
+            progress TEXT,
+            result_summary TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_scrape_tasks_status ON scrape_tasks(status, priority, id)",
+        "CREATE INDEX IF NOT EXISTS idx_scrape_tasks_book ON scrape_tasks(book_id, status)",
+    ],
+    "mysql": [
+        """
+        CREATE TABLE IF NOT EXISTS book_scrape (
+            book_id INTEGER PRIMARY KEY,
+            mode VARCHAR(10) NOT NULL DEFAULT 'off',
+            auto_gap INTEGER,
+            number_offset INTEGER NOT NULL DEFAULT 0,
+            linked INTEGER NOT NULL DEFAULT 0,
+            cursor_url TEXT,
+            cursor_number INTEGER,
+            run_options TEXT,
+            last_toc LONGTEXT,
+            toc_count INTEGER,
+            toc_latest_title TEXT,
+            pending_count INTEGER,
+            last_checked_at VARCHAR(50),
+            last_sweep_at VARCHAR(50),
+            last_new_at VARCHAR(50),
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            hold_reason TEXT,
+            updated_at VARCHAR(50),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scrape_tasks (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            book_id INTEGER NOT NULL,
+            kind VARCHAR(16) NOT NULL,
+            reason VARCHAR(16),
+            priority INTEGER NOT NULL DEFAULT 50,
+            status VARCHAR(16) NOT NULL DEFAULT 'queued',
+            from_url TEXT,
+            to_url TEXT,
+            max_chapters INTEGER,
+            options TEXT,
+            scraper_job_id VARCHAR(64),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            not_before VARCHAR(50),
+            last_error TEXT,
+            vnc_url TEXT,
+            progress TEXT,
+            result_summary MEDIUMTEXT,
+            created_at VARCHAR(50) NOT NULL,
+            started_at VARCHAR(50),
+            finished_at VARCHAR(50),
+            KEY idx_scrape_tasks_status (status, priority, id),
+            KEY idx_scrape_tasks_book (book_id, status),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ],
+}
+
+
+def _m026_scraping(conn, cursor, backend, logger):
+    """Automated source scraping (scrape_worker.py). book_scrape holds each
+    book's mode (off|queue|auto), its cursor into the source TOC and the last
+    TOC read; scrape_tasks is the single scraper lane t9 feeds one job at a
+    time. Every book starts at mode 'off' — nothing is scraped until a book
+    is linked and switched on."""
+    for ddl in _SCRAPE_DDL[backend.name]:
+        cursor.execute(ddl)
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -876,6 +996,7 @@ MIGRATIONS = [
     Migration(23, "reader_log_viewed_book_index", _m023_reader_log_viewed_book_index),
     Migration(24, "footnote_candidates_footnote_id", _m024_footnote_candidates_footnote_id),
     Migration(25, "email_log", _m025_email_log),
+    Migration(26, "scraping", _m026_scraping),
 ]
 
 
