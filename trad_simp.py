@@ -63,6 +63,30 @@ PROTECTED_TERMS = {
     "乾亨": "乾亨",
     "徐乾學": "徐乾学",
     "徐乾学": "徐乾学",
+    # Book 106's own qián terms (its simplified chapters 1-685 write them all
+    # with 乾): the 乾朝 dynasty, 乾宫, the 乾转 "Heaven-Turning" family
+    # (乾转界/乾转法/五渊乾转阵/八门乾转仪), the emperor 昊乾, the trigram
+    # positions 乾位/乾门, and 丁乾 in its divination verses.
+    "乾朝": "乾朝",
+    "乾宮": "乾宫",
+    "乾宫": "乾宫",
+    "乾轉": "乾转",
+    "乾转": "乾转",
+    "昊乾": "昊乾",
+    "乾位": "乾位",
+    "乾門": "乾门",
+    "乾门": "乾门",
+    "丁乾": "丁乾",
+    # 徵 is zhǐ, the fourth note of the pentatonic scale, not 征 "levy". OpenCC
+    # knows 宫商角徵羽 and 變徵 but not the scale written with 、, nor book 106's
+    # 徵音/徵神音 or the names 八徵日轮 and 血徵.
+    "角、徵": "角、徵",
+    "變徵": "变徵",
+    "变徵": "变徵",
+    "徵神音": "徵神音",
+    "徵音": "徵音",
+    "八徵": "八徵",
+    "血徵": "血徵",
 }
 
 # 著 stays 著 (zhù) in these; everywhere else it is the aspect particle 着.
@@ -80,7 +104,9 @@ PROTECTED_TERMS = {
 ZHU_MEDIAL = (
     "显著", "土著", "巨著", "原著", "名著", "昭著", "卓著", "专著", "遗著",
 )
-ZHU_INITIAL = ("著名", "著作", "著称", "著述", "著者", "著录")
+# 著书 is "to write books" (著书立说; book 106's 道树著书); 著雍 is the
+# Taisui year name, OpenCC leaves it alone and only our 著→着 pass breaks it.
+ZHU_INITIAL = ("著名", "著作", "著称", "著述", "著者", "著录", "著书", "著雍")
 
 # A 著 closing a 《book title》 is the verb zhù, "authored by" (《结丹心得——慎独道人著》),
 # never the aspect particle — a particle cannot precede 》.
@@ -160,6 +186,24 @@ def _mask_re(text, pattern, table):
     return pattern.sub(sub, text)
 
 
+def _keep_bmp(before, after):
+    """Undo any conversion that lands outside the Basic Multilingual Plane.
+
+    t2s maps some rare characters to the 2013 standard's extension-plane
+    simplifications (聻→𫆏, 騊駼→𫘦𬳿, 纁→𫄸), which common fonts lack and which
+    simplified web novels don't use — book 106's simplified raws write 聻 and
+    騊駼. t2s is character-for-character, so position i of the output is the
+    conversion of position i of the input; a length change means a phrase
+    rewrite we can't align, and the output is kept as is.
+    """
+    if len(before) != len(after):
+        return after
+    return "".join(
+        b if ord(a) > 0xFFFF and ord(b) <= 0xFFFF else a
+        for b, a in zip(before, after)
+    )
+
+
 def _convert_one(text):
     table = []
     # The masking sentinels use PUA codepoints U+E000/U+E001. If the input
@@ -170,7 +214,7 @@ def _convert_one(text):
         text = text.replace("\ue000", "").replace("\ue001", "")
     # Shield the qián proper nouns before OpenCC sees them — t2s folds 乾 to 干.
     text = _mask_map(text, PROTECTED_TERMS, table)
-    text = _get_converter().convert(text)
+    text = _keep_bmp(text, _get_converter().convert(text))
     # Shield the zhù words (in their post-conversion form), then normalise the
     # remaining 著 to the simplified aspect particle 着.
     text = _mask(text, ZHU_MEDIAL, table)

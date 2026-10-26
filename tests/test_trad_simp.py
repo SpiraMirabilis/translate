@@ -173,3 +173,39 @@ def test_no_sentinel_leakage():
     out = convert_text("大乾的著名原著，看著乾坤")
     assert "" not in out and "" not in out
     assert out == "大乾的著名原著，看着乾坤"
+
+
+@pytest.mark.parametrize("src, expected", [
+    # Book 106's qián terms, as a Taiwanese mirror serves them.
+    ("乾朝至元", "乾朝至元"),
+    ("來到了乾宮", "来到了乾宫"),
+    ("乾轉界、五淵乾轉陣", "乾转界、五渊乾转阵"),
+    ("羽皇昊乾", "羽皇昊乾"),
+    ("乾位進，從乾門進去", "乾位进，从乾门进去"),
+    ("丁乾戊坎己巽門", "丁乾戊坎己巽门"),
+    # ...and 乾 "dry" in the same line still folds.
+    ("乾轉界很乾淨", "乾转界很干净"),
+    # 徵 = zhǐ, the pentatonic note.
+    ("宮、商、角、徵、羽", "宫、商、角、徵、羽"),
+    ("閭暝擅徵音，徵神音，以變徵調起手", "闾暝擅徵音，徵神音，以变徵调起手"),
+    ("八徵日輪、血徵", "八徵日轮、血徵"),
+    ("徵兵", "征兵"),
+    # 著 zhù: 著书 and the year name 著雍; the particle still converts.
+    ("道樹著書，著雍祭靈", "道树著书，著雍祭灵"),
+    ("看著書", "看着书"),
+])
+def test_book106_terms(src, expected):
+    assert convert_text(src) == expected
+    assert convert_text(expected) == expected
+
+
+@pytest.mark.parametrize("src, expected", [
+    # t2s would emit extension-plane glyphs (𫆏 𫘦𬳿 𫄸 𫄧 𫛪) here.
+    ("鬼死為聻", "鬼死为聻"),
+    ("騊駼宮", "騊駼宫"),
+    ("纁裳、綖、鼠化為鴽", "纁裳、綖、鼠化为鴽"),
+])
+def test_no_extension_plane_output(src, expected):
+    out = convert_text(src)
+    assert out == expected
+    assert all(ord(c) <= 0xFFFF for c in out)
