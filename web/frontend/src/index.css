@@ -167,7 +167,10 @@
   padding: 0.4rem 0.6rem;
   text-align: left;
 }
-.chapter-markdown th { font-weight: 700; background: rgba(127, 127, 127, 0.12); }
+/* Header cells are NOT bold (the browser default for <th> is): the corpus uses
+   the first table row for ordinary content as often as for headings. Bold a
+   header the Markdown way, **text**, which renders as <strong> and stays bold. */
+.chapter-markdown th { font-weight: inherit; background: rgba(127, 127, 127, 0.12); }
 /* Table/cell borders shouldn't be as loud as the text. */
 .chapter-markdown table { border-color: rgba(127, 127, 127, 0.4); }
 .chapter-markdown th,
