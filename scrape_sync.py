@@ -1026,9 +1026,10 @@ def blocked_notice(db, payload):
     book_id = task["book_id"] if task else None
     title = task.get("book_title") if task else None
     site = payload.get("site") or "the source site"
-    what = {"toc": "reading the TOC", "chapters": "scraping chapters"}.get((task or {}).get("kind"), "a job")
+    what = {"toc": " while reading the TOC", "chapters": " while scraping chapters"}.get(
+        (task or {}).get("kind"), "")
     line = (f"Scrape ({title or (f'book {book_id}' if book_id else 'unknown book')}): blocked on a "
-            f"Cloudflare challenge at {site} while {what} — it needs a human to solve it")
+            f"Cloudflare challenge at {site}{what} — it needs a human to solve it")
     url = vnc_url()
     if task:
         db.update_scrape_task(task["id"], status="blocked", vnc_url=url)
