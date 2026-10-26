@@ -375,8 +375,10 @@ job at a time**, so t9 owns the lane:
   `scraper_client.verify_signature` against the **raw** body (5-min tolerance; no
   secret configured → every POST is 401), matches the task by `jobId`, marks it
   blocked, and writes a red `scrape_blocked` activity line ("Scrape (Book): blocked on
-  a Cloudflare challenge …") broadcast over the WS. The noVNC link is **ours**:
-  `scraper_vnc_url` (blank = no link), never the scraper's `vncUrl`; it's carried as an
+  a Cloudflare challenge …") broadcast over the WS. The noVNC link is the **scraper's
+  own `vncUrl`** (signed in the notice; also in a blocked job's status) — it knows its
+  address, `…/vnc.html?autoconnect=1&resize=scale`; `scraper_vnc_url` is only the
+  fallback for a scraper that sends none (neither = no link). It's carried as an
   activity entity `{label, href}`, which `Dashboard.jsx::ActivityEntry` renders as an
   external `<a>`.
 - **UI**: Books → Actions → **Source Scraping** (`SourceModal.jsx`: mode, gap, offset,

@@ -108,12 +108,12 @@ def _signed(secret, body, t=None):
 def test_scraper_notify_logs_a_red_line_with_the_novnc_link(api_client, db, monkeypatch):
     import scrape_sync
     monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "s3cret")
-    monkeypatch.setattr(scrape_sync, "vnc_url", lambda: "http://100.65.58.103:6080")
     book_id = _book_with_toc(db)
     task_id = db.create_scrape_task(book_id, "chapters", reason="catchup", priority=20)
     db.update_scrape_task(task_id, status="running", scraper_job_id="job-abc")
     body = json.dumps({"title": "Scraper blocked (twkan)", "message": "…", "jobId": "job-abc",
-                       "site": "twkan", "vncUrl": "http://elsewhere"}).encode()
+                       "site": "twkan",
+                       "vncUrl": "http://100.65.58.103:6080/vnc.html?autoconnect=1"}).encode()
 
     # api_client carries no session cookie: the signature is the only credential.
     r = api_client.post("/api/scraper-notify", content=body,
@@ -123,7 +123,8 @@ def test_scraper_notify_logs_a_red_line_with_the_novnc_link(api_client, db, monk
     entry = db.get_activity_log(limit=5)[-1]
     assert entry["type"] == "scrape_blocked"
     assert entry["message"].startswith("Scrape (Scraped): blocked on a Cloudflare challenge at twkan")
-    assert entry["entities"] == [{"label": "Solve it in noVNC", "href": "http://100.65.58.103:6080"}]
+    assert entry["entities"] == [{"label": "Solve it in noVNC",
+                                  "href": "http://100.65.58.103:6080/vnc.html?autoconnect=1"}]
     assert db.get_scrape_task(task_id)["status"] == "blocked"
 
 
@@ -139,10 +140,21 @@ def test_scraper_notify_rejects_bad_stale_or_unsigned_posts(api_client, monkeypa
     assert post({"X-Scraper-Signature": _signed("", body)}).status_code == 401   # no secret configured
 
 
-def test_scraper_notify_without_a_link_setting_shows_no_link(api_client, db, monkeypatch):
+def test_scraper_notify_falls_back_to_the_setting_then_no_link(api_client, db, monkeypatch):
     import scrape_sync
     monkeypatch.setattr(scrape_sync, "notify_secret", lambda: "s3cret")
-    monkeypatch.setattr(scrape_sync, "vnc_url", lambda: None)
+    settings = {"scraper_vnc_url": "http://fallback:6080/vnc.html"}
+    monkeypatch.setattr(scrape_sync, "setting", lambda k: settings.get(k, scrape_sync.DEFAULTS[k]))
+    body = json.dumps({"jobId": "unknown-job", "site": "69shuba"}).encode()   # no vncUrl sent
+    r = api_client.post("/api/scraper-notify", content=body,
+                        headers={"X-Scraper-Signature": _signed("s3cret", body)})
+    assert r.status_code == 200
+    assert db.get_activity_log(limit=5)[-1]["entities"] == [
+        {"label": "Solve it in noVNC", "href": "http://fallback:6080/vnc.html"}]
+    settings["scraper_vnc_url"] = ""                       # neither: logged, no link
+    r = api_client.post("/api/scraper-notify", content=body,
+                        headers={"X-Scraper-Signature": _signed("s3cret", body)})
+    assert r.status_code == 200 and not db.get_activity_log(limit=5)[-1]["entities"]
     body = json.dumps({"jobId": "unknown-job", "site": "69shuba"}).encode()
     r = api_client.post("/api/scraper-notify", content=body,
                         headers={"X-Scraper-Signature": _signed("s3cret", body)})

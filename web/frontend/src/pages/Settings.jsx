@@ -567,12 +567,12 @@ export default function Settings() {
                 />
               </div>
               <div className="sm:col-span-3">
-                <label className="label">noVNC URL <span className="text-slate-500 font-normal">(where a blocked challenge gets solved; blank = no link)</span></label>
+                <label className="label">noVNC URL <span className="text-slate-500 font-normal">(fallback — the scraper reports its own with each blocked job)</span></label>
                 <input
                   className="input font-mono text-sm"
                   value={settings.scraper_vnc_url || ''}
                   onChange={e => setSettings(s => ({ ...s, scraper_vnc_url: e.target.value }))}
-                  placeholder="http://100.65.58.103:6080"
+                  placeholder="http://100.65.58.103:6080/vnc.html"
                 />
               </div>
               <div className="sm:col-span-3">

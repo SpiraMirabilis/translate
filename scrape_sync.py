@@ -105,9 +105,13 @@ def notify_secret():
     return _env_secret("SCRAPER_NOTIFY_SECRET")
 
 
-def vnc_url():
-    """The noVNC page where a human solves a challenge, or None — a link is
-    shown only when the admin configured one."""
+def vnc_url(reported=None):
+    """The noVNC page where a human solves a challenge, or None for no link.
+    The scraper knows its own noVNC address (it reports vncUrl with a blocked
+    job, signed in a notice), so that wins; scraper_vnc_url is the fallback
+    for a scraper that sends none."""
+    if isinstance(reported, str) and re.match(r"^https?://", reported.strip()):
+        return reported.strip()
     return (str(setting("scraper_vnc_url") or "")).strip() or None
 
 
@@ -715,10 +719,8 @@ class ScrapeEngine:
         if status in ("done", "failed", "cancelled"):
             self.finish(task, job, sc)
             return
-        # The challenge link is ours to configure (scraper_vnc_url), not
-        # whatever the scraper reports: no setting, no link.
         fields = {"progress": job.get("progress") or {},
-                  "vnc_url": vnc_url() if status == "blocked" else None}
+                  "vnc_url": vnc_url(job.get("vncUrl")) if status == "blocked" else None}
         if task["status"] != "cancelling":
             fields["status"] = "blocked" if status == "blocked" else "running"
         self.db.update_scrape_task(task["id"], **fields)
@@ -1030,7 +1032,7 @@ def blocked_notice(db, payload):
         (task or {}).get("kind"), "")
     line = (f"Scrape ({title or (f'book {book_id}' if book_id else 'unknown book')}): blocked on a "
             f"Cloudflare challenge at {site}{what} — it needs a human to solve it")
-    url = vnc_url()
+    url = vnc_url(payload.get("vncUrl"))
     if task:
         db.update_scrape_task(task["id"], status="blocked", vnc_url=url)
     return book_id, title, line, url

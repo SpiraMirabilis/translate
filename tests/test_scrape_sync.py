@@ -545,17 +545,18 @@ def test_jobs_carry_the_callback_only_when_fully_configured(db, book, monkeypatc
     assert params["notify_kind"] == "json" and params["notify_secret"] == "s3cret"
 
 
-def test_blocked_link_comes_from_our_setting_not_the_scraper(db, book, monkeypatch):
+def test_blocked_link_prefers_the_scrapers_url_then_our_setting(db, book, monkeypatch):
     scraper = FakeScraper([entry(1)])
     engine = make_engine(db, scraper)
     scrape_sync.enqueue_check(db, book)
     engine.step_lane()                                       # submitted
-    job_id = db.lane_task()["scraper_job_id"]
-    scraper.status = lambda jid: {"id": jid, "status": "blocked", "vncUrl": "http://scraper-side",
-                                  "progress": {}}
+    reported = {"vncUrl": None}
+    scraper.status = lambda jid: {"id": jid, "status": "blocked", "progress": {}, **reported}
     engine.step_lane()
     assert db.lane_task()["status"] == "blocked" and db.lane_task()["vnc_url"] is None
-    monkeypatch.setitem(SETTINGS, "scraper_vnc_url", "http://100.65.58.103:6080")
+    monkeypatch.setitem(SETTINGS, "scraper_vnc_url", "http://fallback:6080/vnc.html")
     engine.step_lane()
-    assert db.lane_task()["vnc_url"] == "http://100.65.58.103:6080"
-    assert job_id
+    assert db.lane_task()["vnc_url"] == "http://fallback:6080/vnc.html"
+    reported["vncUrl"] = "http://100.65.58.103:6080/vnc.html?autoconnect=1&resize=scale"
+    engine.step_lane()
+    assert db.lane_task()["vnc_url"] == reported["vncUrl"]

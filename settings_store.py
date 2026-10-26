@@ -106,7 +106,8 @@ SCHEMA = {
     # Where the scraper POSTs a job's "blocked on a challenge" notice
     # (…/api/scraper-notify on this admin site), signed with SCRAPER_NOTIFY_SECRET
     # from .env; blank = jobs carry no callback. And the noVNC page where the
-    # challenge gets solved, linked from that notice; blank = no link.
+    # challenge gets solved: only a fallback — the scraper reports its own URL
+    # with a blocked job, and that wins.
     "scrape_notify_url":       ("SCRAPE_NOTIFY_URL",       "",                        str),
     "scraper_vnc_url":         ("SCRAPER_VNC_URL",         "",                        str),
 }
