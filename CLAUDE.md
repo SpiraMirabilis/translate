@@ -371,6 +371,10 @@ job at a time**, so t9 owns the lane:
   with a `scrape` nav badge (blocked job + held/failing books); Settings → Scraping
   (`scraper_url`, `scrape_engine` blank|patchright|extension, hour, chunk, gap, kill
   switch `scrape_enabled`; `SCRAPER_TOKEN` in `.env`, re-read by the worker per call).
+- **Rollout**: `scrape_rollout.py check [--wait]` queues a read-only TOC read per
+  candidate book (supported site, not completed/dropped, `--skip` ids) — confident
+  title matches link themselves, no mode changes; `report [--json plan.json]` suggests
+  auto/queue/review per book; `apply plan.json [--yes]` links and sets modes.
 - Supported sites are the scraper's adapters (twkan, wfxs, novellunar, 69shuba as of
   2026-10-26); others fail on submit. Tests: `tests/test_scrape_sync.py` (fake
   scraper that asserts one-job-in-flight), `tests/test_scrape_api.py`.
