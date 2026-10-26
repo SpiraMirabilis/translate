@@ -193,6 +193,9 @@ def test_no_sentinel_leakage():
     # 著 zhù: 著书 and the year name 著雍; the particle still converts.
     ("道樹著書，著雍祭靈", "道树著书，著雍祭灵"),
     ("看著書", "看着书"),
+    ("著書立說", "著书立说"),
+    # Bare 著书 is verb + particle + book far more often than "to write books".
+    ("包裹著書本，手捲著書，要學著書里", "包裹着书本，手卷着书，要学着书里"),
 ])
 def test_book106_terms(src, expected):
     assert convert_text(src) == expected

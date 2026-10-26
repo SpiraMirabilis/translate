@@ -103,10 +103,13 @@ PROTECTED_TERMS = {
 # that losing the protection costs less than the false positives.
 ZHU_MEDIAL = (
     "显著", "土著", "巨著", "原著", "名著", "昭著", "卓著", "专著", "遗著",
+    # 著书 "to write books" only in fixed phrases: bare 著书 straddles far
+    # too often (拿著書, 包裹著書本, 學著書里 — book 17) for a verb lookbehind.
+    "著书立说", "道树著书", "道书著书",
 )
-# 著书 is "to write books" (著书立说; book 106's 道树著书); 著雍 is the
-# Taisui year name, OpenCC leaves it alone and only our 著→着 pass breaks it.
-ZHU_INITIAL = ("著名", "著作", "著称", "著述", "著者", "著录", "著书", "著雍")
+# 著雍 is the Taisui year name; OpenCC leaves it alone and only our 著→着
+# pass would break it.
+ZHU_INITIAL = ("著名", "著作", "著称", "著述", "著者", "著录", "著雍")
 
 # A 著 closing a 《book title》 is the verb zhù, "authored by" (《结丹心得——慎独道人著》),
 # never the aspect particle — a particle cannot precede 》.
