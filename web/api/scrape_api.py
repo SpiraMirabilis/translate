@@ -68,6 +68,7 @@ def overview():
             "scraper_url": scrape_sync.setting("scraper_url"),
             "has_token": bool(scrape_sync.scraper_token()),
             "failure_limit": scrape_sync.FAILURE_LIMIT,
+            "reserved_slots": scrape_sync.setting("scrape_reserved_slots"),
         },
         "worker": _worker_status(),
         "supported_sites": known,

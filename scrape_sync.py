@@ -53,9 +53,11 @@ UNREACHABLE_RETRY_MINUTES = 5
 # this often after a failed read, keeping the last good list meanwhile).
 SITES_REFRESH_HOURS = 24
 SITES_RETRY_MINUTES = 60
-# A translation start refused because every job slot is busy.
-AUTOSTART_RETRY_MINUTES = 15
-AUTOSTART_GIVE_UP_HOURS = 6
+# Books waiting to auto-translate are checked against the admin's job slots
+# this often (one GET /api/translate/jobs per check, not per book). They wait
+# as long as they stay eligible — there is no give-up timeout, because nothing
+# would re-request a start until the book's next new chapter.
+AUTOSTART_CHECK_SECONDS = 60
 
 DEFAULTS = {
     "scrape_enabled": True,
@@ -67,6 +69,7 @@ DEFAULTS = {
     "scrape_engine": "",
     "scrape_notify_url": "",
     "scraper_vnc_url": "",
+    "scrape_reserved_slots": 1,
 }
 
 
@@ -478,11 +481,14 @@ class AdminAPI:
         import t9_client
         return t9_client.client(self.url) if self.url else t9_client.client()
 
-    def running_book_ids(self):
+    def jobs(self):
+        """(running book ids, the translation cap) from the admin's job registry."""
         with self._client() as c:
             r = c.get("/api/translate/jobs")
             r.raise_for_status()
-            return {j.get("book_id") for j in r.json().get("jobs", [])}
+            body = r.json()
+            return ({j.get("book_id") for j in body.get("jobs", [])},
+                    int(body.get("max_concurrent") or 0))
 
     def process_next(self, payload):
         with self._client() as c:
@@ -506,6 +512,7 @@ class ScrapeEngine:
         self.logger = logger
         self.clock = clock or datetime.datetime.now
         self._sites_retry_at = None
+        self._autostart_check_at = None
 
     # -- helpers -------------------------------------------------------------
 
@@ -973,46 +980,81 @@ class ScrapeEngine:
         }
         return payload
 
-    def run_autostarts(self):
-        for task in self.db.due_autostart_tasks(self._now()):
-            self._run_autostart(task)
-
-    def _run_autostart(self, task):
-        book_id = task["book_id"]
-        done = lambda summary, status="done": self.db.update_scrape_task(  # noqa: E731
-            task["id"], status=status, finished_at=self._now(), result_summary=summary)
-        ok, why = self.autostart_decision(book_id)
-        if not ok:
-            done({"started": False, "reason": why}, status="skipped")
-            self._activity(book_id, f"Auto-translate not started: {why}")
-            return
+    def run_autostarts(self, force=False):
+        """Start waiting auto-translate books, oldest request first, while a
+        slot is free — and always leave scrape_reserved_slots of the
+        translation cap free for manual work. Waiting books are re-checked
+        every AUTOSTART_CHECK_SECONDS and wait as long as they stay eligible."""
+        now = self.clock()
+        if not force and self._autostart_check_at and now < self._autostart_check_at:
+            return 0
+        waiting = self.db.due_autostart_tasks(self._now())     # oldest first
+        if not waiting:
+            return 0
+        self._autostart_check_at = now + datetime.timedelta(seconds=AUTOSTART_CHECK_SECONDS)
         try:
-            if book_id in self.admin.running_book_ids():
-                done({"started": False, "reason": "already translating"})
-                return
-            payload = self.run_options(book_id)
+            running, cap = self.admin.jobs()
+        except Exception as e:
+            self._log("warning", f"auto-translate: admin unreachable, will retry: {e}")
+            for task in waiting:
+                self.db.update_scrape_task(task["id"], last_error=f"admin unreachable: {e}")
+            return 0
+        reserved = max(0, int(setting("scrape_reserved_slots")))
+        # A cap of 1 with one reserved would never auto-translate at all;
+        # auto mode always gets at least one slot.
+        allowed = max(1, cap - reserved) if cap else 0
+        free = allowed - len(running)
+        started = 0
+        position = 0
+        for task in waiting:
+            book_id = task["book_id"]
+            ok, why = self.autostart_decision(book_id)
+            if not ok:
+                self._finish_autostart(task, {"started": False, "reason": why}, status="skipped")
+                self._activity(book_id, f"Auto-translate not started: {why}")
+                continue
+            if book_id in running:
+                # Its own job is on it; an auto_process run picks the new rows up.
+                self._finish_autostart(task, {"started": False, "reason": "already translating"})
+                continue
+            if free <= 0:
+                position += 1
+                self.db.update_scrape_task(task["id"], progress={"waiting": "slot", "position": position},
+                                           last_error=None)
+                continue
+            if self._start_translation(task):
+                free -= 1
+                started += 1
+                running.add(book_id)
+            else:
+                position += 1
+        return started
+
+    def _finish_autostart(self, task, summary, status="done"):
+        self.db.update_scrape_task(task["id"], status=status, finished_at=self._now(),
+                                   result_summary=summary, progress=None)
+
+    def _start_translation(self, task):
+        book_id = task["book_id"]
+        payload = self.run_options(book_id)
+        try:
             code, body = self.admin.process_next(payload)
         except Exception as e:
             code, body = None, {"detail": str(e)}
         if code == 200:
-            done({"started": True, "payload": payload})
+            self._finish_autostart(task, {"started": True, "payload": payload})
             self._activity(book_id, f"Auto-translate started ({payload.get('translation_model') or 'default model'})",
                            type_="scrape_autostart")
-            return
+            return True
         if code == 404:
-            done({"started": False, "reason": "queue empty"})
-            return
-        created = datetime.datetime.fromisoformat(task["created_at"])
-        if self.clock() - created > datetime.timedelta(hours=AUTOSTART_GIVE_UP_HOURS):
-            msg = (body or {}).get("detail") or f"HTTP {code}"
-            done({"started": False, "reason": f"gave up: {msg}"}, status="failed")
-            self._activity(book_id, f"Auto-translate gave up after {AUTOSTART_GIVE_UP_HOURS}h: {msg}",
-                           type_="scrape_error")
-            return
-        self.db.update_scrape_task(
-            task["id"], attempts=(task.get("attempts") or 0) + 1,
-            last_error=(body or {}).get("detail") or f"HTTP {code}",
-            not_before=_minutes_from_now(AUTOSTART_RETRY_MINUTES, self.clock()))
+            self._finish_autostart(task, {"started": False, "reason": "queue empty"})
+            return True   # nothing to wait for; doesn't hold a place in line
+        # 409 (a slot taken between our check and the start — a manual job),
+        # or a transient failure: keep its place and try at the next check.
+        self.db.update_scrape_task(task["id"], attempts=(task.get("attempts") or 0) + 1,
+                                   last_error=(body or {}).get("detail") or f"HTTP {code}",
+                                   progress={"waiting": "slot"})
+        return False
 
 
 # ---------------------------------------------------------------------------

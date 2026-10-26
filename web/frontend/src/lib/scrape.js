@@ -31,8 +31,21 @@ export function taskLabel(t) {
   return t.max_chapters ? `${what} (≤${t.max_chapters} ch)` : what
 }
 
-// One line describing a finished task's outcome.
+function ordinal(n) {
+  const v = n % 100
+  return n + (['th', 'st', 'nd', 'rd'][(v - 20) % 10] || ['th', 'st', 'nd', 'rd'][v] || 'th')
+}
+
+// One line describing a task's outcome (or, for a waiting auto-start, its place in line).
 export function taskSummary(t) {
+  if (t.kind === 'autostart' && t.status === 'queued') {
+    const p = t.progress || {}
+    if (p.waiting === 'slot') {
+      return `waiting for a translation slot${p.position ? ` (${ordinal(p.position)} in line)` : ''}`
+        + (t.last_error ? ` · last try: ${t.last_error}` : '')
+    }
+    return t.last_error || 'waiting to start'
+  }
   const s = t.result_summary
   if (t.last_error && t.status !== 'done') return t.last_error
   if (!s) return ''

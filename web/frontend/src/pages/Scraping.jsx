@@ -53,7 +53,7 @@ export default function Scraping() {
         {!settings.enabled && <span className="px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-300">disabled in Settings</span>}
         <span className="text-xs text-slate-500 ml-auto">
           Daily check at {String(settings.daily_hour).padStart(2, '0')}:00 · chunks of {settings.chunk_size} ·
-          auto-translate gap {settings.default_gap}
+          auto-translate gap {settings.default_gap} · {settings.reserved_slots} slot{settings.reserved_slots === 1 ? '' : 's'} kept free
         </span>
       </div>
 

@@ -358,8 +358,18 @@ job at a time**, so t9 owns the lane:
   (default `scrape_default_gap`, 10 — the backstop for a book stopped on purpose).
   Starts via `t9_client` → `POST /api/queue/process-next` with `no_review` (per-book
   toggle, default on), `auto_process`, and **the model of the book's latest
-  translated chapter** — deliberately not a setting. 409 (cap full) retries every
-  15 min for 6 h.
+  translated chapter** — deliberately not a setting.
+- **Job slots**: auto-starts never take the last `scrape_reserved_slots` (default 1)
+  of `max_concurrent_translations` — a start begins only while running jobs <
+  cap − reserved (floored at 1, so a cap of 1 still auto-translates). Waiting books
+  are checked once a minute (`AUTOSTART_CHECK_SECONDS`, one `GET /api/translate/jobs`
+  per check) and start **oldest request first**; their task carries `progress =
+  {waiting: "slot", position: N}` for the Scraping page. ⚠️ **There is no give-up
+  timeout**: a start is only ever requested after a catch-up that queued rows, so a
+  book that gave up would sit untranslated until its next new chapter. A waiting book
+  drops out only when it stops being eligible (mode, hold, gap, empty queue — re-checked
+  every pass, reason logged). A 409 between check and start (a manual job took the
+  slot) keeps its place in line.
 - **Failures**: retry after 30 min / 2 h / 8 h (chapters jobs resume via `retry`;
   a failed job's partial result is ingested first), then the book's
   `consecutive_failures` climbs; at 3 the sweep skips it until a manual check.
