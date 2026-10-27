@@ -41,17 +41,55 @@ export default function BookFormModal({ book, onClose, onSaved }) {
     api.getAllTags().then(d => setAllTags(d.tags || [])).catch(() => {})
   }, [])
 
+  // Separators: ASCII and full-width commas, the enumeration comma, and newlines
+  // (a pasted column of tags).
+  const TAG_SEPARATORS = /[,，、\n\r]/
+  const mergeTags = (tags, raws) => {
+    const out = [...tags]
+    for (const raw of raws) {
+      const t = (raw || '').trim().toLowerCase()
+      if (t && !out.includes(t)) out.push(t)
+    }
+    return out
+  }
+  const addTags = (raws) => {
+    setForm(f => {
+      const tags = mergeTags(f.tags, raws)
+      return tags.length === f.tags.length ? f : { ...f, tags }
+    })
+  }
   const addTag = (raw) => {
-    const t = (raw || '').trim().toLowerCase()
-    if (!t) return
-    setForm(f => f.tags.includes(t) ? f : { ...f, tags: [...f.tags, t] })
+    addTags([raw])
     setTagInput('')
   }
   const removeTag = (t) => {
     setForm(f => ({ ...f, tags: f.tags.filter(x => x !== t) }))
   }
+  // Typing or pasting a separator finishes every tag before it; whatever
+  // follows the last separator stays in the box as the tag being typed.
+  // Done in onChange rather than onKeyDown so paste, mobile keyboards and IMEs
+  // (which don't report the comma key) all split the same way.
+  const onTagInputChange = (value) => {
+    if (!TAG_SEPARATORS.test(value)) { setTagInput(value); return }
+    const parts = value.split(TAG_SEPARATORS)
+    const rest = parts.pop()
+    addTags(parts)
+    setTagInput(rest.trimStart())
+  }
+  // A single-line input strips newlines from pasted text before onChange sees
+  // it, so a one-tag-per-line paste would arrive as one long tag. Splice the
+  // raw clipboard text in ourselves.
+  const onTagPaste = (e) => {
+    const text = e.clipboardData?.getData('text') || ''
+    if (!TAG_SEPARATORS.test(text)) return
+    e.preventDefault()
+    const el = e.target
+    const start = el.selectionStart ?? tagInput.length
+    const end = el.selectionEnd ?? tagInput.length
+    onTagInputChange(tagInput.slice(0, start) + text + tagInput.slice(end))
+  }
   const onTagKeyDown = (e) => {
-    if (e.key === 'Enter' || e.key === ',') {
+    if (e.key === 'Enter') {
       e.preventDefault()
       addTag(tagInput)
     } else if (e.key === 'Backspace' && !tagInput && form.tags.length > 0) {
@@ -79,6 +117,8 @@ export default function BookFormModal({ book, onClose, onSaved }) {
       if (book) {
         // Don't send genre or source_language on edit
         const { genre: _genre, source_language: _source_language, ...editForm } = form
+        // A tag still in the box when Save is clicked counts — don't drop it.
+        editForm.tags = mergeTags(form.tags, [tagInput])
         editForm.total_source_chapters = editForm.total_source_chapters ? parseInt(editForm.total_source_chapters, 10) : null
         await api.updateBook(book.id, editForm)
       } else {
@@ -198,8 +238,9 @@ export default function BookFormModal({ book, onClose, onSaved }) {
                 <input
                   className="flex-1 min-w-[8rem] bg-transparent outline-none text-sm text-slate-200 placeholder:text-slate-500"
                   value={tagInput}
-                  onChange={e => setTagInput(e.target.value)}
+                  onChange={e => onTagInputChange(e.target.value)}
                   onKeyDown={onTagKeyDown}
+                  onPaste={onTagPaste}
                   onFocus={() => setTagFocused(true)}
                   onBlur={() => setTimeout(() => setTagFocused(false), 150)}
                   placeholder={form.tags.length === 0 ? 'e.g. xianxia, female protagonist' : ''}
@@ -219,7 +260,7 @@ export default function BookFormModal({ book, onClose, onSaved }) {
                   ))}
                 </div>
               )}
-              <p className="text-xs text-slate-500 mt-1">Press <kbd className="px-1 bg-slate-800 rounded">Enter</kbd> or <kbd className="px-1 bg-slate-800 rounded">,</kbd> to add. Lowercased on save. <code className="text-slate-400">female protagonist</code> / <code className="text-slate-400">male protagonist</code> render a prominent badge.</p>
+              <p className="text-xs text-slate-500 mt-1">Press <kbd className="px-1 bg-slate-800 rounded">Enter</kbd> or <kbd className="px-1 bg-slate-800 rounded">,</kbd> to add; paste a comma- or line-separated list to add several at once. Lowercased on save. <code className="text-slate-400">female protagonist</code> / <code className="text-slate-400">male protagonist</code> render a prominent badge.</p>
             </div>
           )}
 
