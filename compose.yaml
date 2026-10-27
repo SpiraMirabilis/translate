@@ -22,6 +22,10 @@ services:
       # lives in data/codex. See QUICKSTART-Docker.md.
       - ${CODEX_HOME_HOST:-./data/codex}:/data/codex
     environment:
+      # Run as this uid/gid instead of data/'s owner (PUID/PGID in the .env
+      # next to this file; see QUICKSTART-Docker.md).
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
       # A reverse proxy on the host reaches the container from the network
       # gateway; trust forwarded client IPs from it (rate limits, comment bans).
       TRUSTED_PROXY_IPS: 127.0.0.1,172.30.57.1
@@ -44,6 +48,8 @@ services:
     volumes:
       - ./data:/data
     environment:
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
       MCP_USAGE_LOG: /data/logs/mcp_usage.log
     read_only: true
     tmpfs: [/tmp]
@@ -69,6 +75,8 @@ services:
       - ./data:/data
       - ${CODEX_HOME_HOST:-./data/codex}:/data/codex
     environment:
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
       TRUSTED_PROXY_IPS: 127.0.0.1,172.30.57.1
       T9_FORWARDED_ALLOW_IPS: 127.0.0.1,172.30.57.1
     networks: [t9]
@@ -92,6 +100,9 @@ services:
         restart: true
     volumes:
       - ./data:/data
+    environment:
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
 
   scraper:
     image: ghcr.io/spiramirabilis/t9-scraper:${SCRAPER_VERSION:-latest}
@@ -120,6 +131,9 @@ services:
     volumes:
       # Job database, browser profiles, and .env (its API_TOKEN is T9's SCRAPER_TOKEN).
       - ./data/scraper:/data
+    environment:
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
     networks: [t9]
 
 networks:
