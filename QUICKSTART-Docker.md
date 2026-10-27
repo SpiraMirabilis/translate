@@ -69,6 +69,8 @@ Everything persists in `./data` on the host:
 - `.env`: your secrets
 - `covers/`, `illustrations/`, `epub_cache/`, `logs/` and the downloaded
   dictionary
+- `scraper/`: the scraper's job database, browser profiles and `.env`, if you
+  run it (see [Automated source scraping](#automated-source-scraping))
 
 To back up, stop the container and copy the `data/` directory.
 
@@ -134,6 +136,52 @@ Usage logs persist at `data/logs/mcp_usage.log` even though the research contain
 root is read-only. Scope restrictions
 and the legacy setting/module IDs are the same as outside Docker; see
 [research tools](README.md#supported-providers).
+
+## Automated source scraping
+
+T9 can keep books' raw chapters current from their source sites, using the
+[chapter scraper](https://github.com/SpiraMirabilis/t9-scraper): a real Chrome
+browser, run where Cloudflare will tolerate it. Run it on a machine with a
+residential IP, such as a home server or desktop. Data-center IPs get
+challenged on nearly every page. To run the scraper and T9's scrape worker
+alongside T9:
+
+```bash
+docker compose --profile scraper up -d
+```
+
+Then:
+
+1. The scraper's first start writes `data/scraper/.env` with a random
+   `API_TOKEN`. Paste it into **Settings → Scraping → Scraper token** (it is
+   saved to `data/.env` as `SCRAPER_TOKEN`):
+
+   ```bash
+   grep ^API_TOKEN= data/scraper/.env
+   ```
+
+2. Leave **Scraper URL** at its default, `http://scraper:8787`.
+3. Optional: to see blocked jobs in T9's activity feed, add
+   `SCRAPER_NOTIFY_SECRET=<openssl rand -hex 32>` to `data/.env`, set
+   **Blocked-job callback URL** to `http://t9:8000/api/scraper-notify`, and
+   restart.
+
+When a site throws a challenge the scraper can't clear, the job turns
+`blocked`. Solve it in the scraper's browser at
+**http://localhost:6080/vnc.html**. The password is `VNC_PASSWORD` in
+`data/scraper/.env`. Books are linked to their source under **Books → Actions
+→ Source Scraping**. The scraper's own settings (push notifications, engine,
+pacing) go in `data/scraper/.env`; see the scraper's README.
+
+Add `--profile scraper` to the other commands too (`pull`, `down`, `logs`),
+or put `COMPOSE_PROFILES=scraper` in the `.env` file next to `compose.yaml`
+and leave it off. To stay on a specific scraper release, put
+`SCRAPER_VERSION=0.3.0` in that `.env` file too.
+
+**Scraper on another machine:** run it there from its own repo (its
+`QUICKSTART-Docker.md`). Here, start only the worker with
+`--profile scrape-worker`, and set **Scraper URL** to that machine's address
+(a LAN or Tailscale IP, never a public one).
 
 ## Exposing it beyond this machine
 

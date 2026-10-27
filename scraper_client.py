@@ -4,7 +4,7 @@ Copy this file into the translation pipeline. Typical flow:
 
     from scraper_client import ScraperClient
 
-    sc = ScraperClient("http://100.65.58.103:8787", token=os.environ["SCRAPER_TOKEN"])
+    sc = ScraperClient("http://127.0.0.1:8787", token=os.environ["SCRAPER_TOKEN"])
 
     # What's new? Read the TOC, then fetch everything after what we have.
     toc = sc.toc("https://twkan.com/book/82888.html")
@@ -194,7 +194,7 @@ def _main(argv: list[str]) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="Chapter scraper client")
-    ap.add_argument("--url", default=os.environ.get("SCRAPER_URL", "http://100.65.58.103:8787"))
+    ap.add_argument("--url", default=os.environ.get("SCRAPER_URL", "http://127.0.0.1:8787"))
     ap.add_argument("--token", default=os.environ.get("SCRAPER_TOKEN", ""))
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("toc"); t.add_argument("book_url")

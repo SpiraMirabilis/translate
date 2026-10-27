@@ -323,11 +323,18 @@ the recommendations one — an abusive reporter has to be identifiable).
   suite must never make a live siteverify call).
 
 ### Automated source scraping (`scrape_sync.py`, `scrape_worker.py`, added 2026-10-26)
-Raw chapters are scraped by a separate service on a home server (residential IP —
+Raw chapters are scraped by a separate service on a residential IP (a home server —
 data-center IPs get endless Cloudflare challenges; code in `~/scraper/`, client
 `scraper_client.py`, copied verbatim from `~/scraper/client/`). The scraper runs **one
 job at a time**, so t9 owns the lane:
 
+- **Docker** (`compose.yaml`): `--profile scraper` adds the scraper itself
+  (`ghcr.io/spiramirabilis/t9-scraper`, state in `data/scraper/`, noVNC on
+  127.0.0.1:6080) and `t9-scraper-worker` (`scrape_worker.py`, `network_mode:
+  service:t9`); `--profile scrape-worker` is the worker alone, for a scraper on
+  another machine. The image sets `T9_DOCKER=1`, which makes the `scraper_url` default
+  `http://scraper:8787` (else `http://127.0.0.1:8787`; `settings_store.DEFAULT_SCRAPER_URL`).
+  Tests: `tests/test_docker_scraper.py`.
 - **`t9-scraper.service`** (`deploy/`, user unit) runs `scrape_worker.py`: a loop that
   keeps **at most one** toc/chapters job on the scraper, persisting the scraper job id
   on submit (a restart resumes polling, never resubmits). It also runs the daily sweep

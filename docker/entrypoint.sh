@@ -6,7 +6,7 @@
 set -e
 
 DATA=/data
-SUBDIRS="covers illustrations epub_cache output logs sitemaps"
+SUBDIRS="covers illustrations epub_cache output logs sitemaps scraper"
 
 if [ "$(id -u)" = "0" ]; then
     mkdir -p "$DATA"

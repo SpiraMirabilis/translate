@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 from db.scrape_repo import now_iso
 from scraper_client import ScraperClient, ScraperError
+from settings_store import DEFAULT_SCRAPER_URL
 
 MODES = ("off", "queue", "auto")
 
@@ -66,7 +67,7 @@ DEFAULTS = {
     "scrape_chunk_size": 50,
     "scrape_default_gap": 10,
     "scrape_toc_spacing_seconds": 20,
-    "scraper_url": "http://100.65.58.103:8787",
+    "scraper_url": DEFAULT_SCRAPER_URL,
     "scrape_engine": "",
     "scrape_notify_url": "",
     "scraper_vnc_url": "",

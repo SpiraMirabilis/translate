@@ -73,6 +73,55 @@ services:
       T9_FORWARDED_ALLOW_IPS: 127.0.0.1,172.30.57.1
     networks: [t9]
 
+  # Optional: automated source scraping. `docker compose --profile scraper up -d`
+  # starts the chapter scraper (a headed Chrome; solve its challenges over
+  # noVNC at http://localhost:6080/vnc.html) and the worker that feeds it.
+  # With a scraper on another machine, use `--profile scrape-worker` for the
+  # worker alone. See QUICKSTART-Docker.md.
+  t9-scraper-worker:
+    image: ghcr.io/spiramirabilis/translate:${T9_VERSION:-latest}
+    command: ["python", "scrape_worker.py"]
+    profiles: [scraper, scrape-worker]
+    restart: unless-stopped
+    # T9's network namespace: the admin API at 127.0.0.1:8000 (auto-starts)
+    # and the scraper at http://scraper:8787.
+    network_mode: "service:t9"
+    depends_on:
+      t9:
+        condition: service_healthy
+        restart: true
+    volumes:
+      - ./data:/data
+
+  scraper:
+    image: ghcr.io/spiramirabilis/t9-scraper:${SCRAPER_VERSION:-latest}
+    profiles: [scraper]
+    restart: unless-stopped
+    # Starts after T9, whose entrypoint creates data/scraper owned by you.
+    depends_on:
+      t9:
+        condition: service_healthy
+    # Reaps the browser's exited child processes.
+    init: true
+    # Chrome needs more shared memory than Docker's 64 MB default.
+    shm_size: 1gb
+    # Fixed, so the browser profile isn't seen as locked by another machine
+    # after the container is recreated.
+    hostname: scraper
+    # Chrome's sandbox needs user namespaces, which Docker's default seccomp
+    # profile blocks; Chrome then confines each page with its own, stricter
+    # seccomp filter.
+    security_opt:
+      - seccomp=unconfined
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:6080:6080"   # noVNC
+      - "127.0.0.1:8787:8787"   # API and /docs
+    volumes:
+      # Job database, browser profiles, and .env (its API_TOKEN is T9's SCRAPER_TOKEN).
+      - ./data/scraper:/data
+    networks: [t9]
+
 networks:
   t9:
     ipam:

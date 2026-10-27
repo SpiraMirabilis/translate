@@ -213,7 +213,7 @@ def get_settings():
         "has_typesafe_key": bool(os.getenv("TYPESAFE_KEY", "").strip()),
         # Scraping: read from the store -- the scrape worker consults it live.
         "scrape_enabled": settings_store.get("scrape_enabled", True),
-        "scraper_url": settings_store.get("scraper_url", "http://100.65.58.103:8787"),
+        "scraper_url": settings_store.get("scraper_url", settings_store.DEFAULT_SCRAPER_URL),
         "scrape_daily_hour": settings_store.get("scrape_daily_hour", 5),
         "scrape_chunk_size": settings_store.get("scrape_chunk_size", 50),
         "scrape_default_gap": settings_store.get("scrape_default_gap", 10),

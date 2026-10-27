@@ -16,6 +16,11 @@ import threading
 
 _lock = threading.Lock()
 
+# The scraper on this machine: the compose `scraper` service in the Docker
+# image (T9_DOCKER is set there), else a local install's loopback port.
+DEFAULT_SCRAPER_URL = ("http://scraper:8787" if os.environ.get("T9_DOCKER")
+                       else "http://127.0.0.1:8787")
+
 # Schema: setting_key -> (env_var_name, default, type)
 # Each managed setting maps to a legacy env var (for the os.environ compat
 # shim) and carries a typed default for first-run migration / forward compat.
@@ -93,7 +98,7 @@ SCHEMA = {
     # .env as SCRAPER_TOKEN. Which books are scraped is per book (book_scrape
     # .mode); scrape_enabled only takes it all away. Read live by the worker.
     "scrape_enabled":          ("SCRAPE_ENABLED",          True,                      bool),
-    "scraper_url":             ("SCRAPER_URL",             "http://100.65.58.103:8787", str),
+    "scraper_url":             ("SCRAPER_URL",             DEFAULT_SCRAPER_URL,       str),
     "scrape_daily_hour":       ("SCRAPE_DAILY_HOUR",       5,                         int),
     "scrape_chunk_size":       ("SCRAPE_CHUNK_SIZE",       50,                        int),
     # Auto-translate only starts when the newest queued chapter is at most this
