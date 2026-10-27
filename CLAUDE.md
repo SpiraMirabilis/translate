@@ -869,6 +869,23 @@ public book (~38k URLs, ~20s, 5 MB), so no crawler may trigger a build.
   tags are invisible to crawlers, which never run the JS. A chapterless
   `/read/{id}` canonicalises to the book page.
 
+### API-call log retention (`prune_api_calls.py`, 60 days)
+`api_calls` holds the full prompt and response of every model call — the largest
+table by far (4.6 GB on 2026-10-27; ~1.5 GB/month at the current rate). It is a
+debugging record only (the API Calls page, replaying responses through the JSON /
+repetition checks); nothing derives from it, and backups already carry it as
+schema only. Rows older than **60 days** are deleted daily:
+`50 3 * * * cd /home/mdm/t9 && /usr/bin/python3 prune_api_calls.py >> logs/prune_api_calls.log 2>&1`.
+- `DatabaseManager.prune_api_calls(days)` (`db/logs_repo.py`) walks the primary key
+  from the oldest row and stops at the first row inside the window — `created_at` is
+  unindexed, and id order is time order. Batches of 200, each its own commit, so it
+  never holds a multi-GB transaction against a table translators insert into.
+- `--days N`, `--dry-run`, `--optimize`. Deleting does not shrink the InnoDB file;
+  freed pages are reused, so the daily prune holds it at steady state. `--optimize`
+  (`OPTIMIZE TABLE`) hands space back to the db host's disk — needed once after the
+  first prune, not daily.
+- A session straddling the cutoff loses its older chunks; the API Calls page copes.
+
 ### Database backups
 Daily `mysqldump` of the `t9` database to a **private DigitalOcean Space**, run from
 this VM (the MySQL grant is host-restricted — `t9@localhost` on the db host is denied,
@@ -951,7 +968,7 @@ the output cap. **It is off by default since 2026-09-17** —
   breaks and screams like `Kyaaa…ack` (30 a's) and `Bzzz…z` (20 z's), book 42
   especially. The scan is `finditer`, not `search`, so a rule early in the
   200-char tail can't mask a real loop behind it.
-- **Diagnosing the next one**: `api_calls` stores every prompt and response.
+- **Diagnosing the next one**: `api_calls` stores every prompt and response (the last 60 days — see "API-call log retention").
   `success=0` with a **non-empty** `response_text` means the guard fired (or the
   response was empty) — not that the provider failed. Replay the stored text
   through `_detect_repetition` to confirm.

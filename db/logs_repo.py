@@ -1,5 +1,6 @@
 import json
 import datetime
+import time
 import traceback
 
 
@@ -176,6 +177,48 @@ class LogsRepo:
         except Exception as e:
             self.logger.error(f"Error logging API call: {e}")
             return None
+
+    _API_CALL_PRUNE_BATCH = 200
+
+    def prune_api_calls(self, older_than_days, batch_size=None, dry_run=False, pause=0.0):
+        """Delete API-call logs older than ``older_than_days``. Returns the row count.
+
+        Walks the primary key from the oldest row and stops at the first row
+        inside the window, so it never scans the table: created_at has no index,
+        and ``WHERE created_at < ?`` would read all of it every day once nothing
+        is left to delete. Ids are assigned as calls happen, so id order is time
+        order. Each batch commits on its own — the rows carry whole prompts, and
+        one big DELETE would hold a multi-GB transaction against a table the
+        translators are inserting into.
+        """
+        batch_size = batch_size or self._API_CALL_PRUNE_BATCH
+        cutoff = (datetime.datetime.now()
+                  - datetime.timedelta(days=older_than_days)).isoformat()
+        total, after = 0, 0
+        while True:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT id, created_at FROM api_calls WHERE id > ? '
+                               'ORDER BY id LIMIT ?', (after, batch_size))
+                rows = cursor.fetchall()
+                old = []
+                for row_id, created_at in rows:
+                    if created_at >= cutoff:
+                        break
+                    old.append(row_id)
+                if old and not dry_run:
+                    # created_at is re-checked so a row that slipped in out of
+                    # order is never deleted early.
+                    cursor.execute('DELETE FROM api_calls WHERE id <= ? AND created_at < ?',
+                                   (old[-1], cutoff))
+                    total += cursor.rowcount
+                elif old:
+                    total += len(old)
+            if len(old) < batch_size:
+                return total
+            after = old[-1]
+            if pause:
+                time.sleep(pause)
 
     # The list view never carries the three text columns. They are ~95% of a
     # 4.5 GB table, a single call's prompt runs to tens of KB, and the page only

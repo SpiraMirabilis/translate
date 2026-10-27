@@ -73,3 +73,39 @@ def test_book_and_chapter_filters(db):
     assert _all_pages(db, book_id=book, chapter_number=1) == [["b1c1"]]
     sessions, _ = db.list_api_call_sessions(book_id=book)
     assert sessions[0]["book_title"] == "Log Book"
+
+
+def _age(db, row_id, days):
+    import datetime
+    ts = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
+    with db._conn() as conn:
+        conn.cursor().execute("UPDATE api_calls SET created_at = ? WHERE id = ?", (ts, row_id))
+
+
+def _ids(db):
+    with db._conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM api_calls ORDER BY id")
+        return [r[0] for r in cur.fetchall()]
+
+
+def test_prune_deletes_only_rows_past_the_window(db):
+    ids = [_log(db, f"s{i}") for i in range(7)]
+    for row_id, days in zip(ids, [90, 80, 70, 61, 59, 10, 0]):
+        _age(db, row_id, days)
+    assert db.prune_api_calls(60, dry_run=True) == 4
+    assert _ids(db) == ids
+    # batch_size=3 makes the walk cross a batch boundary mid-run
+    assert db.prune_api_calls(60, batch_size=3) == 4
+    assert _ids(db) == ids[4:]
+    assert db.prune_api_calls(60, batch_size=3) == 0
+
+
+def test_prune_stops_at_the_first_row_inside_the_window(db):
+    # An out-of-order old row behind a recent one is left for a later run
+    # rather than found by scanning the whole table.
+    ids = [_log(db, f"s{i}") for i in range(3)]
+    for row_id, days in zip(ids, [90, 1, 90]):
+        _age(db, row_id, days)
+    assert db.prune_api_calls(60) == 1
+    assert _ids(db) == ids[1:]
