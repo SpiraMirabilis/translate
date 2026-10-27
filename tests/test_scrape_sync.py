@@ -198,6 +198,18 @@ def test_parsers():
     assert scrape_sync.cn_to_num("１２") == 12
     assert scrape_sync.parse_title_number("第三百二十一章 风起") == 321
     assert scrape_sync.parse_title_number("请假条") is None
+    # A bare number run into the title (novel543) counts, as does 第-less N章.
+    assert scrape_sync.parse_title_number("377妖界裂縫") == 377
+    assert scrape_sync.parse_title_number("363【鬼魂】三") == 363
+    assert scrape_sync.parse_title_number("342第十個保安") == 342
+    assert scrape_sync.parse_title_number("357與鬼魂們達成交易") == 357
+    assert scrape_sync.parse_title_number("272章 先廢了") == 272
+    assert scrape_sync.title_number("377妖界裂縫") == (377, True)
+    assert scrape_sync.title_number("第5章 x") == (5, False)
+    # TOC positions, dates and notices do not.
+    for title in ("670.请假条", "001：1996，你的名字", "12月更新計劃", "2026一月月票抽獎",
+                  "673和674發布的時候順序搞反了", "２０２６年总结"):
+        assert scrape_sync.parse_title_number(title) is None, title
     assert scrape_sync.url_key("http://www.twkan.com/a/1.html/") == scrape_sync.url_key("https://twkan.com/a/1.html")
     assert scrape_sync.normalize_book_url("69shuba.com/txt/1") == "https://69shuba.com/txt/1"
 
@@ -647,6 +659,28 @@ def test_canvas_lines_are_counted_not_held():
         chapters, offset=0, base_number=4, numbered=True, existing=set(), new_only=True)
     assert [n for n, _, _ in to_queue] == [5]
     assert report["anomalies"] == [] and report["canvas_lines"] == 3
+
+
+def test_bare_number_counts_only_when_it_continues_the_sequence():
+    chapters = [{"title": t, "text": "正文", "sourceUrls": [t]}
+                for t in ("315陳輝", "316老太太", "52请假条", "1900请假条", "317陰魂")]
+    to_queue, report = scrape_sync.number_chapters(
+        chapters, offset=0, base_number=314, numbered=True, existing=set(), new_only=True)
+    assert [n for n, _, _ in to_queue] == [315, 316, 317]
+    assert report["anomalies"] == []
+    # The two notes take the unnumbered path (Jev, then parking), not a number.
+    assert report["skipped_unnumbered"] == ["52请假条", "1900请假条"]
+
+
+def test_bare_number_agreeing_with_position_survives_a_missed_entry():
+    # "357月下" can't be read (a date-style opener), but 358 and 359 still sit
+    # where 358 and 359 belong, so they are numbered rather than all parked.
+    chapters = [{"title": t, "text": "正文", "sourceUrls": [t]}
+                for t in ("356監獄", "357月下", "358【故事】一", "359【故事】二")]
+    to_queue, report = scrape_sync.number_chapters(
+        chapters, offset=0, base_number=355, numbered=True, existing=set(), new_only=True)
+    assert [n for n, _, _ in to_queue] == [356, 358, 359]
+    assert report["skipped_unnumbered"] == ["357月下"]
 
 
 def test_activity_lines_name_the_book(db, book):

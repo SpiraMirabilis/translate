@@ -301,10 +301,30 @@ def cn_to_num(s):
 
 _TITLE_NUMBER_RE = re.compile(r"第\s*([0-9０-９零〇一二三四五六七八九十百千万萬两]+)\s*[章节節回]")
 
+# A bare number run straight into the title, no 第…章 (novel543: "377妖界裂縫",
+# "363【…】三"). Only when the next character is an ideograph or an opening
+# bracket, so these stay unnumbered: 69shuba's "670.请假条" (TOC position,
+# not the author's number), "001：…", and date/range notices ("12月更新計劃",
+# "2026一月月票…", "673和674發布…"). Weaker evidence than 第N章: ingest also
+# requires it to agree with the entry's place in the sequence (number_chapters).
+_BARE_NUMBER_RE = re.compile(r"^\s*([0-9０-９]+)(?=[一-鿿【「『《（(])")
+_NOT_A_TITLE_START = set("年月日號号和至到、零〇一二三四五六七八九十百千万萬两")
+
+
+def title_number(title):
+    """(number, bare): bare=True when it came from a bare leading number
+    rather than 第N章 — weaker evidence, see number_chapters."""
+    m = _TITLE_NUMBER_RE.search(title or "")
+    if m:
+        return cn_to_num(m.group(1)), False
+    m = _BARE_NUMBER_RE.match(title or "")
+    if m and title[m.end()] not in _NOT_A_TITLE_START:
+        return cn_to_num(m.group(1)), True
+    return None, False
+
 
 def parse_title_number(title):
-    m = _TITLE_NUMBER_RE.search(title or "")
-    return cn_to_num(m.group(1)) if m else None
+    return title_number(title)[0]
 
 
 def compact_toc(toc):
@@ -438,13 +458,22 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
     to_queue = []
     seen = set()
     prev = base_number
-    for ch in chapters:
+    anchor_i = -1          # batch index of the last numbered entry (-1 = the base)
+    for i, ch in enumerate(chapters):
         urls = ch.get("sourceUrls") or []
         if urls:
             report["last_url"] = urls[0]
         title = (ch.get("title") or "").strip()
         if numbered:
-            n = parse_title_number(title)
+            n, bare = title_number(title)
+            # A bare number only counts when it agrees with where the entry
+            # sits: the next chapter after the last numbered one, or that
+            # chapter plus its distance in the list (so one missed entry
+            # doesn't strand everything after it). "52请假条" at ch1339 is a
+            # note and is classified like any unnumbered entry, never queued
+            # under a wrong number or left holding the book.
+            if bare and prev is not None and n + offset not in (prev + 1, prev + i - anchor_i):
+                n = None
             if n is None:
                 report["skipped_unnumbered"].append(title or "(untitled)")
                 # Kept whole (text included) for ingest to classify and, if it
@@ -469,6 +498,7 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
             report["anomalies"].append(f"gap: ch{prev} -> ch{number}")
         seen.add(number)
         prev = number
+        anchor_i = i
         report["last_number"] = number
 
         # twkan's anti-scrape <canvas> lines: the scraper recovers their text,
