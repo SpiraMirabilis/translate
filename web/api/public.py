@@ -243,6 +243,7 @@ def public_book_list(sort: str = 'popular') -> dict:
         out.append({
             "id": b["id"],
             "title": b["title"],
+            "source_title": b.get("source_title"),
             "author": b.get("author"),
             "description": b.get("description"),
             "cover_image": b.get("cover_image"),
@@ -288,6 +289,7 @@ def get_book(book_id: int, request: Request, response: Response):
     return {
         "id": book["id"],
         "title": book["title"],
+        "source_title": book.get("source_title"),
         "author": book.get("author"),
         "description": book.get("description"),
         "cover_image": book.get("cover_image"),

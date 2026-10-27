@@ -62,7 +62,7 @@ const norm = (s) => (s || '').toString().toLowerCase()
 function matchesQuery(book, q) {
   const words = norm(q).split(/\s+/).filter(Boolean)
   if (!words.length) return true
-  const hay = [book.title, book.author, book.description, ...(book.tags || [])]
+  const hay = [book.title, book.source_title, book.author, book.description, ...(book.tags || [])]
     .map(norm).join(' \n ')
   return words.every(w => hay.includes(w))
 }

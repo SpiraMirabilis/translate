@@ -81,7 +81,7 @@ export default function LibraryToolbar({ books, filters, onChange, sort, setSort
             type="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search title, author, tag…"
+            placeholder="Search title, original title, author, tag…"
             aria-label="Search books"
             className={`flex-1 min-w-0 bg-transparent text-sm outline-none ${t.searchText}`}
           />

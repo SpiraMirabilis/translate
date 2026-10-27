@@ -992,6 +992,16 @@ def _m028_book_scrape_warnings(conn, cursor, backend, logger):
                           "ALTER TABLE book_scrape ADD COLUMN warnings TEXT")
 
 
+def _m029_books_source_title(conn, cursor, backend, logger):
+    """`source_title`: the book's title in its source language (原名), shown on
+    the reader's book page and searchable in the Library. NULL until filled in."""
+    if add_column_if_missing(
+            conn, cursor, backend, "books", "source_title",
+            "ALTER TABLE books ADD COLUMN source_title TEXT",
+            "ALTER TABLE books ADD COLUMN source_title VARCHAR(500)"):
+        logger.info("Added source_title column to books table")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1021,6 +1031,7 @@ MIGRATIONS = [
     Migration(26, "scraping", _m026_scraping),
     Migration(27, "book_scrape_unplaced", _m027_book_scrape_unplaced),
     Migration(28, "book_scrape_warnings", _m028_book_scrape_warnings),
+    Migration(29, "books_source_title", _m029_books_source_title),
 ]
 
 

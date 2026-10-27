@@ -8,7 +8,7 @@ const NOW = new Date('2026-10-11T12:00:00Z').getTime()
 const iso = (hoursAgo) => new Date(NOW - hoursAgo * 3600 * 1000).toISOString()
 
 const books = [
-  { id: 1, title: 'Mirror of the Divine Emperor', author: 'A', description: 'A xianxia saga',
+  { id: 1, title: 'Mirror of the Divine Emperor', source_title: '神帝之镜', author: 'A', description: 'A xianxia saga',
     tags: ['xianxia', 'female protagonist', 'no romance'], status: 'ongoing', source_language: 'zh',
     chapter_count: 1754, created_date: iso(24 * 400), last_chapter_date: iso(3) },
   { id: 2, title: 'Genius Warlock', author: 'B', description: 'Western fantasy',
@@ -35,6 +35,7 @@ describe('applyFilters', () => {
   })
   it('matches every query word across title/author/description/tags, case-insensitively', () => {
     expect(ids(applyFilters(books, { q: 'MIRROR' }))).toEqual([1])
+    expect(ids(applyFilters(books, { q: '神帝' }))).toEqual([1])
     expect(ids(applyFilters(books, { q: 'xianxia' }))).toEqual([1, 3])
     expect(ids(applyFilters(books, { q: 'xianxia saga' }))).toEqual([1])
     expect(ids(applyFilters(books, { q: 'nothing here' }))).toEqual([])

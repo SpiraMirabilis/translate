@@ -283,6 +283,9 @@ export default function BookDetail() {
               <h1 className={`text-2xl sm:text-3xl font-bold ${t.title} leading-tight`}>{book.title}</h1>
               <ProtagonistBadge tags={book.tags} size="md" theme={prefs.theme} />
             </div>
+            {book.source_title && (
+              <p lang={book.source_language || 'zh'} className={`mt-1 text-lg ${t.author}`}>{book.source_title}</p>
+            )}
             {book.author && (
               <p className={`flex items-center gap-1.5 mt-2 ${t.author} justify-center sm:justify-start`}>
                 <User size={14} />

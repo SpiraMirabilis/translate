@@ -267,6 +267,12 @@ unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf
   via `lib/inlineData.js` when the reader's sort is the default — first paint needs no API
   round trip. With `public_library` off the shell carries neither this nor the #ssr list
   (`_public_catalog_allowed`, the same gate as `/simple`).
+- **Original title** (`books.source_title`, migration 29): the novel's title in its source
+  language, edited on the Books form, shown under the title on the book page, and matched
+  by the Library search box. `backfill_source_titles.py` fills it in bulk (source page via
+  the scraper's `POST /page` → `og:novel:book_name` or Haiku; cover read by Haiku as the
+  fallback), dry run → reviewed JSON → `--apply`. Chinese titles always go through t2s.
+  It writes via `set_book_source_title`, which leaves `modified_date` alone (no ebook rebuild).
 - **Header links**: Recommend a Novel, Report an Error (hidden by `error_reports_enabled`)
   and About Us (`/library/about`, `pages/About.jsx` — team blurb, GitHub repo, the
   editor@/abuse@ contact addresses). With no book open, `ReportErrorModal` takes `books`

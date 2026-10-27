@@ -52,6 +52,25 @@ class TestBooksCrud:
         assert any(b["id"] == book_id and b["title"] == "HTTP Test Book"
                    for b in books)
 
+    def test_source_title_round_trip(self, admin_client):
+        book_id = _create_book(admin_client, title="Mirror Book", source_title="神帝之镜")
+        assert admin_client.get(f"/api/books/{book_id}").json()["source_title"] == "神帝之镜"
+
+        resp = admin_client.put(f"/api/books/{book_id}", json={"source_title": "  镜中神帝 "})
+        assert resp.status_code == 200, resp.text
+        assert admin_client.get(f"/api/books/{book_id}").json()["source_title"] == "镜中神帝"
+        books = admin_client.get("/api/books").json()["books"]
+        assert next(b for b in books if b["id"] == book_id)["source_title"] == "镜中神帝"
+
+        # Public detail + Library payload carry it too
+        assert admin_client.get(f"/api/public/books/{book_id}").json()["source_title"] == "镜中神帝"
+        pub = admin_client.get("/api/public/books").json()["books"]
+        assert next(b for b in pub if b["id"] == book_id)["source_title"] == "镜中神帝"
+
+        # An empty string clears it (stored as NULL); omitting it leaves it alone
+        admin_client.put(f"/api/books/{book_id}", json={"source_title": ""})
+        assert admin_client.get(f"/api/books/{book_id}").json()["source_title"] is None
+
     def test_update_invalid_status_rejected(self, admin_client):
         book_id = _create_book(admin_client, title="Status Book")
         resp = admin_client.put(f"/api/books/{book_id}", json={"status": "bogus"})
