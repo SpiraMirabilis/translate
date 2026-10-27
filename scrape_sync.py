@@ -15,10 +15,12 @@ ingested — never a count or a TOC position: sources insert and delete notice
 from the TOC stops the book rather than guessing.
 
 Chapter numbers come from the title (第N章) plus the book's number_offset.
-Anything that would end in a chapter-conflict prompt — numbers going
-backwards, duplicates, gaps, twkan's anti-scrape canvas lines — is ingested
-(or skipped) with a warning and puts the book on hold, which blocks the
-automatic translation start until someone looks.
+Numbering surprises — numbers going backwards or repeating, a catch-up
+chapter whose number we already hold, gaps — are warnings, not holds: the
+chapter is queued under its number anyway and the translation-time conflict
+check (Jev triage, then the conflict panel) settles the collision, exactly as
+it does for any other source. Skipping them here lost content silently. Only a
+cursor that vanished from the TOC holds the book.
 """
 import datetime
 import json
@@ -439,30 +441,59 @@ def propose_link(toc_chapters, have_max, offset=0, our_titles=None):
     return result(have_max - 1, "position")
 
 
+def title_key(title):
+    """normalize_title for a stored source line too ("# 第1章 裴长老"); "" when
+    nothing is left to compare (a bare "第12章")."""
+    return normalize_title((title or "").lstrip("#").strip())
+
+
+def held_title_keys(db, book_id, number):
+    """title_key()s of what we hold at `number`. A stored line only counts when
+    it reads as a chapter title (it carries a number): many saved chapters open
+    straight into prose, and a prose line never matches the TOC, which would
+    make every held chapter look like a different one."""
+    keys = set()
+    for t in db.source_titles_at(book_id, number):
+        if title_number(t.lstrip("#").strip())[0] is not None:
+            keys.add(title_key(t))
+    return keys - {""}
+
+
 def number_chapters(chapters, *, offset, base_number, numbered, existing,
-                    new_only=False, prior_added=()):
+                    new_only=False, prior_added=(), prior_urls=(), titles_at=None):
     """Assign our chapter numbers to a scraped batch and decide what to queue.
 
-    base_number is the number this batch should continue from (the cursor's
-    number when the task was created; None for a backfill with no anchor).
-    new_only (catch-ups): every chapter is past the cursor, so a number we
-    already hold means the numbering is off — an anomaly, not a skip.
-    prior_added are numbers this same task queued before a retry resumed it.
-    Returns (to_queue, report): to_queue is [(number, title, lines)], report
-    holds the skips, the anomalies and the last chapter's url/number (the new
-    cursor candidate).
+    Everything the source lists is queued, in source order, under the number
+    its title gives — a repost, a volume that restarts at 第1章, a number we
+    already hold. Collisions and renumbering are settled downstream (the
+    translation-time conflict check, or by hand in the queue); here they only
+    raise a warning. The one thing never queued twice is the same chapter:
+    - a URL this task already queued before a retry resumed it (prior_urls;
+      prior_added is the number-based fallback for an older summary);
+    - in a backfill (new_only=False), a number we hold whose stored source
+      title matches (titles_at(number) -> set of title_key()s). With no title
+      to compare on either side it is skipped too, with a warning.
+    A catch-up (new_only=True) is past the cursor, so every entry is new at
+    the source and only the retry rule applies.
+
+    base_number is the number this batch continues from (the cursor's number
+    when the task was created; None for a backfill with no anchor).
+    Returns (to_queue, report): to_queue is [(number, title, lines, url)],
+    report holds the skips, the warnings ("anomalies"), and the last entry's
+    url/number (the new cursor candidate).
     """
     report = {"received": len(chapters), "skipped_existing": [], "skipped_unnumbered": [],
               "skipped_empty": 0, "anomalies": [], "canvas_lines": 0,
               "last_url": None, "last_number": None}
     to_queue = []
-    seen = set()
+    prior_urls = set(prior_urls or ())
     prev = base_number
     anchor_i = -1          # batch index of the last numbered entry (-1 = the base)
     for i, ch in enumerate(chapters):
         urls = ch.get("sourceUrls") or []
-        if urls:
-            report["last_url"] = urls[0]
+        url = urls[0] if urls else None
+        if url:
+            report["last_url"] = url
         title = (ch.get("title") or "").strip()
         if numbered:
             n, bare = title_number(title)
@@ -471,7 +502,7 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
             # chapter plus its distance in the list (so one missed entry
             # doesn't strand everything after it). "52请假条" at ch1339 is a
             # note and is classified like any unnumbered entry, never queued
-            # under a wrong number or left holding the book.
+            # under a wrong number.
             if bare and prev is not None and n + offset not in (prev + 1, prev + i - anchor_i):
                 n = None
             if n is None:
@@ -479,24 +510,22 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
                 # Kept whole (text included) for ingest to classify and, if it
                 # isn't confidently an author's note, park for the admin.
                 report.setdefault("_unnumbered", []).append(
-                    {"title": title or "(untitled)", "url": urls[0] if urls else None,
+                    {"title": title or "(untitled)", "url": url,
                      "text": ch.get("text") or "", "after": prev})
                 continue
             number = n + offset
         else:
             number = (prev or 0) + 1
 
+        # The sequence follows the source, so a volume restarting at 第1章
+        # counts on from 1 (gaps inside it are still noticed, and the next
+        # catch-up continues from there).
         if prev is not None and number <= prev:
             report["anomalies"].append(
-                f"ch{number} ({title}) does not follow ch{prev} — numbering went backwards or repeated "
-                f"(if the source renumbered, relink the book or fix its offset)")
-            continue
-        if number in seen:
-            report["anomalies"].append(f"duplicate ch{number} ({title})")
-            continue
-        if prev is not None and number > prev + 1:
+                f"ch{number} ({title}) follows ch{prev} — numbering went backwards or repeated; "
+                f"queued anyway in source order")
+        elif prev is not None and number > prev + 1:
             report["anomalies"].append(f"gap: ch{prev} -> ch{number}")
-        seen.add(number)
         prev = number
         anchor_i = i
         report["last_number"] = number
@@ -510,14 +539,26 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
             report["skipped_empty"] += 1
             report["anomalies"].append(f"ch{number} came back empty")
             continue
-        if number in existing:
-            report["skipped_existing"].append(number)
-            if new_only and number not in prior_added:
-                report["anomalies"].append(
-                    f"ch{number} ({title}) is new at the source but we already have a ch{number} — "
-                    f"the chapter numbering is probably off; relink the book")
+        if url and url in prior_urls or (not prior_urls and number in prior_added):
+            report["skipped_existing"].append(number)   # queued by this task before a retry
             continue
-        to_queue.append((number, title or f"Chapter {number}", text.splitlines()))
+        if number in existing:
+            if not new_only:
+                key = title_key(title)
+                held = titles_at(number) if titles_at else set()
+                if key and key in held:
+                    report["skipped_existing"].append(number)
+                    continue
+                if not key or not held:
+                    report["skipped_existing"].append(number)
+                    report["anomalies"].append(
+                        f"ch{number} ({title}) skipped: we already have a ch{number} and there is "
+                        f"no title to tell whether it is the same chapter")
+                    continue
+            report["anomalies"].append(
+                f"ch{number} ({title}) collides with the ch{number} we already have — queued "
+                f"anyway; the translation conflict check will compare them")
+        to_queue.append((number, title or f"Chapter {number}", text.splitlines(), url))
     return to_queue, report
 
 
@@ -1011,6 +1052,10 @@ class ScrapeEngine:
         state = self.db.get_book_scrape(book_id, include_toc=True)
         toc_chs = (state.get("last_toc") or {}).get("chapters") or []
         opts = task.get("options") or {}
+        # A retry re-ingests from the top; what this task already queued is
+        # known by URL (repeats share numbers, so numbers can't tell).
+        prior = task.get("result_summary") or {}
+        prior_urls = set(prior.get("added_urls") or [])
         to_queue, report = number_chapters(
             result.get("chapters") or [],
             offset=state.get("number_offset") or 0,
@@ -1018,20 +1063,26 @@ class ScrapeEngine:
             numbered=toc_is_numbered(toc_chs),
             existing=self.db.existing_chapter_numbers(book_id),
             new_only=task.get("reason") == "catchup",
-            prior_added=set(((task.get("result_summary") or {}).get("added")) or []))
+            prior_added=set(prior.get("added") or []),
+            prior_urls=prior_urls,
+            titles_at=lambda n: held_title_keys(self.db, book_id, n))
         site = result.get("site") or site_of(state.get("cursor_url") or "")
         added = []
-        for number, title, lines in to_queue:
+        added_urls = set(prior_urls)
+        for number, title, lines, url in to_queue:
             qid = self.db.add_to_queue(book_id=book_id, content=lines, title=title,
                                        chapter_number=number, source=f"scrape:{site}")
             if qid:
                 added.append(number)
+                if url:
+                    added_urls.add(url)
         try:
             from modules import module_activity
             module_activity.flush(book_id)
         except Exception:
             pass
         report["added"] = added
+        report["added_urls"] = sorted(added_urls)
         self.sort_unnumbered(book_id, report)
         if result.get("job", {}).get("stopReason") == "stall":
             report["anomalies"].append("the scraper stalled (page navigation stopped moving)")
@@ -1054,9 +1105,12 @@ class ScrapeEngine:
         if added:
             fields["last_new_at"] = self._now()
         if report["anomalies"]:
-            prior = state.get("hold_reason")
+            # Kept on the book until dismissed; never a hold.
+            prior = state.get("warnings")
             note = "; ".join(report["anomalies"][:5])
-            fields["hold_reason"] = (f"{prior}; {note}" if prior else note)[:2000]
+            if len(report["anomalies"]) > 5:
+                note += f" (+{len(report['anomalies']) - 5} more)"
+            fields["warnings"] = (f"{prior}; {note}" if prior else note)[-2000:]
         if fields:
             self.db.update_book_scrape(book_id, **fields)
 
@@ -1069,7 +1123,8 @@ class ScrapeEngine:
             parts.append(f"⚠ {len(report['parked'])} unnumbered entr{'y' if len(report['parked']) == 1 else 'ies'} "
                          f"parked for you to place: {', '.join(report['parked'][:3])}")
         if report["anomalies"]:
-            parts.append(f"⚠ {len(report['anomalies'])} warning(s) — book held for review")
+            parts.append(f"⚠ {len(report['anomalies'])} warning(s): "
+                         + "; ".join(report["anomalies"][:5]))
         self._activity(book_id, "; ".join(parts),
                        type_="scrape_error" if report["anomalies"] else "scrape")
         return report

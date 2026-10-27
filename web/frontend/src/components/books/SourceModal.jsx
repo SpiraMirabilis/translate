@@ -158,6 +158,20 @@ export default function SourceModal({ bookId, onClose }) {
               </div>
             )}
 
+            {state.warnings && (
+              <div className="px-3 py-2 rounded-lg bg-slate-800 border border-amber-700/40 text-sm text-amber-200 flex gap-3 items-start">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium">Numbering warnings — everything was queued in source order</div>
+                  <div className="text-xs text-amber-300/80 mt-1 break-words">{state.warnings}</div>
+                </div>
+                <button className="btn btn-secondary text-xs shrink-0" disabled={!!busy}
+                        onClick={() => run('warnings', () => api.updateBookScrape(bookId, { clear_warnings: true }))}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+
             {data.unplaced?.length > 0 && (
               <UnplacedPanel bookId={bookId} items={data.unplaced} busy={busy} run={run} />
             )}

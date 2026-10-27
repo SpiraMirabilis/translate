@@ -214,6 +214,7 @@ class BookScrapeUpdate(BaseModel):
     number_offset: Optional[int] = None
     run_options: Optional[RunOptions] = None
     clear_hold: bool = False
+    clear_warnings: bool = False
 
 
 @router.put("/api/books/{book_id}/scrape")
@@ -246,6 +247,8 @@ def update_book_scrape(book_id: int, req: BookScrapeUpdate):
     if req.clear_hold:
         fields["hold_reason"] = None
         fields["last_error"] = None
+    if req.clear_warnings:
+        fields["warnings"] = None
     if fields:
         _db.update_book_scrape(book_id, **fields)
     return get_book_scrape(book_id)

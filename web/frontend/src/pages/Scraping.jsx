@@ -209,6 +209,7 @@ export default function Scraping() {
                         : b.hold_reason ? <span className="text-amber-300 truncate block" title={b.hold_reason}>held: {b.hold_reason}</span>
                         : b.consecutive_failures >= settings.failure_limit ? <span className="text-rose-300 truncate block" title={b.last_error}>failing: {b.last_error}</span>
                           : b.last_error ? <span className="text-rose-300/80 truncate block" title={b.last_error}>{b.last_error}</span>
+                            : b.warnings ? <span className="text-amber-300/80 truncate block" title={b.warnings}>⚠ {b.warnings}</span>
                             : b.site_supported === false ? <span className="text-slate-500">site not supported by the scraper</span>
                             : !b.linked ? <span className="text-slate-500">not linked</span>
                               : <span className="text-slate-500">ok</span>}

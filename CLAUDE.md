@@ -372,11 +372,21 @@ job at a time**, so t9 owns the lane:
   ⚠️ No decimal/inserted chapter numbers: `chapter_number` is an integer identity
   across ~15 columns, URLs, comments and `n±1` arithmetic (`notes_as_of(n-1)`, reader
   prev/next). If in-between ordering is ever needed, add a separate sort key + label.
-  Backwards/duplicate numbers are skipped, gaps are ingested — all of them set
-  `hold_reason`, which blocks auto-translate until cleared. twkan's anti-scrape
+  **Everything the source lists is queued, in source order** (2026-10-27): a repost
+  (book 137 listed 第119/120章 twice), a volume restarting at 第1章 (book 17), a
+  catch-up chapter whose number we already hold — each goes in under its own number,
+  and collisions/renumbering are settled downstream (the translation-time conflict
+  check, or by hand in the queue). Skipping them used to lose content silently. The
+  sequence follows the source, so after a restart the cursor number counts on from 1.
+  They raise **warnings, never a hold**: `book_scrape.warnings` (migration 28), shown in
+  the Source modal (Dismiss = `clear_warnings`) and on the Scraping page, plus the task
+  summary and a red activity line. Only a vanished cursor sets `hold_reason`.
+  The one thing never queued twice is the *same* chapter: a URL this task already queued
+  before a retry (`result_summary.added_urls`), and — in a **backfill** only — a held
+  number whose stored source title matches (`title_key`, via `source_titles_at`; a held
+  number with no title to compare is skipped with a warning). twkan's anti-scrape
   `secCanvasCount` lines are **not** an anomaly (the scraper recovers their text);
-  they're only tallied as `canvas_lines` in the task summary. Numbers already saved or queued are never re-queued
-  (`existing_chapter_numbers`, also behind `queue_api._existing_chapter_numbers`).
+  they're only tallied as `canvas_lines` in the task summary.
 - **Auto-translate** (mode `auto`, after a catch-up chain that added rows): no hold,
   book not already running, and newest queued − newest translated ≤ `auto_gap`
   (default `scrape_default_gap`, 10 — the backstop for a book stopped on purpose).

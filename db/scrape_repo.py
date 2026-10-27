@@ -1,5 +1,6 @@
 import datetime
 import json
+import re
 
 
 def now_iso():
@@ -13,7 +14,7 @@ _BOOK_SCRAPE_FIELDS = {
     "mode", "auto_gap", "number_offset", "linked", "cursor_url", "cursor_number",
     "run_options", "last_toc", "toc_count", "toc_latest_title", "pending_count",
     "last_checked_at", "last_sweep_at", "last_new_at", "consecutive_failures",
-    "last_error", "hold_reason", "unplaced", "unplaced_pending",
+    "last_error", "hold_reason", "warnings", "unplaced", "unplaced_pending",
 }
 _BOOK_SCRAPE_JSON = {"run_options", "last_toc", "unplaced"}
 # Big JSON blobs left out of ordinary reads.
@@ -78,7 +79,7 @@ class ScrapeRepo:
             return {"book_id": book_id, "exists": False, "mode": "off", "auto_gap": None,
                     "number_offset": 0, "linked": 0, "cursor_url": None,
                     "cursor_number": None, "run_options": None, "last_toc": None,
-                    "consecutive_failures": 0, "hold_reason": None,
+                    "consecutive_failures": 0, "hold_reason": None, "warnings": None,
                     "unplaced": None, "unplaced_pending": 0}
         out = _decode(dict(zip(names, row)), _BOOK_SCRAPE_JSON)
         out["exists"] = True
@@ -188,6 +189,24 @@ class ScrapeRepo:
                 first = next((ln.strip() for ln in lines if isinstance(ln, str) and ln.strip()), "")
                 if 0 < len(first) <= 40:
                     out[n] = first
+        return out
+
+    def source_titles_at(self, book_id: int, number: int) -> list:
+        """Every source title we hold at one chapter number: queue rows' titles
+        and the first line of a saved chapter's source ("# 第1章 …"). Only the
+        head of the content is read — a big chapter's source is tens of KB."""
+        out = []
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT title FROM queue WHERE book_id = ? AND chapter_number = ?",
+                           (book_id, number))
+            out.extend(t for (t,) in cursor.fetchall() if t and t != "Untitled")
+            cursor.execute("SELECT SUBSTR(untranslated_content, 1, 400) FROM chapters "
+                           "WHERE book_id = ? AND chapter_number = ?", (book_id, number))
+            for (head,) in cursor.fetchall():
+                first = _first_source_line(head or "")
+                if first:
+                    out.append(first)
         return out
 
     # -- unplaced entries + the two places "append" can land -------------------
@@ -353,3 +372,22 @@ class ScrapeRepo:
                 (failure_limit,))
             books = cursor.fetchone()[0]
         return blocked + books
+
+
+
+_JSON_STR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _first_source_line(head):
+    """First non-empty line of a (possibly truncated) stored source: a JSON
+    line array, or plain text."""
+    if head.lstrip().startswith("["):
+        for m in _JSON_STR_RE.finditer(head):
+            try:
+                line = json.loads(f'"{m.group(1)}"').strip()
+            except ValueError:
+                return ""
+            if line:
+                return line
+        return ""
+    return next((ln.strip() for ln in head.splitlines() if ln.strip()), "")

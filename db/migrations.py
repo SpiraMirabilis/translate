@@ -984,6 +984,14 @@ def _m027_book_scrape_unplaced(conn, cursor, backend, logger):
                           "ALTER TABLE book_scrape ADD COLUMN unplaced_pending INTEGER NOT NULL DEFAULT 0")
 
 
+def _m028_book_scrape_warnings(conn, cursor, backend, logger):
+    """`warnings`: numbering notices from scraping (repeats, gaps, collisions)
+    kept per book until the admin dismisses them. Unlike hold_reason they
+    never block anything — the chapters were queued in source order anyway."""
+    add_column_if_missing(conn, cursor, backend, "book_scrape", "warnings",
+                          "ALTER TABLE book_scrape ADD COLUMN warnings TEXT")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1012,6 +1020,7 @@ MIGRATIONS = [
     Migration(25, "email_log", _m025_email_log),
     Migration(26, "scraping", _m026_scraping),
     Migration(27, "book_scrape_unplaced", _m027_book_scrape_unplaced),
+    Migration(28, "book_scrape_warnings", _m028_book_scrape_warnings),
 ]
 
 

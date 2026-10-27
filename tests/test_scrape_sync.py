@@ -256,10 +256,11 @@ def test_backfill_yields_to_toc_check_between_chunks(db, book):
     assert {p["priority"] for k, p in scraper.calls if k == "chapters"} == {"low"}
 
 
-def test_numbering_anomalies_hold_the_book(db, book):
-    entries = [entry(1), entry(2), entry(0, "请假条"), entry(4), entry(4, "第四章 重复")]
-    entries[2]["url"] = "https://twkan.com/txt/1/notice.html"
-    entries[4]["url"] = "https://twkan.com/txt/1/4b.html"
+def test_numbering_anomalies_warn_but_queue_and_never_hold(db, book):
+    # The book 137 case: the source reposted 第4章, and a gap. Both copies are
+    # queued in source order; the translation-time conflict check settles it.
+    entries = [entry(1), entry(2), entry(4), entry(4, "第四章 重复")]
+    entries[3]["url"] = "https://twkan.com/txt/1/4b.html"
     scraper = FakeScraper(entries)
     engine = make_engine(db, scraper)
     seed_queue(db, book, [1])
@@ -267,11 +268,62 @@ def test_numbering_anomalies_hold_the_book(db, book):
     db.update_book_scrape(book, mode="auto")
     scrape_sync.enqueue_check(db, book, catchup=True)
     drain(engine)
-    assert queued_numbers(db, book) == [1, 2, 4]  # notice skipped, duplicate 4 skipped
+    assert [q["chapter_number"] for q in db.list_queue(book_id=book)] == [1, 2, 4, 4]
     state = db.get_book_scrape(book)
-    assert "gap: ch2 -> ch4" in state["hold_reason"]
-    assert "ch4" in state["hold_reason"]
-    assert engine.admin.started == []  # held: no automatic translation
+    assert state["hold_reason"] is None
+    assert "gap: ch2 -> ch4" in state["warnings"]
+    assert "numbering went backwards or repeated" in state["warnings"]
+    assert engine.admin.started  # warnings don't block the automatic start
+
+
+def test_volume_restart_is_queued_in_source_order():
+    # Book 17: volume 2 starts again at 第1章. Every entry goes in, in order,
+    # and the sequence follows the source (no gap noise inside volume 2).
+    chs = [{"title": f"第{n}章 t{i}", "text": "x", "sourceUrls": [f"u{i}"]}
+           for i, n in enumerate([299, 300, 1, 2, 4])]
+    to_queue, report = scrape_sync.number_chapters(
+        chs, offset=0, base_number=298, numbered=True, existing={1, 2, 4, 298}, new_only=True)
+    assert [n for n, *_ in to_queue] == [299, 300, 1, 2, 4]
+    assert report["last_number"] == 4 and report["last_url"] == "u4"
+    assert any("ch1 (第1章 t2) follows ch300" in w for w in report["anomalies"])
+    assert "gap: ch2 -> ch4" in report["anomalies"]
+    assert sum("collides" in w for w in report["anomalies"]) == 3  # ch1, ch2, ch4
+
+
+def test_backfill_skips_only_the_same_chapter():
+    chs = [{"title": "第1章 裴长老", "text": "x", "sourceUrls": ["a"]},     # we hold this one
+           {"title": "第1章 新卷开端", "text": "x", "sourceUrls": ["b"]},   # vol 2 ch1: different
+           {"title": "第2章", "text": "x", "sourceUrls": ["c"]}]            # nothing to compare
+    held = {1: {scrape_sync.title_key("# 第1章 裴长老")}, 2: {scrape_sync.title_key("# 第2章 你爹死了")}}
+    to_queue, report = scrape_sync.number_chapters(
+        chs, offset=0, base_number=None, numbered=True, existing={1, 2},
+        titles_at=lambda n: held.get(n, set()))
+    assert [(n, u) for n, _, _, u in to_queue] == [(1, "b")]
+    assert report["skipped_existing"] == [1, 2]
+    assert any("no title to tell" in w for w in report["anomalies"])
+
+
+def test_source_titles_at_reads_queue_and_saved_heads(db, book):
+    db.add_to_queue(book_id=book, content=["x"], title="第3章 甲", chapter_number=3)
+    db.save_chapter(book, 3, "Ch3", ["# 第3章 乙", "正文"], ["# Chapter 3", "text"])
+    assert sorted(db.source_titles_at(book, 3)) == ["# 第3章 乙", "第3章 甲"]
+    assert scrape_sync.title_key("# 第3章 乙") == scrape_sync.title_key("第3章 乙") == "乙"
+    assert scrape_sync.held_title_keys(db, book, 3) == {"甲", "乙"}
+    # A saved chapter that opens straight into prose has no title to compare.
+    db.save_chapter(book, 5, "Ch5", ["南海西道防城，一场春雨刚刚过去。"], ["text"])
+    assert scrape_sync.held_title_keys(db, book, 5) == set()
+
+
+def test_number_chapters_retry_skips_by_url_not_number():
+    # A retry re-ingests from the top: the first copy of 119 was queued before
+    # the failure, the repost wasn't. The repost must still go in.
+    chs = [{"title": "第119章 a", "text": "x", "sourceUrls": ["u1"]},
+           {"title": "第119章 a", "text": "y", "sourceUrls": ["u2"]}]
+    to_queue, report = scrape_sync.number_chapters(
+        chs, offset=0, base_number=118, numbered=True, existing={119}, new_only=True,
+        prior_added={119}, prior_urls={"u1"})
+    assert [(n, u) for n, _, _, u in to_queue] == [(119, "u2")]
+    assert report["skipped_existing"] == [119]
 
 
 def test_vanished_cursor_stops_the_book(db, book):
@@ -557,7 +609,7 @@ def test_title_match_links_across_scripts_and_offsets():
     assert prop["index"] == 103 and prop["number_offset"] == 3   # 第101章 + 3 = ch104
 
 
-def test_wrong_offset_holds_instead_of_silently_skipping(db, book):
+def test_catchup_collision_is_queued_with_a_warning(db, book):
     scraper = FakeScraper([entry(n) for n in range(1, 5)])
     engine = make_engine(db, scraper)
     seed_queue(db, book, [1, 2, 3, 4])
@@ -567,7 +619,10 @@ def test_wrong_offset_holds_instead_of_silently_skipping(db, book):
                           number_offset=-1)  # linked one too low: 第4章 -> ch3, which exists
     scrape_sync.enqueue_check(db, book, catchup=True)
     drain(engine)
-    assert "numbering is probably off" in db.get_book_scrape(book)["hold_reason"]
+    state = db.get_book_scrape(book)
+    assert state["hold_reason"] is None
+    assert queued_numbers(db, book) == [1, 2, 3, 3, 4]
+    assert "collides with the ch3 we already have" in state["warnings"]
 
 
 def test_unlinked_book_auto_links_by_title_on_first_toc(db, book):
@@ -657,7 +712,7 @@ def test_canvas_lines_are_counted_not_held():
     chapters = [{"title": "第5章 x", "text": "正文", "sourceUrls": ["u5"], "secCanvasCount": 3}]
     to_queue, report = scrape_sync.number_chapters(
         chapters, offset=0, base_number=4, numbered=True, existing=set(), new_only=True)
-    assert [n for n, _, _ in to_queue] == [5]
+    assert [n for n, *_ in to_queue] == [5]
     assert report["anomalies"] == [] and report["canvas_lines"] == 3
 
 
@@ -666,7 +721,7 @@ def test_bare_number_counts_only_when_it_continues_the_sequence():
                 for t in ("315陳輝", "316老太太", "52请假条", "1900请假条", "317陰魂")]
     to_queue, report = scrape_sync.number_chapters(
         chapters, offset=0, base_number=314, numbered=True, existing=set(), new_only=True)
-    assert [n for n, _, _ in to_queue] == [315, 316, 317]
+    assert [n for n, *_ in to_queue] == [315, 316, 317]
     assert report["anomalies"] == []
     # The two notes take the unnumbered path (Jev, then parking), not a number.
     assert report["skipped_unnumbered"] == ["52请假条", "1900请假条"]
@@ -679,7 +734,7 @@ def test_bare_number_agreeing_with_position_survives_a_missed_entry():
                 for t in ("356監獄", "357月下", "358【故事】一", "359【故事】二")]
     to_queue, report = scrape_sync.number_chapters(
         chapters, offset=0, base_number=355, numbered=True, existing=set(), new_only=True)
-    assert [n for n, _, _ in to_queue] == [356, 358, 359]
+    assert [n for n, *_ in to_queue] == [356, 358, 359]
     assert report["skipped_unnumbered"] == ["357月下"]
 
 
