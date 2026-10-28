@@ -10,6 +10,7 @@
     "cun":         { "value": 0.0333, "unit": "m",    "type": "length", "action": "annotate" },
     "ren":         { "value": 2.67,   "unit": "m",    "type": "length", "action": "annotate" },
     "gongli":      { "value": 1.0,    "unit": "kilometer", "type": "length", "action": "replace", "numeral": "english" },
+    "gongjin":     { "value": 1.0,    "unit": "kilogram",  "type": "mass",   "action": "replace", "numeral": "english" },
     "jin":         { "value": 0.5,    "unit": "kg",   "type": "mass",   "action": "annotate" },
     "liang":       { "value": 0.05,   "unit": "kg",   "type": "mass",   "action": "annotate" },
     "qian":        { "value": 0.005,  "unit": "kg",   "type": "mass",   "action": "annotate" },

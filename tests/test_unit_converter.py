@@ -425,7 +425,8 @@ def _conv(s):
 
 def test_gongli_is_replaced_with_kilometers():
     assert _conv("Three gongli further on.") == "Three kilometers further on."
-    assert _conv("It was 15 gongli away.") == "It was fifteen kilometers away."
+    # A one-to-one unit keeps the count exactly as written.
+    assert _conv("It was 15 gongli away.") == "It was 15 kilometers away."
     assert _conv("two or three gongli") == "two or three kilometers"
     assert _conv("three gonglis") == "three kilometers"
 
@@ -436,9 +437,85 @@ def test_gongli_keeps_the_article_and_reads_fractions():
     assert _conv("a quarter of a gongli") == "a quarter of a kilometer"
 
 
-def test_gongli_left_alone_without_a_count():
-    assert _conv("dozens of gongli") == "dozens of gongli"
+def test_gongli_takes_a_vague_count():
+    # One-to-one, so a vague count can't misstate the magnitude.
+    assert _conv("dozens of gongli") == "dozens of kilometers"
     assert _conv("Gongli Village") == "Gongli Village"
+
+
+# ── gongjin (公斤): the same treatment — one kilogram, i.e. two jin ──
+
+
+def test_gongjin_is_replaced_with_kilograms():
+    assert _conv("Three gongjin of rice.") == "Three kilograms of rice."
+    assert _conv("It weighed 15 gongjin.") == "It weighed 15 kilograms."
+    assert _conv("two or three gongjin") == "two or three kilograms"
+    assert _conv("only a gongjin left") == "only a kilogram left"
+    assert _conv("Half a gongjin of pork") == "Half a kilogram of pork"
+
+
+def test_gongjin_is_not_read_as_jin():
+    assert "jin (" not in _conv("Three gongjin of rice.")
+    assert _conv("three jin of rice") == "three jin (1.5 kg) of rice"
+    assert _conv("dozens of gongjin") == "dozens of kilograms"
+    assert _conv("several hundred thousand gongjin") == "several hundred thousand kilograms"
+    assert _conv("a few thousand gongjin more") == "a few thousand kilograms more"
+
+
+def test_gongjin_keeps_the_count_as_written():
+    # Book 139: "6,432 gongjin" became "six thousand four hundred thirty-two
+    # kilograms", and "a thousand gongjin" became "one thousand kilograms".
+    assert _conv('"6,432 gongjin, 6,247 gongjin..."') == '"6,432 kilograms, 6,247 kilograms..."'
+    assert _conv("over a thousand gongjin of force") == "over a thousand kilograms of force"
+    assert _conv("two or three thousand gongjin") == "two or three thousand kilograms"
+    assert _conv("the 60,000-gongjin limit") == "the 60,000-kilogram limit"
+    assert _conv("0.5 gongjin") == "0.5 kilograms"
+    assert _conv("1 gongjin") == "1 kilogram"
+
+
+def test_a_match_never_starts_mid_number():
+    # The apostrophe blocked "2", and the match started at "000": "2,zero kilograms".
+    assert _conv("its limit was '2,000 gongjin.'") == "its limit was '2,000 kilograms.'"
+
+
+# ── Hyphenated compound adjectives (2026-10-28) ────────────────────
+# "a two-shichen wait" used to come out "four hours wait": the article was
+# swallowed with the count and the unit pluralised in front of the noun.
+
+def test_compound_adjective_stays_hyphenated_and_singular():
+    assert _conv("a two-shichen wait") == "a four-hour wait"
+    assert _conv("a hundred-gongli journey") == "a hundred-kilometer journey"
+    assert _conv("a fifty-gongjin sack") == "a fifty-kilogram sack"
+    assert _conv("a three-ke walk") == "a forty-five-minute walk"
+    assert _conv("a one-jiazi cycle") == "a sixty-year cycle"
+    assert _conv("a quarter-shichen walk") == "a thirty-minute walk"
+    assert _conv("a half-gongli stretch") == "a half-kilometer stretch"
+
+
+def test_compound_adjective_keeps_determiners_and_emphasis():
+    assert _conv("A two-shichen wait began.") == "A four-hour wait began."
+    assert _conv("the two-shichen wait") == "the four-hour wait"
+    assert _conv("his two-shichen absence") == "his four-hour absence"
+    assert _conv("a full two-shichen wait") == "a full four-hour wait"
+    assert _conv("another two-shichen wait") == "another four-hour wait"
+    assert _conv("a two-ke-long nap") == "a thirty-minute-long nap"
+
+
+def test_compound_adjective_fixes_the_article():
+    assert _conv("a four-shichen wait") == "an eight-hour wait"
+    assert _conv("An eight-ke nap") == "A two-hour nap"
+    assert _conv("a 4-shichen wait") == "an eight-hour wait"
+
+
+def test_compound_adjective_is_exact_never_hedged():
+    # "about" can't sit inside an adjective; 75 minutes stays 75 minutes.
+    assert _conv("a five-ke break") == "a seventy-five-minute break"
+
+
+def test_hyphenated_count_without_an_adjective_reading_is_a_count():
+    assert _conv("after two-shichen of waiting") == "after four hours of waiting"
+    assert _conv("two-shichen passed") == "four hours passed"
+    assert _conv("twenty-one shichen later") == "forty-two hours later"
 
 
 # ── Names built from a real measurement (2026-10-12) ───────────────

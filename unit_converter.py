@@ -430,7 +430,8 @@ _adj_alt = "|".join(sorted(_EMPHASIS_ADJ, key=len, reverse=True))
 #   3. a hyphenated/bare fraction directly on the unit ("a quarter-shichen")
 def _build_pattern(unit_names: str) -> re.Pattern:
     return re.compile(
-        r"(?<!['\w])"                       # not preceded by word char or apostrophe
+        r"(?<!\w)(?:(?<!')|(?=\d))"          # not preceded by word char or apostrophe ('2,000 is fine)
+        r"(?<!\d[,.])"                      # nor mid-number: '2,000 must not start at "000"
         # Optional leading emphasis phrase ("a full <qty>", "another <qty>"). Only
         # matches when a quantity follows; "a full shichen" (no quantity) falls
         # through to num="a" + more="full", which lands in the same place.
@@ -921,6 +922,95 @@ def _place_emphasis(art: Optional[str], adj: Optional[str], *,
     return lead, None
 
 
+# A count hyphenated onto a singular unit in front of a noun is an adjective:
+# "a two-shichen wait" must become "a four-hour wait", not "four hours wait".
+# A function word after it means the hyphen was just sloppy ("after
+# two-shichen of waiting" is a count), and so does a missing determiner.
+_COMPOUND_STOP = frozenset((
+    "of and or but nor than then later ago away before after earlier since "
+    "passed in on at to for from with by into was were is are had has have"
+).split())
+_DETERMINER_BEFORE_RE = re.compile(
+    r"(?:\b(?:a|an|the|this|that|each|every|his|her|its|their|our|my|your|whose)"
+    r"|['’]s)\s+$", re.IGNORECASE)
+
+
+def _swap_unit_word(match: re.Match, base_unit: str, *, singular: bool) -> str:
+    """Replace only the unit word of a match, leaving the count as written."""
+    singular = singular or _is_compound_adjective(match, None, None, match.group("more"))
+    label = base_unit if singular or base_unit.endswith("s") else base_unit + "s"
+    full = match.group(0)
+    return full[:match.start("unit") - match.start()] + _match_case(match.group("unit"), label)
+
+
+def _scales(base_unit: str) -> bool:
+    return base_unit in SCALE_DOWN or base_unit in SCALE_UP
+
+
+def _is_compound_adjective(match: re.Match, art: Optional[str],
+                           adj: Optional[str], more_str: Optional[str]) -> bool:
+    s = match.string
+    u = match.start("unit")
+    if u == 0 or s[u - 1] != "-" or match.end() != match.end("unit") or more_str:
+        return False
+    rest = s[match.end():]
+    if re.match(r"-[A-Za-z]", rest):         # "a two-ke-long nap"
+        return True
+    nxt = re.match(r"\s+([a-z]+)\b", rest)
+    if not nxt or nxt.group(1) in _COMPOUND_STOP:
+        return False
+    lead = (match.group("num") or match.group("fracunit") or "").strip().lower()
+    if art or adj or re.match(r"an?\s", lead):
+        return True
+    return bool(_DETERMINER_BEFORE_RE.search(s[:match.start()]))
+
+
+_COMPOUND_FRACTION = {0.25: "quarter", 0.5: "half", 0.75: "three-quarter"}
+
+
+def _takes_an(word: str) -> bool:
+    w = word.lower()
+    return w[:1] in "aeiou" and not w.startswith("one")
+
+
+def _compound_output(raw: float, base_unit: str, lead: str,
+                     art: Optional[str], adj: Optional[str]) -> Optional[str]:
+    """'four-hour', with the article/emphasis the match carried ('a full
+    four-hour'). Exact values only: 'about' can't sit inside an adjective, so a
+    value with no whole-number reading returns None and the phrase is left alone."""
+    scaled, unit, _ = _scale(raw, base_unit)
+    if unit == "hour" and not float(scaled).is_integer() and float(scaled * 60).is_integer():
+        scaled, unit = scaled * 60, "minute"
+    if scaled in _COMPOUND_FRACTION:
+        words = _COMPOUND_FRACTION[scaled]
+    elif float(scaled).is_integer():
+        words = _number_to_words(scaled)
+    else:
+        return None
+    lead_words = lead.lower().split()
+    article = art or (lead_words[0] if lead_words and lead_words[0] in ("a", "an") else None)
+    if article and re.match(r"one (?:hundred|thousand|million)\b", words):
+        words = words[4:]                   # "a hundred-kilometer", not "a one-hundred-"
+    parts = [p for p in (article, adj) if p] + [f"{words}-{unit}".replace(" ", "-")]
+    if article and article in ("a", "an"):
+        parts[0] = "an" if _takes_an(parts[1]) else "a"
+    return " ".join(parts)
+
+
+# An indefinite article right before a main match whose replacement changed
+# the first sound: "a 8-gongjin sack" -> "an eight-kilogram sack".
+def _agree_indefinite_before(prefix: str, replacement: str) -> str:
+    m = re.search(r"\b(an?)(\s+)$", prefix, re.IGNORECASE)
+    if not m or not replacement[:1].isalpha():
+        return prefix
+    want = "an" if _takes_an(replacement.split()[0]) else "a"
+    if m.group(1).lower() == want:
+        return prefix
+    if m.group(1)[:1].isupper():
+        want = want.capitalize()
+    return prefix[:m.start()] + want + m.group(2)
+
+
 def _convert_match(match: re.Match, uset: _UnitSet) -> str:
     """Replace callback for unit matches (from the unit set's pattern)."""
     full = match.group(0)
@@ -945,7 +1035,10 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
     # Only for hour-based replace units; anything else is left untouched so we
     # don't misstate magnitude ("several jiazi", "several ke") or try to annotate
     # an uncountable phrase ("several zhang").
+    one_to_one = action == "replace" and base_value == 1.0 and not _scales(base_unit)
     if vague_str:
+        if one_to_one and not det_str:
+            return _swap_unit_word(match, base_unit, singular=False)
         # An emphasis word on a vague count ("a full several shichen") is
         # incoherent phrasing; leave it for a human rather than guess.
         if det_str or action != "replace":
@@ -970,7 +1063,7 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
         # Check text before match for vague quantifiers ("several thousand X")
         before = match.string[:match.start()]
         if _VAGUE_BEFORE.search(before):
-            return full
+            return _swap_unit_word(match, base_unit, singular=False) if one_to_one else full
 
         # Handle "a"/"an"/"a single"/"single"/"the full" (numfill) as 1
         normalized = re.sub(r"[\s\-]+", " ", num_str.strip().lower())
@@ -980,7 +1073,8 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
             number = _word_to_number(num_str)
 
         if number is None:
-            return full  # vague quantifier, skip
+            # vague quantifier, skip
+            return _swap_unit_word(match, base_unit, singular=False) if one_to_one else full
 
         # Apply fractional multiplier if we matched one (e.g. "a quarter of a ke")
         if fraction_str:
@@ -988,6 +1082,15 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
             if frac_mult is None:
                 return full
             number *= frac_mult
+
+    # ── One-to-one units (gongli = km, gongjin = kg): swap the word only ──
+    # The count needs no arithmetic, so it stays exactly as written: "6,432
+    # gongjin" -> "6,432 kilograms", "a thousand gongjin" -> "a thousand
+    # kilograms", "a 60,000-gongjin limit" -> "a 60,000-kilogram limit".
+    if one_to_one:
+        return _swap_unit_word(match, base_unit, singular=(
+            number == 1.0
+            or (number < 1.0 and not any(c.isdigit() for c in num_str))))
 
     # ── Emphasis modifier ("a full …", "another …", "the whole …") ──
     # Three ways it reaches us; all reduce to (article, adjective) so the output
@@ -1053,6 +1156,12 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
             output = f"about {body}" if (lo_rounded or hi_rounded) else body
             return _match_case(full, output)
         return f"{full} ({lo_fmt}–{hi_fmt} {hi_unit})"
+
+    # ── Compound adjective ("a two-shichen wait" -> "a four-hour wait") ──
+    if action == "replace" and _is_compound_adjective(match, art, adj, more_str):
+        output = _compound_output(number * base_value, base_unit,
+                                  num_str or fracunit_str or "", art, adj)
+        return _match_case(full, output) if output else full
 
     is_another = num_str.strip().lower() == "another"
     raw = number * base_value
@@ -1571,6 +1680,8 @@ def convert_units(lines: List[str], cleaning_model: Optional[str] = None,
                 replacement = match.group("q") + "quarter hour"
             else:
                 replacement = _convert_match(match, uset)
+                if replacement != match.group(0):
+                    prefix = _agree_indefinite_before(prefix, replacement)
             line = prefix + replacement + line[match.end():]
         result[line_idx] = line
 
