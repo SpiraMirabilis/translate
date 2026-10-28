@@ -25,6 +25,27 @@ def _claim_stdout():
                             write_through=True)
 
 
+def _quiet_stateless_teardown():
+    """Drop mcp 1.12's "Error in message router" ClosedResourceError traceback.
+
+    In stateless HTTP mode each POST gets a throwaway transport; once the
+    response is sent the transport closes the stream its message router is
+    still iterating, and the router's catch-all logs that as an ERROR with a
+    full traceback — on most requests, after a 200 has already gone out. Any
+    other exception in the router still logs.
+    """
+    import logging
+
+    import anyio
+
+    def keep(record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        return not (record.getMessage() == "Error in message router"
+                    and isinstance(exc, anyio.ClosedResourceError))
+
+    logging.getLogger("mcp.server.streamable_http").addFilter(keep)
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="mcp_server", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -74,6 +95,7 @@ def main(argv=None) -> None:
         # entity cache) now rather than inside the first caller's lookup.
         from mcp_server.deps import app
         app().ensure_db()
+        _quiet_stateless_teardown()
         mcp.run(transport="streamable-http")
 
 
