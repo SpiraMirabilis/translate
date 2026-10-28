@@ -71,7 +71,7 @@ export default function Scraping() {
         </button>
         <span className="text-xs text-slate-500 ml-auto">
           Daily check at {String(settings.daily_hour).padStart(2, '0')}:00 · chunks of {settings.chunk_size} ·
-          auto-translate gap {settings.default_gap} · {settings.reserved_slots} slot{settings.reserved_slots === 1 ? '' : 's'} kept free
+          auto-translate gap {settings.default_gap}
         </span>
       </div>
 

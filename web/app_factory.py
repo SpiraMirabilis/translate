@@ -62,7 +62,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # Admin machinery — translation engine, job manager, module hooks.
         # Imported lazily so the public process never loads any of it.
         from translation_engine import TranslationEngine
-        from web.services.job_manager import job_hub, job_registry
+        from web.services.job_manager import job_hub, job_registry, start_queue
         from web.services.web_interface import WebInterface
         from web.api import (
             translation, books, entities, queue_api, settings_api,
@@ -110,12 +110,18 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         set_activity_notifier(job_hub.log_activity)
 
         deps.init(entity_manager)
-        translation.init(make_web_interface, job_registry, entity_manager)
+        translation.init(make_web_interface, job_registry, entity_manager, start_queue)
         books.init(entity_manager, translator, logger)
         revisions.init(entity_manager)
         grammar.init(entity_manager, config)
         entities.init(entity_manager, translator)
-        queue_api.init(entity_manager, job_registry, make_web_interface)
+        queue_api.init(entity_manager, job_registry, make_web_interface, start_queue)
+        # Every start (Dashboard Translate, Queue page, MCP, scrape worker)
+        # waits here for a free slot; these are what it calls to start one.
+        start_queue.configure(entity_manager, {
+            "queue": lambda opts: queue_api.start_now(queue_api.ProcessNextRequest(**opts)),
+            "text": lambda opts: translation.start_now(translation.TranslateRequest(**opts)),
+        })
         settings_api.init(config)
         settings_api.init_db(entity_manager)
         dictionary_api.init(entity_manager, translator)
@@ -137,6 +143,9 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
     # seconds of views are accepted-lost on a hard kill).
     @asynccontextmanager
     async def lifespan(app):
+        if not public_only:
+            # Dispatcher thread for starts waiting on a slot (admin only).
+            start_queue.start()
         yield
         view_logger.stop()
 

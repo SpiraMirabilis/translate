@@ -76,7 +76,7 @@ def test_process_next_records_run_options(web_app, monkeypatch):
     req = queue_api.ProcessNextRequest(book_id=7, auto_process=True, max_chapters=4,
                                        translation_model="claude:x", no_review=True)
     try:
-        queue_api.process_next(req)
+        queue_api.start_now(req)
     finally:
         queue_api._registry.end(7)
     opts = captured["job"].run_options

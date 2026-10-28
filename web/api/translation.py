@@ -4,6 +4,7 @@ Translation API endpoints + WebSocket.
 import asyncio
 import threading
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 
@@ -16,13 +17,15 @@ router = APIRouter()
 _make_web_interface = None
 _registry = None
 _entity_manager = None
+_start_queue = None
 
 
-def init(make_web_interface, job_registry, entity_manager):
-    global _make_web_interface, _registry, _entity_manager
+def init(make_web_interface, job_registry, entity_manager, start_queue=None):
+    global _make_web_interface, _registry, _entity_manager, _start_queue
     _make_web_interface = make_web_interface
     _registry = job_registry
     _entity_manager = entity_manager
+    _start_queue = start_queue
 
 
 def _begin_job_or_409(book_id):
@@ -133,6 +136,10 @@ class TranslateRequest(BaseModel):
     no_clean: bool = False
     no_stream: bool = False
     save_as_draft: bool = False  # save new chapters unpublished (publish manually later)
+    # The start queue: queue=False starts now or 409s (the old behaviour);
+    # priority=True jumps every waiting start.
+    queue: bool = True
+    priority: bool = False
 
 
 class ReviewSubmitRequest(BaseModel):
@@ -185,8 +192,25 @@ class CancelRequest(BaseModel):
 
 @router.post("/api/translate")
 def start_translation(req: TranslateRequest):
+    """Translate pasted text. 200 = started; 202 = waiting for a free slot
+    ({status: "queued", request_id, position}); queue=false gives the old 409."""
     # Sync handler on purpose: runs in FastAPI's threadpool so the DB lookups
     # here can't stall the event loop (see the async-starvation punchlist item).
+    if not req.text.splitlines():
+        raise HTTPException(status_code=400, detail="No text provided.")
+    if not req.queue or _start_queue is None:
+        return start_now(req)
+    result = _start_queue.submit(
+        "text", req.book_id, req.model_dump(exclude={"queue", "priority"}),
+        priority=req.priority)
+    if result.get("status") == "queued":
+        return JSONResponse(status_code=202, content=result)
+    return result
+
+
+def start_now(req: TranslateRequest):
+    """Claim a slot and start translating the text, or raise 409. What the
+    start queue calls when a waiting request reaches a free slot."""
     lines = req.text.splitlines()
     if not lines:
         raise HTTPException(status_code=400, detail="No text provided.")
@@ -414,7 +438,29 @@ async def list_jobs():
         "jobs": [_job_state(j) for j in active],
         "running": len(active),
         "max_concurrent": _registry.max_concurrent(),
+        # Starts waiting for a free slot, in run order.
+        "pending": await asyncio.to_thread(_start_queue.list) if _start_queue else [],
     }
+
+
+class PendingPriorityRequest(BaseModel):
+    priority: bool
+
+
+@router.delete("/api/translate/pending/{request_id}")
+def remove_pending(request_id: int):
+    """Take a waiting start out of the queue."""
+    if _start_queue is None or not _start_queue.remove(request_id):
+        raise HTTPException(status_code=404, detail="No such waiting start.")
+    return {"status": "removed", "id": request_id}
+
+
+@router.put("/api/translate/pending/{request_id}/priority")
+def set_pending_priority(request_id: int, req: PendingPriorityRequest):
+    """Move a waiting start to the front (priority) or back among the rest."""
+    if _start_queue is None or not _start_queue.set_priority(request_id, req.priority):
+        raise HTTPException(status_code=404, detail="No such waiting start.")
+    return {"status": "ok", "id": request_id, "priority": req.priority}
 
 
 @router.get("/api/translate/status")
@@ -487,11 +533,19 @@ async def cancel_translation(req: CancelRequest = CancelRequest()):
     else:
         targets = _registry.active()
 
+    # A start waiting behind a cancelled book would begin it again as soon as
+    # the slot frees. Off the event loop: it's DB work.
+    dropped = []
+    if _start_queue is not None:
+        dropped = await asyncio.to_thread(
+            _start_queue.drop_for_book, req.book_id, "translation cancelled")
+
     if not targets:
-        return {"status": "not_running", "cancelled": []}
+        return {"status": "not_running", "cancelled": [], "dropped_waiting": len(dropped)}
 
     for job in targets:
         _cancel_job(job)
         await job.log_activity_async(type='info', message='Translation cancelled.')
 
-    return {"status": "cancelled", "cancelled": [j.book_id for j in targets]}
+    return {"status": "cancelled", "cancelled": [j.book_id for j in targets],
+            "dropped_waiting": len(dropped)}

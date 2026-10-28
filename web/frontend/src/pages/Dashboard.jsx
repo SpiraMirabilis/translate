@@ -51,7 +51,7 @@ export default function Dashboard() {
   // rendered globally by PromptHost, so this page no longer owns modal slots.
   const {
     isBookRunning, atCapacity, markStarted, maxConcurrent,
-    active: activeJobsList, refresh: refreshJobs,
+    active: activeJobsList, pending: pendingStarts, refresh: refreshJobs,
   } = useJobs()
   const activeCount = activeJobsList.length
 
@@ -125,14 +125,22 @@ export default function Dashboard() {
   const bookIdValue = selectedBook ? parseInt(selectedBook) : null
   const thisBookRunning = isBookRunning(bookIdValue)
   const [startError, setStartError] = useState(null)
+  // Applies to the next Translate only (not persisted), so it can't quietly
+  // put every start at the front of the line.
+  const [priority, setPriority] = useState(false)
+  const [starting, setStarting] = useState(false)
 
+  // Translate goes through the start queue: it begins at once when a slot is
+  // free, otherwise it waits (listed under the running jobs) and begins by
+  // itself when one frees up. The server keeps the pasted text, so a queued
+  // start clears the composer the way "Add to queue" does.
   const handleTranslate = async () => {
     if (!inputText.trim()) return
     setStartError(null)
     setQueueMsg(null)
-    markStarted(bookIdValue)
+    setStarting(true)
     try {
-      await api.translate({
+      const res = await api.translate({
         text: inputText,
         book_id: bookIdValue,
         chapter_number: chapterNum ? parseInt(chapterNum) : null,
@@ -144,12 +152,22 @@ export default function Dashboard() {
         no_clean: noClean,
         no_stream: noStream,
         save_as_draft: saveAsDraft,
+        priority,
       })
+      if (res?.status === 'queued') {
+        if (chapterNum) setChapterNum(String(parseInt(chapterNum) + 1))
+        setInputText('')
+        setQueueMsg(`All ${maxConcurrent} slots are busy — waiting at position ${res.position}${res.priority ? ' (priority)' : ''}. It starts on its own when a slot frees up.`)
+      } else {
+        markStarted(bookIdValue)
+      }
+      setPriority(false)
     } catch (e) {
-      // A refusal (this book is busy, or all slots are in use) is normal now,
-      // so show why inline rather than painting the whole page as errored.
+      // A refusal (this book is busy, say) is normal, so show why inline
+      // rather than painting the whole page as errored.
       setStartError(e?.message || 'Could not start translation.')
     } finally {
+      setStarting(false)
       refreshJobs()
     }
   }
@@ -373,6 +391,21 @@ export default function Dashboard() {
                 <input
                   type="checkbox"
                   className="rounded border-slate-600"
+                  checked={priority}
+                  onChange={e => setPriority(e.target.checked)}
+                />
+                Priority
+                <span className="relative group">
+                  <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                    When every slot is busy, starts wait their turn in order. A priority start goes to the front and takes the next free slot. Applies to the next Translate only.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="rounded border-slate-600"
                   checked={noStream}
                   onChange={e => setNoStream(e.target.checked)}
                 />
@@ -394,14 +427,14 @@ export default function Dashboard() {
               <button
                 className="btn-primary flex items-center gap-1.5 flex-1"
                 onClick={handleTranslate}
-                disabled={!inputText.trim() || thisBookRunning || atCapacity}
+                disabled={!inputText.trim() || thisBookRunning || starting}
                 title={
                   thisBookRunning ? 'This book is already translating'
-                    : atCapacity ? `All ${maxConcurrent} translation slots are in use`
+                    : atCapacity ? `All ${maxConcurrent} translation slots are in use — this will wait for the next free one`
                     : undefined
                 }
               >
-                <Play size={13} /> Translate
+                <Play size={13} /> {atCapacity ? 'Queue Translate' : 'Translate'}
               </button>
               {/* Queuing is always allowed — it starts nothing, so a busy book
                   or a full slot roster is irrelevant. It does need a book. */}
@@ -419,12 +452,9 @@ export default function Dashboard() {
                 {queueMsg} <Link to="/queue" className="underline hover:text-emerald-300">View queue</Link>
               </p>
             )}
-            {(thisBookRunning || atCapacity || startError) && (
+            {(thisBookRunning || startError) && (
               <p className="text-xs text-amber-400 mt-1.5">
-                {startError
-                  || (thisBookRunning
-                    ? 'This book is already translating — its chapters run in order.'
-                    : `All ${maxConcurrent} translation slots are in use.`)}
+                {startError || 'This book is already translating — its chapters run in order.'}
               </p>
             )}
           </div>
@@ -466,7 +496,7 @@ export default function Dashboard() {
           </div>
 
           {/* Progress banner — visible while running */}
-          {activeCount > 0 && (
+          {(activeCount > 0 || pendingStarts.length > 0) && (
             <div className="px-4 py-3 border-b border-indigo-900 bg-indigo-950/40 shrink-0">
               <JobList onCancel={handleCancel} onStopAuto={handleStopAuto} />
             </div>

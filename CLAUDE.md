@@ -404,17 +404,15 @@ job at a time**, so t9 owns the lane:
   ⚠️ Deliberately **not** the model of the book's latest chapter (the original rule,
   dropped 2026-10-26): a book resumed after a break would inherit whatever weaker
   model was current when it stopped. Override per book only to pick a lesser model on purpose.
-- **Job slots**: auto-starts never take the last `scrape_reserved_slots` (default 1)
-  of `max_concurrent_translations` — a start begins only while running jobs <
-  cap − reserved (floored at 1, so a cap of 1 still auto-translates). Waiting books
-  are checked once a minute (`AUTOSTART_CHECK_SECONDS`, one `GET /api/translate/jobs`
-  per check) and start **oldest request first**; their task carries `progress =
-  {waiting: "slot", position: N}` for the Scraping page. ⚠️ **There is no give-up
-  timeout**: a start is only ever requested after a catch-up that queued rows, so a
-  book that gave up would sit untranslated until its next new chapter. A waiting book
-  drops out only when it stops being eligible (mode, hold, gap, empty queue — re-checked
-  every pass, reason logged). A 409 between check and start (a manual job took the
-  slot) keeps its place in line.
+- **Job slots**: the worker no longer counts slots. An eligible book is handed to the
+  admin's **start queue** at once (`process-next` with `source: "scrape"`): 200 =
+  started, 202 = waiting for a slot (task finishes `done` with
+  `result_summary.queued`). Scrape starts use the whole cap and wait first come, first
+  served, behind priority starts only (`scrape_reserved_slots` is gone, 2026-10-28).
+  Eligibility (`scrape_sync.autostart_eligibility`) is re-checked by the start queue
+  when the start reaches a slot, so a book held or switched off while waiting is
+  dropped (logged). Only an unreachable admin or a failed hand-off is retried by the
+  worker, every `AUTOSTART_CHECK_SECONDS`.
 - **Failures**: retry after 30 min / 2 h / 8 h (chapters jobs resume via `retry`;
   a failed job's partial result is ingested first), then the book's
   `consecutive_failures` climbs; at 3 the sweep skips it until a manual check.
@@ -547,6 +545,24 @@ book in flight would corrupt it — but different books share nothing.
   dict without touching that cache; the cache remains for the admin
   Entities/Dictionary pages. Never reintroduce `entity_manager.entities` reads
   into `translation_engine.py` or `ui.py`.
+- **Start queue** (`web/services/start_queue.py`, `translation_requests` table,
+  migration 30, added 2026-10-28): every start (Dashboard Translate, Queue page
+  Process Next / Start Auto-process / Process All, MCP `t9_resume_translation`,
+  `start_auto_process.py`, the scrape worker) goes through `StartQueue.submit`. A free
+  slot with nothing ahead starts it in the same call (200, as before); otherwise
+  **202** `{status: "queued", request_id, position}` and it starts when a job ends.
+  Order = priority, then age; the **Priority** checkbox (`priority: true`, not
+  persisted in the UI) jumps the line and takes the next free slot. A waiting start for
+  a busy book is passed over, not blocking. A row exists only while it waits, and a
+  restart keeps it (`StartQueue.start()` in the admin lifespan, plus a 30 s recheck).
+  One waiting queue run per book: a repeat updates its options in place. A starter 409
+  keeps a start waiting; any other refusal (404 empty queue) drops it, logged. Per-book
+  `cancel` / `stop-auto` also drop that book's waiting starts. `queue: false` restores
+  start-now-or-409. Starters are the old endpoint bodies, `translation.start_now` and
+  `queue_api.start_now`. `GET /api/translate/jobs` carries `pending` (no pasted text);
+  `DELETE /api/translate/pending/{id}` and `PUT …/{id}/priority` edit it; the WS
+  `translation_queue_changed` (never replayed) refetches it. `JobList` renders the
+  waiting list. Tests: `tests/test_multibook_translation_http.py`.
 - **Endpoints**: `GET /api/translate/jobs` (per-book list the UI hydrates from),
   `POST /api/queue/process-all` (one worker per queued book, up to the cap).
   Control endpoints (`cancel`, `submit-review`, `skip-review`,

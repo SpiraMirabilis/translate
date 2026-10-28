@@ -115,10 +115,16 @@ def main() -> int:
                 item = entry.get("item") or {}
                 print(f"Started book {entry['book_id']} — chapter "
                       f"{item.get('chapter_number', '?')}")
+            for entry in data.get("queued", []):
+                print(f"Queued book {entry['book_id']} — waiting for a free slot "
+                      f"(position {entry.get('position', '?')})")
             for entry in data.get("skipped", []):
                 print(f"Skipped book {entry['book_id']}: {entry['reason']}")
-            if not started:
+            if not started and not data.get("queued"):
                 print("Nothing started.")
+        elif data.get("status") == "queued":
+            print(f"All translation slots are busy — book {args.book_id} is queued "
+                  f"(position {data.get('position', '?')}) and starts when one frees up.")
         else:
             item = data.get("item") or {}
             print(f"Auto-process started on book {item.get('book_id', args.book_id)} "

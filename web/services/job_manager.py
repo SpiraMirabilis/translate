@@ -39,7 +39,7 @@ class JobHub:
     # ticks are high-frequency transient state that the status endpoint
     # already restores — replaying stale ones would just flicker the UI.
     # (Progress matters more now: N concurrent jobs emit N streams of it.)
-    _NO_REPLAY_TYPES = {"activity_log", "progress"}
+    _NO_REPLAY_TYPES = {"activity_log", "progress", "translation_queue_changed"}
 
     # The events that end a run, as the frontend reads them. Named separately
     # because a job parking on a prompt retracts them (see Job.await_prompt):
@@ -631,6 +631,7 @@ class JobRegistry:
         self._lock = threading.Lock()
         self._jobs = {}  # book_id -> Job
         self._max_concurrent = max_concurrent  # None = read from settings
+        self._release_listeners = []
 
     def max_concurrent(self) -> int:
         """The current cap, read live so Settings changes apply without a restart."""
@@ -666,6 +667,11 @@ class JobRegistry:
             self._jobs[book_id] = job
             return job
 
+    def add_release_listener(self, fn):
+        """Call `fn()` whenever a slot is released. It must not block — the
+        start queue's listener only wakes its own thread."""
+        self._release_listeners.append(fn)
+
     def end(self, book_id):
         """Release a book's slot (idempotent).
 
@@ -676,6 +682,11 @@ class JobRegistry:
             job = self._jobs.get(book_id)
         if job is not None:
             job.end_job()
+        for fn in list(self._release_listeners):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def rekey(self, old_book_id, new_book_id):
         """Move a job to the book it turned out to be for.
@@ -730,3 +741,7 @@ job_hub = JobHub()
 
 # The live jobs, one per book.
 job_registry = JobRegistry(job_hub)
+
+# Starts waiting for a free slot (web/services/start_queue.py).
+from web.services.start_queue import StartQueue  # noqa: E402
+start_queue = StartQueue(job_registry, job_hub)

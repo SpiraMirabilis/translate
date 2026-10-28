@@ -64,7 +64,8 @@ export function JobsProvider({ children }) {
     // the poll off, and with refetchOnWindowFocus off app-wide nothing would
     // ever ask again.
     refetchInterval: (query) =>
-      (hasLocalActive || (query.state.data?.running ?? 0) > 0 ? ACTIVE_POLL_MS : false),
+      (hasLocalActive || (query.state.data?.running ?? 0) > 0
+        || (query.state.data?.pending?.length ?? 0) > 0 ? ACTIVE_POLL_MS : false),
   })
 
   // Hydrate on every successful fetch, not every time `data` changes identity.
@@ -89,7 +90,9 @@ export function JobsProvider({ children }) {
   const lastServerSeq = useRef(0)
 
   useWsEvent(useCallback((msg) => {
-    if (msg.type === 'ws_reconnected') {
+    // The start queue changed (a start queued, began, or was removed): the
+    // waiting list only comes from the snapshot, so refetch it.
+    if (msg.type === 'ws_reconnected' || msg.type === 'translation_queue_changed') {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       return
     }
@@ -121,9 +124,13 @@ export function JobsProvider({ children }) {
   const value = useMemo(() => {
     const active = activeJobs(jobs)
     const maxConcurrent = data?.max_concurrent ?? 3
+    const pending = data?.pending || []
     return {
       jobs,
       active,
+      // Starts waiting for a free slot, in run order (never carries pasted text).
+      pending,
+      pendingFor: (bookId) => pending.filter((p) => (p.book_id ?? null) === (bookId ?? null)),
       prompts: pendingPrompts(jobs),
       maxConcurrent,
       atCapacity: active.length >= maxConcurrent,

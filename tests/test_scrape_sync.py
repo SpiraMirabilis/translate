@@ -125,7 +125,7 @@ class Clock:
 SETTINGS = {
     "scrape_enabled": True, "scrape_daily_hour": 5, "scrape_chunk_size": 2,
     "scrape_default_gap": 10, "scrape_toc_spacing_seconds": 0, "scraper_url": "http://x",
-    "scrape_engine": "", "scrape_notify_url": "", "scraper_vnc_url": "", "scrape_reserved_slots": 1,
+    "scrape_engine": "", "scrape_notify_url": "", "scraper_vnc_url": "",
     "scrape_translation_model": "claudecode:global-model",
 }
 
@@ -505,69 +505,64 @@ def _autostart(db, book_id):
     return [t for t in db.list_scrape_tasks(book_id=book_id) if t["kind"] == "autostart"][0]
 
 
-def test_autostart_waits_for_a_slot_without_giving_up(db):
-    admin = FakeAdmin(cap=3)
-    admin.running = {901, 902}                 # 2 running, 1 reserved -> no room
-    clock = Clock()
-    engine = make_engine(db, FakeScraper([]), admin=admin, clock=clock)
-    book = _ready_auto_book(db, "Waiting")
+def test_autostart_hands_off_to_the_admin_queue_whatever_the_slots(db):
+    # Waiting for a slot is the admin's start queue's job now: the worker
+    # submits at once, even with every slot busy, and no slots are reserved.
+    admin = FakeAdmin(code=202, cap=3)
+    admin.running = {901, 902, 903}
+    engine = make_engine(db, FakeScraper([]), admin=admin)
+    book = _ready_auto_book(db, "Busy")
+    engine.request_autostart(book)
+    assert engine.run_autostarts() == 1
+    assert [p["book_id"] for p in admin.started] == [book]
+    assert admin.started[0]["source"] == "scrape"
+    task = _autostart(db, book)
+    assert task["status"] == "done" and task["result_summary"]["queued"] is True
+
+
+def test_autostart_started_at_once_is_done(db):
+    admin = FakeAdmin(code=200, cap=3)
+    engine = make_engine(db, FakeScraper([]), admin=admin)
+    book = _ready_auto_book(db, "Free")
     engine.request_autostart(book)
     engine.run_autostarts()
-    assert admin.started == []
     task = _autostart(db, book)
-    assert task["status"] == "queued" and task["progress"] == {"waiting": "slot", "position": 1}
-    clock.advance(days=2)                      # no give-up timeout
-    engine.run_autostarts()
-    assert admin.started == [] and _autostart(db, book)["status"] == "queued"
-    admin.running = {901}                      # a job finished
-    clock.advance(seconds=scrape_sync.AUTOSTART_CHECK_SECONDS + 1)
-    engine.run_autostarts()
-    assert [p["book_id"] for p in admin.started] == [book]
-    assert _autostart(db, book)["status"] == "done"
+    assert task["status"] == "done" and task["result_summary"]["started"] is True
 
 
-def test_waiting_books_start_oldest_first(db):
-    admin = FakeAdmin(cap=3)
-    admin.running = {901}                      # room for exactly one more
+def test_waiting_books_are_handed_off_oldest_first(db):
+    admin = FakeAdmin(code=202)
     engine = make_engine(db, FakeScraper([]), admin=admin)
     first, second = _ready_auto_book(db, "First"), _ready_auto_book(db, "Second")
     engine.request_autostart(first)
     engine.request_autostart(second)
     engine.run_autostarts()
-    assert [p["book_id"] for p in admin.started] == [first]
-    assert _autostart(db, second)["progress"] == {"waiting": "slot", "position": 1}
+    assert [p["book_id"] for p in admin.started] == [first, second]
 
 
-def test_reserved_slots_setting_and_a_cap_of_one(db, monkeypatch):
-    admin = FakeAdmin(cap=3)
-    admin.running = {901, 902}
-    engine = make_engine(db, FakeScraper([]), admin=admin)
-    book = _ready_auto_book(db, "Reserved")
-    engine.request_autostart(book)
-    monkeypatch.setitem(SETTINGS, "scrape_reserved_slots", 0)    # use the whole cap
-    engine.run_autostarts(force=True)
-    assert len(admin.started) == 1
-
-    admin2 = FakeAdmin(cap=1)                  # cap 1, 1 reserved: auto still gets one
-    engine2 = make_engine(db, FakeScraper([]), admin=admin2)
-    monkeypatch.setitem(SETTINGS, "scrape_reserved_slots", 1)
-    other = _ready_auto_book(db, "Solo")
-    engine2.request_autostart(other)
-    engine2.run_autostarts(force=True)
-    assert [p["book_id"] for p in admin2.started] == [other]
-
-
-def test_a_slot_lost_to_a_manual_job_keeps_the_books_place(db):
-    admin = FakeAdmin(code=409, cap=3)         # our check saw room; a manual job took it
-    engine = make_engine(db, FakeScraper([]), admin=admin)
-    book = _ready_auto_book(db, "Raced")
+def test_a_failed_hand_off_keeps_the_task_and_retries_later(db):
+    admin = FakeAdmin(code=500)
+    clock = Clock()
+    engine = make_engine(db, FakeScraper([]), admin=admin, clock=clock)
+    book = _ready_auto_book(db, "Flaky")
     engine.request_autostart(book)
     engine.run_autostarts()
     task = _autostart(db, book)
     assert task["status"] == "queued" and task["attempts"] == 1
     admin.code = 200
-    engine.run_autostarts(force=True)
+    engine.run_autostarts()                    # backing off: not yet
+    assert len(admin.started) == 1
+    clock.advance(seconds=scrape_sync.AUTOSTART_CHECK_SECONDS + 1)
+    engine.run_autostarts()
     assert len(admin.started) == 2 and _autostart(db, book)["status"] == "done"
+
+
+def test_eligibility_is_shared_with_the_admin_queue(db):
+    book = _ready_auto_book(db, "Shared")
+    assert scrape_sync.autostart_eligibility(db, book) == (True, None)
+    db.update_book_scrape(book, hold_reason="cursor vanished")
+    ok, why = scrape_sync.autostart_eligibility(db, book)
+    assert not ok and "held" in why
 
 
 def test_existing_numbers_are_not_requeued(db, book):

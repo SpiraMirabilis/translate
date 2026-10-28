@@ -6,8 +6,8 @@
  * it as an array threw "(r.data||[]).find is not a function" — which took the
  * whole admin app down via the error boundary, not just the card.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const listBooksMinimal = vi.fn()
@@ -19,6 +19,8 @@ let jobsValue = null
 vi.mock('../../hooks/useJobs', () => ({ useJobs: () => jobsValue }))
 
 const { default: JobList } = await import('./JobList')
+
+afterEach(cleanup)
 
 function renderList() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -62,6 +64,40 @@ describe('JobList', () => {
     jobsValue = { active: [], maxConcurrent: 3 }
     const { container } = renderList()
     expect(container.textContent).toBe('')
+  })
+
+  it('lists starts waiting for a slot, in order, with their badges', async () => {
+    jobsValue = {
+      active: [{ book_id: 14, status: 'running', chapter_number: 7, progress: null }],
+      pending: [
+        { id: 5, position: 1, kind: 'queue', book_id: 79, book_title: 'Book Seventy-Nine',
+          source: 'manual', priority: true, auto_process: true, max_chapters: null },
+        { id: 6, position: 2, kind: 'text', book_id: null, source: 'manual',
+          priority: false, chapter_number: 3 },
+        { id: 7, position: 3, kind: 'queue', book_id: 90, book_title: 'Ninety',
+          source: 'scrape', priority: false, auto_process: true },
+      ],
+      maxConcurrent: 1,
+      refresh: () => {},
+    }
+    renderList()
+    expect(await screen.findByText('Book Seventy-Nine')).toBeTruthy()
+    expect(screen.getByText(/3 waiting/)).toBeTruthy()
+    expect(screen.getByText('priority')).toBeTruthy()
+    expect(screen.getByText('Translate ch 3')).toBeTruthy()
+    expect(screen.getByText('auto')).toBeTruthy()
+  })
+
+  it('shows the waiting list even with no job running', async () => {
+    jobsValue = {
+      active: [],
+      pending: [{ id: 5, position: 1, kind: 'queue', book_id: 79, book_title: 'Waiting Book',
+                  source: 'manual', priority: false }],
+      maxConcurrent: 3,
+      refresh: () => {},
+    }
+    renderList()
+    expect(await screen.findByText('Waiting Book')).toBeTruthy()
   })
 })
 

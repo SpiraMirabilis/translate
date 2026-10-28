@@ -15,11 +15,17 @@ export default function Queue() {
   const [filterBook, setFilterBook] = useLocalStorage('queue.filterBook', '')
   const [showUpload, setShowUpload] = useState(false)
   const [error, setError] = useState(null)
+  // "Waiting for a free slot" etc. — informational, not an error.
+  const [notice, setNotice] = useState(null)
+  // Not persisted: a sticky priority box would quietly make every start jump
+  // the line. It applies to the next start, then clears.
+  const [priority, setPriority] = useState(false)
+  const [starting, setStarting] = useState(false)
 
   // Job state is shared and keyed by book — several can run at once.
   const {
     isBookRunning, atCapacity, maxConcurrent, markStarted,
-    active: activeJobsList, jobFor, refresh: refreshJobs,
+    active: activeJobsList, pending: pendingStarts, pendingFor, jobFor, refresh: refreshJobs,
   } = useJobs()
   const [translationModel, setTranslationModel] = useLocalStorage('queue.translationModel', '')
   const [adviceModel, setAdviceModel]             = useLocalStorage('shared.adviceModel', '')
@@ -80,44 +86,44 @@ export default function Queue() {
     save_as_draft: saveAsDraft,
     auto_process: autoProcess,
     max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
+    priority,
   })
 
+  // Every start goes through the start queue: it begins at once when a slot
+  // is free, otherwise it waits (shown under the running jobs) and begins on
+  // its own when one frees up.
   const handleProcessAll = async () => {
-    setError(null)
+    setError(null); setNotice(null); setStarting(true)
     try {
       const res = await api.processAllBooks(runOptions())
-      const blocked = (res.skipped || []).filter(s => s.reason === 'at_capacity')
-      if (blocked.length) {
-        setError(`Started ${res.started.length}; ${blocked.length} book(s) waiting for a free slot.`)
+      const queued = res.queued || []
+      if (queued.length) {
+        setNotice(`Started ${res.started.length}; ${queued.length} book${queued.length === 1 ? '' : 's'} waiting for a free slot.`)
       }
+      setPriority(false)
     } catch (e) {
       setError(e.message)
     } finally {
+      setStarting(false)
       refreshJobs()
     }
   }
 
   const handleProcessNext = async () => {
-    setError(null)
+    setError(null); setNotice(null); setStarting(true)
     const bookId = filterBook ? parseInt(filterBook) : null
-    markStarted(bookId)
     try {
-      await api.processNext({
-        book_id: bookId,
-        translation_model: translationModel || null,
-        advice_model: adviceModel || null,
-        cleaning_model: cleaningModel || null,
-        no_review: noReview,
-        two_pass: twoPass,
-        no_clean: noClean,
-        no_stream: noStream,
-        save_as_draft: saveAsDraft,
-        auto_process: autoProcess,
-        max_chapters: autoProcess && maxChapters ? parseInt(maxChapters) : null,
-      })
+      const res = await api.processNext({ book_id: bookId, ...runOptions() })
+      if (res?.status === 'queued') {
+        setNotice(`All ${maxConcurrent} slots are busy — waiting at position ${res.position}${res.priority ? ' (priority)' : ''}. It starts on its own when a slot frees up.`)
+      } else {
+        markStarted(res?.item?.book_id ?? bookId)
+      }
+      setPriority(false)
     } catch (e) {
       setError(e.message)
     } finally {
+      setStarting(false)
       refreshJobs()
     }
   }
@@ -169,6 +175,9 @@ export default function Queue() {
   const filterBookId = filterBook ? parseInt(filterBook) : null
   const filterBookRunning = isBookRunning(filterBookId)
   const filterBookJob = jobFor(filterBookId)
+  const filterBookWaiting = filterBookId != null
+    && pendingFor(filterBookId).some(p => p.kind === 'queue')
+  const fullTitle = `All ${maxConcurrent} translation slots are in use — this will wait for the next free one`
 
   const modelOptions = providers.flatMap(p =>
     (p.models || []).map(m => `${p.name}:${m}`)
@@ -204,28 +213,29 @@ export default function Queue() {
             <button
               className="btn-primary flex items-center gap-1.5"
               onClick={handleProcessNext}
-              disabled={filterBookRunning || atCapacity || queue.length === 0}
+              disabled={filterBookRunning || starting || queue.length === 0}
               title={
                 filterBookRunning ? 'This book is already translating'
-                  : atCapacity ? `All ${maxConcurrent} translation slots are in use`
+                  : filterBookWaiting ? 'Already waiting for a slot — starting again updates its settings'
+                  : atCapacity ? fullTitle
                   : undefined
               }
             >
               {filterBookRunning
                 ? <><Loader2 size={13} className="animate-spin" /> Processing…</>
                 : autoProcess
-                  ? <><RefreshCw size={13} /> Start Auto-process</>
-                  : <><Play size={13} /> Process Next</>}
+                  ? <><RefreshCw size={13} /> {atCapacity ? 'Queue Auto-process' : 'Start Auto-process'}</>
+                  : <><Play size={13} /> {atCapacity ? 'Queue Next' : 'Process Next'}</>}
             </button>
           )}
           {/* One worker per queued book, up to the concurrency limit. */}
           <button
             className="btn-primary flex items-center gap-1.5"
             onClick={handleProcessAll}
-            disabled={atCapacity || queuedBookIds.length === 0}
+            disabled={starting || queuedBookIds.length === 0}
             title={atCapacity
-              ? `All ${maxConcurrent} translation slots are in use`
-              : 'Start one worker per book with queued chapters'}
+              ? fullTitle
+              : 'Start one worker per book with queued chapters; books past the slot limit wait their turn'}
           >
             <RefreshCw size={13} /> Process All Books
           </button>
@@ -367,6 +377,20 @@ export default function Queue() {
             />
             Auto-process queue
           </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={priority}
+              onChange={e => setPriority(e.target.checked)}
+            />
+            Priority
+            <span className="relative group">
+              <Info size={13} className="text-slate-500 hover:text-slate-300 cursor-help" />
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 px-3 py-2 rounded bg-slate-700 text-xs text-slate-200 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 shadow-lg">
+                When every slot is busy, starts wait their turn in order. A priority start goes to the front and takes the next free slot. Applies to the next start only.
+              </span>
+            </span>
+          </label>
           {autoProcess && (
             <input
               type="number"
@@ -384,7 +408,10 @@ export default function Queue() {
       {/* One card per running book. The old single banner also told the user to
           "go to the Translate tab" for a prompt; PromptHost now shows prompts
           wherever they are. */}
-      {activeJobsList.length > 0 && (
+      {notice && (
+        <p className="text-xs text-amber-300 mb-3">{notice}</p>
+      )}
+      {(activeJobsList.length > 0 || pendingStarts.length > 0) && (
         <div className="card p-4 mb-4 border-indigo-700 bg-indigo-950/40 space-y-3">
           <JobList onCancel={handleCancelJob} onStopAuto={handleStopAuto} />
           {autoProcess && (

@@ -92,6 +92,9 @@ def register(mcp) -> None:
             if exc.status_code == 409:
                 raise ToolError(f"Cannot start book {book_id}: {exc.detail}") from exc
             raise
-        return json_out({"started": True, "book_id": book_id,
+        # 202: every slot is busy; the admin's start queue runs it when one frees.
+        queued = isinstance(resp, dict) and resp.get("status") == "queued"
+        return json_out({"started": not queued, "queued": queued, "book_id": book_id,
+                         "position": resp.get("position") if queued else None,
                          "options": {k: v for k, v in payload.items() if v not in (None, False)},
                          "response": resp})

@@ -65,6 +65,9 @@ export const api = {
   cancelJob:     (bookId) => post('/api/translate/cancel', { book_id: bookId ?? null }),
   getJobStatus:  ()      => get('/api/translate/status'),
   listJobs:      ()      => get('/api/translate/jobs'),
+  // Starts waiting for a free slot (the start queue).
+  removePendingStart:   (id)           => del(`/api/translate/pending/${id}`),
+  setPendingPriority:   (id, priority) => put(`/api/translate/pending/${id}/priority`, { priority }),
 
   // Books
   listBooks:     ()           => get('/api/books'),

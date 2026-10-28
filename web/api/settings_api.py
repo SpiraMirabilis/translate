@@ -220,7 +220,6 @@ def get_settings():
         "scrape_translation_model": settings_store.get("scrape_translation_model",
                                                         "claudecode:claude-opus-5-5"),
         "scrape_engine": settings_store.get("scrape_engine", ""),
-        "scrape_reserved_slots": settings_store.get("scrape_reserved_slots", 1),
         "scrape_notify_url": settings_store.get("scrape_notify_url", ""),
         "scraper_vnc_url": settings_store.get("scraper_vnc_url", ""),
         "has_scraper_notify_secret": bool(_scraper_notify_secret()),
@@ -271,7 +270,6 @@ class SettingsUpdate(BaseModel):
     scrape_default_gap: Optional[int] = None
     scrape_translation_model: Optional[str] = None
     scrape_engine: Optional[str] = None
-    scrape_reserved_slots: Optional[int] = None
     scrape_notify_url: Optional[str] = None
     scraper_vnc_url: Optional[str] = None
 
@@ -297,8 +295,6 @@ def update_settings(req: SettingsUpdate):
                 raise HTTPException(status_code=400, detail=f"{key} must start with http:// or https://")
     if "scrape_engine" in updates and updates["scrape_engine"] not in ("", "patchright", "extension"):
         raise HTTPException(status_code=400, detail="scrape_engine must be blank, patchright or extension")
-    if "scrape_reserved_slots" in updates and updates["scrape_reserved_slots"] < 0:
-        raise HTTPException(status_code=400, detail="scrape_reserved_slots must be >= 0")
     if "scrape_default_gap" in updates and updates["scrape_default_gap"] < 0:
         raise HTTPException(status_code=400, detail="scrape_default_gap must be >= 0")
     if "scrape_translation_model" in updates:

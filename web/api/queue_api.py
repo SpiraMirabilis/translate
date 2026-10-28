@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -16,13 +17,15 @@ router = APIRouter(prefix="/api/queue")
 _entity_manager = None
 _registry = None
 _make_web_interface = None
+_start_queue = None
 
 
-def init(entity_manager, job_registry, make_web_interface):
-    global _entity_manager, _registry, _make_web_interface
+def init(entity_manager, job_registry, make_web_interface, start_queue=None):
+    global _entity_manager, _registry, _make_web_interface, _start_queue
     _entity_manager = entity_manager
     _registry = job_registry
     _make_web_interface = make_web_interface
+    _start_queue = start_queue
 
 
 def _begin_job_or_409(book_id):
@@ -744,6 +747,15 @@ class ProcessNextRequest(BaseModel):
     save_as_draft: bool = False  # save new chapters unpublished (publish manually later)
     auto_process: bool = False
     max_chapters: Optional[int] = None  # Stop after N chapters (None = unlimited)
+    # The start queue (web/services/start_queue.py). queue=False is the old
+    # behaviour: start now or 409. priority=True jumps every waiting start.
+    queue: bool = True
+    priority: bool = False
+    source: str = "manual"  # "manual" | "scrape" (the scrape worker's auto-starts)
+
+
+# Request fields about getting a slot, not about the run itself.
+_QUEUE_FIELDS = {"queue", "priority", "source"}
 
 
 def _setup_job(job, web_interface, queue_item, settings):
@@ -794,8 +806,29 @@ def _translate_one(job, web_interface, queue_item):
     web_interface.run_translation()
 
 
+def _submit(req: ProcessNextRequest) -> dict:
+    """Start now, or wait in the start queue for a free slot."""
+    if not req.queue or _start_queue is None:
+        return start_now(req)
+    return _start_queue.submit(
+        "queue", req.book_id, req.model_dump(exclude=_QUEUE_FIELDS),
+        source=req.source, priority=req.priority)
+
+
 @router.post("/process-next")
 def process_next(req: ProcessNextRequest = ProcessNextRequest()):
+    """Start translating a book's queue. 200 = started; 202 = waiting for a
+    free slot ({status: "queued", request_id, position}); queue=false gives
+    the old 409 instead of waiting."""
+    result = _submit(req)
+    if result.get("status") == "queued":
+        return JSONResponse(status_code=202, content=result)
+    return result
+
+
+def start_now(req: ProcessNextRequest):
+    """Claim a slot and start the run, or raise (409 busy / 404 nothing queued).
+    What the start queue calls when a waiting request reaches a free slot."""
     import threading
 
     book_id = _pick_book_to_process(req.book_id)
@@ -960,14 +993,20 @@ def stop_auto_process(req: StopAutoRequest = StopAutoRequest()):
     else:
         targets = [j for j in _registry.active() if j.auto_process]
 
+    # A start waiting behind this book would otherwise begin it again the
+    # moment the current chapter finishes — the opposite of "stop".
+    dropped = _start_queue.drop_for_book(req.book_id, reason="auto-process stopped") \
+        if _start_queue is not None else []
+
     if not targets:
-        return {"status": "not_running"}
+        return {"status": "not_running", "dropped_waiting": len(dropped)}
 
     for job in targets:
         job.stop_auto_process()
         job.log_activity(type='info', message='Auto-process will stop after current chapter.')
         job.send_message_sync({"type": "auto_process_stopping"})
-    return {"status": "stopping", "stopped": [j.book_id for j in targets]}
+    return {"status": "stopping", "stopped": [j.book_id for j in targets],
+            "dropped_waiting": len(dropped)}
 
 
 class ProcessAllRequest(ProcessNextRequest):
@@ -977,34 +1016,40 @@ class ProcessAllRequest(ProcessNextRequest):
 
 @router.post("/process-all")
 def process_all(req: ProcessAllRequest = ProcessAllRequest()):
-    """Start one worker per queued book, up to the concurrency limit.
+    """Start one worker per queued book; books past the concurrency limit wait
+    in the start queue (or are skipped as at_capacity with queue=false).
 
     Books already translating are skipped rather than erroring — the point of
     the button is "get everything moving", and a half-started sweep is more
     confusing than one that reports what it did.
     """
-    started, skipped = [], []
+    started, queued, skipped = [], [], []
     running = _registry.running_book_ids()
 
     for book_id in _entity_manager.get_next_queued_book_ids():
         if book_id in running:
             skipped.append({"book_id": book_id, "reason": "already_running"})
             continue
-        if not _registry.has_capacity():
+        if not req.queue and not _registry.has_capacity():
             skipped.append({"book_id": book_id, "reason": "at_capacity"})
             continue
 
         single = ProcessNextRequest(**{**req.model_dump(), "book_id": book_id})
         try:
-            result = process_next(single)
+            result = _submit(single)
         except HTTPException as e:
             skipped.append({"book_id": book_id, "reason": e.detail})
             continue
-        started.append({"book_id": book_id, "item": result.get("item")})
+        if result.get("status") == "queued":
+            queued.append({"book_id": book_id, "request_id": result.get("request_id"),
+                           "position": result.get("position")})
+        else:
+            started.append({"book_id": book_id, "item": result.get("item")})
 
     return {
-        "status": "started" if started else "noop",
+        "status": "started" if started else ("queued" if queued else "noop"),
         "started": started,
+        "queued": queued,
         "skipped": skipped,
         "running": len(_registry.active()),
         "max_concurrent": _registry.max_concurrent(),

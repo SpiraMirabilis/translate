@@ -1002,6 +1002,50 @@ def _m029_books_source_title(conn, cursor, backend, logger):
         logger.info("Added source_title column to books table")
 
 
+_TRANSLATION_REQUESTS_DDL = {
+    "sqlite": """
+        CREATE TABLE IF NOT EXISTS translation_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER,
+            kind TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            priority INTEGER NOT NULL DEFAULT 10,
+            options TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+    """,
+    "mysql": """
+        CREATE TABLE IF NOT EXISTS translation_requests (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            book_id INTEGER NULL,
+            kind VARCHAR(16) NOT NULL,
+            source VARCHAR(16) NOT NULL DEFAULT 'manual',
+            priority INTEGER NOT NULL DEFAULT 10,
+            options LONGTEXT,
+            last_error TEXT,
+            created_at VARCHAR(50) NOT NULL,
+            KEY idx_translation_requests_order (priority, id),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+}
+
+
+def _m030_translation_requests(conn, cursor, backend, logger):
+    """Translation starts waiting for a free job slot (web/services/start_queue.py).
+    A row exists only while it waits: it is deleted the moment it starts or is
+    dropped, and the activity log records which. `kind` 'queue' = a
+    process-next run (options = the run options), 'text' = a Dashboard
+    Translate (options carry the pasted text). Persisted so an admin restart
+    doesn't lose them."""
+    cursor.execute(_TRANSLATION_REQUESTS_DDL[backend.name])
+    if backend.name == "sqlite":
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_translation_requests_order "
+                       "ON translation_requests(priority, id)")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1032,6 +1076,7 @@ MIGRATIONS = [
     Migration(27, "book_scrape_unplaced", _m027_book_scrape_unplaced),
     Migration(28, "book_scrape_warnings", _m028_book_scrape_warnings),
     Migration(29, "books_source_title", _m029_books_source_title),
+    Migration(30, "translation_requests", _m030_translation_requests),
 ]
 
 

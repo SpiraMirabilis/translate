@@ -626,16 +626,6 @@ export default function Settings() {
                 <p className="text-xs text-slate-500 mt-1">Long backfills run in chunks of this size, so daily checks can slip in between.</p>
               </div>
               <div>
-                <label className="label">Slots kept free for manual work</label>
-                <input
-                  type="number" min="0"
-                  className="input text-sm"
-                  value={settings.scrape_reserved_slots ?? 1}
-                  onChange={e => setSettings(s => ({ ...s, scrape_reserved_slots: parseInt(e.target.value, 10) }))}
-                />
-                <p className="text-xs text-slate-500 mt-1">Auto-translate only starts a book while this many translation slots would stay free; waiting books start in the order they became ready.</p>
-              </div>
-              <div>
                 <label className="label">Auto-translate model</label>
                 <input
                   className="input font-mono text-sm"

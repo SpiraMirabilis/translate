@@ -117,10 +117,6 @@ SCHEMA = {
     # from .env; blank = jobs carry no callback. And the noVNC page where the
     # challenge gets solved: only a fallback — the scraper reports its own URL
     # with a blocked job, and that wins.
-    # Auto-translate starts leave this many of max_concurrent_translations
-    # free for manual work (cap 3, reserved 1 -> at most 2 jobs running when
-    # an auto-start begins). Auto mode always gets at least one slot.
-    "scrape_reserved_slots":   ("SCRAPE_RESERVED_SLOTS",   1,                         int),
     "scrape_notify_url":       ("SCRAPE_NOTIFY_URL",       "",                        str),
     "scraper_vnc_url":         ("SCRAPER_VNC_URL",         "",                        str),
 }
