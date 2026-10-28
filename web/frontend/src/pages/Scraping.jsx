@@ -70,7 +70,7 @@ export default function Scraping() {
           {paused ? 'Resume' : 'Pause'}
         </button>
         <span className="text-xs text-slate-500 ml-auto">
-          Daily check at {String(settings.daily_hour).padStart(2, '0')}:00 · chunks of {settings.chunk_size} ·
+          TOC checks at {(settings.sweep_hours || []).map(h => `${String(h).padStart(2, '0')}:00`).join(', ')} · chunks of {settings.chunk_size} ·
           auto-translate gap {settings.default_gap}
         </span>
       </div>

@@ -139,7 +139,7 @@ export default function SourceModal({ bookId, onClose }) {
 
             {data.site_supported === false && (
               <div className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-300">
-                The scraper doesn&apos;t service <span className="font-mono">{data.site}</span> yet. The daily check
+                The scraper doesn&apos;t service <span className="font-mono">{data.site}</span> yet. The scheduled check
                 skips this book; once the site is supported, its TOC is read automatically.
               </div>
             )}
@@ -251,7 +251,7 @@ export default function SourceModal({ bookId, onClose }) {
             {/* TOC actions */}
             <div className="flex gap-2 flex-wrap items-center">
               <button className="btn btn-secondary text-xs inline-flex items-center gap-1.5" disabled={!!busy || !data.source_url}
-                      title="What the daily check does, now: read the TOC, and when the mode is on, scrape what's new"
+                      title="What the scheduled check does, now: read the TOC, and when the mode is on, scrape what's new"
                       onClick={() => run('check', () => api.scrapeCheckNow(bookId))}>
                 <RefreshCw size={12} /> Check now
               </button>

@@ -62,7 +62,7 @@ def overview():
     return {
         "settings": {
             "enabled": bool(scrape_sync.setting("scrape_enabled")),
-            "daily_hour": scrape_sync.setting("scrape_daily_hour"),
+            "sweep_hours": scrape_sync.sweep_hours(),
             "chunk_size": scrape_sync.setting("scrape_chunk_size"),
             "default_gap": scrape_sync.setting("scrape_default_gap"),
             "scraper_url": scrape_sync.setting("scraper_url"),

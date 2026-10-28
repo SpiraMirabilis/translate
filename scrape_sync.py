@@ -64,7 +64,7 @@ AUTOSTART_CHECK_SECONDS = 60
 
 DEFAULTS = {
     "scrape_enabled": True,
-    "scrape_daily_hour": 5,
+    "scrape_sweep_hours": "5,13,21",
     "scrape_chunk_size": 50,
     "scrape_default_gap": 10,
     "scrape_toc_spacing_seconds": 20,
@@ -83,6 +83,30 @@ def setting(key):
     except Exception:
         val = DEFAULTS[key]
     return DEFAULTS[key] if val is None else val
+
+
+def parse_sweep_hours(value):
+    """'5,13,21' -> [5, 13, 21]: sorted, deduplicated, 0-23. Raises
+    ValueError on anything else (the Settings API validates with this)."""
+    hours = set()
+    for part in str(value).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        h = int(part)
+        if not 0 <= h <= 23:
+            raise ValueError(f"sweep hour {h} is not 0-23")
+        hours.add(h)
+    if not hours:
+        raise ValueError("no sweep hours")
+    return sorted(hours)
+
+
+def sweep_hours():
+    try:
+        return parse_sweep_hours(setting("scrape_sweep_hours"))
+    except ValueError:
+        return parse_sweep_hours(DEFAULTS["scrape_sweep_hours"])
 
 
 def auto_translate_model(run_options=None):
@@ -701,7 +725,7 @@ class ScrapeEngine:
     # -- tick ----------------------------------------------------------------
 
     def tick(self):
-        """One pass: schedule the daily sweep, run due translation starts,
+        """One pass: schedule the TOC sweep, run due translation starts,
         then advance the scraper lane by one step. Returns 'busy' while a
         scraper job is in flight, else 'idle'."""
         if not setting("scrape_enabled"):
@@ -769,14 +793,18 @@ class ScrapeEngine:
             pass
         return books
 
-    # -- daily sweep ---------------------------------------------------------
+    # -- TOC sweep -----------------------------------------------------------
 
     def schedule_sweep(self):
+        """Queue a TOC check per book once per sweep slot (scrape_sweep_hours).
+        The slot is the latest of today's hours already passed; before the
+        first one nothing fires, and a slot missed while the worker was down
+        is covered by the next one."""
         now = self.clock()
-        hour = int(setting("scrape_daily_hour"))
-        sweep_at = now.replace(hour=max(0, min(23, hour)), minute=0, second=0, microsecond=0)
-        if now < sweep_at:
+        passed = [h for h in sweep_hours() if h <= now.hour]
+        if not passed:
             return 0
+        sweep_at = now.replace(hour=passed[-1], minute=0, second=0, microsecond=0)
         sweep_iso = sweep_at.isoformat(timespec="seconds")
         spacing = int(setting("scrape_toc_spacing_seconds"))
         known = load_supported_sites()
@@ -805,7 +833,7 @@ class ScrapeEngine:
             self.db.update_book_scrape(b["book_id"], last_sweep_at=self._now())
             queued += 1
         if queued:
-            self._log("info", f"daily sweep: queued {queued} TOC check(s)")
+            self._log("info", f"sweep ({sweep_at:%H:%M}): queued {queued} TOC check(s)")
         return queued
 
     # -- the lane ------------------------------------------------------------

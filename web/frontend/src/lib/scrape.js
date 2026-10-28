@@ -2,7 +2,7 @@
 // Mirrors scrape_sync.py: modes, priorities and task kinds.
 
 export const MODES = [
-  { value: 'off',   label: 'Off',                       hint: 'Not checked by the daily sweep.' },
+  { value: 'off',   label: 'Off',                       hint: 'Not checked by the TOC sweeps.' },
   { value: 'queue', label: 'Queue only',                hint: 'New chapters are scraped into the queue; you start translating.' },
   { value: 'auto',  label: 'Queue + auto-translate',    hint: 'New chapters are queued and translated, if the gap to the last translated chapter is small.' },
 ]

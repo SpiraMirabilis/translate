@@ -607,13 +607,15 @@ export default function Settings() {
                 <p className="text-xs text-slate-500 mt-1">Sent with every job; switch if one draws fewer Cloudflare challenges.</p>
               </div>
               <div>
-                <label className="label">Daily check (hour, server time)</label>
+                <label className="label">TOC check hours (server time, UTC)</label>
                 <input
-                  type="number" min="0" max="23"
+                  type="text"
                   className="input text-sm"
-                  value={settings.scrape_daily_hour ?? 5}
-                  onChange={e => setSettings(s => ({ ...s, scrape_daily_hour: parseInt(e.target.value, 10) }))}
+                  placeholder="5,13,21"
+                  value={settings.scrape_sweep_hours ?? '5,13,21'}
+                  onChange={e => setSettings(s => ({ ...s, scrape_sweep_hours: e.target.value }))}
                 />
+                <p className="text-xs text-slate-500 mt-1">Comma-separated hours, 0-23. Every scraped book&apos;s TOC is checked once per slot.</p>
               </div>
               <div>
                 <label className="label">Chapters per scrape job</label>
@@ -623,7 +625,7 @@ export default function Settings() {
                   value={settings.scrape_chunk_size ?? 50}
                   onChange={e => setSettings(s => ({ ...s, scrape_chunk_size: parseInt(e.target.value, 10) }))}
                 />
-                <p className="text-xs text-slate-500 mt-1">Long backfills run in chunks of this size, so daily checks can slip in between.</p>
+                <p className="text-xs text-slate-500 mt-1">Long backfills run in chunks of this size, so TOC checks can slip in between.</p>
               </div>
               <div>
                 <label className="label">Auto-translate model</label>

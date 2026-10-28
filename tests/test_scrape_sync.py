@@ -123,7 +123,7 @@ class Clock:
 
 
 SETTINGS = {
-    "scrape_enabled": True, "scrape_daily_hour": 5, "scrape_chunk_size": 2,
+    "scrape_enabled": True, "scrape_sweep_hours": "5,13,21", "scrape_chunk_size": 2,
     "scrape_default_gap": 10, "scrape_toc_spacing_seconds": 0, "scraper_url": "http://x",
     "scrape_engine": "", "scrape_notify_url": "", "scraper_vnc_url": "",
     "scrape_translation_model": "claudecode:global-model",
@@ -237,6 +237,34 @@ def test_daily_sweep_catches_up_in_chunks(db, book):
     engine.tick()
     drain(engine)
     assert len(scraper.calls) == n
+
+
+def test_sweep_fires_once_per_slot(db, book):
+    scraper = FakeScraper([entry(1)])
+    clock = Clock()
+    engine = make_engine(db, scraper, clock=clock)
+    db.update_book_scrape(book, mode="queue")
+
+    def sweeps():
+        return len([t for t in db.list_scrape_tasks(book_id=book) if t["reason"] == "sweep"])
+
+    clock.now = clock.now.replace(hour=4)
+    assert engine.schedule_sweep() == 0  # before 05:00
+    for hour, expected in ((5, 1), (12, 1), (13, 2), (20, 2), (21, 3), (23, 3)):
+        clock.now = clock.now.replace(hour=hour)
+        engine.schedule_sweep()
+        drain(engine)
+        assert sweeps() == expected, hour
+    clock.advance(hours=6)  # next day, 05:00
+    engine.schedule_sweep()
+    assert sweeps() == 4
+
+
+def test_parse_sweep_hours():
+    assert scrape_sync.parse_sweep_hours("21, 5,13,5") == [5, 13, 21]
+    for bad in ("", "24", "5,x", "-1"):
+        with pytest.raises(ValueError):
+            scrape_sync.parse_sweep_hours(bad)
 
 
 def test_backfill_yields_to_toc_check_between_chunks(db, book):

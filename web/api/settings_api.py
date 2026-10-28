@@ -214,7 +214,7 @@ def get_settings():
         # Scraping: read from the store -- the scrape worker consults it live.
         "scrape_enabled": settings_store.get("scrape_enabled", True),
         "scraper_url": settings_store.get("scraper_url", settings_store.DEFAULT_SCRAPER_URL),
-        "scrape_daily_hour": settings_store.get("scrape_daily_hour", 5),
+        "scrape_sweep_hours": settings_store.get("scrape_sweep_hours", "5,13,21"),
         "scrape_chunk_size": settings_store.get("scrape_chunk_size", 50),
         "scrape_default_gap": settings_store.get("scrape_default_gap", 10),
         "scrape_translation_model": settings_store.get("scrape_translation_model",
@@ -265,7 +265,7 @@ class SettingsUpdate(BaseModel):
     jev_unit_confidence: Optional[float] = None
     scrape_enabled: Optional[bool] = None
     scraper_url: Optional[str] = None
-    scrape_daily_hour: Optional[int] = None
+    scrape_sweep_hours: Optional[str] = None
     scrape_chunk_size: Optional[int] = None
     scrape_default_gap: Optional[int] = None
     scrape_translation_model: Optional[str] = None
@@ -284,8 +284,14 @@ def update_settings(req: SettingsUpdate):
     for key in ("jev_conflict_confidence", "comment_automod_jev_confidence", "jev_unit_confidence"):
         if key in updates and not 0 < updates[key] <= 1:
             raise HTTPException(status_code=400, detail=f"{key} must be in (0, 1]")
-    if "scrape_daily_hour" in updates and not 0 <= updates["scrape_daily_hour"] <= 23:
-        raise HTTPException(status_code=400, detail="scrape_daily_hour must be 0-23")
+    if "scrape_sweep_hours" in updates:
+        import scrape_sync
+        try:
+            hours = scrape_sync.parse_sweep_hours(updates["scrape_sweep_hours"])
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail="scrape_sweep_hours must be comma-separated hours 0-23")
+        updates["scrape_sweep_hours"] = ",".join(str(h) for h in hours)
     if "scrape_chunk_size" in updates and not 1 <= updates["scrape_chunk_size"] <= 500:
         raise HTTPException(status_code=400, detail="scrape_chunk_size must be 1-500")
     for key in ("scrape_notify_url", "scraper_vnc_url"):

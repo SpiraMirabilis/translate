@@ -344,7 +344,7 @@ job at a time**, so t9 owns the lane:
 - **`t9-scraper.service`** (`deploy/`, user unit) runs `scrape_worker.py`: a loop that
   keeps **at most one** toc/chapters job on the scraper, persisting the scraper job id
   on submit (a restart resumes polling, never resubmits). It also runs the daily sweep
-  at `scrape_daily_hour` and translation auto-starts. Standalone, not a thread in the
+  at each of `scrape_sweep_hours` (05/13/21 server time = UTC) and translation auto-starts. Standalone, not a thread in the
   admin app, so admin restarts never interrupt a backfill. `--status` prints the lane;
   the admin UI reads its heartbeat from `logs/scrape_worker.json`.
 - **Tables** (migration 26): `book_scrape` (per book: `mode` off|queue|auto, `auto_gap`,

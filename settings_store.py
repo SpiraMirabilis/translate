@@ -99,7 +99,8 @@ SCHEMA = {
     # .mode); scrape_enabled only takes it all away. Read live by the worker.
     "scrape_enabled":          ("SCRAPE_ENABLED",          True,                      bool),
     "scraper_url":             ("SCRAPER_URL",             DEFAULT_SCRAPER_URL,       str),
-    "scrape_daily_hour":       ("SCRAPE_DAILY_HOUR",       5,                         int),
+    # TOC sweep hours (server time), comma-separated: "5,13,21".
+    "scrape_sweep_hours":      ("SCRAPE_SWEEP_HOURS",      "5,13,21",                 str),
     "scrape_chunk_size":       ("SCRAPE_CHUNK_SIZE",       50,                        int),
     # Auto-translate only starts when the newest queued chapter is at most this
     # far past the newest translated one (per-book override: book_scrape.auto_gap).

@@ -2,7 +2,7 @@
 """The scraper lane worker — runs as t9-scraper.service.
 
 Keeps at most one job on the scraper (see scrape_sync.py for the rules), runs
-the daily TOC sweep at scrape_daily_hour, and starts translations for books in
+the TOC sweeps at scrape_sweep_hours, and starts translations for books in
 auto mode. A standalone process rather than a thread in the admin app, so the
 frequent admin restarts never interrupt a backfill; the scraper's job id is
 persisted on submit, so its own restarts resume polling instead of resubmitting.
