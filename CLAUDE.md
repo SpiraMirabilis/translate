@@ -273,6 +273,9 @@ unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf
   the scraper's `POST /page` → `og:novel:book_name` or Haiku; cover read by Haiku as the
   fallback), dry run → reviewed JSON → `--apply`. Chinese titles always go through t2s.
   It writes via `set_book_source_title`, which leaves `modified_date` alone (no ebook rebuild).
+- **NovelUpdates title** (`books.nu_title`, migration 31): the title NovelUpdates lists the
+  novel under, often not ours. Books form + admin API only — deliberately absent from
+  `/api/public/*`. The key a NovelUpdates release module will match against.
 - **Header links**: Recommend a Novel, Report an Error (hidden by `error_reports_enabled`)
   and About Us (`/library/about`, `pages/About.jsx` — team blurb, GitHub repo, the
   editor@/abuse@ contact addresses). With no book open, `ReportErrorModal` takes `books`

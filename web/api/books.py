@@ -44,6 +44,7 @@ def init(entity_manager, translator, logger):
 class BookCreate(BaseModel):
     title: str
     source_title: Optional[str] = None  # title in the source language (原名)
+    nu_title: Optional[str] = None  # title as NovelUpdates lists it
     author: Optional[str] = None
     language: Optional[str] = "en"
     source_language: Optional[str] = "zh"
@@ -57,6 +58,7 @@ class BookCreate(BaseModel):
 class BookUpdate(BaseModel):
     title: Optional[str] = None
     source_title: Optional[str] = None  # "" clears it
+    nu_title: Optional[str] = None  # "" clears it
     author: Optional[str] = None
     language: Optional[str] = None
     description: Optional[str] = None
@@ -210,7 +212,8 @@ def create_book(req: BookCreate):
 
     # Apply optional metadata that create_book() doesn't accept directly
     extras = {k: v for k, v in (("source_url", req.source_url), ("notes", req.notes),
-                                ("source_title", req.source_title)) if v}
+                                ("source_title", req.source_title),
+                                ("nu_title", req.nu_title)) if v}
     if extras:
         _entity_manager.update_book(book_id, **extras)
 

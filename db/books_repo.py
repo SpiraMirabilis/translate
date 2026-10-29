@@ -240,7 +240,7 @@ class BooksRepo:
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
-                    view_count, trad_to_simp, tags, modules, is_original, source_title
+                    view_count, trad_to_simp, tags, modules, is_original, source_title, nu_title
                 FROM books
                 WHERE id = ?
                 ''', (book_id,))
@@ -249,7 +249,7 @@ class BooksRepo:
                 SELECT id, title, author, language, description, created_date, modified_date,
                     source_language, target_language, cover_image, categories, is_public,
                     total_source_chapters, status, comments_enabled, source_url, notes,
-                    view_count, trad_to_simp, tags, modules, is_original, source_title
+                    view_count, trad_to_simp, tags, modules, is_original, source_title, nu_title
                 FROM books
                 WHERE title = ?
                 ''', (title,))
@@ -290,6 +290,7 @@ class BooksRepo:
                 "modules": modules,
                 "is_original": bool(row[21]) if len(row) > 21 and row[21] is not None else False,
                 "source_title": row[22] if len(row) > 22 else None,
+                "nu_title": row[23] if len(row) > 23 else None,
             }
 
             return book_info
@@ -347,7 +348,7 @@ class BooksRepo:
                             'target_language', 'modified_date', 'cover_image', 'is_public',
                             'total_source_chapters', 'status', 'comments_enabled',
                             'source_url', 'notes', 'trad_to_simp', 'tags', 'modules',
-                            'is_original', 'source_title']:
+                            'is_original', 'source_title', 'nu_title']:
                         set_clause.append(f"{key} = ?")
                         if key in ('is_public', 'comments_enabled', 'is_original'):
                             values.append(int(bool(value)))
@@ -360,7 +361,7 @@ class BooksRepo:
                                 values.append(int(bool(value)))
                         elif key in ('tags', 'modules'):
                             values.append(json.dumps(value) if value else None)
-                        elif key == 'source_title':
+                        elif key in ('source_title', 'nu_title'):
                             values.append((value or '').strip() or None)
                         else:
                             values.append(value)
@@ -548,7 +549,7 @@ class BooksRepo:
                 is_original,
                 (SELECT COUNT(*) FROM chapters WHERE book_id = books.id AND {pub}) as published_chapter_count,
                 (SELECT MAX(translation_date) FROM chapters WHERE book_id = books.id AND {pub}) as last_published_date,
-                source_language, source_title
+                source_language, source_title, nu_title
             FROM books
             ORDER BY {clause}
             ''', (now, now))
@@ -562,7 +563,7 @@ class BooksRepo:
                  comments_enabled, source_url, notes, view_count, modified_date,
                  trad_to_simp, raw_tags, raw_modules, last_chapter_date, is_original,
                  published_chapter_count, last_published_date, source_language,
-                 source_title) = row
+                 source_title, nu_title) = row
                 try:
                     modules = json.loads(raw_modules) if raw_modules else None
                 except (json.JSONDecodeError, TypeError):
@@ -579,6 +580,7 @@ class BooksRepo:
                     "id": book_id,
                     "title": title,
                     "source_title": source_title,
+                    "nu_title": nu_title,
                     "author": author,
                     "language": language,
                     "source_language": source_language,

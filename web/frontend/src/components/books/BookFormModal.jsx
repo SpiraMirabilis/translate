@@ -6,6 +6,7 @@ export default function BookFormModal({ book, onClose, onSaved }) {
   const [form, setForm] = useState({
     title: book?.title || '',
     source_title: book?.source_title || '',
+    nu_title: book?.nu_title || '',
     author: book?.author || '',
     language: book?.language || 'en',
     source_language: book?.source_language || 'zh',
@@ -203,6 +204,7 @@ export default function BookFormModal({ book, onClose, onSaved }) {
           {!form.is_original && (
             <div><label className="label">Original Title</label><input className="input" lang={form.source_language || 'zh'} value={form.source_title} onChange={e => setForm(f => ({...f, source_title: e.target.value}))} placeholder="原名" /></div>
           )}
+          <div><label className="label">NovelUpdates Title</label><input className="input" value={form.nu_title} onChange={e => setForm(f => ({...f, nu_title: e.target.value}))} placeholder="As listed on NovelUpdates, if different" /></div>
           <div><label className="label">Author</label><input className="input" value={form.author} onChange={e => setForm(f => ({...f, author: e.target.value}))} /></div>
           {!form.is_original && (
             <div><label className="label">Source Language</label><input className="input" value={form.source_language} onChange={e => setForm(f => ({...f, source_language: e.target.value}))} placeholder="zh" /></div>

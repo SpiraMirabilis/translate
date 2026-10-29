@@ -1046,6 +1046,17 @@ def _m030_translation_requests(conn, cursor, backend, logger):
                        "ON translation_requests(priority, id)")
 
 
+def _m031_books_nu_title(conn, cursor, backend, logger):
+    """`nu_title`: the title NovelUpdates lists the novel under, which often
+    differs from ours. Admin-only — it is the key a NovelUpdates module will
+    match releases against. NULL until filled in."""
+    if add_column_if_missing(
+            conn, cursor, backend, "books", "nu_title",
+            "ALTER TABLE books ADD COLUMN nu_title TEXT",
+            "ALTER TABLE books ADD COLUMN nu_title VARCHAR(500)"):
+        logger.info("Added nu_title column to books table")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1077,6 +1088,7 @@ MIGRATIONS = [
     Migration(28, "book_scrape_warnings", _m028_book_scrape_warnings),
     Migration(29, "books_source_title", _m029_books_source_title),
     Migration(30, "translation_requests", _m030_translation_requests),
+    Migration(31, "books_nu_title", _m031_books_nu_title),
 ]
 
 
