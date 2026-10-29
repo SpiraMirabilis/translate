@@ -117,3 +117,22 @@ def test_original_books_refused(admin_client, db):
 def test_screenshot_name_validated(admin_client):
     assert admin_client.get("/api/nu/screenshots/..passwd").status_code == 400
     assert admin_client.get("/api/nu/screenshots/shot.jpg").status_code == 400
+
+
+def test_pending_series_endpoints(admin_client, db):
+    book_id = _book(admin_client, db)
+    base = f"/api/books/{book_id}/nu"
+    # only a submitted series is looked up / posted by id
+    assert admin_client.post(f"{base}/release-search").status_code == 409
+    db.update_book_nu(book_id, state="series_submitted", series_draft={"title": "Pending Title"})
+    view = admin_client.post(f"{base}/release-search").json()
+    assert view["pending_title"] == "Pending Title"
+    assert any(t["kind"] == "release_search" and t["options"]["title"] == "Pending Title"
+               for t in view["tasks"])
+    # no id yet: "post now" is refused
+    assert admin_client.post(f"{base}/first-release/post", json={}).status_code == 409
+    assert admin_client.post(f"{base}/pick", json={"id": "abc"}).status_code == 409
+    st = admin_client.post(f"{base}/pick", json={"id": "123"}).json()["state"]
+    assert st["nu_series_id"] == "123" and st["state"] == "series_submitted"
+    resp = admin_client.post(f"{base}/first-release/post", json={"chapter": 1})
+    assert resp.status_code == 200 and resp.json()["task_id"]

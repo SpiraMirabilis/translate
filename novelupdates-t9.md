@@ -98,8 +98,37 @@ NU adds a series to our group page **only after it approves our first
 release of it**, which takes about a day. That is how T9 learns a series is
 "active" (see the procedure below).
 
-### `POST /nu/releases {series, release, link, date?, dryRun?, force?}`: post a release
-- `series`: the NU series URL or slug.
+### `POST /nu/release-search {title}`: find a series in the add-release form
+Types `title` (the series' **English** NU name) into `/add-release/`'s Series
+box and returns what it offers. Nothing is submitted. That box searches NU's
+whole database, **including series still awaiting approval**. Those have no
+public page, so `POST /nu/search` can't see them. This is how T9 gets the id
+of a series it just submitted.
+
+```json
+{ "title": "The Law-Abiding Necromancer",
+  "match": { "id": "232967", "title": "The Law-Abiding Necromancer" },
+  "ambiguous": false,
+  "hits": [ { "id": "232967", "title": "The Law-Abiding Necromancer" } ] }
+```
+- `match` is set only when exactly one hit's title equals `title`, ignoring
+  case, spaces and punctuation. Long titles come back in full.
+- `ambiguous` means several hits share that exact title. A human picks one.
+- `match: null` with hits means the search returned only near misses. A
+  partial title such as "Law-Abiding" lists every series containing it.
+- **Store `match.id`.** Post to the series by id from then on, not by name.
+
+### `POST /nu/releases {series | seriesId+seriesTitle, release, link, date?, dryRun?, force?}`: post a release
+- Name the series in one of two ways (not both):
+  - `series`: the NU series URL or slug, for an approved series. The
+    scraper reads its page for the id and checks the release table there.
+  - `seriesId` + `seriesTitle`: from `POST /nu/release-search`, for a
+    series still awaiting approval. The title is what gets typed into the
+    Series box, and the submit only goes ahead if the box offers that exact
+    id; an id paired with the wrong title is refused. There's no page to
+    check, so the scraper's log is the only duplicate guard. Once the
+    series is approved, `series` checks the log under both its slug and its
+    id, so a first chapter sent by id is still recognised.
 - `release`: NU's label. Use the same style as our existing releases, which
   are plain `c<N>` (`c745`, `c1016`); NU's example is `v2c10`. NU shows the
   label as typed, so keep it consistent. Labels are compared ignoring case
@@ -132,7 +161,7 @@ Errors (the job fails; the message is in `error`):
 | `may have gone through` / `no reply from NovelUpdates` | It clicked submit but never saw the reply (crash, timeout) | **Stop that series** and ask a human to check NU. Resend with `force: true` only if the release isn't there |
 | `neither confirmed nor refused` | NU's reply had no thank-you and no error | **Stop that series** and ask a human to check NU, as above |
 | `NovelUpdates refused the release` | NU's reply had new error wording; the attempt is logged as failed | Show it to a human; a plain retry is allowed |
-| `didn't offer id` | The add-release form's series search didn't list this series (e.g. it's still pending approval) | Wait and retry later, or escalate |
+| `didn't offer id` | The Series box didn't offer this id for that title (wrong `seriesTitle`, or the series was renamed or removed) | Run `POST /nu/release-search` again and check the id; escalate |
 | `no series at` | Bad slug | Fix the stored slug |
 | `NovelUpdates login failed` / `must be set` | Credentials or config on the scraper | Escalate (scraper `.env`) |
 | `Cloudflare blocked` | Firewall block page, can't be solved | Retry later; escalate if it keeps happening |
@@ -171,7 +200,8 @@ normalized raw title) or `dry_run`. Errors are as for releases.
 ### Also available
 `POST /nu/vocabulary` is described under add-series. `POST /nu/login` checks or refreshes the login (other operations log in by
 themselves). `GET /nu/submissions?limit=` lists everything sent, newest
-first. `GET /nu/screenshots/:file` serves screenshots, which are kept 24 h.
+first. `GET /nu/screenshots/:file` serves screenshots, which are kept 24 h (new-series
+ones 7 days).
 
 ## The procedure T9 implements
 
@@ -182,10 +212,10 @@ untracked → searching → linked ──────────────→
                   │      (found, inOurGroup)            ▲  (slug shows up in group sync)
                   │                                     │
                   ├→ needs_review (candidates, no exact match: a human picks)
-                  └→ new_series → series_submitted ─────┘ (see open issue 2)
+                  └→ new_series → series_submitted → (release-search finds the id) ─┘
 ```
 
-Suggested fields: `nu_state`, `nu_slug`, `nu_url`, `nu_title`,
+Suggested fields: `nu_state`, `nu_id`, `nu_slug`, `nu_url`, `nu_title`,
 `nu_first_release_at`, `nu_last_release` (label), `nu_checked_at`, plus a
 per-chapter "sent to NU" flag or label.
 
@@ -209,8 +239,16 @@ per-chapter "sent to NU" flag or label.
    labels.
 5. **New series.** Check the metadata against the name lists above, dry-run
    it, then `nu_add_series()`. The user wanted new series to be approved by
-   a human before submitting; build that gate in T9. Then follow step 2 for
-   its first release. See open issue 2.
+   a human before submitting; build that gate in T9.
+   - Then call `nu_release_search(title)` with the English title just
+     submitted, and store `match.id` (`series_submitted`). If there's no
+     match yet, retry a few times over a few minutes.
+   - If it's still missing or `ambiguous`, ask a human.
+   - Then post its first chapter with `nu_release(series_id=…,
+     series_title=…)`. NU requires that first release before it approves
+     the series, so do it promptly. From there, follow step 3.
+   - Once the series is approved and has a slug, switch to posting by
+     `series`.
 
 Notifications: the scraper sends ntfy notices only for challenges. Alerts
 for `needs_review`, "check NU" and approval timeouts are T9's job.
@@ -228,14 +266,15 @@ for `needs_review`, "check NU" and approval timeouts are T9's job.
    human checks NU. NU's reply after add-series hasn't been seen yet. If it
    uses different wording, the first real series submit ends in that human
    check; the scraper side then gets updated to recognise it.
-2. **The first release of a brand-new series.** The add-series page says:
-   *"Before your series is approved, you must add one release for the series
-   you're submitting using this link: Add Release."* A pending series has
-   no public `/series/<slug>/` page, so `POST /nu/releases` can't post to it
-   yet: it needs the series page for the id and the duplicate check. The
-   scraper side will be extended once we see the real add-series reply
-   (likely by picking up that link and posting through it). Until then, a
-   new series' first release is done by hand.
+2. **The first release of a brand-new series is untested end to end.** The
+   add-series page says: *"Before your series is approved, you must add one
+   release for the series you're submitting using this link: Add Release."*
+   The user's experience is that the add-release Series box finds pending
+   series. So `POST /nu/release-search` plus posting by `seriesId` covers
+   it, and has been tested live against approved series (search and a dry
+   run by id). Whether a pending series shows up immediately after
+   add-series, and under exactly the submitted title, will only be seen with
+   the first real new series. Watch that one.
 3. **Only the first page of a series' release table is checked** for
    duplicates. That's enough for newest-first posting. Re-posting an old
    chapter relies on T9's records and the scraper's log.

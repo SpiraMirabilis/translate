@@ -476,8 +476,8 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
   `sync`/`vocab`).
 - **States**: untracked → searching → active (found, in our group) | linked (found, not
   ours) | needs_review (near misses: a human picks or declares it new) | new_series (draft →
-  dry run → submit) → series_submitted → *first release posted by hand* (scraper open issue
-  2) → first_release_sent → active (slug seen in a group sync; syncs start
+  dry run → submit) → series_submitted → *release-search finds its id, first chapter posted
+  by id* → first_release_sent → active (slug seen in a group sync; syncs start
   `nu_approval_wait_hours` after the first release, every `nu_group_sync_hours`).
   `linked` books post their first chapter ≥ start automatically. `mode` only gates posting.
 - ⚠️ **`start_chapter` is the baseline**: nothing below it is ever auto-posted — >1,000
@@ -496,6 +496,17 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
   `{SITE_BASE_URL}/library/read/{id}/{n}`, `date` only when published before today. No
   publish hook exists, so polling is how a scheduled chapter going live is noticed. Private
   books hold (`not_public`); no `SITE_BASE_URL` holds the lane.
+- **Backlog rate limit** (migration 33): NU auto-approves a release only when it finds the
+  chapter in our RSS feed — **the per-book feed** (`/api/public/books/{id}/feed.rss`, newest
+  100). Established 2026-10-29: B15 c1017–1022 were auto-approved while beyond the site
+  feed's 400; B8 c689+ (book-feed position ~390) went to NU's manual queue. The `?around=N`
+  feed chapter pages advertise is evidently *not* what NU's approval reads. A chapter outside
+  `nu_feed_window_book` (100; `nu_feed_window_site` > 0 additionally requires the site feed)
+  is **backlog**: `nu_releases.backlog = 1`, capped at `nu_backlog_limit` (150) per book and
+  `nu_backlog_limit_all` (0 = off) across books per rolling `nu_backlog_window_hours` (8);
+  queued backlog tasks count toward the cap. A book at its cap just waits
+  (`book_nu.rate_limited_until`, shown on the page/modal), no hold, no alert. In-feed
+  (new) chapters are never limited. Membership uses `feed_keys()` — the feeds' own query.
 - **Holds stop one book until a human clears them**: `check_nu` (submit may have gone
   through — resolve the release as *On NU* or *Resend*, which sends `force`), `refused`,
   `bad_slug`, `failing` (transient errors after 30 m/2 h/8 h backoff), `approval_timeout`
@@ -515,7 +526,14 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
 - **New series**: `build_series_draft` maps book tags onto NU's genre/tag names
   case-insensitively (vocabulary cached in `logs/nu_vocabulary.json`, refreshed weekly),
   lists the rest as `unmatchedTags`; **submit is refused unless this exact draft dry-ran**
-  (`draft_fingerprint`).
+  (`draft_fingerprint`). A submitted series has no public page until approved, so the lane
+  looks it up by its submitted title on the add-release form (`release_search` task,
+  `POST /nu/release-search`, scraper ≥ 19746ff; retried `RELEASE_SEARCH_TRIES` × 5 min,
+  ambiguous → `candidates` for a human pick, still missing → alert) and stores the id in
+  `book_nu.nu_series_id`. The first chapter then posts by `seriesId` + `seriesTitle`
+  (`pending_title`): automatically on Auto, or the **Post c1 now** button
+  (`post_first_release`, any mode). A pending id the Series box doesn't offer holds the
+  book (`bad_slug`). "I posted c1 by hand" stays as the fallback.
 - **UI**: `/novelupdates` page (nav badge `nu`), Books → Actions → NovelUpdates
   (`NovelUpdatesModal.jsx`), Settings → NovelUpdates. API `web/api/nu_api.py` (admin only).
 - Tests: `tests/test_nu_sync.py` (fake scraper asserting one NU job in flight),

@@ -147,6 +147,12 @@ export default function NovelUpdates() {
                   <td className="px-3 py-1.5">
                     <span className={`px-1.5 py-0.5 rounded ${STATE_CHIP[b.state] || ''}`}>{STATE_LABEL[b.state] || b.state}</span>
                     {b.hold_reason && <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300">{HOLD_LABEL[b.hold_reason] || b.hold_reason}</span>}
+                    {b.rate_limited_until && (
+                      <span className="ml-1 px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300"
+                            title="Backlog chapters NU won't find in the RSS feed are capped; new chapters still go">
+                        backlog paused until {b.rate_limited_until.slice(11, 16)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-1.5 text-slate-400">{b.mode}</td>
                   <td className="px-3 py-1.5 text-slate-400">{b.start_chapter ? `c${b.start_chapter}` : '—'}</td>

@@ -9,11 +9,12 @@ _BOOK_NU_FIELDS = {
     "candidates", "search_names", "series_draft", "draft_dry_run_at", "draft_dry_run",
     "first_release_label", "first_release_at", "active_since", "last_release_label",
     "last_release_at", "checked_at", "hold_reason", "hold_detail", "alerted_at",
-    "consecutive_failures", "last_error",
+    "consecutive_failures", "last_error", "rate_limited_until",
 }
 _BOOK_NU_JSON = {"candidates", "search_names", "series_draft", "draft_dry_run"}
 
-_RELEASE_FIELDS = {"label", "link", "status", "nu_task_id", "submitted_at", "message", "error"}
+_RELEASE_FIELDS = {"label", "link", "status", "nu_task_id", "submitted_at", "message", "error",
+                   "backlog"}
 # A chapter in one of these is done: posted by us, already on NU, or posted by hand.
 RELEASE_DONE = ("sent", "exists", "manual")
 
@@ -35,6 +36,7 @@ _DEFAULTS = {
     "last_release_label": None, "last_release_at": None, "checked_at": None,
     "hold_reason": None, "hold_detail": None, "alerted_at": None,
     "consecutive_failures": 0, "last_error": None, "updated_at": None,
+    "rate_limited_until": None,
 }
 
 
@@ -184,6 +186,27 @@ class NuRepo:
                 (book_id, _published_now()))
             row = cursor.fetchone()
         return (row[0] or 0) + 1
+
+    def feed_keys(self, limit: int, book_id: int = None) -> set:
+        """{(book_id, chapter)} our RSS feed serves: the site-wide feed, or one
+        book's — the same query the feeds run, so "in the feed" can't drift
+        from what NU actually reads."""
+        return {(r["book_id"], r["chapter"])
+                for r in self.list_recent_translated_chapters(limit=limit, book_id=book_id)}
+
+    def backlog_releases_since(self, since: str, book_id: int = None) -> list:
+        """submitted_at of each backlog release posted (or being posted) since
+        `since`, oldest first; one being posted right now reads as None."""
+        where = ["backlog = 1", "(status = 'posting' OR (status IN ('sent', 'check') AND submitted_at >= ?))"]
+        params = [since]
+        if book_id is not None:
+            where.append("book_id = ?")
+            params.append(book_id)
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT submitted_at FROM nu_releases WHERE {' AND '.join(where)} "
+                           "ORDER BY submitted_at", params)
+            return [r[0] for r in cursor.fetchall()]
 
     def get_nu_release(self, book_id: int, chapter_number: int):
         rows = self.list_nu_releases(book_id, chapter_number=chapter_number)

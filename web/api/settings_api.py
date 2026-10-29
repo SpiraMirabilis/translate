@@ -239,6 +239,11 @@ def get_settings():
         "nu_alert_email": settings_store.get("nu_alert_email", ""),
         "nu_ntfy_url": settings_store.get("nu_ntfy_url", ""),
         "nu_forum_username": settings_store.get("nu_forum_username", ""),
+        "nu_backlog_limit": settings_store.get("nu_backlog_limit", 150),
+        "nu_backlog_window_hours": settings_store.get("nu_backlog_window_hours", 8),
+        "nu_backlog_limit_all": settings_store.get("nu_backlog_limit_all", 0),
+        "nu_feed_window_book": settings_store.get("nu_feed_window_book", 100),
+        "nu_feed_window_site": settings_store.get("nu_feed_window_site", 0),
         "has_nu_ntfy_token": bool(_env_value("NU_NTFY_TOKEN")),
         "email_from": os.getenv("EMAIL_FROM", ""),
         "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
@@ -297,6 +302,11 @@ class SettingsUpdate(BaseModel):
     nu_alert_email: Optional[str] = None
     nu_ntfy_url: Optional[str] = None
     nu_forum_username: Optional[str] = None
+    nu_backlog_limit: Optional[int] = None
+    nu_backlog_window_hours: Optional[int] = None
+    nu_backlog_limit_all: Optional[int] = None
+    nu_feed_window_book: Optional[int] = None
+    nu_feed_window_site: Optional[int] = None
 
 
 @router.put("")
@@ -320,7 +330,9 @@ def update_settings(req: SettingsUpdate):
     if "scrape_chunk_size" in updates and not 1 <= updates["scrape_chunk_size"] <= 500:
         raise HTTPException(status_code=400, detail="scrape_chunk_size must be 1-500")
     for key in ("nu_release_spacing_seconds", "nu_approval_wait_hours",
-                "nu_approval_timeout_hours", "nu_group_sync_hours"):
+                "nu_approval_timeout_hours", "nu_group_sync_hours", "nu_backlog_limit",
+                "nu_backlog_window_hours", "nu_backlog_limit_all", "nu_feed_window_book",
+                "nu_feed_window_site"):
         if key in updates and updates[key] < 0:
             raise HTTPException(status_code=400, detail=f"{key} must be >= 0")
     if "nu_forum_username" in updates:

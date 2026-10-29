@@ -27,6 +27,8 @@ class FakeNu:
             "/nu/group/sync": lambda b: {"added": [], "series": []},
             "/nu/series": lambda b: {"status": "dry_run" if b.get("dryRun") else "submitted",
                                      "form": {"title": b.get("title")}, "screenshot": "s.png"},
+            "/nu/release-search": lambda b: {"title": b.get("title"), "match": None,
+                                             "ambiguous": False, "hits": []},
             "/nu/vocabulary": lambda b: {"genres": [{"id": 1, "name": "Xianxia"}],
                                          "tags": [{"id": 2, "name": "Female Protagonist"}],
                                          "types": [], "languages": [{"id": 3, "name": "Chinese"}]},
@@ -479,3 +481,133 @@ def test_seconds_until_due_honours_spacing(db, nu, engine, monkeypatch):
     assert engine.seconds_until_due() == 0
     drain(engine)
     assert [b["release"] for b in nu.posted()] == ["c1", "c2"]
+
+
+# -- a submitted series' first chapter, by id ------------------------------------
+
+def _submitted(db, nu, engine, title="Tokyo 1996: Manga by Keyword", chapters=((1, PAST), (2, PAST))):
+    book = make_book(db, title="Manga", chapters=list(chapters))
+    db.update_book_nu(book, state="new_series", series_draft={
+        "title": title, "associatedNames": ["原名"], "genres": ["Drama"]})
+    nu_sync.queue_series(db, book, dry_run=True)
+    drain(engine)
+    nu_sync.queue_series(db, book, dry_run=False)
+    return book
+
+
+def test_submitted_series_is_found_and_its_first_chapter_posted_by_id(db, nu, engine, alerts):
+    nu.handlers["/nu/release-search"] = lambda b: {"title": b["title"], "ambiguous": False,
+                                                   "match": {"id": "990001", "title": b["title"]},
+                                                   "hits": [{"id": "990001", "title": b["title"]}]}
+    book = _submitted(db, nu, engine)
+    nu_sync.set_mode(db, book, "auto", start_chapter=1)
+    drain(engine)
+    st = db.get_book_nu(book)
+    assert st["state"] == "first_release_sent" and st["nu_series_id"] == "990001"
+    first = nu.posted()[0]
+    assert first["seriesId"] == "990001" and first["seriesTitle"] == "Tokyo 1996: Manga by Keyword"
+    assert "series" not in first and first["release"] == "c1"
+    assert db.get_book(book_id=book)["nu_title"] == "Tokyo 1996: Manga by Keyword"
+
+    # approved: the group sync finds it by title; c2 goes by slug
+    nu.handlers["/nu/group/sync"] = lambda b: {"added": ["tokyo-1996"], "series": [
+        {"slug": "tokyo-1996", "title": "Tokyo 1996: Manga by Keyword",
+         "url": "https://www.novelupdates.com/series/tokyo-1996/"}]}
+    engine.clock.advance(hours=21)
+    drain(engine)
+    assert db.get_book_nu(book)["state"] == "active"
+    assert nu.posted()[1]["series"].endswith("/series/tokyo-1996/") and nu.posted()[1]["release"] == "c2"
+    assert alerts == []
+
+
+def test_submitted_series_mode_off_waits_for_the_button(db, nu, engine):
+    nu.handlers["/nu/release-search"] = lambda b: {"title": b["title"], "ambiguous": False,
+                                                   "match": {"id": "7", "title": b["title"]}, "hits": []}
+    book = _submitted(db, nu, engine)
+    drain(engine)
+    assert nu.posted() == []                        # mode off: nothing posts by itself
+    nu_sync.post_first_release(db, book)            # the "Post c1 now" button
+    drain(engine)
+    assert [b["release"] for b in nu.posted()] == ["c1"]
+    assert db.get_book_nu(book)["state"] == "first_release_sent"
+
+
+def test_ambiguous_lookup_lists_hits_for_a_human(db, nu, engine, alerts):
+    hits = [{"id": "1", "title": "Same Name"}, {"id": "2", "title": "Same Name"}]
+    nu.handlers["/nu/release-search"] = lambda b: {"title": b["title"], "ambiguous": True,
+                                                   "match": None, "hits": hits}
+    book = _submitted(db, nu, engine, title="Same Name")
+    drain(engine)
+    st = db.get_book_nu(book)
+    assert st["nu_series_id"] is None and [c["id"] for c in st["candidates"]] == ["1", "2"]
+    assert len(alerts) == 1
+    nu_sync.set_pending_series_id(db, book, "2")
+    assert db.get_book_nu(book)["nu_series_id"] == "2"
+
+
+def test_lookup_retries_then_alerts(db, nu, engine, alerts):
+    book = _submitted(db, nu, engine)
+    drain(engine)
+    for _ in range(nu_sync.RELEASE_SEARCH_TRIES):
+        engine.clock.advance(minutes=nu_sync.RELEASE_SEARCH_RETRY_MINUTES + 1)
+        drain(engine)
+    assert len(nu.posted("/nu/release-search")) == nu_sync.RELEASE_SEARCH_TRIES
+    assert len(alerts) == 1 and "doesn't list" in db.get_book_nu(book)["last_error"]
+
+
+def test_wrong_pending_id_holds(db, nu, engine, alerts):
+    nu.handlers["/nu/release-search"] = lambda b: {"title": b["title"], "ambiguous": False,
+                                                   "match": {"id": "5", "title": b["title"]}, "hits": []}
+    book = _submitted(db, nu, engine)
+    nu_sync.set_mode(db, book, "auto", start_chapter=1)
+    nu.errors["/nu/releases"] = ["NU's Series search for \"Tokyo\" didn't offer id 5"]
+    drain(engine)
+    st = db.get_book_nu(book)
+    assert st["hold_reason"] == "bad_slug" and st["state"] == "series_submitted"
+    assert len(alerts) == 1
+
+
+# -- backlog rate limit ------------------------------------------------------------
+
+def test_backlog_is_rate_limited_and_new_chapters_are_not(db, nu, engine, monkeypatch):
+    # c1-c6 published; the book feed carries the newest 2 (c5, c6)
+    monkeypatch.setitem(SETTINGS, "nu_feed_window_book", 2)
+    monkeypatch.setitem(SETTINGS, "nu_backlog_limit", 2)
+    monkeypatch.setitem(SETTINGS, "nu_backlog_window_hours", 8)
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 7)])
+    go_active(db, book, start=1)
+    drain(engine)
+    assert [b["release"] for b in nu.posted()] == ["c1", "c2"]      # then the limit binds
+    st = db.get_book_nu(book)
+    assert st["rate_limited_until"]
+    assert [r["backlog"] for r in sorted(db.list_nu_releases(book), key=lambda r: r["chapter_number"])] == [1, 1]
+
+    engine.clock.advance(hours=8, seconds=1)
+    drain(engine)
+    # c3, c4 are backlog (2 more); c5, c6 are in the feed and go regardless
+    assert [b["release"] for b in nu.posted()] == ["c1", "c2", "c3", "c4", "c5", "c6"]
+    rows = {r["chapter_number"]: r["backlog"] for r in db.list_nu_releases(book)}
+    assert rows[5] == 0 and rows[6] == 0
+    assert db.get_book_nu(book)["rate_limited_until"] is None
+
+
+def test_global_backlog_cap(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_feed_window_book", 1)
+    monkeypatch.setitem(SETTINGS, "nu_backlog_limit", 0)          # no per-book limit
+    monkeypatch.setitem(SETTINGS, "nu_backlog_limit_all", 3)
+    a = make_book(db, title="A", chapters=[(n, PAST) for n in range(1, 4)])
+    b = make_book(db, title="B", chapters=[(n, PAST) for n in range(1, 4)])
+    go_active(db, a, start=1, slug="a")
+    go_active(db, b, start=1, slug="b")
+    drain(engine)
+    backlog = [r for bid in (a, b) for r in db.list_nu_releases(bid) if r["backlog"]]
+    assert len(backlog) == 3                                        # the cap across books
+
+
+def test_limit_off_posts_everything(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_feed_window_book", 1)
+    monkeypatch.setitem(SETTINGS, "nu_backlog_limit", 0)
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 5)])
+    go_active(db, book, start=1)
+    drain(engine)
+    assert len(nu.posted()) == 4

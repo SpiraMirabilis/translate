@@ -310,6 +310,8 @@ export const api = {
   nuFirstRelease:    (bookId, chapter, label) => post(`/api/books/${bookId}/nu/first-release`, { chapter, label: label || null }),
   nuResolveRelease:  (bookId, chapter, action) => post(`/api/books/${bookId}/nu/releases/${chapter}/resolve`, { action }),
   nuReleaseDryRun:   (bookId, chapter) => post(`/api/books/${bookId}/nu/releases/${chapter}/dry-run`, {}),
+  nuReleaseSearch:   (bookId) => post(`/api/books/${bookId}/nu/release-search`, {}),
+  nuPostFirstRelease: (bookId, chapter) => post(`/api/books/${bookId}/nu/first-release/post`, { chapter }),
 
   // Comments (admin moderation)
   listComments:    (params = {}) => {

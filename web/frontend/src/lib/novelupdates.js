@@ -46,6 +46,7 @@ export function nuTaskLabel(t) {
   const o = t.options || {}
   switch (t.kind) {
     case 'search':  return 'Search NU'
+    case 'release_search': return `Find new series on NU${o.tries > 1 ? ` (try ${o.tries})` : ''}`
     case 'release': return `${o.dry_run ? 'Dry run' : 'Post'} c${o.chapter}${o.force ? ' (force)' : ''}`
     case 'sync':    return 'Group sync'
     case 'series':  return o.dry_run ? 'New series (dry run)' : 'Submit new series'
@@ -62,6 +63,11 @@ export function nuTaskSummary(t) {
     if (r.found) return `found “${r.series?.title}”${r.inOurGroup ? ' (ours)' : ''}`
     if (r.candidates?.length) return `${r.candidates.length} candidate(s), no exact match`
     if (t.status === 'done') return 'not on NU'
+  }
+  if (t.kind === 'release_search') {
+    if (r.match) return `id ${r.match.id}`
+    if (r.ambiguous) return `${r.hits?.length} series share the title`
+    if (t.status === 'done') return r.hits?.length ? `${r.hits.length} near miss(es)` : 'not listed yet'
   }
   if (t.kind === 'release' || t.kind === 'series') return r.message || r.status || ''
   if (t.kind === 'sync' && r.series) return `${r.series.length} series${r.added?.length ? `, ${r.added.length} new` : ''}`

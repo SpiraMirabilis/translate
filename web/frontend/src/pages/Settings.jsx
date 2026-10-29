@@ -696,6 +696,33 @@ export default function Settings() {
                 </div>
               ))}
             </div>
+            <div>
+              <p className="text-xs text-slate-400 mb-2">
+                <strong className="text-slate-300">Backlog rate limit.</strong> NovelUpdates approves a release by itself
+                only when it finds the chapter in the book&apos;s RSS feed (its newest chapters). Older chapters land in
+                NU&apos;s manual queue, so they&apos;re capped; new chapters are never held back.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
+                {[
+                  ['nu_backlog_limit', 'Per book', 150, 'Backlog releases per book per window. 0 = no limit.'],
+                  ['nu_backlog_window_hours', 'Window (hours)', 8, 'Rolling window for both limits.'],
+                  ['nu_backlog_limit_all', 'All books', 0, 'Across every book per window. 0 = no limit.'],
+                  ['nu_feed_window_book', 'Book feed size', 100, 'Chapters NU sees in a book’s feed; anything older is backlog.'],
+                  ['nu_feed_window_site', 'Site feed size', 0, 'Also require a place in the site-wide feed’s newest N. 0 = ignore it.'],
+                ].map(([key, label, dflt, help]) => (
+                  <div key={key}>
+                    <label className="label">{label}</label>
+                    <input
+                      type="number" min="0"
+                      className="input text-sm"
+                      value={settings[key] ?? dflt}
+                      onChange={e => setSettings(s => ({ ...s, [key]: parseInt(e.target.value, 10) }))}
+                    />
+                    <p className="text-xs text-slate-500 mt-1">{help}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="label">Alert email</label>

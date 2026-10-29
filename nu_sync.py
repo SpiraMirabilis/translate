@@ -17,7 +17,8 @@ States (book_nu.state) — `mode` (off|auto) only gates posting:
                            ├→ linked        found, never posted by us
                            ├→ needs_review  near misses: a human picks or declares it new
                            └→ new_series    nothing found: a human edits and submits a draft
-    new_series → series_submitted → (first release posted by hand) → first_release_sent
+    new_series → series_submitted → (release-search finds its id; first chapter
+                 posted by id) → first_release_sent
     linked → (first chapter ≥ start_chapter posted) → first_release_sent
     first_release_sent → (slug appears in a group sync) → active
 
@@ -41,12 +42,17 @@ STATES = ("untracked", "searching", "linked", "needs_review", "new_series",
 HOLD_REASONS = ("check_nu", "refused", "bad_slug", "approval_timeout", "failing", "not_public")
 
 PRIORITY_SYNC = 10
+PRIORITY_RELEASE_SEARCH = 15
 PRIORITY_RELEASE = 20
 PRIORITY_SERIES = 25
 PRIORITY_SEARCH = 30
 PRIORITY_VOCAB = 40
 
 RETRY_BACKOFF_MINUTES = (30, 120, 480)
+# A just-submitted series can take a moment to appear in the add-release
+# form's Series box: look it up this many times, this far apart.
+RELEASE_SEARCH_TRIES = 4
+RELEASE_SEARCH_RETRY_MINUTES = 5
 UNREACHABLE_RETRY_MINUTES = 5
 VOCAB_MAX_AGE_DAYS = 7
 PLAN_SECONDS = 30
@@ -63,6 +69,19 @@ DEFAULTS = {
     "nu_group_sync_hours": 4,
     "nu_alert_email": "",
     "nu_ntfy_url": "",
+    # Rate limit on backlog releases: NU auto-approves a release only when it
+    # finds the chapter in our RSS feed; anything else waits in its manual
+    # queue. NU reads the per-book feed (seen 2026-10-29: B15 c1017-1022 were
+    # auto-approved while beyond the site feed's 400), so a chapter counts as
+    # in the feed when it is among its book feed's newest nu_feed_window_book;
+    # nu_feed_window_site > 0 additionally requires the site feed's newest N.
+    # Other releases are capped per book (and optionally across books) per
+    # rolling window; 0 = off.
+    "nu_backlog_limit": 150,
+    "nu_backlog_window_hours": 8,
+    "nu_backlog_limit_all": 0,
+    "nu_feed_window_site": 0,
+    "nu_feed_window_book": 100,
 }
 
 # Substrings of a failed job's error (novelupdates-t9.md, "Errors").
@@ -74,6 +93,7 @@ ERR_UNKNOWN_NAMES = ("doesn't know",)
 
 KIND_PATHS = {
     "search": "/nu/search",
+    "release_search": "/nu/release-search",
     "release": "/nu/releases",
     "sync": "/nu/group/sync",
     "series": "/nu/series",
@@ -480,6 +500,59 @@ def suggested_start(db, book_id, state):
     return db.first_unpublished_chapter(book_id)
 
 
+def pending_title(db, book_id, state=None):
+    """The English title a series was submitted under — what the add-release
+    form's Series box knows it by until NU approves it."""
+    state = state or db.get_book_nu(book_id)
+    return ((state.get("series_draft") or {}).get("title")
+            or (db.get_book(book_id=book_id) or {}).get("nu_title") or "").strip() or None
+
+
+def request_release_search(db, book_id):
+    """Look a submitted series up on the add-release form, for its NU id."""
+    state = db.get_book_nu(book_id)
+    if state["state"] != "series_submitted":
+        raise NuActionError("only a submitted series is looked up this way")
+    title = pending_title(db, book_id, state)
+    if not title:
+        raise NuActionError("no submitted title to look up")
+    if not db.open_nu_task(book_id, "release_search"):
+        db.create_nu_task(book_id, "release_search", priority=PRIORITY_RELEASE_SEARCH,
+                          options={"title": title, "tries": 1})
+    return db.get_book_nu(book_id)
+
+
+def set_pending_series_id(db, book_id, series_id):
+    """A human picked the pending series' id (the lookup was ambiguous)."""
+    state = db.get_book_nu(book_id)
+    if state["state"] != "series_submitted":
+        raise NuActionError("only a submitted series takes a pending id")
+    if not str(series_id or "").strip().isdigit():
+        raise NuActionError("a NovelUpdates series id is a number")
+    db.update_book_nu(book_id, nu_series_id=str(series_id).strip(), candidates=None, last_error=None,
+                      **({"hold_reason": None, "hold_detail": None, "alerted_at": None}
+                         if state.get("hold_reason") == "bad_slug" else {}))
+    return db.get_book_nu(book_id)
+
+
+def post_first_release(db, book_id, chapter=None):
+    """Post a submitted series' first chapter now, whatever the book's mode —
+    NU won't approve the series without it. Goes through the lane like any
+    release (holds, "check NU", alerts)."""
+    state = db.get_book_nu(book_id)
+    if state["state"] != "series_submitted":
+        raise NuActionError(f"the book is {state['state']}")
+    if not state.get("nu_series_id"):
+        raise NuActionError("the series' NU id isn't known yet — look it up first")
+    chapter = int(chapter or state.get("start_chapter") or 1)
+    if not db.chapter_published_at(book_id, chapter):
+        raise NuActionError(f"chapter {chapter} isn't published")
+    if db.open_nu_task(book_id, "release"):
+        raise NuActionError("a release for this book is already queued")
+    return db.create_nu_task(book_id, "release", priority=PRIORITY_RELEASE,
+                             options={"chapter": chapter, "first": True})
+
+
 def clear_book_hold(db, book_id):
     db.update_book_nu(book_id, hold_reason=None, hold_detail=None, alerted_at=None,
                       consecutive_failures=0)
@@ -517,6 +590,7 @@ class NuEngine:
         self.alerter = alerter
         self.plan_seconds = plan_seconds
         self._planned_at = None
+        self._site_feed = None
 
     # -- helpers -------------------------------------------------------------
 
@@ -612,6 +686,7 @@ class NuEngine:
         wait = datetime.timedelta(hours=float(setting("nu_approval_wait_hours")))
         timeout = datetime.timedelta(hours=float(setting("nu_approval_timeout_hours")))
         base = None
+        self._site_feed = None
         need_sync = need_vocab = False
         for r in self.db.list_book_nu():
             book_id, state = r["book_id"], r["state"]
@@ -632,9 +707,14 @@ class NuEngine:
                                f"{int((now - first).total_seconds() // 3600)} h ago and the series "
                                "still isn't on our group page — NU may have rejected it")
                 continue
-            if r["mode"] != "auto" or r.get("hold_reason") or state not in ("linked", "active"):
+            if r["mode"] != "auto" or r.get("hold_reason") \
+                    or state not in ("linked", "active", "series_submitted"):
                 continue
-            if not r.get("nu_slug") or r.get("start_chapter") is None:
+            if r.get("start_chapter") is None:
+                continue
+            # A submitted series has no slug until NU approves it; its first
+            # chapter goes by the id the add-release form gave us.
+            if not (r.get("nu_slug") or (state == "series_submitted" and r.get("nu_series_id"))):
                 continue
             if not r.get("is_public"):
                 self._hold(book_id, "not_public", "the book is private, so its chapter links "
@@ -651,6 +731,20 @@ class NuEngine:
             nxt = self.db.published_chapters_from(book_id, int(r["start_chapter"]), limit=1)
             if not nxt:
                 continue
+            chapter = nxt[0]["chapter"]
+            backlog = not self._in_feed(book_id, chapter)
+            if backlog:
+                until = self._backlog_until(book_id, now)
+                if until is not None:
+                    if r.get("rate_limited_until") != _iso(until):
+                        if not r.get("rate_limited_until"):
+                            self._activity(book_id, f"rate-limited: c{chapter} isn't in our RSS feed, so NU "
+                                                    "would queue it for manual approval; the backlog "
+                                                    f"resumes at {until:%H:%M}")
+                        self.db.update_book_nu(book_id, rate_limited_until=_iso(until))
+                    continue
+            if r.get("rate_limited_until"):
+                self.db.update_book_nu(book_id, rate_limited_until=None)
             last = _parse(r.get("last_release_at"))
             not_before = None
             if state == "active" and last and spacing:
@@ -659,7 +753,8 @@ class NuEngine:
                     not_before = _iso(due)
             self.db.create_nu_task(book_id, "release", priority=PRIORITY_RELEASE,
                                    not_before=not_before,
-                                   options={"chapter": nxt[0]["chapter"], "first": state == "linked"})
+                                   options={"chapter": chapter, "backlog": backlog,
+                                            "first": state in ("linked", "series_submitted")})
         if need_sync and not self.db.open_nu_task(None, "sync"):
             last = self.db.last_finished_nu_task("sync")
             last_at = _parse((last or {}).get("finished_at"))
@@ -668,6 +763,47 @@ class NuEngine:
                 self.db.create_nu_task(None, "sync", priority=PRIORITY_SYNC)
         if need_vocab and not self.db.open_nu_task(None, "vocab"):
             self.db.create_nu_task(None, "vocab", priority=PRIORITY_VOCAB)
+
+    def _in_feed(self, book_id, chapter):
+        """Will NU find this chapter in our RSS feed (and so approve it on its
+        own)? NU reads the book's feed; the site feed is checked as well only
+        when nu_feed_window_site is set."""
+        site_n = int(setting("nu_feed_window_site") or 0)
+        book_n = int(setting("nu_feed_window_book") or 0)
+        if book_n <= 0:
+            return False
+        key = (book_id, chapter)
+        if key not in self.db.feed_keys(book_n, book_id=book_id):
+            return False
+        if site_n > 0:
+            if self._site_feed is None:
+                self._site_feed = self.db.feed_keys(site_n)
+            return key in self._site_feed
+        return True
+
+    def _backlog_until(self, book_id, now):
+        """None when another backlog release may go now, else when the oldest
+        one in the window ages out (per book, or across books for the global
+        cap — whichever binds later)."""
+        window = datetime.timedelta(hours=float(setting("nu_backlog_window_hours") or 0))
+        since = _iso(now - window)
+        until = None
+        for limit, scope in ((int(setting("nu_backlog_limit") or 0), book_id),
+                             (int(setting("nu_backlog_limit_all") or 0), None)):
+            if limit <= 0:
+                continue
+            stamps = self.db.backlog_releases_since(since, book_id=scope)
+            # Backlog releases queued but not yet posting count too, or one
+            # planning pass could let every book's next release under the cap.
+            stamps += [None for t in self.db.list_nu_tasks(statuses=("queued",), kinds=("release",),
+                                                           book_id=scope, limit=1000)
+                       if (t.get("options") or {}).get("backlog")]
+            if len(stamps) < limit:
+                continue
+            posted = sorted(_parse(t) or now for t in stamps)
+            frees = posted[len(posted) - limit] + window
+            until = frees if until is None else max(until, frees)
+        return until
 
     # -- the lane ------------------------------------------------------------
 
@@ -692,16 +828,28 @@ class NuEngine:
             chapter = opts["chapter"]
             pub = self.db.chapter_published_at(book_id, chapter)
             link = chapter_link(book_id, chapter)
-            if not state.get("nu_slug") or not pub or not link:
+            if state.get("nu_slug"):
+                target = {"series": state.get("nu_url") or state["nu_slug"]}
+            elif state.get("nu_series_id") and pending_title(self.db, book_id, state):
+                # Awaiting approval: no page yet. The scraper types the title into
+                # the Series box and only submits if it offers this exact id.
+                target = {"seriesId": state["nu_series_id"],
+                          "seriesTitle": pending_title(self.db, book_id, state)}
+            else:
+                return None
+            if not pub or not link:
                 return None
             if not opts.get("dry_run"):
                 self.db.upsert_nu_release(book_id, chapter, label=release_label(chapter), link=link,
-                                          status="posting", nu_task_id=task["id"], error=None)
-            return {"series": state.get("nu_url") or state["nu_slug"],
+                                          status="posting", nu_task_id=task["id"], error=None,
+                                          backlog=1 if opts.get("backlog") else 0)
+            return {**target,
                     "release": release_label(chapter), "link": link,
                     "date": release_date(pub, self.clock().date()),
                     "dryRun": True if opts.get("dry_run") else None,
                     "force": True if opts.get("force") else None}
+        if kind == "release_search":
+            return {"title": opts.get("title")}
         if kind == "series":
             draft = self.db.get_book_nu(book_id).get("series_draft") or {}
             body = series_body(draft)
@@ -826,6 +974,14 @@ class NuEngine:
                 self.db.update_book_nu(book_id, last_error=error)
                 self._alert(book_id, "refused", f"NU refused the {kind}: {error}")
             return
+        if kind == "release" and "didn't offer id" in low \
+                and not self.db.get_book_nu(book_id).get("nu_slug"):
+            self.db.update_nu_task(task["id"], **fail)
+            self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
+            self._hold(book_id, "bad_slug", "NU's add-release form didn't offer the stored id for the "
+                                            f"submitted title ({error}). Look the series up again, "
+                                            "then clear the hold.")
+            return
         if kind == "release" and any(s in low for s in ERR_BAD_SLUG):
             self.db.update_nu_task(task["id"], **fail)
             self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
@@ -903,7 +1059,7 @@ class NuEngine:
         state = self.db.get_book_nu(book_id)
         fields = {"last_release_label": label, "last_release_at": now, "consecutive_failures": 0,
                   "last_error": None}
-        if state["state"] == "linked":
+        if state["state"] in ("linked", "series_submitted"):
             fields.update(state="first_release_sent", first_release_label=label, first_release_at=now)
             self._activity(book_id, f"first release {label} sent; waiting for NU to approve the series",
                            link=state.get("nu_url"))
@@ -948,8 +1104,48 @@ class NuEngine:
                                                   "screenshot": res.get("screenshot")})
             return
         self.db.update_book_nu(book_id, state="series_submitted", last_error=None)
-        self._activity(book_id, "new series submitted. Post its first release by hand with NU's "
-                                "Add Release link, then record it here")
+        title = pending_title(self.db, book_id)
+        if title and not (self.db.get_book(book_id=book_id) or {}).get("nu_title"):
+            self.db.update_book(book_id, nu_title=title)
+        self._activity(book_id, "new series submitted; looking it up on NU's add-release form "
+                                "so its first chapter can be posted")
+        try:
+            request_release_search(self.db, book_id)
+        except NuActionError as e:
+            self.db.update_book_nu(book_id, last_error=str(e))
+
+    def on_release_search(self, task, res):
+        book_id = task["book_id"]
+        opts = task.get("options") or {}
+        match = res.get("match") or {}
+        hits = res.get("hits") or []
+        if match.get("id") and not res.get("ambiguous"):
+            self.db.update_book_nu(book_id, nu_series_id=str(match["id"]), candidates=None,
+                                   last_error=None)
+            mode = self.db.get_book_nu(book_id).get("mode")
+            self._activity(book_id, f"found the pending series on NU (id {match['id']}); "
+                           + ("posting its first chapter" if mode == "auto"
+                              else "post its first chapter from the NovelUpdates modal"))
+            return
+        if res.get("ambiguous"):
+            self.db.update_book_nu(book_id, candidates=[{"id": h.get("id"), "title": h.get("title")}
+                                                        for h in hits], last_error=None)
+            self._alert(book_id, "pick the series",
+                        f"several series on NU are named “{opts.get('title')}” — pick ours in the "
+                        "NovelUpdates modal so its first chapter can be posted")
+            return
+        tries = int(opts.get("tries") or 1)
+        if tries < RELEASE_SEARCH_TRIES:
+            self.db.create_nu_task(book_id, "release_search", priority=PRIORITY_RELEASE_SEARCH,
+                                   not_before=self._later(minutes=RELEASE_SEARCH_RETRY_MINUTES),
+                                   options={"title": opts.get("title"), "tries": tries + 1})
+            return
+        detail = (f"NU's add-release form doesn't list “{opts.get('title')}” after {tries} tries"
+                  + (f" (near misses: {', '.join(h.get('title') or '' for h in hits[:4])})" if hits else ""))
+        self.db.update_book_nu(book_id, last_error=detail,
+                               candidates=[{"id": h.get("id"), "title": h.get("title")} for h in hits] or None)
+        self._alert(book_id, "new series not found", detail + ". Look it up again later, pick it, "
+                                                              "or post the first chapter by hand.")
 
     def on_vocab(self, task, res):
         save_vocab(res)

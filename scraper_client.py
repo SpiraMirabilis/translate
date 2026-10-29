@@ -258,12 +258,20 @@ class ScraperClient:
         """Our group's series as of the last sync (no browser)."""
         return self._req("GET", "/nu/group/series")[1]
 
-    def nu_release(self, series: str, release: str, link: str, date: str | None = None,
+    def nu_release_search(self, title: str, poll: float = 3, timeout: float | None = None) -> dict:
+        """Search the add-release form's Series box, which also finds series still awaiting
+        approval. {title, match: {id, title} | None, ambiguous, hits: [{id, title}]}."""
+        return self._nu("/nu/release-search", {"title": title}, poll, timeout)
+
+    def nu_release(self, series: str | None = None, release: str = "", link: str = "", date: str | None = None,
                    dry_run: bool | None = None, force: bool | None = None,
+                   series_id: str | None = None, series_title: str | None = None,
                    poll: float = 3, timeout: float | None = None) -> dict:
-        """Post a release: series is the NU URL or slug, release NU's label (c12, v2c10),
-        link our chapter URL, date MM/DD/YYYY only if released before today."""
-        return self._nu("/nu/releases", {"series": series, "release": release, "link": link, "date": date,
+        """Post a release: series is the NU URL or slug, or (for a series still awaiting
+        approval) series_id + series_title from nu_release_search. release is NU's label
+        (c12, v2c10), link our chapter URL, date MM/DD/YYYY only if released before today."""
+        return self._nu("/nu/releases", {"series": series, "seriesId": series_id, "seriesTitle": series_title,
+                                         "release": release, "link": link, "date": date,
                                          "dryRun": dry_run, "force": force}, poll, timeout)
 
     def nu_add_series(self, title: str, associated_names: list[str], genres: list[str],

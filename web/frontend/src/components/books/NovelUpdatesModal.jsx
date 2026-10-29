@@ -38,6 +38,7 @@ export default function NovelUpdatesModal({ bookId, onClose }) {
     if (!data) return
     setMode(data.state.mode)
     setStart(String(data.state.start_chapter ?? data.suggested_start ?? ''))
+    if (data.first_chapter) setFirstChapter(String(data.first_chapter))
   }, [data?.state?.mode, data?.state?.start_chapter, data?.suggested_start])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const refresh = () => {
@@ -104,6 +105,12 @@ export default function NovelUpdatesModal({ bookId, onClose }) {
               {data.pending > 0 && <span className="text-xs text-slate-400">{data.pending} to post</span>}
             </div>
             {st.last_error && !st.hold_reason && <p className="text-xs text-amber-300">{st.last_error}</p>}
+            {st.rate_limited_until && (
+              <p className="text-xs text-sky-300">
+                Backlog rate limit reached: older chapters (not in the book&apos;s RSS feed, so NU would queue them for
+                manual approval) resume at {st.rate_limited_until.replace('T', ' ').slice(0, 16)}. New chapters still go out.
+              </p>
+            )}
 
             {/* Posting */}
             <Section title="Posting">
@@ -180,17 +187,53 @@ export default function NovelUpdatesModal({ bookId, onClose }) {
             {st.state === 'series_submitted' && (
               <Section title="First release">
                 <p className="text-xs text-slate-400 mb-2">
-                  NU needs one release before it approves a new series, and the scraper can&apos;t post to a series
-                  that isn&apos;t approved yet. Post the first chapter by hand with the <em>Add Release</em> link on NU&apos;s
-                  add-series confirmation, then record it here. A group sync picks the series up once NU approves it.
+                  NU approves a new series only after its first release. Until then the series has no public page,
+                  so the lane finds it by its submitted title{data.pending_title ? <> (<em>{data.pending_title}</em>)</> : ''} in
+                  NU&apos;s add-release form and posts by its id.
+                  {st.mode === 'auto' ? ' On Auto, the first chapter goes out as soon as the id is known.' : ''}
                 </p>
-                <div className="flex items-center gap-2">
-                  <input className="input w-24 text-xs" type="number" min="1" value={firstChapter} onChange={e => setFirstChapter(e.target.value)} />
-                  <button className="btn btn-primary text-xs inline-flex items-center gap-1" disabled={!!busy || !firstChapter}
-                          onClick={() => run('first', () => api.nuFirstRelease(bookId, parseInt(firstChapter, 10)))}>
-                    {spin('first')} I posted c{firstChapter || '?'}
-                  </button>
-                </div>
+                {st.nu_series_id ? (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-emerald-300">Found on NU: id {st.nu_series_id}</span>
+                    <input className="input w-24 text-xs" type="number" min="1" value={firstChapter}
+                           onChange={e => setFirstChapter(e.target.value)} />
+                    <button className="btn btn-primary text-xs inline-flex items-center gap-1" disabled={!!busy || !firstChapter}
+                            onClick={() => run('postfirst', () => api.nuPostFirstRelease(bookId, parseInt(firstChapter, 10)))}>
+                      {spin('postfirst') || <Send size={12} />} Post c{firstChapter || '?'} now
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-amber-300">
+                        {(data.tasks || []).some(t => t.kind === 'release_search' && OPEN.includes(t.status))
+                          ? 'Looking the series up on NU…' : 'The series’ NU id isn’t known yet.'}
+                      </span>
+                      <button className="btn btn-secondary text-xs inline-flex items-center gap-1" disabled={!!busy}
+                              onClick={() => run('rsearch', () => api.nuReleaseSearch(bookId))}>
+                        {spin('rsearch') || <Search size={12} />} Look it up again
+                      </button>
+                    </div>
+                    {(st.candidates || []).map(c => (
+                      <div key={c.id} className="flex items-center gap-2 text-xs px-3 py-1.5 rounded bg-slate-800/50">
+                        <span className="text-slate-200 flex-1">{c.title}</span>
+                        <span className="text-slate-500">id {c.id}</span>
+                        <button className="btn btn-secondary text-xs" disabled={!!busy}
+                                onClick={() => run('pickid', () => api.nuPick(bookId, { id: c.id }))}>This one</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <details className="mt-3">
+                  <summary className="text-xs text-slate-500 cursor-pointer">Posted the first chapter by hand instead?</summary>
+                  <div className="flex items-center gap-2 mt-2">
+                    <input className="input w-24 text-xs" type="number" min="1" value={firstChapter} onChange={e => setFirstChapter(e.target.value)} />
+                    <button className="btn btn-secondary text-xs inline-flex items-center gap-1" disabled={!!busy || !firstChapter}
+                            onClick={() => run('first', () => api.nuFirstRelease(bookId, parseInt(firstChapter, 10)))}>
+                      {spin('first')} I posted c{firstChapter || '?'}
+                    </button>
+                  </div>
+                </details>
               </Section>
             )}
 

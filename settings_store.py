@@ -138,6 +138,17 @@ SCHEMA = {
     # ("NUF username: …") — NU verifies a translation group by that line on its
     # site. Blank = the line isn't shown. Per deployment, never in code.
     "nu_forum_username":       ("NU_FORUM_USERNAME",       "",                        str),
+    # Rate limit on backlog releases. NU auto-approves a release only when it
+    # finds the chapter in the book's RSS feed (its newest nu_feed_window_book
+    # chapters); anything older lands in NU's manual queue, so at most
+    # nu_backlog_limit of those go per book per nu_backlog_window_hours, and
+    # nu_backlog_limit_all across all books (0 = no limit). nu_feed_window_site
+    # > 0 also requires a place in the site-wide feed's newest N.
+    "nu_backlog_limit":        ("NU_BACKLOG_LIMIT",        150,                       int),
+    "nu_backlog_window_hours": ("NU_BACKLOG_WINDOW_HOURS", 8,                         int),
+    "nu_backlog_limit_all":    ("NU_BACKLOG_LIMIT_ALL",    0,                         int),
+    "nu_feed_window_book":     ("NU_FEED_WINDOW_BOOK",     100,                       int),
+    "nu_feed_window_site":     ("NU_FEED_WINDOW_SITE",     0,                         int),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION

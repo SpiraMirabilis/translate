@@ -173,6 +173,10 @@ def _book_view(book_id):
         "releases": _db.list_nu_releases(book_id, limit=30),
         "tasks": _db.list_nu_tasks(book_id=book_id, limit=15),
         "draft_dry_run_current": bool(draft) and dry.get("fingerprint") == nu_sync.draft_fingerprint(draft),
+        # A submitted series awaiting approval: the title the add-release form
+        # knows it by, and the chapter "Post now" would send.
+        "pending_title": nu_sync.pending_title(_db, book_id, state) if state["state"] == "series_submitted" else None,
+        "first_chapter": int(start or 1),
         "vocab": {k: [x["name"] for x in (vocab or {}).get(k) or []]
                   for k in ("genres", "tags", "types", "languages")} if vocab else None,
         "hold": nu_sync.load_hold(),
@@ -224,6 +228,9 @@ def pick(book_id: int, req: PickSeries):
     _book_or_404(book_id)
     if req.new:
         _act(nu_sync.declare_new_series, book_id)
+    elif req.id and not req.url:
+        # a pending (submitted, not yet approved) series: its id from the lookup's hits
+        _act(nu_sync.set_pending_series_id, book_id, req.id)
     elif req.url:
         _act(nu_sync.link_series, book_id, req.url, req.title, req.id)
     else:
@@ -280,6 +287,26 @@ def draft_dry_run(book_id: int):
 def draft_submit(book_id: int):
     _book_or_404(book_id)
     task_id = _act(nu_sync.queue_series, book_id, False)
+    return {"task_id": task_id, **_book_view(book_id)}
+
+
+@router.post("/api/books/{book_id}/nu/release-search")
+def release_search(book_id: int):
+    """Look a submitted series up on NU's add-release form for its id."""
+    _book_or_404(book_id)
+    _act(nu_sync.request_release_search, book_id)
+    return _book_view(book_id)
+
+
+class PostFirst(BaseModel):
+    chapter: Optional[int] = None
+
+
+@router.post("/api/books/{book_id}/nu/first-release/post")
+def post_first(book_id: int, req: PostFirst):
+    """Post a submitted series' first chapter by its pending id, now."""
+    _book_or_404(book_id)
+    task_id = _act(nu_sync.post_first_release, book_id, req.chapter)
     return {"task_id": task_id, **_book_view(book_id)}
 
 
