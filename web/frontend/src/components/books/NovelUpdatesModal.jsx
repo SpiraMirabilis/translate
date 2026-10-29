@@ -102,6 +102,13 @@ export default function NovelUpdatesModal({ bookId, onClose }) {
                 </a>
               )}
               {st.last_release_label && <span className="text-xs text-slate-400">last: {st.last_release_label} {relativeTime(st.last_release_at)}</span>}
+              {st.nu_slug && (
+                <button className="btn btn-secondary text-xs ml-auto" disabled={!!busy}
+                        title="Add our English title and the original title (both scripts) to the series' Associated Names on NU, so NU's bot and search match it. Others' names are kept."
+                        onClick={() => run('names', () => api.nuAddNames(bookId))}>
+                  {spin('names')} Add our names on NU
+                </button>
+              )}
               {data.pending > 0 && <span className="text-xs text-slate-400">{data.pending} to post</span>}
             </div>
             {st.last_error && !st.hold_reason && <p className="text-xs text-amber-300">{st.last_error}</p>}

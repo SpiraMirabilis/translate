@@ -274,8 +274,9 @@ unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf
   fallback), dry run → reviewed JSON → `--apply`. Chinese titles always go through t2s.
   It writes via `set_book_source_title`, which leaves `modified_date` alone (no ebook rebuild).
 - **NovelUpdates title** (`books.nu_title`, migration 31): the title NovelUpdates lists the
-  novel under, often not ours. Books form + admin API only — deliberately absent from
-  `/api/public/*`. The key a NovelUpdates release module will match against.
+  novel under, often not ours. Books form + admin API; not in the public JSON API, but
+  every RSS item carries it as a second `<category>` where it differs from our title —
+  NU's bot auto-approves releases whose feed item names the series as NU knows it.
 - **Header links**: Recommend a Novel, Report an Error (hidden by `error_reports_enabled`)
   and About Us (`/library/about`, `pages/About.jsx` — team blurb, GitHub repo, the
   editor@/abuse@ contact addresses, and a "NUF username: …" line from the
@@ -518,15 +519,29 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
   in B8's feed) went to the manual queue. **NU's rule is not known**: Cloudflare analytics
   (feeds are `cf-cache-status: DYNAMIC`, never cached) showed *no* request from NU — no feed,
   no chapter page — around B15's approvals, and no NU fetcher could be identified in 8 weeks
-  of logs. Whether NU reads a feed on its own schedule, or approves "newer than the latest
-  approved release", is open. The limit uses book-feed recency as a proxy for "old chapter",
-  which fits both. A chapter outside
+  of logs. NU's own FAQ: it **polls each group's RSS feed every ~20 minutes** and
+  auto-approves a release whose feed item names the series (category or title, as NU knows
+  it — hence the `nu_title` `<category>` on every item) with correct numbering; anything
+  else goes to the moderators. Until 2026-10-29 our WordPress-era feed URLs were broken
+  (`novels.boondollars.com/feed/rss-chapters` → the Library page, `www…/feed` → a 404 on
+  the reader), which may be why no poller shows up; they now 301 to the site feed (story
+  feeds to their book's feed — `deploy/novels-redirects.conf`, and `/feed` on the reader
+  in `FeedRedirectMiddleware`). Which feed URL NU holds for us is still to be confirmed with
+  NU. The limit uses book-feed recency as a proxy for "old chapter". A chapter outside
   `nu_feed_window_book` (100; `nu_feed_window_site` > 0 additionally requires the site feed)
   is **backlog**: `nu_releases.backlog = 1`, capped at `nu_backlog_limit` (150) per book and
   `nu_backlog_limit_all` (0 = off) across books per rolling `nu_backlog_window_hours` (8);
   queued backlog tasks count toward the cap. A book at its cap just waits
   (`book_nu.rate_limited_until`, shown on the page/modal), no hold, no alert. In-feed
   (new) chapters are never limited. Membership uses `feed_keys()` — the feeds' own query.
+- **Associated names** (scraper ≥ 67567c9, `POST /nu/associated-names`, merged — others'
+  names kept): a `linked` series (someone else created it) gets a `names` task adding our
+  English title and both scripts of the raw title (`names_to_add`) **before our first
+  release** — so NU's bot can match our feed items and search finds either script. It never
+  blocks posting: a names task that has failed once (or for good) lets the release go; a
+  "didn't save as sent" alerts for a look at the series page. Any book with a slug can run it
+  by hand (modal → *Add our names on NU*, `POST /api/books/{id}/nu/names`); active series
+  don't get it automatically.
 - **Holds stop one book until a human clears them**: `check_nu` (submit may have gone
   through — resolve the release as *On NU* or *Resend*, which sends `force`), `refused`,
   `bad_slug`, `failing` (transient errors after 30 m/2 h/8 h backoff), `approval_timeout`

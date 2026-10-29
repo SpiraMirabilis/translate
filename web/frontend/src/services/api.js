@@ -311,6 +311,7 @@ export const api = {
   nuResolveRelease:  (bookId, chapter, action) => post(`/api/books/${bookId}/nu/releases/${chapter}/resolve`, { action }),
   nuReleaseDryRun:   (bookId, chapter) => post(`/api/books/${bookId}/nu/releases/${chapter}/dry-run`, {}),
   nuReleaseSearch:   (bookId) => post(`/api/books/${bookId}/nu/release-search`, {}),
+  nuAddNames:        (bookId) => post(`/api/books/${bookId}/nu/names`, {}),
   nuPostFirstRelease: (bookId, chapter) => post(`/api/books/${bookId}/nu/first-release/post`, { chapter }),
 
   // Comments (admin moderation)

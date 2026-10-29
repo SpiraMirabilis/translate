@@ -374,3 +374,21 @@ def test_geoblock_settings_round_trip_and_admin_is_never_blocked(
     bad = admin_client.put("/api/settings", json={"geoblock_countries": "China"})
     assert bad.status_code == 400
     assert settings_store.get("geoblock_countries") == "CN,RU"
+
+
+def test_wordpress_feed_paths_redirect_to_the_feed(pub_client):
+    for path in ("/feed", "/feed/", "/feed/rss-chapters"):
+        resp = pub_client.get(path, follow_redirects=False)
+        assert resp.status_code == 301 and resp.headers["location"] == "/api/public/feed.rss", path
+    assert pub_client.get("/feedback", follow_redirects=False).status_code != 301
+
+
+def test_feed_items_carry_the_nu_title_as_a_category(pub_client, public_book, db):
+    xml = pub_client.get("/api/public/feed.rss").text
+    assert xml.count("<category>") == 1                      # our title only
+    db.set_book_nu_title(public_book, "Split Process Book (NU)")
+    xml = pub_client.get(f"/api/public/books/{public_book}/feed.rss").text
+    assert "<category>Split Proc Book</category>" in xml
+    assert "<category>Split Process Book (NU)</category>" in xml
+    db.set_book_nu_title(public_book, "split proc book")      # same name: no duplicate
+    assert pub_client.get(f"/api/public/books/{public_book}/feed.rss").text.count("<category>") == 1

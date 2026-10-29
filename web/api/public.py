@@ -814,6 +814,12 @@ def _build_rss(channel_title: str,
         ET.SubElement(item, "description").text = _item_description(row)
         if row.get("book_title"):
             ET.SubElement(item, "category").text = row["book_title"]
+        # NovelUpdates auto-approves a release when a feed item names the
+        # series as NU knows it, by category or title. Where NU's name differs
+        # from ours, carry it as a second category so the match can happen.
+        nu = (row.get("book_nu_title") or "").strip()
+        if nu and nu.casefold() != (row.get("book_title") or "").strip().casefold():
+            ET.SubElement(item, "category").text = nu
 
     return b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(rss, encoding="utf-8")
 

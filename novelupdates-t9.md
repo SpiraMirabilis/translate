@@ -4,12 +4,12 @@ For whoever builds the T9 side of NovelUpdates (NU) posting. The scraper
 (this repo) now has the browser half. T9 owns the logic. Read this first,
 then the live API docs at `GET /docs` on the scraper.
 
-Status as of 2026-10-29:
-- **Verified live:** login, search, group sync, the duplicate check, dry
-  runs of both forms, and one real add-release (c2 of *The Law-Abiding
-  Necromancer*, which NU confirmed).
-- **Never actually submitted:** add-series. Read
-  [Open issues](#open-issues) before relying on its result.
+Status as of 2026-10-29: everything below has run live. By 07:10 that day
+the scraper had submitted 102 releases and 2 new series. One new series had
+its first chapter posted by id while still pending. Associated names were
+edited once for real: the Traditional raw title was added to *The
+Law-Abiding Necromancer*, after which `nu_search` finds it by that form
+alone.
 
 ## The split
 
@@ -27,7 +27,7 @@ request from T9.
 
 ## Calling it
 
-Use the scraper's Python client. **T9's copy (`~/translate/scraper_client.py`)
+Use the scraper's Python client. **T9's copy (`scraper_client.py` at the root of the T9 repo)
 is out of date.** Copy `client/scraper_client.py` from this repo over it: the
 new version adds `nu_search`, `nu_sync_group`, `nu_group_series`,
 `nu_release`, `nu_add_series` and `nu_submissions`. All of them block until
@@ -197,6 +197,31 @@ genres and tags onto these names before calling `nu_add_series()`.
 Result `status` is `submitted`, `already_submitted` (the log is keyed on the
 normalized raw title) or `dry_run`. Errors are as for releases.
 
+### `POST /nu/series-info {series}`: read a series page
+Returns `{id, title, slug, url, associatedNames, releases}`. `releases` is
+the first page of the release table (`{date, group, groupUrl, release}`,
+newest first). No login is needed.
+
+### `POST /nu/associated-names {series, add?, remove?, dryRun?}`: edit the names
+Adds names to, or removes names from, a series' Associated Names. Use it,
+for example, to add the Traditional raw title so `nu_search` finds the
+series under both forms, or to add our English title.
+- **It merges; it doesn't replace.** It reads the current list, drops
+  `remove`, and appends each `add` that isn't there already. Other
+  people's entries stay. Names compare ignoring case, spaces and
+  punctuation, so re-adding a name changes nothing.
+- It uses the series page's own Edit/Save, then **reloads the page to check**
+  what NU kept.
+- Result `status`:
+  - `updated`, with `before`, `after`, `saved` and a `screenshot`.
+  - `unchanged`: nothing to do.
+  - `dry_run`: works out `after` without saving.
+- The job fails if NU kept something other than what was sent
+  (`didn't save as sent`, listing what's missing or unexpected), or if
+  Save got no answer within 30 s. Either way, look at the series page.
+- Every save is logged in `GET /nu/submissions` as kind `names`, with the
+  lists from before and after.
+
 ### Also available
 `POST /nu/vocabulary` is described under add-series. `POST /nu/login` checks or refreshes the login (other operations log in by
 themselves). `GET /nu/submissions?limit=` lists everything sent, newest
@@ -255,26 +280,15 @@ for `needs_review`, "check NU" and approval timeouts are T9's job.
 
 ## Open issues
 
-1. **Add-release is verified with one real submit; add-series isn't.**
-   On 2026-10-29, c2 of *The Law-Abiding Necromancer* was submitted. NU
-   reloads `/add-release/` with every field still filled in and adds one
-   line: "Thank you! Your submission should be approved within 24 hours."
-   The scraper now counts a submit as `submitted` **only** when that
-   confirmation appears, and returns it as `message`. If the reply has
-   neither the confirmation nor an error, the job fails with "neither
-   confirmed nor refused", the attempt stays marked as possibly sent, and a
-   human checks NU. NU's reply after add-series hasn't been seen yet. If it
-   uses different wording, the first real series submit ends in that human
-   check; the scraper side then gets updated to recognise it.
-2. **The first release of a brand-new series is untested end to end.** The
-   add-series page says: *"Before your series is approved, you must add one
-   release for the series you're submitting using this link: Add Release."*
-   The user's experience is that the add-release Series box finds pending
-   series. So `POST /nu/release-search` plus posting by `seriesId` covers
-   it, and has been tested live against approved series (search and a dry
-   run by id). Whether a pending series shows up immediately after
-   add-series, and under exactly the submitted title, will only be seen with
-   the first real new series. Watch that one.
+1. **Resolved: what counts as a confirmed submit.** NU answers add-release
+   with "Thank you! Your submission should be approved within 24 hours."
+   It answers add-series with "Thank you! Your submission is now pending."
+   Both match the scraper's confirmation check and come back as `message`.
+   A reply with neither still ends in the "neither confirmed nor refused"
+   human check.
+2. **Resolved: a pending series' first release.** `POST /nu/release-search`
+   plus posting by `seriesId` has worked for real: `id:238334 c1` was
+   posted a minute after that series was submitted.
 3. **Only the first page of a series' release table is checked** for
    duplicates. That's enough for newest-first posting. Re-posting an old
    chapter relies on T9's records and the scraper's log.
@@ -285,6 +299,7 @@ for `needs_review`, "check NU" and approval timeouts are T9's job.
   (in-page readers and form helpers), routes in `src/server.js`, and the
   `nu_group_series` and `nu_submissions` tables in `src/db.js`. The README
   has a NovelUpdates section.
-- Saved NU pages (local only, gitignored): `~/scraper/test/fixtures/nu/`.
+- Saved NU pages: `test/fixtures/nu/` in the scraper checkout on the home box
+  (gitignored, so not in the repo).
 - T9: `scrape_sync.py` (the lane pattern to copy), `scraper_client.py` (to
   replace), `trad_simp.py` (OpenCC).

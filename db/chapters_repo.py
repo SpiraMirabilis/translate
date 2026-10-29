@@ -439,7 +439,8 @@ class ChaptersRepo:
                 cursor = conn.cursor()
                 sql = f'''
                 SELECT c.id, c.book_id, c.chapter_number, c.title, c.summary,
-                       c.translation_date, b.title AS book_title, b.author AS book_author
+                       c.translation_date, b.title AS book_title, b.author AS book_author,
+                       b.nu_title AS book_nu_title
                 FROM chapters c
                 {join} books b ON c.book_id = b.id
                 WHERE b.is_public = 1
@@ -470,6 +471,7 @@ class ChaptersRepo:
                     "translation_date": row[5],
                     "book_title": row[6],
                     "book_author": row[7],
+                    "book_nu_title": row[8],
                 }
                 for row in rows
             ]

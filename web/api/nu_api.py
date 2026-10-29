@@ -290,6 +290,15 @@ def draft_submit(book_id: int):
     return {"task_id": task_id, **_book_view(book_id)}
 
 
+@router.post("/api/books/{book_id}/nu/names")
+def add_names(book_id: int):
+    """Add our English title and both scripts of the raw title to the
+    series' Associated Names on NU (merged; others' names are kept)."""
+    _book_or_404(book_id)
+    task_id = _act(nu_sync.queue_names, book_id)
+    return {"task_id": task_id, **_book_view(book_id)}
+
+
 @router.post("/api/books/{book_id}/nu/release-search")
 def release_search(book_id: int):
     """Look a submitted series up on NU's add-release form for its id."""

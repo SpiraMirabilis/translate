@@ -196,10 +196,16 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
 
     # WordPress-style feed URL fallback: some RSS readers probe /?feed=rss2
     # at the site root before trying link-rel autodiscovery. Catch anywhere
-    # outside /api/ and redirect to our canonical feed.
+    # outside /api/ and redirect to our canonical feed. The path form
+    # (/feed, /feed/, /feed/rss-chapters…) is a permanent move: the old
+    # WordPress site's feeds land here via www.boondollars.com, and a
+    # subscriber (NovelUpdates included) should update the URL it holds.
     class FeedRedirectMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            if not request.url.path.startswith("/api/"):
+            path = request.url.path
+            if not path.startswith("/api/"):
+                if path == "/feed" or path.startswith("/feed/"):
+                    return RedirectResponse("/api/public/feed.rss", status_code=301)
                 feed = request.query_params.get("feed", "").lower()
                 if feed in ("rss", "rss2", "atom", "rdf"):
                     return RedirectResponse("/api/public/feed.rss", status_code=302)

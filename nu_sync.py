@@ -43,6 +43,7 @@ HOLD_REASONS = ("check_nu", "refused", "bad_slug", "approval_timeout", "failing"
 
 PRIORITY_SYNC = 10
 PRIORITY_RELEASE_SEARCH = 15
+PRIORITY_NAMES = 19
 PRIORITY_RELEASE = 20
 PRIORITY_SERIES = 25
 PRIORITY_SEARCH = 30
@@ -94,6 +95,7 @@ ERR_UNKNOWN_NAMES = ("doesn't know",)
 KIND_PATHS = {
     "search": "/nu/search",
     "release_search": "/nu/release-search",
+    "names": "/nu/associated-names",
     "release": "/nu/releases",
     "sync": "/nu/group/sync",
     "series": "/nu/series",
@@ -473,6 +475,34 @@ def resolve_release(db, book_id, chapter, action):
     return db.get_book_nu(book_id)
 
 
+def names_to_add(book):
+    """What we add to a series' Associated Names on NU: our English title (so
+    NU's bot can match our feed items, whose titles carry it) and the raw title
+    in both scripts (so a search by either finds the series). NU's side merges
+    and ignores names it already has."""
+    names = []
+    for n in [book.get("title")] + search_names(book):
+        n = (n or "").strip()
+        if n and n.casefold() not in {x.casefold() for x in names}:
+            names.append(n)
+    return names
+
+
+def queue_names(db, book_id):
+    """Add our names to the series' Associated Names now (any state with a slug)."""
+    book = _book(db, book_id)
+    state = db.get_book_nu(book_id)
+    if not state.get("nu_slug"):
+        raise NuActionError("the book has no NU series page yet")
+    names = names_to_add(book)
+    if not names:
+        raise NuActionError("no names to add")
+    existing = db.open_nu_task(book_id, "names")
+    if existing:
+        return existing["id"]
+    return db.create_nu_task(book_id, "names", priority=PRIORITY_NAMES, options={"add": names})
+
+
 def queue_release_dry_run(db, book_id, chapter):
     """Fill NU's add-release form for one chapter without submitting — to see
     exactly what would be posted. Touches no release record."""
@@ -728,6 +758,18 @@ class NuEngine:
                     return
             if self.db.open_nu_task(book_id, "release"):
                 continue
+            if state == "linked":
+                # Someone else created this series: add our names before our first
+                # release. Once tried (done or given up), it never blocks posting.
+                pending = self.db.open_nu_task(book_id, "names")
+                if pending and not pending.get("attempts"):
+                    continue   # its first try is due; a retrying one doesn't hold the release
+                if not self.db.list_nu_tasks(book_id=book_id, kinds=("names",), limit=1):
+                    try:
+                        queue_names(self.db, book_id)
+                        continue
+                    except NuActionError:
+                        pass
             nxt = self.db.published_chapters_from(book_id, int(r["start_chapter"]), limit=1)
             if not nxt:
                 continue
@@ -850,6 +892,11 @@ class NuEngine:
                     "force": True if opts.get("force") else None}
         if kind == "release_search":
             return {"title": opts.get("title")}
+        if kind == "names":
+            state = self.db.get_book_nu(book_id)
+            if not state.get("nu_slug"):
+                return None
+            return {"series": state.get("nu_url") or state["nu_slug"], "add": opts.get("add") or []}
         if kind == "series":
             draft = self.db.get_book_nu(book_id).get("series_draft") or {}
             body = series_body(draft)
@@ -986,6 +1033,11 @@ class NuEngine:
             self.db.update_nu_task(task["id"], **fail)
             self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
             self._hold(book_id, "bad_slug", f"the stored NU series is wrong: {error}")
+            return
+        if kind == "names" and ("didn't save as sent" in low or "no answer" in low):
+            self.db.update_nu_task(task["id"], **fail)
+            self._alert(book_id, "check associated names", f"editing the series' associated names "
+                        f"may not have saved as sent ({error}); look at the series page")
             return
         if kind == "series" and any(s in low for s in ERR_UNKNOWN_NAMES):
             # Fails before anything is sent: fix the draft, no alert.
@@ -1146,6 +1198,13 @@ class NuEngine:
                                candidates=[{"id": h.get("id"), "title": h.get("title")} for h in hits] or None)
         self._alert(book_id, "new series not found", detail + ". Look it up again later, pick it, "
                                                               "or post the first chapter by hand.")
+
+    def on_names(self, task, res):
+        if res.get("status") == "updated":
+            added = [n for n in (res.get("after") or []) if n not in (res.get("before") or [])]
+            self._activity(task["book_id"], "added to the series' associated names on NU: "
+                           + (", ".join(added) or "(see the task)"),
+                           link=self.db.get_book_nu(task["book_id"]).get("nu_url"))
 
     def on_vocab(self, task, res):
         save_vocab(res)

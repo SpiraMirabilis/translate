@@ -27,6 +27,7 @@ class FakeNu:
             "/nu/group/sync": lambda b: {"added": [], "series": []},
             "/nu/series": lambda b: {"status": "dry_run" if b.get("dryRun") else "submitted",
                                      "form": {"title": b.get("title")}, "screenshot": "s.png"},
+            "/nu/associated-names": lambda b: {"status": "unchanged", "before": [], "after": []},
             "/nu/release-search": lambda b: {"title": b.get("title"), "match": None,
                                              "ambiguous": False, "hits": []},
             "/nu/vocabulary": lambda b: {"genres": [{"id": 1, "name": "Xianxia"}],
@@ -611,3 +612,40 @@ def test_limit_off_posts_everything(db, nu, engine, monkeypatch):
     go_active(db, book, start=1)
     drain(engine)
     assert len(nu.posted()) == 4
+
+
+# -- associated names ------------------------------------------------------------
+
+def test_linked_series_gets_our_names_before_the_first_release(db, nu, engine):
+    nu.handlers["/nu/associated-names"] = lambda b: {"status": "updated", "before": ["X"],
+                                                     "after": ["X"] + b["add"]}
+    book = make_book(db, title="Our English Title", chapters=[(1, PAST)])
+    db.update_book_nu(book, state="linked", nu_slug="s", nu_url="https://www.novelupdates.com/series/s/")
+    nu_sync.set_mode(db, book, "auto", start_chapter=1)
+    drain(engine)
+    paths = [p for p, _ in nu.calls]
+    assert paths.index("/nu/associated-names") < paths.index("/nu/releases")
+    add = nu.posted("/nu/associated-names")[0]["add"]
+    assert add == ["Our English Title", "我，死灵法师，遵纪守法", "我，死靈法師，遵紀守法"]
+    assert db.get_book_nu(book)["state"] == "first_release_sent"
+
+
+def test_names_failure_never_blocks_the_release(db, nu, engine, alerts):
+    nu.errors["/nu/associated-names"] = ["the names didn't save as sent: missing Our Title"]
+    book = make_book(db, chapters=[(1, PAST)])
+    db.update_book_nu(book, state="linked", nu_slug="s")
+    nu_sync.set_mode(db, book, "auto", start_chapter=1)
+    drain(engine)
+    assert [b["release"] for b in nu.posted()] == ["c1"]
+    assert len(alerts) == 1
+    assert len(nu.posted("/nu/associated-names")) == 1      # tried once, not again
+
+
+def test_active_series_get_names_only_on_request(db, nu, engine):
+    book = make_book(db, chapters=[(1, PAST)])
+    go_active(db, book, start=1)
+    drain(engine)
+    assert nu.posted("/nu/associated-names") == []
+    nu_sync.queue_names(db, book)
+    drain(engine)
+    assert len(nu.posted("/nu/associated-names")) == 1

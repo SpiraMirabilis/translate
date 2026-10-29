@@ -287,6 +287,17 @@ class ScraperClient:
         languages}, each [{id, name}]. Cache it; it changes rarely."""
         return self._nu("/nu/vocabulary", {}, poll, timeout)
 
+    def nu_series_info(self, series: str, poll: float = 3, timeout: float | None = None) -> dict:
+        """A series page: {id, title, slug, url, associatedNames, releases (newest first)}."""
+        return self._nu("/nu/series-info", {"series": series}, poll, timeout)
+
+    def nu_associated_names(self, series: str, add: list[str] | None = None, remove: list[str] | None = None,
+                            dry_run: bool | None = None, poll: float = 3, timeout: float | None = None) -> dict:
+        """Add or remove Associated Names, keeping everyone else's. {status: updated |
+        unchanged | dry_run, before, after, saved?, screenshot?}."""
+        return self._nu("/nu/associated-names", {"series": series, "add": add, "remove": remove,
+                                                 "dryRun": dry_run}, poll, timeout)
+
     def nu_submissions(self, limit: int = 100) -> list[dict]:
         """What we've submitted to NU, newest first."""
         return self._req("GET", f"/nu/submissions?limit={limit}")[1]
