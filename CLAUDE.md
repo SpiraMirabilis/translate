@@ -457,6 +457,66 @@ job at a time**, so t9 owns the lane:
   script takes its default `--sites` from the same endpoint. Tests: `tests/test_scrape_sync.py` (fake
   scraper that asserts one-job-in-flight), `tests/test_scrape_api.py`.
 
+### NovelUpdates posting (`nu_sync.py`, added 2026-10-29)
+New published chapters are posted to NovelUpdates (NU) automatically. NU has no API: the
+scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step as a
+`POST /nu/*` job — see `novelupdates-t9.md` for its contract. T9 owns the rest.
+
+- **A separate lane**, not new kinds in the scrape lane (that one hard-codes toc/chapters,
+  counts failures on `book_scrape`, and needs a book per task). `NuEngine` is ticked by the
+  same `scrape_worker.py` loop, keeps **one NU job in flight**, persists the scraper job id
+  (a restart resumes polling, never reposts), kill switch `nu_enabled` (default **off**).
+  `submit_nu` posts via the client's `_req` — the client's `nu_*` helpers block.
+- **Tables** (migration 32, `db/nu_repo.py`): `book_nu` (per book: `mode` off|auto,
+  `state`, slug/url, **`start_chapter`**, candidates, series draft + dry run, first/last
+  release, `hold_reason`), `nu_releases` (one row per chapter, `UNIQUE(book_id,
+  chapter_number)`, moved by `renumber_chapter`), `nu_tasks` (the lane; `book_id` NULL for
+  `sync`/`vocab`).
+- **States**: untracked → searching → active (found, in our group) | linked (found, not
+  ours) | needs_review (near misses: a human picks or declares it new) | new_series (draft →
+  dry run → submit) → series_submitted → *first release posted by hand* (scraper open issue
+  2) → first_release_sent → active (slug seen in a group sync; syncs start
+  `nu_approval_wait_hours` after the first release, every `nu_group_sync_hours`).
+  `linked` books post their first chapter ≥ start automatically. `mode` only gates posting.
+- ⚠️ **`start_chapter` is the baseline**: nothing below it is ever auto-posted — >1,000
+  releases were posted by hand before this existed, and the scraper's duplicate check only
+  reads the first page of a series' release table. The UI prefills it
+  (`nu_sync.suggested_start`) with **1** only where NU confirmed the series isn't ours
+  (`NOT_OURS_STATES`: linked, new_series, series_submitted, first_release_sent — c1 opens
+  it, the rest follow approval), else with the next chapter to be published. A book not
+  looked up yet gets the safe default: enabled before its search, a 1 would re-post a
+  hand-posted backlog once the search found it ours.
+- **Posting**: the lowest *published* chapter ≥ start with no done row (`sent`/`exists`/
+  `manual`), one task per book at a time (strict order; gaps skipped, never invented),
+  `nu_release_spacing_seconds` apart. Label `c<N>`, link
+  `{SITE_BASE_URL}/library/read/{id}/{n}`, `date` only when published before today. No
+  publish hook exists, so polling is how a scheduled chapter going live is noticed. Private
+  books hold (`not_public`); no `SITE_BASE_URL` holds the lane.
+- **Holds stop one book until a human clears them**: `check_nu` (submit may have gone
+  through — resolve the release as *On NU* or *Resend*, which sends `force`), `refused`,
+  `bad_slug`, `failing` (transient errors after 30 m/2 h/8 h backoff), `approval_timeout`
+  (`nu_approval_timeout_hours`). A scraper login/config error holds the **whole lane**
+  (`logs/nu_hold.json`, cleared on the NovelUpdates page).
+- **Alerts** (`nu_alerts.py`, once per hold): red `nu_error` activity line, email to
+  `nu_alert_email` (blank = `EMAIL_FROM`, `email_log.kind = nu_alert`), ntfy to
+  `nu_ntfy_url` (token `NU_NTFY_TOKEN` in `.env`). Never raises.
+- **Search** uses `source_title` in both scripts (`trad_simp.to_traditional`, s2t — NU's
+  search doesn't convert). No original title → `needs_review`. **Find all on NU** = one
+  group sync + a search for every public book not yet looked up; read-only.
+- **`backfill_nu_titles.py`** fills `books.nu_title` in bulk with the same search (group
+  sync first, waits out the lane's own job): dry run → reviewed JSON → `--apply`, which
+  also records the series for books the lane hasn't looked up (`--no-link` = titles only).
+  Near misses list candidates and propose nothing. Writes via `set_book_nu_title`
+  (no `modified_date` bump).
+- **New series**: `build_series_draft` maps book tags onto NU's genre/tag names
+  case-insensitively (vocabulary cached in `logs/nu_vocabulary.json`, refreshed weekly),
+  lists the rest as `unmatchedTags`; **submit is refused unless this exact draft dry-ran**
+  (`draft_fingerprint`).
+- **UI**: `/novelupdates` page (nav badge `nu`), Books → Actions → NovelUpdates
+  (`NovelUpdatesModal.jsx`), Settings → NovelUpdates. API `web/api/nu_api.py` (admin only).
+- Tests: `tests/test_nu_sync.py` (fake scraper asserting one NU job in flight),
+  `tests/test_nu_api.py`.
+
 ### Queue Processing
 - Batch processing of multiple files/chapters
 - Resume functionality for interrupted translations

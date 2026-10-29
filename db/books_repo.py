@@ -418,6 +418,13 @@ class BooksRepo:
             cursor.execute("UPDATE books SET source_title = ? WHERE id = ?",
                            ((source_title or '').strip() or None, book_id))
 
+    def set_book_nu_title(self, book_id, nu_title):
+        """Write nu_title alone (same reason as set_book_source_title)."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE books SET nu_title = ? WHERE id = ?",
+                           ((nu_title or '').strip() or None, book_id))
+
     def get_module_settings(self, book_id, module_id=None):
         """Return stored per-book module settings.
 
