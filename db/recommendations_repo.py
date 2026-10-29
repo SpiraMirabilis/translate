@@ -42,7 +42,10 @@ class RecommendationsRepo:
         '(SELECT COUNT(*) FROM email_log el '
         "WHERE el.recommendation_id = r.id AND el.status = 'bounced') AS bounced_email_count, "
         '(SELECT MAX(s.reason) FROM email_suppressions s '
-        'WHERE s.email = LOWER(r.requester_email)) AS email_suppressed_reason'
+        'WHERE s.email = LOWER(r.requester_email)) AS email_suppressed_reason, '
+        # The book an accepted request became (NULL title = unlinked or deleted).
+        '(SELECT b.title FROM books b WHERE b.id = r.book_id) AS book_title, '
+        '(SELECT b.is_public FROM books b WHERE b.id = r.book_id) AS book_is_public'
     )
 
     def list_recommendations(self, status: str = None) -> list:
@@ -75,7 +78,7 @@ class RecommendationsRepo:
 
     def update_recommendation(self, rec_id: int, updates: dict):
         """Update fields on a recommendation."""
-        allowed = {'status', 'admin_notes', 'reviewed_at'}
+        allowed = {'status', 'admin_notes', 'reviewed_at', 'book_id'}
         parts, vals = [], []
         for k, v in updates.items():
             if k in allowed:

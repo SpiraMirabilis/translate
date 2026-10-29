@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { MessageSquarePlus, Trash2, ExternalLink, ChevronDown, ChevronUp, Loader2, Mail, CornerDownRight, Inbox, MailWarning, Send } from 'lucide-react'
+import { MessageSquarePlus, Trash2, ExternalLink, ChevronDown, ChevronUp, Loader2, Mail, CornerDownRight, Inbox, MailWarning, Send, BookOpen } from 'lucide-react'
 import { api } from '../services/api'
 import { useSite } from '../App'
 
@@ -31,6 +31,7 @@ export default function Recommendations() {
   const [emailDraft, setEmailDraft] = useState({})   // id -> message text
   const [emailState, setEmailState] = useState({})   // id -> { sending, result }
   const [actionError, setActionError] = useState(null)
+  const [accepting, setAccepting] = useState(null)   // id whose book picker is open
 
   const isUnmatched = filter === 'unmatched'
 
@@ -63,6 +64,20 @@ export default function Recommendations() {
       invalidate()
     } catch (e) {
       setActionError(`Failed to update status: ${e.message}`)
+    }
+  }
+
+  // Accepting with a book: the acceptance email names and links that book,
+  // since our title is often not the one the reader asked for.
+  const handleAccept = async (id, bookId) => {
+    setActionError(null)
+    try {
+      await api.updateRecommendation(id, { status: 'accepted', ...(bookId ? { book_id: bookId } : {}) })
+      setAccepting(null)
+      invalidate()
+      queryClient.invalidateQueries({ queryKey: ['rec-emails', id] })
+    } catch (e) {
+      setActionError(`Failed to accept: ${e.message}`)
     }
   }
 
@@ -192,6 +207,11 @@ export default function Recommendations() {
                     {rec.source_language && (
                       <span className="text-xs text-slate-500">{LANG_LABELS[rec.source_language] || rec.source_language}</span>
                     )}
+                    {rec.book_title && (
+                      <span className="flex items-center gap-1 text-xs text-emerald-400/80 truncate" title="Linked book">
+                        <BookOpen size={11} /> {rec.book_title}
+                      </span>
+                    )}
                     {rec.unread_reply_count > 0 && (
                       <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-rose-500/20 text-rose-400">
                         <CornerDownRight size={11} /> {rec.unread_reply_count} new
@@ -248,6 +268,16 @@ export default function Recommendations() {
                       <span className="text-slate-500">Submitted: </span>
                       <span className="text-slate-200">{rec.created_at}</span>
                     </div>
+                    {rec.book_title && (
+                      <div>
+                        <span className="text-slate-500">Book: </span>
+                        <a href={`/library/book/${rec.book_id}`} target="_blank" rel="noopener noreferrer"
+                          className="text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1">
+                          {rec.book_title} <ExternalLink size={12} />
+                        </a>
+                        {!rec.book_is_public && <span className="text-xs text-amber-400 ml-2">private</span>}
+                      </div>
+                    )}
                   </div>
 
                   {rec.description && (
@@ -335,11 +365,14 @@ export default function Recommendations() {
                     {STATUS_OPTIONS.map(s => (
                       <button
                         key={s}
-                        onClick={() => handleStatusChange(rec.id, s)}
-                        disabled={rec.status === s}
+                        onClick={() => s === 'accepted'
+                          ? setAccepting(accepting === rec.id ? null : rec.id)
+                          : handleStatusChange(rec.id, s)}
+                        disabled={rec.status === s && s !== 'accepted'}
+                        title={rec.status === s && s === 'accepted' ? 'Link a book (no new email)' : undefined}
                         className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                           rec.status === s
-                            ? 'bg-indigo-600 text-white cursor-default'
+                            ? `bg-indigo-600 text-white ${s === 'accepted' ? '' : 'cursor-default'}`
                             : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                         }`}
                       >
@@ -354,12 +387,92 @@ export default function Recommendations() {
                       <Trash2 size={12} /> Delete
                     </button>
                   </div>
+                  {accepting === rec.id && (
+                    <AcceptPicker
+                      rec={rec}
+                      onAccept={bookId => handleAccept(rec.id, bookId)}
+                      onCancel={() => setAccepting(null)}
+                    />
+                  )}
                 </div>
               )}
             </div>
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Picks the book a request became before accepting it. Newest books first —
+// the usual flow is "create the book, then accept", so it's at the top.
+function AcceptPicker({ rec, onAccept, onCancel }) {
+  const [filter, setFilter] = useState('')
+  const [bookId, setBookId] = useState(rec.book_id || null)
+  const [busy, setBusy] = useState(false)
+  const { data, isPending } = useQuery({
+    queryKey: ['books', 'minimal'],
+    queryFn: () => api.listBooksMinimal(),
+    refetchOnMount: 'always',   // the book was probably created moments ago
+  })
+  const books = [...(data?.books || [])].sort((a, b) => b.id - a.id)
+  const q = filter.trim().toLowerCase()
+  const shown = q ? books.filter(b => b.title.toLowerCase().includes(q) || String(b.id) === q) : books
+  const chosen = books.find(b => b.id === bookId)
+  const already = rec.status === 'accepted'
+
+  const accept = async (id) => {
+    setBusy(true)
+    try { await onAccept(id) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="rounded-lg border border-emerald-700/50 bg-emerald-500/5 p-3 space-y-2">
+      <div className="text-xs text-slate-400">
+        Which book is this? The acceptance email names it and links its page
+        {already ? ' (already accepted — linking now sends no new email)' : ''}.
+      </div>
+      <input
+        value={filter}
+        onChange={e => setFilter(e.target.value)}
+        className="input w-full text-sm"
+        placeholder="Filter books by title or id…"
+        autoFocus
+      />
+      <div className="max-h-48 overflow-y-auto rounded border border-slate-700 divide-y divide-slate-800">
+        {isPending ? (
+          <div className="text-xs text-slate-500 p-2 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Loading books…</div>
+        ) : shown.length === 0 ? (
+          <div className="text-xs text-slate-500 p-2">No matching books.</div>
+        ) : shown.map(b => (
+          <button
+            key={b.id}
+            onClick={() => setBookId(b.id)}
+            className={`w-full text-left px-2 py-1 text-sm flex gap-2 ${
+              bookId === b.id ? 'bg-emerald-600/30 text-emerald-200' : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <span className="text-slate-500 tabular-nums w-10 shrink-0">{b.id}</span>
+            <span className="truncate">{b.title}</span>
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => accept(bookId)}
+          disabled={!bookId || busy}
+          className="btn-primary text-xs flex items-center gap-1 disabled:opacity-40"
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <BookOpen size={12} />}
+          {already ? 'Link' : 'Accept as'} {chosen ? `“${chosen.title}”` : 'selected book'}
+        </button>
+        {!already && (
+          <button onClick={() => accept(null)} disabled={busy} className="btn-secondary text-xs disabled:opacity-40">
+            Accept without a book
+          </button>
+        )}
+        <button onClick={onCancel} className="text-xs text-slate-500 hover:text-slate-300">Cancel</button>
+      </div>
     </div>
   )
 }

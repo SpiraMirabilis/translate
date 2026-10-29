@@ -1165,6 +1165,15 @@ def _m033_nu_backlog(conn, cursor, backend, logger):
                           "ALTER TABLE book_nu ADD COLUMN rate_limited_until VARCHAR(50)")
 
 
+def _m034_recommendations_book_id(conn, cursor, backend, logger):
+    """`book_id`: the book an accepted request became. Our title is often not
+    the one the reader asked for, so the acceptance email names and links the
+    book we actually created. No FK: the request outlives a deleted book, and
+    the admin list LEFT JOINs (a dangling id just reads as unlinked)."""
+    add_column_if_missing(conn, cursor, backend, "recommendations", "book_id",
+                          "ALTER TABLE recommendations ADD COLUMN book_id INTEGER")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1199,6 +1208,7 @@ MIGRATIONS = [
     Migration(31, "books_nu_title", _m031_books_nu_title),
     Migration(32, "novelupdates", _m032_novelupdates),
     Migration(33, "nu_backlog", _m033_nu_backlog),
+    Migration(34, "recommendations_book_id", _m034_recommendations_book_id),
 ]
 
 

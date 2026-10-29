@@ -102,6 +102,21 @@ def _deliver(db_manager, rec: dict, kind: str, subject: str,
     return (ok, msg)
 
 
+def _linked_book(db_manager, rec: dict, base: str) -> tuple:
+    """(title, url) of the book an accepted request was linked to, or
+    (None, None). The url is the public book page, and only for a public book
+    with a configured SITE_BASE_URL — a private book's page is a 404."""
+    book_id = rec.get("book_id")
+    if not book_id:
+        return (None, None)
+    book = db_manager.get_book(book_id=book_id)
+    if not book or not book.get("title"):
+        return (None, None)
+    url = (f"{base}/library/book/{int(book_id)}"
+           if base and book.get("is_public", True) else None)
+    return (book["title"], url)
+
+
 # ------------------------------------------------------------------
 # Public senders
 # ------------------------------------------------------------------
@@ -147,6 +162,29 @@ def send_status_change(db_manager, rec_id: int, new_status: str) -> tuple[bool, 
 
     if new_status == "accepted":
         subject = f"[{site}] Your translation request was accepted"
+        book_title, book_url = _linked_book(db_manager, rec, base)
+        if book_title:
+            # Our title often isn't the one the reader asked for — say both, so
+            # they can find it.
+            renamed = book_title.strip().casefold() != title.strip().casefold()
+            text_main = (
+                f"Hi {name},\n\n"
+                f"Good news — we're translating \"{title}\", which you requested"
+                + (f". You'll find it on {site} as \"{book_title}\"" if renamed
+                   else f", on {site}")
+                + (f":\n\n{book_url}\n\n" if book_url else ".\n\n")
+                + f"— {site}"
+            )
+            book_html = (f"<a href='{escape(book_url)}' style='color:#4f46e5'><em>{escape(book_title)}</em></a>"
+                         if book_url else f"<em>{escape(book_title)}</em>")
+            html_main = (
+                f"<p>Hi {escape(name)},</p>"
+                f"<p>Good news — we're translating <em>{escape(title)}</em>, which you requested"
+                + (f". You'll find it on {escape(site)} as {book_html}.</p>" if renamed
+                   else f": {book_html} on {escape(site)}.</p>")
+                + f"<p style='color:#666'>— {escape(site)}</p>"
+            )
+            return _deliver(db_manager, rec, "rec_accepted", subject, text_main, html_main)
         text_main = (
             f"Hi {name},\n\n"
             f"Good news — we're planning to translate \"{title}\", which you "

@@ -27,6 +27,10 @@ def init(db_manager):
 class RecommendationUpdate(BaseModel):
     status: Optional[str] = None
     admin_notes: Optional[str] = None
+    # The book this request became. Omitted = leave as is; 0 = unlink. Set it
+    # together with status "accepted" and the acceptance email names and links
+    # that book instead of the title the reader typed.
+    book_id: Optional[int] = None
 
 
 # Serializes the read-check-update in update_recommendation: two concurrent
@@ -82,6 +86,13 @@ def update_recommendation(rec_id: int, req: RecommendationUpdate, background_tas
                 notify_status = req.status
         if req.admin_notes is not None:
             updates["admin_notes"] = req.admin_notes
+        if req.book_id is not None:
+            if req.book_id == 0:
+                updates["book_id"] = None
+            elif not _db.get_book(book_id=req.book_id):
+                raise HTTPException(status_code=400, detail="Book not found")
+            else:
+                updates["book_id"] = req.book_id
 
         if updates:
             _db.update_recommendation(rec_id, updates)
