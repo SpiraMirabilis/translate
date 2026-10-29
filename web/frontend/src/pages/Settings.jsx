@@ -703,6 +703,7 @@ export default function Settings() {
                 ['nu_approval_wait_hours', 'Approval wait (hours)', 20, 'After a first release, start checking our group page this much later.'],
                 ['nu_group_sync_hours', 'Group sync every (hours)', 4, 'How often to re-read the group page while a series awaits approval.'],
                 ['nu_approval_timeout_hours', 'Approval alert after (hours)', 72, 'Alert when a series still isn’t approved this long after its first release.'],
+                ['nu_batch_size', 'Releases per job', 50, 'An active series’ due chapters go out as one batch job of up to this many (max 50); other books’ jobs interleave between batches.'],
               ].map(([key, label, dflt, help]) => (
                 <div key={key}>
                   <label className="label">{label}</label>

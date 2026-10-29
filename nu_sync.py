@@ -50,6 +50,7 @@ PRIORITY_SEARCH = 30
 PRIORITY_VOCAB = 40
 
 RETRY_BACKOFF_MINUTES = (30, 120, 480)
+BATCH_MAX = 50  # the scraper's limit per /nu/releases/batch job
 # A just-submitted series can take a moment to appear in the add-release
 # form's Series box: look it up this many times, this far apart.
 RELEASE_SEARCH_TRIES = 4
@@ -83,6 +84,10 @@ DEFAULTS = {
     "nu_backlog_limit_all": 0,
     "nu_feed_window_site": 0,
     "nu_feed_window_book": 100,
+    # An active series' due chapters go out as one batch job of up to this many
+    # (POST /nu/releases/batch; the scraper's cap is 50), so several books'
+    # batches interleave on the lane. 1 = one job per release.
+    "nu_batch_size": 50,
 }
 
 # Substrings of a failed job's error (novelupdates-t9.md, "Errors").
@@ -97,6 +102,7 @@ KIND_PATHS = {
     "release_search": "/nu/release-search",
     "names": "/nu/associated-names",
     "release": "/nu/releases",
+    "release_batch": "/nu/releases/batch",
     "sync": "/nu/group/sync",
     "series": "/nu/series",
     "vocab": "/nu/vocabulary",
@@ -759,7 +765,7 @@ class NuEngine:
                     set_hold("SITE_BASE_URL is not set, so there are no chapter links to post")
                     self._alert(None, "lane held", "SITE_BASE_URL is not set; NU posting is held")
                     return
-            if self.db.open_nu_task(book_id, "release"):
+            if self.db.open_nu_task(book_id, "release") or self.db.open_nu_task(book_id, "release_batch"):
                 continue
             if state == "linked":
                 # Someone else created this series: add our names before our first
@@ -773,12 +779,28 @@ class NuEngine:
                         continue
                     except NuActionError:
                         pass
-            nxt = self.db.published_chapters_from(book_id, int(r["start_chapter"]), limit=1)
+            size = 1
+            if state == "active":
+                size = max(1, min(BATCH_MAX, int(setting("nu_batch_size") or 1)))
+            nxt = self.db.published_chapters_from(book_id, int(r["start_chapter"]), limit=size)
             if not nxt:
                 continue
+            # Oldest first, as NU asks; a backlog chapter past the rate-limit
+            # budget ends the batch there (order is never broken).
+            budget = self._backlog_budget(book_id, now)
+            picked, backlog_chapters = [], []
+            for c in nxt:
+                is_backlog = not self._in_feed(book_id, c["chapter"])
+                if is_backlog:
+                    if budget is not None and budget <= 0:
+                        break
+                    if budget is not None:
+                        budget -= 1
+                    backlog_chapters.append(c["chapter"])
+                picked.append(c["chapter"])
             chapter = nxt[0]["chapter"]
-            backlog = not self._in_feed(book_id, chapter)
-            if backlog:
+            backlog = chapter in backlog_chapters
+            if not picked:
                 until = self._backlog_until(book_id, now)
                 if until is not None:
                     if r.get("rate_limited_until") != _iso(until):
@@ -787,7 +809,7 @@ class NuEngine:
                                                     "queues for manual approval; the backlog "
                                                     f"resumes at {until:%H:%M}")
                         self.db.update_book_nu(book_id, rate_limited_until=_iso(until))
-                    continue
+                continue
             if r.get("rate_limited_until"):
                 self.db.update_book_nu(book_id, rate_limited_until=None)
             last = _parse(r.get("last_release_at"))
@@ -796,10 +818,15 @@ class NuEngine:
                 due = last + datetime.timedelta(seconds=spacing)
                 if due > now:
                     not_before = _iso(due)
-            self.db.create_nu_task(book_id, "release", priority=PRIORITY_RELEASE,
-                                   not_before=not_before,
-                                   options={"chapter": chapter, "backlog": backlog,
-                                            "first": state in ("linked", "series_submitted")})
+            if len(picked) > 1:
+                self.db.create_nu_task(book_id, "release_batch", priority=PRIORITY_RELEASE,
+                                       not_before=not_before,
+                                       options={"chapters": picked, "backlog": backlog_chapters})
+            else:
+                self.db.create_nu_task(book_id, "release", priority=PRIORITY_RELEASE,
+                                       not_before=not_before,
+                                       options={"chapter": chapter, "backlog": backlog,
+                                                "first": state in ("linked", "series_submitted")})
         if need_sync and not self.db.open_nu_task(None, "sync"):
             last = self.db.last_finished_nu_task("sync")
             last_at = _parse((last or {}).get("finished_at"))
@@ -826,6 +853,32 @@ class NuEngine:
             return key in self._site_feed
         return True
 
+    def _queued_backlog(self, scope):
+        """Backlog releases queued but not yet posting (single and batched)."""
+        n = 0
+        for t in self.db.list_nu_tasks(statuses=("queued",), kinds=("release", "release_batch"),
+                                       book_id=scope, limit=1000):
+            opts = t.get("options") or {}
+            if t["kind"] == "release_batch":
+                n += len(opts.get("backlog") or [])
+            elif opts.get("backlog"):
+                n += 1
+        return n
+
+    def _backlog_budget(self, book_id, now):
+        """How many more backlog releases may go now (None = no limit)."""
+        window = datetime.timedelta(hours=float(setting("nu_backlog_window_hours") or 0))
+        since = _iso(now - window)
+        budget = None
+        for limit, scope in ((int(setting("nu_backlog_limit") or 0), book_id),
+                             (int(setting("nu_backlog_limit_all") or 0), None)):
+            if limit <= 0:
+                continue
+            used = len(self.db.backlog_releases_since(since, book_id=scope)) + self._queued_backlog(scope)
+            left = max(0, limit - used)
+            budget = left if budget is None else min(budget, left)
+        return budget
+
     def _backlog_until(self, book_id, now):
         """None when another backlog release may go now, else when the oldest
         one in the window ages out (per book, or across books for the global
@@ -840,9 +893,7 @@ class NuEngine:
             stamps = self.db.backlog_releases_since(since, book_id=scope)
             # Backlog releases queued but not yet posting count too, or one
             # planning pass could let every book's next release under the cap.
-            stamps += [None for t in self.db.list_nu_tasks(statuses=("queued",), kinds=("release",),
-                                                           book_id=scope, limit=1000)
-                       if (t.get("options") or {}).get("backlog")]
+            stamps += [None] * self._queued_backlog(scope)
             if len(stamps) < limit:
                 continue
             posted = sorted(_parse(t) or now for t in stamps)
@@ -863,6 +914,18 @@ class NuEngine:
         self.poll(task)
         return "busy"
 
+    def _release_target(self, book_id, state):
+        """How a release names its series: the slug once NU has a page for it,
+        else (awaiting approval) the id the add-release form gave us plus the
+        submitted title, which the scraper types into the Series box and only
+        submits if it offers that exact id."""
+        if state.get("nu_slug"):
+            return {"series": state.get("nu_url") or state["nu_slug"]}
+        if state.get("nu_series_id") and pending_title(self.db, book_id, state):
+            return {"seriesId": state["nu_series_id"],
+                    "seriesTitle": pending_title(self.db, book_id, state)}
+        return None
+
     def _body(self, task):
         """The request for a task, or None when it no longer applies."""
         kind, opts, book_id = task["kind"], task.get("options") or {}, task.get("book_id")
@@ -873,14 +936,8 @@ class NuEngine:
             chapter = opts["chapter"]
             pub = self.db.chapter_published_at(book_id, chapter)
             link = chapter_link(book_id, chapter)
-            if state.get("nu_slug"):
-                target = {"series": state.get("nu_url") or state["nu_slug"]}
-            elif state.get("nu_series_id") and pending_title(self.db, book_id, state):
-                # Awaiting approval: no page yet. The scraper types the title into
-                # the Series box and only submits if it offers this exact id.
-                target = {"seriesId": state["nu_series_id"],
-                          "seriesTitle": pending_title(self.db, book_id, state)}
-            else:
+            target = self._release_target(book_id, state)
+            if not target:
                 return None
             if not pub or not link:
                 return None
@@ -891,6 +948,32 @@ class NuEngine:
             return {**target,
                     "release": release_label(chapter), "link": link,
                     "date": release_date(pub, self.clock().date()),
+                    "dryRun": True if opts.get("dry_run") else None,
+                    "force": True if opts.get("force") else None}
+        if kind == "release_batch":
+            state = self.db.get_book_nu(book_id)
+            target = self._release_target(book_id, state)
+            if not target:
+                return None
+            backlog = set(opts.get("backlog") or [])
+            releases = []
+            for chapter in opts.get("chapters") or []:
+                pub = self.db.chapter_published_at(book_id, chapter)
+                link = chapter_link(book_id, chapter)
+                if not pub or not link:
+                    continue   # unpublished since it was planned: leave it out
+                releases.append({"release": release_label(chapter), "link": link,
+                                 "date": release_date(pub, self.clock().date())})
+                if not opts.get("dry_run"):
+                    self.db.upsert_nu_release(book_id, chapter, label=release_label(chapter), link=link,
+                                              status="posting", nu_task_id=task["id"], error=None,
+                                              backlog=1 if chapter in backlog else 0)
+            if not releases:
+                return None
+            for r in releases:
+                if r["date"] is None:
+                    del r["date"]
+            return {**target, "releases": releases,
                     "dryRun": True if opts.get("dry_run") else None,
                     "force": True if opts.get("force") else None}
         if kind == "release_search":
@@ -984,11 +1067,49 @@ class NuEngine:
 
     def _release_back_to_queue(self, task):
         opts = task.get("options") or {}
-        chapter = opts.get("chapter")
-        if task["kind"] == "release" and chapter is not None and not opts.get("dry_run"):
+        if opts.get("dry_run"):
+            return
+        if task["kind"] == "release" and opts.get("chapter") is not None:
+            chapters = [opts["chapter"]]
+        elif task["kind"] == "release_batch":
+            chapters = opts.get("chapters") or []
+        else:
+            return
+        for chapter in chapters:
             row = self.db.get_nu_release(task["book_id"], chapter)
             if row and row["status"] == "posting":
                 self.db.upsert_nu_release(task["book_id"], chapter, status="queued")
+
+    def _release_failed(self, book_id, chapter, error):
+        """Act on one release NU (or the scraper) refused, for the outcomes
+        that need a human: True when handled with a hold, False for a
+        transient failure the caller should retry."""
+        low = (error or "").lower()
+        if any(s in low for s in ERR_GLOBAL):
+            self.db.upsert_nu_release(book_id, chapter, status="queued", error=error)
+            set_hold(error)
+            self._alert(None, "scraper login/config", f"NU posting is held: {error}")
+            return True
+        if any(s in low for s in ERR_CHECK):
+            self.db.upsert_nu_release(book_id, chapter, status="check", error=error)
+            self._hold(book_id, "check_nu", f"{release_label(chapter)} may or may not have reached NU "
+                                            f"({error}). Check NU, then mark it sent or resend it.")
+            return True
+        if any(s in low for s in ERR_REFUSED):
+            self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
+            self._hold(book_id, "refused", f"NU refused {release_label(chapter)}: {error}")
+            return True
+        if "didn't offer id" in low and not self.db.get_book_nu(book_id).get("nu_slug"):
+            self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
+            self._hold(book_id, "bad_slug", "NU's add-release form didn't offer the stored id for the "
+                                            f"submitted title ({error}). Look the series up again, "
+                                            "then clear the hold.")
+            return True
+        if any(s in low for s in ERR_BAD_SLUG):
+            self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
+            self._hold(book_id, "bad_slug", f"the stored NU series is wrong: {error}")
+            return True
+        return False
 
     def _on_error(self, task, error, permanent=False):
         """Classify a failed job (novelupdates-t9.md, "Errors") and act on it."""
@@ -1037,6 +1158,15 @@ class NuEngine:
             self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
             self._hold(book_id, "bad_slug", f"the stored NU series is wrong: {error}")
             return
+        if kind == "release_batch" and (any(s in low for s in ERR_BAD_SLUG + ERR_REFUSED)
+                                        or "didn't offer id" in low):
+            # Fails before anything was posted: hold the book on the first chapter.
+            self.db.update_nu_task(task["id"], **fail)
+            self._release_back_to_queue(task)
+            first = ((task.get("options") or {}).get("chapters") or [None])[0]
+            if first is not None:
+                self._release_failed(book_id, first, error)
+            return
         if kind == "names" and ("didn't save as sent" in low or "no answer" in low):
             self.db.update_nu_task(task["id"], **fail)
             self._alert(book_id, "check associated names", f"editing the series' associated names "
@@ -1057,7 +1187,13 @@ class NuEngine:
             self._log("warning", f"nu task {task['id']} ({kind}) failed, retry {attempts}: {error}")
             return
         self.db.update_nu_task(task["id"], attempts=attempts, **fail)
-        if kind == "release":
+        if kind == "release_batch":
+            self._release_back_to_queue(task)
+            chapters = (task.get("options") or {}).get("chapters") or []
+            self._hold(book_id, "failing", f"a batch of {len(chapters)} releases from "
+                                           f"{release_label(chapters[0]) if chapters else '?'} keeps "
+                                           f"failing: {error}")
+        elif kind == "release":
             self.db.upsert_nu_release(book_id, chapter, status="failed", error=error)
             self._hold(book_id, "failing", f"{release_label(chapter)} keeps failing: {error}")
         elif kind == "search":
@@ -1122,6 +1258,62 @@ class NuEngine:
             self._activity(book_id, f"{label} {'was already on NU' if status != 'submitted' else 'posted'}",
                            link=state.get("nu_url"))
         self.db.update_book_nu(book_id, **fields)
+
+    def on_release_batch(self, task, res):
+        book_id = task["book_id"]
+        opts = task.get("options") or {}
+        if res.get("status") == "dry_run":
+            return
+        by_label = {release_label(c): c for c in opts.get("chapters") or []}
+        backlog = opts.get("backlog") or []
+        now = self._now()
+        posted, retry, stopped_by = [], [], None
+        for entry in res.get("releases") or []:
+            chapter = by_label.get(entry.get("release"))
+            if chapter is None:
+                continue
+            status = entry.get("status")
+            if status in ("submitted", "exists", "already_submitted"):
+                self.db.upsert_nu_release(book_id, chapter, status="exists" if status == "exists" else "sent",
+                                          submitted_at=now, error=None,
+                                          message=entry.get("message") or status)
+                posted.append(chapter)
+            elif status == "failed":
+                if self._release_failed(book_id, chapter, entry.get("error")):
+                    stopped_by = "hold"
+                else:
+                    retry.append(chapter)
+                    stopped_by = stopped_by or entry.get("error")
+            elif status == "not_attempted":
+                self.db.upsert_nu_release(book_id, chapter, status="queued")
+                if stopped_by != "hold":
+                    retry.append(chapter)
+        # Anything planned but missing from the result goes back to the planner.
+        self._release_back_to_queue(task)
+        fields = {}
+        if posted:
+            last = release_label(max(posted))
+            fields.update(last_release_label=last, last_release_at=now, consecutive_failures=0,
+                          last_error=None)
+            span = (f"{release_label(min(posted))}–{last}" if len(posted) > 1 else last)
+            self._activity(book_id, f"posted {span} ({len(posted)} release{'s' if len(posted) != 1 else ''})"
+                           + (f"; stopped: {stopped_by}" if stopped_by and stopped_by != "hold" else ""),
+                           link=self.db.get_book_nu(book_id).get("nu_url"))
+        if fields:
+            self.db.update_book_nu(book_id, **fields)
+        if retry and stopped_by != "hold":
+            # A transient failure partway: resend the rest as a new batch, backed off.
+            tries = int(opts.get("retry") or 0) + 1
+            if tries <= len(RETRY_BACKOFF_MINUTES):
+                for chapter in retry:
+                    self.db.upsert_nu_release(book_id, chapter, status="queued")
+                self.db.create_nu_task(book_id, "release_batch", priority=PRIORITY_RELEASE,
+                                       not_before=self._later(minutes=RETRY_BACKOFF_MINUTES[tries - 1]),
+                                       options={"chapters": retry, "retry": tries,
+                                                "backlog": [c for c in retry if c in backlog]})
+            else:
+                self.db.upsert_nu_release(book_id, retry[0], status="failed", error=stopped_by)
+                self._hold(book_id, "failing", f"{release_label(retry[0])} keeps failing: {stopped_by}")
 
     def on_sync(self, task, res):
         listed = res.get("series") or []

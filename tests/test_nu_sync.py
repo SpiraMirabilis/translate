@@ -24,6 +24,9 @@ class FakeNu:
             "/nu/search": lambda b: {"found": False, "candidates": [], "series": None,
                                      "inOurGroup": False},
             "/nu/releases": lambda b: {"status": "submitted", "message": "Thank you!"},
+            "/nu/releases/batch": lambda b: {"status": "done", "submitted": len(b["releases"]),
+                                             "releases": [dict(r, status="submitted", message="Thank you!")
+                                                          for r in b["releases"]]},
             "/nu/group/sync": lambda b: {"added": [], "series": []},
             "/nu/series": lambda b: {"status": "dry_run" if b.get("dryRun") else "submitted",
                                      "form": {"title": b.get("title")}, "screenshot": "s.png"},
@@ -64,8 +67,19 @@ class FakeNu:
     def cancel(self, job_id):
         self.jobs[job_id]["status"] = "cancelled"
 
-    def posted(self, path="/nu/releases"):
-        return [b for p, b in self.calls if p == path]
+    def posted(self, path=None):
+        """Bodies sent to `path`; by default every release, a batch's entries
+        flattened (each with the batch's series fields)."""
+        if path:
+            return [b for p, b in self.calls if p == path]
+        out = []
+        for p, b in self.calls:
+            if p == "/nu/releases":
+                out.append(b)
+            elif p == "/nu/releases/batch":
+                head = {k: v for k, v in b.items() if k != "releases"}
+                out += [dict(head, **r) for r in b["releases"]]
+        return out
 
 
 class Clock:
@@ -79,7 +93,8 @@ class Clock:
         self.now += datetime.timedelta(**kw)
 
 
-SETTINGS = dict(nu_sync.DEFAULTS, nu_enabled=True, nu_release_spacing_seconds=0)
+# Batch size 1 keeps one job per release; the batching tests raise it.
+SETTINGS = dict(nu_sync.DEFAULTS, nu_enabled=True, nu_release_spacing_seconds=0, nu_batch_size=1)
 
 
 @pytest.fixture(autouse=True)
@@ -658,3 +673,82 @@ def test_names_skip_the_series_own_nu_title(db, nu, engine):
     nu_sync.queue_names(db, book)
     drain(engine)
     assert "Same As NU" not in nu.posted("/nu/associated-names")[0]["add"]
+
+
+
+# -- batches ---------------------------------------------------------------------
+
+def test_active_series_posts_due_chapters_in_one_batch(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_batch_size", 3)
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 6)])
+    go_active(db, book, start=1)
+    drain(engine)
+    batches = nu.posted("/nu/releases/batch")
+    assert [[r["release"] for r in b["releases"]] for b in batches] == [["c1", "c2", "c3"], ["c4", "c5"]]
+    assert batches[0]["series"].endswith("/series/the-law-abiding-necromancer/")
+    assert all(r["status"] == "sent" for r in db.list_nu_releases(book))
+    assert db.get_book_nu(book)["last_release_label"] == "c5"
+
+
+def test_batch_stopped_by_check_nu_holds_and_requeues_the_rest(db, nu, engine, alerts, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_batch_size", 5)
+    nu.handlers["/nu/releases/batch"] = lambda b: {"status": "stopped", "submitted": 1, "releases": [
+        dict(b["releases"][0], status="submitted"),
+        dict(b["releases"][1], status="failed", error="no reply from NovelUpdates within 60s"),
+        dict(b["releases"][2], status="not_attempted")]}
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 4)])
+    go_active(db, book, start=1)
+    drain(engine)
+    rows = {r["chapter_number"]: r["status"] for r in db.list_nu_releases(book)}
+    assert rows == {1: "sent", 2: "check", 3: "queued"}
+    assert db.get_book_nu(book)["hold_reason"] == "check_nu" and len(alerts) == 1
+    assert len(nu.posted("/nu/releases/batch")) == 1          # held: nothing more goes
+
+
+def test_batch_transient_failure_resends_the_rest_later(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_batch_size", 5)
+    calls = {"n": 0}
+    def handler(b):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"status": "stopped", "releases": [
+                dict(b["releases"][0], status="submitted"),
+                dict(b["releases"][1], status="failed", error="Cloudflare blocked"),
+                dict(b["releases"][2], status="not_attempted")]}
+        return {"status": "done", "releases": [dict(r, status="submitted") for r in b["releases"]]}
+    nu.handlers["/nu/releases/batch"] = handler
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 4)])
+    go_active(db, book, start=1)
+    drain(engine)
+    assert [r["release"] for r in nu.posted()] == ["c1", "c2", "c3"]
+    engine.clock.advance(minutes=nu_sync.RETRY_BACKOFF_MINUTES[0] + 1)
+    drain(engine)
+    assert [r["release"] for r in nu.posted()][-2:] == ["c2", "c3"]
+    assert all(r["status"] == "sent" for r in db.list_nu_releases(book))
+    assert db.get_book_nu(book)["hold_reason"] is None
+
+
+def test_batch_stops_at_the_backlog_budget(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_batch_size", 10)
+    monkeypatch.setitem(SETTINGS, "nu_feed_window_book", 1)        # only the newest is "new"
+    monkeypatch.setitem(SETTINGS, "nu_backlog_limit", 2)
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 6)])
+    go_active(db, book, start=1)
+    drain(engine)
+    first = nu.posted("/nu/releases/batch")[0]
+    assert [r["release"] for r in first["releases"]] == ["c1", "c2"]   # budget 2, order kept
+    assert db.get_book_nu(book)["rate_limited_until"]
+
+
+def test_batch_job_failure_retries_the_same_list(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_batch_size", 5)
+    nu.errors["/nu/releases/batch"] = ["challenge not solved within 10 min"]
+    book = make_book(db, chapters=[(n, PAST) for n in range(1, 4)])
+    go_active(db, book, start=1)
+    drain(engine)
+    assert all(r["status"] == "queued" for r in db.list_nu_releases(book))
+    engine.clock.advance(minutes=nu_sync.RETRY_BACKOFF_MINUTES[0] + 1)
+    drain(engine)
+    sent = nu.posted("/nu/releases/batch")
+    assert [r["release"] for r in sent[-1]["releases"]] == ["c1", "c2", "c3"]
+    assert all(r["status"] == "sent" for r in db.list_nu_releases(book))

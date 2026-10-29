@@ -274,6 +274,17 @@ class ScraperClient:
                                          "release": release, "link": link, "date": date,
                                          "dryRun": dry_run, "force": force}, poll, timeout)
 
+    def nu_releases(self, releases: list[dict], series: str | None = None,
+                    series_id: str | None = None, series_title: str | None = None,
+                    dry_run: bool | None = None, force: bool | None = None,
+                    poll: float = 3, timeout: float | None = None) -> dict:
+        """Post up to 50 releases of one series in one job, oldest first. releases is
+        [{"release": "c12", "link": ..., "date"?: "MM/DD/YYYY"}]; the series is named as for
+        nu_release. Stops at the first failure: result {status: done|stopped, series,
+        submitted, releases: [one entry per release]}."""
+        return self._nu("/nu/releases/batch", {"series": series, "seriesId": series_id, "seriesTitle": series_title,
+                                               "releases": releases, "dryRun": dry_run, "force": force}, poll, timeout)
+
     def nu_add_series(self, title: str, associated_names: list[str], genres: list[str],
                       poll: float = 3, timeout: float | None = None, **fields) -> dict:
         """Submit a new series (search first). associated_names: raw title first. Other

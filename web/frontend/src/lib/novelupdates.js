@@ -49,6 +49,10 @@ export function nuTaskLabel(t) {
     case 'release_search': return `Find new series on NU${o.tries > 1 ? ` (try ${o.tries})` : ''}`
     case 'names':   return 'Add our names on NU'
     case 'release': return `${o.dry_run ? 'Dry run' : 'Post'} c${o.chapter}${o.force ? ' (force)' : ''}`
+    case 'release_batch': {
+      const cs = o.chapters || []
+      return `Post c${cs[0]}–c${cs[cs.length - 1]} (${cs.length})${o.retry ? ` (retry ${o.retry})` : ''}`
+    }
     case 'sync':    return 'Group sync'
     case 'series':  return o.dry_run ? 'New series (dry run)' : 'Submit new series'
     case 'vocab':   return 'Fetch NU vocabulary'
@@ -73,6 +77,11 @@ export function nuTaskSummary(t) {
   if (t.kind === 'names') {
     if (r.status === 'updated') return `added: ${(r.after || []).filter(n => !(r.before || []).includes(n)).join(', ')}`
     if (r.status === 'unchanged') return 'already listed'
+  }
+  if (t.kind === 'release_batch' && r.releases) {
+    const n = r.releases.filter(e => ['submitted', 'exists', 'already_submitted'].includes(e.status)).length
+    const bad = r.releases.find(e => e.status === 'failed')
+    return `${n} posted` + (bad ? ` · stopped at ${bad.release}: ${bad.error || 'failed'}` : '')
   }
   if (t.kind === 'release' || t.kind === 'series') return r.message || r.status || ''
   if (t.kind === 'sync' && r.series) return `${r.series.length} series${r.added?.length ? `, ${r.added.length} new` : ''}`

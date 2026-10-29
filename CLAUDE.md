@@ -517,6 +517,16 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
   `{SITE_BASE_URL}/library/read/{id}/{n}`, `date` only when published before today. No
   publish hook exists, so polling is how a scheduled chapter going live is noticed. Private
   books hold (`not_public`); no `SITE_BASE_URL` holds the lane.
+- **Batches** (scraper ≥ 93e635c, `POST /nu/releases/batch`): an `active` series' due chapters
+  go out as one `release_batch` task of up to `nu_batch_size` (50, the scraper's cap), oldest
+  first, so books interleave on the lane batch by batch. A batch stops at the backlog budget
+  (`_backlog_budget`) — order is never broken. First releases, dry runs, resends and a batch
+  of one stay on the single endpoint. Result entries are applied one by one through
+  `_release_failed` (the single path's classifier): a hold (check NU / refused / bad series /
+  login) stops the series and leaves `not_attempted` chapters queued; a transient entry
+  failure resends the rest as a new batch after 30 m / 2 h / 8 h, then holds `failing`. A
+  job-level failure (nothing posted) retries the same list; the scraper's log answers
+  `already_submitted` for anything that went out.
 - **Backlog rate limit** (migration 33): NU auto-approves some releases and queues others for
   manual review. Observed 2026-10-29: B15 c1017–1022 (new chapters, top of B15's feed but
   beyond the site feed's 400) were auto-approved at once; B8 c689–723 (old chapters, ~390th

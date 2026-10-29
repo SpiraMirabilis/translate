@@ -246,6 +246,7 @@ def get_settings():
         "nu_backlog_limit_all": settings_store.get("nu_backlog_limit_all", 0),
         "nu_feed_window_book": settings_store.get("nu_feed_window_book", 100),
         "nu_feed_window_site": settings_store.get("nu_feed_window_site", 0),
+        "nu_batch_size": settings_store.get("nu_batch_size", 50),
         "has_nu_ntfy_token": bool(_env_value("NU_NTFY_TOKEN")),
         "email_from": os.getenv("EMAIL_FROM", ""),
         "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
@@ -311,6 +312,7 @@ class SettingsUpdate(BaseModel):
     nu_backlog_limit_all: Optional[int] = None
     nu_feed_window_book: Optional[int] = None
     nu_feed_window_site: Optional[int] = None
+    nu_batch_size: Optional[int] = None
 
 
 @router.put("")
@@ -350,6 +352,8 @@ def update_settings(req: SettingsUpdate):
         updates["geoblock_message"] = updates["geoblock_message"].strip()
     if "nu_forum_username" in updates:
         updates["nu_forum_username"] = updates["nu_forum_username"].strip()
+    if "nu_batch_size" in updates and not 1 <= updates["nu_batch_size"] <= 50:
+        raise HTTPException(status_code=400, detail="nu_batch_size must be 1-50 (the scraper's limit)")
     if "nu_alert_email" in updates:
         updates["nu_alert_email"] = updates["nu_alert_email"].strip()
         if updates["nu_alert_email"] and "@" not in updates["nu_alert_email"]:

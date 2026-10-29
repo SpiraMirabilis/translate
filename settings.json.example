@@ -227,5 +227,11 @@
   // env: NU_FEED_WINDOW_BOOK
   "nu_feed_window_book": 100,
   // env: NU_FEED_WINDOW_SITE
-  "nu_feed_window_site": 0
+  "nu_feed_window_site": 0,
+
+  // An active series' due chapters go out as one batch job of up to this many
+  // (the scraper's cap is 50); other books' batches interleave between them.
+  // 1 = one job per release.
+  // env: NU_BATCH_SIZE
+  "nu_batch_size": 50
 }

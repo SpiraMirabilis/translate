@@ -155,6 +155,10 @@ SCHEMA = {
     "nu_backlog_limit_all":    ("NU_BACKLOG_LIMIT_ALL",    0,                         int),
     "nu_feed_window_book":     ("NU_FEED_WINDOW_BOOK",     100,                       int),
     "nu_feed_window_site":     ("NU_FEED_WINDOW_SITE",     0,                         int),
+    # An active series' due chapters go out as one batch job of up to this many
+    # (the scraper's cap is 50); other books' batches interleave between them.
+    # 1 = one job per release.
+    "nu_batch_size":           ("NU_BATCH_SIZE",           50,                        int),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION

@@ -30,7 +30,7 @@ request from T9.
 Use the scraper's Python client. **T9's copy (`scraper_client.py` at the root of the T9 repo)
 is out of date.** Copy `client/scraper_client.py` from this repo over it: the
 new version adds `nu_search`, `nu_sync_group`, `nu_group_series`,
-`nu_release`, `nu_add_series` and `nu_submissions`. All of them block until
+`nu_release`, `nu_releases`, `nu_add_series` and `nu_submissions`. All of them block until
 the job is done, and raise `ScraperError` if it fails. The base URL and token
 are the ones `scrape_sync.py` already uses.
 
@@ -48,8 +48,10 @@ of low-priority backfills):
    has no result (409); the reason is in the job's `error` field.
 
 Timing: each page load waits about 3 s (NU's pacing setting), and every
-operation loads 1–5 pages. A search takes about 10–30 s and a release about
-20–40 s. Follow `scrape_sync.py`'s pattern and keep **one NU job in flight at
+operation loads 1–4 pages. A search takes about 10–30 s and a release about
+10–15 s. When several chapters of one series are due, post them with one
+`POST /nu/releases/batch` rather than one job each: after the first, each
+release costs one paced submit (about 6 s), and T9 polls once for the lot. Follow `scrape_sync.py`'s pattern and keep **one NU job in flight at
 a time**: submit the next only after the last one finishes. Jobs run in the
 order they were queued, but waiting also stops one failure from cascading.
 
@@ -166,6 +168,34 @@ Errors (the job fails; the message is in `error`):
 | `NovelUpdates login failed` / `must be set` | Credentials or config on the scraper | Escalate (scraper `.env`) |
 | `Cloudflare blocked` | Firewall block page, can't be solved | Retry later; escalate if it keeps happening |
 | `challenge not solved within` | Nobody solved a challenge over noVNC in time | Retry later |
+
+### `POST /nu/releases/batch {series | seriesId+seriesTitle, releases: [{release, link, date?}], dryRun?, force?}`: post several releases
+The same as `POST /nu/releases` for up to 50 releases of **one** series, in
+the order given: **oldest first**, as NU asks. The series page and the form
+are loaded once; NU's reply to each submit is the form with the series and
+group still picked, so each further release is refilled and submitted on it.
+Submits are spaced like page loads. Every release gets its own `filled` and
+`submitted` screenshots (`nu-<job>-<n>-release-....png`, `n` counting from 1).
+
+Result: `{status, series: {title, slug?, id}, submitted, releases}`, with one
+`releases` entry per release sent, in order: `{release, link, status, ...}`.
+Each entry's `status` and fields are as in the table above (an `exists`
+entry's table row is `live`), plus:
+
+| status | meaning | T9 does |
+|---|---|---|
+| `failed` | This release failed; `error` is the message the single endpoint would have failed with | As the error table below says for that message |
+| `not_attempted` | An earlier release failed, so this one wasn't tried | Send it again later, in a new batch, once the failure is dealt with |
+
+The batch's `status` is `stopped` if an entry failed, else `done`. The job
+itself fails (no result) only for a problem before anything was posted:
+login, a bad slug, a Cloudflare block. A `may have gone through` failure
+still means **stop that series** until a human has checked NU.
+
+A batch is deduplicated like any job only when it is identical. If the
+scraper restarts mid-batch, resend the same list: the log answers
+`already_submitted` for the releases that went out, and the one caught
+mid-submit (if any) fails with `may have gone through`.
 
 ### `POST /nu/series {...}`: submit a new series
 Search first; this endpoint doesn't. Required: `title` (English name),
