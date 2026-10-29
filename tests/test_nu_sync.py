@@ -649,3 +649,12 @@ def test_active_series_get_names_only_on_request(db, nu, engine):
     nu_sync.queue_names(db, book)
     drain(engine)
     assert len(nu.posted("/nu/associated-names")) == 1
+
+
+def test_names_skip_the_series_own_nu_title(db, nu, engine):
+    book = make_book(db, title="Same As NU", chapters=[(1, PAST)])
+    db.update_book(book, nu_title="Same as NU")
+    db.update_book_nu(book, state="active", nu_slug="s")
+    nu_sync.queue_names(db, book)
+    drain(engine)
+    assert "Same As NU" not in nu.posted("/nu/associated-names")[0]["add"]

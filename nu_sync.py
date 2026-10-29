@@ -494,7 +494,10 @@ def queue_names(db, book_id):
     state = db.get_book_nu(book_id)
     if not state.get("nu_slug"):
         raise NuActionError("the book has no NU series page yet")
-    names = names_to_add(book)
+    # NU's own series title isn't repeated as an associated name (the scraper
+    # compares against the names list only, so it would add it).
+    nu_title = norm_title(book.get("nu_title"))
+    names = [n for n in names_to_add(book) if norm_title(n) != nu_title]
     if not names:
         raise NuActionError("no names to add")
     existing = db.open_nu_task(book_id, "names")
