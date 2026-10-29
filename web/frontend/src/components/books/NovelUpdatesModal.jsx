@@ -107,8 +107,7 @@ export default function NovelUpdatesModal({ bookId, onClose }) {
             {st.last_error && !st.hold_reason && <p className="text-xs text-amber-300">{st.last_error}</p>}
             {st.rate_limited_until && (
               <p className="text-xs text-sky-300">
-                Backlog rate limit reached: older chapters (not in the book&apos;s RSS feed, so NU would queue them for
-                manual approval) resume at {st.rate_limited_until.replace('T', ' ').slice(0, 16)}. New chapters still go out.
+                Backlog rate limit reached: older chapters (which NU queues for manual approval) resume at {st.rate_limited_until.replace('T', ' ').slice(0, 16)}. New chapters still go out.
               </p>
             )}
 

@@ -71,9 +71,9 @@ DEFAULTS = {
     "nu_ntfy_url": "",
     # Rate limit on backlog releases: NU auto-approves a release only when it
     # finds the chapter in our RSS feed; anything else waits in its manual
-    # queue. NU reads the per-book feed (seen 2026-10-29: B15 c1017-1022 were
-    # auto-approved while beyond the site feed's 400), so a chapter counts as
-    # in the feed when it is among its book feed's newest nu_feed_window_book;
+    # queue. Its rule isn't known (it never fetched our feed around the
+    # auto-approvals we saw); book-feed recency is the proxy: a chapter counts
+    # as in the feed when it is among its book feed's newest nu_feed_window_book;
     # nu_feed_window_site > 0 additionally requires the site feed's newest N.
     # Other releases are capped per book (and optionally across books) per
     # rolling window; 0 = off.
@@ -738,8 +738,8 @@ class NuEngine:
                 if until is not None:
                     if r.get("rate_limited_until") != _iso(until):
                         if not r.get("rate_limited_until"):
-                            self._activity(book_id, f"rate-limited: c{chapter} isn't in our RSS feed, so NU "
-                                                    "would queue it for manual approval; the backlog "
+                            self._activity(book_id, f"rate-limited: c{chapter} is an old chapter, which NU "
+                                                    "queues for manual approval; the backlog "
                                                     f"resumes at {until:%H:%M}")
                         self.db.update_book_nu(book_id, rate_limited_until=_iso(until))
                     continue

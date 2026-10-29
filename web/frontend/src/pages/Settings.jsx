@@ -718,9 +718,9 @@ export default function Settings() {
             </div>
             <div>
               <p className="text-xs text-slate-400 mb-2">
-                <strong className="text-slate-300">Backlog rate limit.</strong> NovelUpdates approves a release by itself
-                only when it finds the chapter in the book&apos;s RSS feed (its newest chapters). Older chapters land in
-                NU&apos;s manual queue, so they&apos;re capped; new chapters are never held back.
+                <strong className="text-slate-300">Backlog rate limit.</strong> NovelUpdates approves new chapters by itself
+                but sends old ones to its manual queue, so old chapters (outside the book feed&apos;s newest N) are capped;
+                new chapters are never held back.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
                 {[

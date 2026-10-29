@@ -512,11 +512,15 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
   `{SITE_BASE_URL}/library/read/{id}/{n}`, `date` only when published before today. No
   publish hook exists, so polling is how a scheduled chapter going live is noticed. Private
   books hold (`not_public`); no `SITE_BASE_URL` holds the lane.
-- **Backlog rate limit** (migration 33): NU auto-approves a release only when it finds the
-  chapter in our RSS feed — **the per-book feed** (`/api/public/books/{id}/feed.rss`, newest
-  100). Established 2026-10-29: B15 c1017–1022 were auto-approved while beyond the site
-  feed's 400; B8 c689+ (book-feed position ~390) went to NU's manual queue. The `?around=N`
-  feed chapter pages advertise is evidently *not* what NU's approval reads. A chapter outside
+- **Backlog rate limit** (migration 33): NU auto-approves some releases and queues others for
+  manual review. Observed 2026-10-29: B15 c1017–1022 (new chapters, top of B15's feed but
+  beyond the site feed's 400) were auto-approved at once; B8 c689–723 (old chapters, ~390th
+  in B8's feed) went to the manual queue. **NU's rule is not known**: Cloudflare analytics
+  (feeds are `cf-cache-status: DYNAMIC`, never cached) showed *no* request from NU — no feed,
+  no chapter page — around B15's approvals, and no NU fetcher could be identified in 8 weeks
+  of logs. Whether NU reads a feed on its own schedule, or approves "newer than the latest
+  approved release", is open. The limit uses book-feed recency as a proxy for "old chapter",
+  which fits both. A chapter outside
   `nu_feed_window_book` (100; `nu_feed_window_site` > 0 additionally requires the site feed)
   is **backlog**: `nu_releases.backlog = 1`, capped at `nu_backlog_limit` (150) per book and
   `nu_backlog_limit_all` (0 = off) across books per rolling `nu_backlog_window_hours` (8);

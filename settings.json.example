@@ -211,9 +211,10 @@
   // env: NU_FORUM_USERNAME
   "nu_forum_username": "",
 
-  // Rate limit on backlog releases. NU auto-approves a release only when it
-  // finds the chapter in the book's RSS feed (its newest nu_feed_window_book
-  // chapters); anything older lands in NU's manual queue, so at most
+  // Rate limit on backlog releases. NU auto-approves new chapters but queues
+  // old ones for manual review (its exact rule is unknown; recency in the
+  // book's RSS feed, its newest nu_feed_window_book chapters, is the proxy).
+  // Older chapters are capped: at most
   // nu_backlog_limit of those go per book per nu_backlog_window_hours, and
   // nu_backlog_limit_all across all books (0 = no limit). nu_feed_window_site
   // > 0 also requires a place in the site-wide feed's newest N.

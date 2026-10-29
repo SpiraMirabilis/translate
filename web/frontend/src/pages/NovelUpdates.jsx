@@ -149,7 +149,7 @@ export default function NovelUpdates() {
                     {b.hold_reason && <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300">{HOLD_LABEL[b.hold_reason] || b.hold_reason}</span>}
                     {b.rate_limited_until && (
                       <span className="ml-1 px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300"
-                            title="Backlog chapters NU won't find in the RSS feed are capped; new chapters still go">
+                            title="Old chapters, which NU queues for manual approval, are capped; new chapters still go">
                         backlog paused until {b.rate_limited_until.slice(11, 16)}
                       </span>
                     )}
