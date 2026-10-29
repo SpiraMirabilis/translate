@@ -6,7 +6,7 @@ import { useJobs } from '../hooks/useJobs'
 import { useWs, useSite } from '../App'
 import { api } from '../services/api'
 import {
-  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users, Asterisk, Flag, CloudDownload
+  Languages, BookOpen, Database, ListChecks, Settings, HelpCircle, Wifi, WifiOff, Menu, X, ScrollText, MessageSquarePlus, MessageSquare, Users, Asterisk, Flag, CloudDownload, Newspaper
 } from 'lucide-react'
 
 const nav = [
@@ -15,6 +15,7 @@ const nav = [
   { to: '/entities',        icon: Database,          label: 'Entities'        },
   { to: '/queue',           icon: ListChecks,        label: 'Queue'           },
   { to: '/scraping',        icon: CloudDownload,     label: 'Scraping',        badgeKey: 'scrape' },
+  { to: '/novelupdates',    icon: Newspaper,         label: 'NovelUpdates',    badgeKey: 'nu' },
   { to: '/recommendations', icon: MessageSquarePlus, label: 'Recommendations', badgeKey: 'recs' },
   { to: '/comments',        icon: MessageSquare,     label: 'Comments',        badgeKey: 'comments' },
   { to: '/error-reports',   icon: Flag,              label: 'Error Reports',   badgeKey: 'reports' },
@@ -34,6 +35,7 @@ export default function Layout() {
   const [pendingCommentsCount, setPendingCommentsCount] = useState(0)
   const [newReportsCount, setNewReportsCount] = useState(0)
   const [scrapeAttentionCount, setScrapeAttentionCount] = useState(0)
+  const [nuAttentionCount, setNuAttentionCount] = useState(0)
 
   useEffect(() => {
     const fetchCounts = () => {
@@ -53,6 +55,10 @@ export default function Layout() {
       api.scrapeCount()
         .then(data => setScrapeAttentionCount(data.count || 0))
         .catch(e => console.warn('Failed to load scrape badge count:', e))
+      // A held series, a book waiting on a human decision, a blocked NU job, or a lane hold.
+      api.nuCount()
+        .then(data => setNuAttentionCount(data.count || 0))
+        .catch(e => console.warn('Failed to load NovelUpdates badge count:', e))
     }
     fetchCounts()
     const interval = setInterval(fetchCounts, 5 * 60 * 1000)
@@ -69,6 +75,7 @@ export default function Layout() {
     comments: pendingCommentsCount,
     reports: newReportsCount,
     scrape: scrapeAttentionCount,
+    nu: nuAttentionCount,
     jobs: active.length,
   }
 

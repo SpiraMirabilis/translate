@@ -666,6 +666,80 @@ export default function Settings() {
         </section>
       )}
 
+      {/* NovelUpdates posting */}
+      {settings && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">NovelUpdates</h2>
+          <div className="card p-4 space-y-4">
+            <p className="text-xs text-slate-500">
+              Newly published chapters are posted to NovelUpdates through the scraper&apos;s logged-in browser, by the
+              NU lane in <code>t9-scraper.service</code>. Which books post, and from which chapter, is set per book
+              (Books → Actions → NovelUpdates, or the <a href="/novelupdates" className="text-indigo-400 hover:text-indigo-300">NovelUpdates</a> page).
+              The NU login itself lives on the scraper.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+              {[
+                ['nu_release_spacing_seconds', 'Seconds between releases', 60, 'Pause between two posts to one series.'],
+                ['nu_approval_wait_hours', 'Approval wait (hours)', 20, 'After a first release, start checking our group page this much later.'],
+                ['nu_group_sync_hours', 'Group sync every (hours)', 4, 'How often to re-read the group page while a series awaits approval.'],
+                ['nu_approval_timeout_hours', 'Approval alert after (hours)', 72, 'Alert when a series still isn’t approved this long after its first release.'],
+              ].map(([key, label, dflt, help]) => (
+                <div key={key}>
+                  <label className="label">{label}</label>
+                  <input
+                    type="number" min="0"
+                    className="input text-sm"
+                    value={settings[key] ?? dflt}
+                    onChange={e => setSettings(s => ({ ...s, [key]: parseInt(e.target.value, 10) }))}
+                  />
+                  <p className="text-xs text-slate-500 mt-1">{help}</p>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="label">Alert email</label>
+                <input
+                  type="email"
+                  className="input text-sm"
+                  placeholder={settings.email_from || 'editor@…'}
+                  value={settings.nu_alert_email ?? ''}
+                  onChange={e => setSettings(s => ({ ...s, nu_alert_email: e.target.value }))}
+                />
+                <p className="text-xs text-slate-500 mt-1">Where “check NU”, refusals and overdue approvals are emailed. Blank = the address mail is sent from.</p>
+              </div>
+              <div>
+                <label className="label">ntfy topic URL</label>
+                <input
+                  className="input text-sm"
+                  placeholder="https://ntfy.sh/your-topic"
+                  value={settings.nu_ntfy_url ?? ''}
+                  onChange={e => setSettings(s => ({ ...s, nu_ntfy_url: e.target.value }))}
+                />
+                <p className="text-xs text-slate-500 mt-1">
+                  The same alerts as a push. Blank = none. A token, if the topic needs one, goes in <code>.env</code> as
+                  NU_NTFY_TOKEN{settings.has_nu_ntfy_token ? ' (set)' : ''}.
+                </p>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={!!settings.nu_enabled}
+                onChange={e => setSettings(s => ({ ...s, nu_enabled: e.target.checked }))}
+              />
+              NovelUpdates posting enabled (off stops the NU lane for every book)
+            </label>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
+                <Check size={13} />
+                {saved ? 'Saved!' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Unit Conversions */}
       <UnitsSection />
 

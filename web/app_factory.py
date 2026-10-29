@@ -70,7 +70,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             recommendations_admin, reader_stats_api, comments_admin,
             error_reports_admin,
             revisions, grammar, mail_ingest, deps, footnote_candidates,
-            sitemap, scrape_api,
+            sitemap, scrape_api, nu_api,
         )
 
         # Shared engine for the non-job callers (entity advice, dictionary
@@ -138,6 +138,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         footnote_candidates.init(entity_manager)
         sitemap.init(entity_manager, config)
         scrape_api.init(entity_manager, job_hub)
+        nu_api.init(entity_manager)
 
     # Flush buffered reader views on clean shutdown (best-effort; up to a few
     # seconds of views are accepted-lost on a hard kill).
@@ -265,7 +266,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
             recommendations_admin, reader_stats_api, comments_admin,
             error_reports_admin,
             revisions, grammar, mail_ingest, footnote_candidates, sitemap,
-            scrape_api,
+            scrape_api, nu_api,
         )
         app.include_router(translation.router)
         app.include_router(books.router)
@@ -290,6 +291,8 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # Automated scraping — the worker is t9-scraper.service; these only
         # read its state and queue work for it.
         app.include_router(scrape_api.router)
+        # NovelUpdates posting — the NU lane runs in the same worker.
+        app.include_router(nu_api.router)
 
     # Public API routes — both processes
     app.include_router(health.router)

@@ -120,6 +120,20 @@ SCHEMA = {
     # with a blocked job, and that wins.
     "scrape_notify_url":       ("SCRAPE_NOTIFY_URL",       "",                        str),
     "scraper_vnc_url":         ("SCRAPER_VNC_URL",         "",                        str),
+    # NovelUpdates posting (nu_sync.py, the NU lane in t9-scraper.service).
+    # Off until switched on; which books post is per book (book_nu.mode).
+    "nu_enabled":              ("NU_ENABLED",              False,                     bool),
+    # Pause between two releases of one series.
+    "nu_release_spacing_seconds": ("NU_RELEASE_SPACING_SECONDS", 60,              int),
+    # After a series' first release: start group syncs this long after it,
+    # sync this often, and alert when it still isn't approved after the timeout.
+    "nu_approval_wait_hours":  ("NU_APPROVAL_WAIT_HOURS",  20,                        int),
+    "nu_approval_timeout_hours": ("NU_APPROVAL_TIMEOUT_HOURS", 72,                   int),
+    "nu_group_sync_hours":     ("NU_GROUP_SYNC_HOURS",     4,                         int),
+    # Alerts: email (blank = EMAIL_FROM, the editor mailbox) and an ntfy topic
+    # URL (blank = none; its token is NU_NTFY_TOKEN in .env).
+    "nu_alert_email":          ("NU_ALERT_EMAIL",          "",                        str),
+    "nu_ntfy_url":             ("NU_NTFY_URL",             "",                        str),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION

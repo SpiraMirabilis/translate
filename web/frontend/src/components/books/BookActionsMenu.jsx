@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Trash2, Edit2, Download, ChevronDown, Loader2, ScrollText, Sparkles, Globe, Tags, ListChecks, Code, Boxes, RefreshCw, Asterisk, CloudDownload, Radar
+  Trash2, Edit2, Download, ChevronDown, Loader2, ScrollText, Sparkles, Globe, Tags, ListChecks, Code, Boxes, RefreshCw, Asterisk, CloudDownload, Radar, Newspaper
 } from 'lucide-react'
 
-export default function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache, onFootnotes, onSource, onCheckSource }) {
+export default function BookActionsMenu({ book, exporting, onExport, onPublish, onCategories, onReview, onPrompt, onEdit, onDelete, onApiLogs, onPronounRepair, onModules, onInvalidateCache, onFootnotes, onSource, onCheckSource, onNovelUpdates }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -61,6 +61,7 @@ export default function BookActionsMenu({ book, exporting, onExport, onPublish, 
           <div className="border-t border-slate-700 my-1" />
           <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-wider">Publish</div>
           {item(<Globe size={12} />, 'WordPress', onPublish)}
+          {isTranslation && onNovelUpdates && item(<Newspaper size={12} />, 'NovelUpdates', onNovelUpdates)}
           {isTranslation && (
             <>
               <div className="border-t border-slate-700 my-1" />

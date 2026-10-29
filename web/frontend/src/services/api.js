@@ -290,6 +290,27 @@ export const api = {
   setScraperToken:    (token) => post('/api/settings/scraper-token', { api_key: token }),
   testScraper:        () => post('/api/settings/scraper-test', {}),
 
+  // NovelUpdates posting (the NU lane runs in scrape_worker.py; these record decisions for it)
+  nuOverview:        () => get('/api/nu/overview'),
+  nuCount:           () => get('/api/nu/count'),
+  nuFindAll:         () => post('/api/nu/find-all', {}),
+  nuSync:            () => post('/api/nu/sync', {}),
+  nuRefreshVocab:    () => post('/api/nu/vocabulary/refresh', {}),
+  nuClearHold:       () => post('/api/nu/hold/clear', {}),
+  nuCancelTask:      (taskId) => post(`/api/nu/tasks/${taskId}/cancel`, {}),
+  nuRetryTask:       (taskId) => post(`/api/nu/tasks/${taskId}/retry`, {}),
+  getBookNu:         (bookId) => get(`/api/books/${bookId}/nu`),
+  updateBookNu:      (bookId, body) => put(`/api/books/${bookId}/nu`, body),
+  nuSearch:          (bookId) => post(`/api/books/${bookId}/nu/search`, {}),
+  nuPick:            (bookId, body) => post(`/api/books/${bookId}/nu/pick`, body),
+  nuSaveDraft:       (bookId, draft) => put(`/api/books/${bookId}/nu/draft`, draft),
+  nuResetDraft:      (bookId) => post(`/api/books/${bookId}/nu/draft/reset`, {}),
+  nuDraftDryRun:     (bookId) => post(`/api/books/${bookId}/nu/draft/dry-run`, {}),
+  nuDraftSubmit:     (bookId) => post(`/api/books/${bookId}/nu/draft/submit`, {}),
+  nuFirstRelease:    (bookId, chapter, label) => post(`/api/books/${bookId}/nu/first-release`, { chapter, label: label || null }),
+  nuResolveRelease:  (bookId, chapter, action) => post(`/api/books/${bookId}/nu/releases/${chapter}/resolve`, { action }),
+  nuReleaseDryRun:   (bookId, chapter) => post(`/api/books/${bookId}/nu/releases/${chapter}/dry-run`, {}),
+
   // Comments (admin moderation)
   listComments:    (params = {}) => {
     const q = new URLSearchParams()

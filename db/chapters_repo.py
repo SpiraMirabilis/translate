@@ -935,6 +935,10 @@ class ChaptersRepo:
                     "UPDATE polish_jobs SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
                     (new_chapter_number, book_id, chapter_number),
                 )
+                cursor.execute(
+                    "UPDATE nu_releases SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
                 # activity_log uses column name `chapter`, not `chapter_number`
                 cursor.execute(
                     "UPDATE activity_log SET chapter = ? WHERE book_id = ? AND chapter = ?",

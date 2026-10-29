@@ -131,6 +131,12 @@ def _scraper_notify_secret():
     return scrape_sync.notify_secret()
 
 
+def _env_value(key):
+    """A .env secret, re-read (Settings may have just written it)."""
+    import scrape_sync
+    return scrape_sync._env_secret(key)
+
+
 @router.post("/scraper-token")
 def set_scraper_token(req: ApiKeyRequest):
     key = req.api_key.strip()
@@ -224,6 +230,16 @@ def get_settings():
         "scraper_vnc_url": settings_store.get("scraper_vnc_url", ""),
         "has_scraper_notify_secret": bool(_scraper_notify_secret()),
         "has_scraper_token": bool(_scraper_token()),
+        # NovelUpdates: read from the store -- the NU lane consults it live.
+        "nu_enabled": settings_store.get("nu_enabled", False),
+        "nu_release_spacing_seconds": settings_store.get("nu_release_spacing_seconds", 60),
+        "nu_approval_wait_hours": settings_store.get("nu_approval_wait_hours", 20),
+        "nu_approval_timeout_hours": settings_store.get("nu_approval_timeout_hours", 72),
+        "nu_group_sync_hours": settings_store.get("nu_group_sync_hours", 4),
+        "nu_alert_email": settings_store.get("nu_alert_email", ""),
+        "nu_ntfy_url": settings_store.get("nu_ntfy_url", ""),
+        "has_nu_ntfy_token": bool(_env_value("NU_NTFY_TOKEN")),
+        "email_from": os.getenv("EMAIL_FROM", ""),
         "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
     }
 
@@ -272,6 +288,13 @@ class SettingsUpdate(BaseModel):
     scrape_engine: Optional[str] = None
     scrape_notify_url: Optional[str] = None
     scraper_vnc_url: Optional[str] = None
+    nu_enabled: Optional[bool] = None
+    nu_release_spacing_seconds: Optional[int] = None
+    nu_approval_wait_hours: Optional[int] = None
+    nu_approval_timeout_hours: Optional[int] = None
+    nu_group_sync_hours: Optional[int] = None
+    nu_alert_email: Optional[str] = None
+    nu_ntfy_url: Optional[str] = None
 
 
 @router.put("")
@@ -294,7 +317,15 @@ def update_settings(req: SettingsUpdate):
         updates["scrape_sweep_hours"] = ",".join(str(h) for h in hours)
     if "scrape_chunk_size" in updates and not 1 <= updates["scrape_chunk_size"] <= 500:
         raise HTTPException(status_code=400, detail="scrape_chunk_size must be 1-500")
-    for key in ("scrape_notify_url", "scraper_vnc_url"):
+    for key in ("nu_release_spacing_seconds", "nu_approval_wait_hours",
+                "nu_approval_timeout_hours", "nu_group_sync_hours"):
+        if key in updates and updates[key] < 0:
+            raise HTTPException(status_code=400, detail=f"{key} must be >= 0")
+    if "nu_alert_email" in updates:
+        updates["nu_alert_email"] = updates["nu_alert_email"].strip()
+        if updates["nu_alert_email"] and "@" not in updates["nu_alert_email"]:
+            raise HTTPException(status_code=400, detail="nu_alert_email must be an email address")
+    for key in ("scrape_notify_url", "scraper_vnc_url", "nu_ntfy_url"):
         if key in updates:
             updates[key] = updates[key].strip()
             if updates[key] and not re.match(r"^https?://", updates[key]):

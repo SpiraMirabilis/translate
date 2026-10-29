@@ -20,6 +20,7 @@ from db.polish_repo import PolishJobsRepo
 from db.footnote_candidates_repo import FootnoteCandidatesRepo
 from db.chapter_entities_repo import ChapterEntitiesRepo
 from db.scrape_repo import ScrapeRepo
+from db.nu_repo import NuRepo
 from db.translation_requests_repo import TranslationRequestsRepo
 
 
@@ -29,7 +30,7 @@ class DatabaseManager(BooksRepo, ChaptersRepo, EntitiesRepo, QueueRepo,
                       LogsRepo, WpStateRepo,
                       ChapterRevisionsRepo, PolishJobsRepo,
                       FootnoteCandidatesRepo, ChapterEntitiesRepo, ScrapeRepo,
-                      TranslationRequestsRepo,
+                      TranslationRequestsRepo, NuRepo,
                       DatabaseCore):
     """Class to manage database operations including entities, books, and chapters using SQLite"""
 

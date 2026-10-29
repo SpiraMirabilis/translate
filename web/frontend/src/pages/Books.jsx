@@ -17,6 +17,7 @@ import BookFormModal from '../components/books/BookFormModal'
 import PromptEditorModal from '../components/books/PromptEditorModal'
 import BookModulesModal from '../components/books/BookModulesModal'
 import SourceModal from '../components/books/SourceModal'
+import NovelUpdatesModal from '../components/books/NovelUpdatesModal'
 import WordPressPublishModal from '../components/books/WordPressPublishModal'
 import CategoryManagerModal from '../components/books/CategoryManagerModal'
 import PronounRepairBookModal from '../components/books/PronounRepairBookModal'
@@ -43,6 +44,7 @@ export default function Books() {
   const pronounRepairModal = useUrlModal('pronounRepair', { idKey: 'book' })
   const modulesModal = useUrlModal('modules', { idKey: 'book' })
   const sourceModal = useUrlModal('source', { idKey: 'book' })
+  const nuModal = useUrlModal('nu', { idKey: 'book' })
 
   // Chapter selection for batch retranslate — too large to live in the URL,
   // so it's kept local and keyed by book id.
@@ -431,6 +433,7 @@ export default function Books() {
                     onModules={() => modulesModal.open(book.id)}
                     onSource={() => sourceModal.open(book.id)}
                     onCheckSource={() => handleCheckSource(book)}
+                    onNovelUpdates={() => nuModal.open(book.id)}
                     onInvalidateCache={() => handleInvalidateCache(book.id)}
                   />
                 </div>
@@ -633,6 +636,10 @@ export default function Books() {
 
       {sourceModal.isOpen && (
         <SourceModal bookId={parseInt(sourceModal.id, 10)} onClose={sourceModal.close} />
+      )}
+
+      {nuModal.isOpen && (
+        <NovelUpdatesModal bookId={parseInt(nuModal.id, 10)} onClose={nuModal.close} />
       )}
 
       {/* Global search modal */}

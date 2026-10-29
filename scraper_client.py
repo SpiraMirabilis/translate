@@ -36,9 +36,23 @@ job runs, in slices, so translation can start before a backfill finishes:
 (The last chapter of a running job can still be growing if the site splits
 it across pages; treat it as final once the job is done.)
 
+Any other page, through the same browser and challenge handling:
+
+    html = sc.page("https://example.com/", wait_ms=2000).decode()
+    png = sc.page("https://example.com/", format="screenshot")
+
+NovelUpdates (the scraper's browser holds the login; you own the workflow):
+
+    hit = sc.nu_search(["我，死靈法師，遵紀守法", "我，死灵法师，遵纪守法"])  # trad + simp
+    if hit["found"]:
+        r = sc.nu_release(hit["series"]["url"], "c2", "https://our.site/necromancer/2")
+        # r["status"]: submitted | exists | already_submitted | dry_run
+    sc.nu_sync_group(); listed = {s["slug"] for s in sc.nu_group_series()}
+
 Command line:
     python scraper_client.py toc <url>
     python scraper_client.py chapters <url> [--from N] [--to N] [--max N] [-o out.json]
+    python scraper_client.py page <url> [--screenshot] [--wait MS] [--viewport] [-o out]
     python scraper_client.py status <job-id> | result <job-id> | retry <job-id> | cancel <job-id>
   (reads SCRAPER_URL and SCRAPER_TOKEN from the environment)
 """
@@ -102,6 +116,15 @@ class ScraperClient:
                 detail = {"error": e.reason}
             raise ScraperError(f"{method} {path}: HTTP {e.code}: {detail.get('error') or detail}") from None
 
+    def _get_bytes(self, path: str) -> bytes:
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        req = urllib.request.Request(self.base_url + path, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                return res.read()
+        except urllib.error.HTTPError as e:
+            raise ScraperError(f"GET {path}: HTTP {e.code}: {e.read().decode(errors='replace')}") from None
+
     # -- jobs --------------------------------------------------------------
     def submit_chapters(self, url: str, from_chapter: int | None = None, to_chapter: int | None = None,
                         max_chapters: int | None = None, from_url: str | None = None,
@@ -124,6 +147,23 @@ class ScraperClient:
         body = {"url": url, "engine": engine, "notifyUrl": notify_url, "notifyKind": notify_kind,
                 "notifySecret": notify_secret}
         return self._req("POST", "/toc", {k: v for k, v in body.items() if v is not None})[1]
+
+    def submit_page(self, url: str, format: str | None = None, wait_ms: int | None = None,
+                    full_page: bool | None = None, priority: str | None = None,
+                    notify_url: str | None = None, notify_kind: str | None = None,
+                    notify_secret: str | None = None) -> dict:
+        """Queue a fetch of any http(s) page: format "html" (default) or "screenshot"
+        (PNG; full_page=False for just the window). wait_ms waits that much longer
+        after load, for pages that render late."""
+        body = {"url": url, "format": format, "waitMs": wait_ms, "fullPage": full_page,
+                "priority": priority, "notifyUrl": notify_url, "notifyKind": notify_kind,
+                "notifySecret": notify_secret}
+        return self._req("POST", "/page", {k: v for k, v in body.items() if v is not None})[1]
+
+    def page_content(self, job_id: str) -> bytes:
+        """A done page job's capture: HTML bytes (UTF-8) or PNG bytes. Captures
+        expire (CAPTURE_TTL_HOURS on the server); fetch them soon after the job."""
+        return self._get_bytes(f"/jobs/{job_id}/result")
 
     def status(self, job_id: str) -> dict:
         return self._req("GET", f"/jobs/{job_id}")[1]
@@ -181,6 +221,14 @@ class ScraperClient:
             raise ScraperError(f"job {job['id']} {job['status']}: {job.get('error', '')}", job)
         return self.result(job["id"])
 
+    def page(self, url: str, poll: float = 2, timeout: float | None = None, **kwargs) -> bytes:
+        """Fetch a page and return the capture (see submit_page for the options)."""
+        job = self.submit_page(url, **kwargs)
+        job = self.wait(job["id"], poll=poll, timeout=timeout)
+        if job["status"] != "done":
+            raise ScraperError(f"page job {job['id']} {job['status']}: {job.get('error', '')}", job)
+        return self.page_content(job["id"])
+
     def toc(self, url: str, poll: float = 5, timeout: float | None = None) -> dict:
         """Read a book's TOC: chapterCount, latest, chapters[{position, number, title, url}]."""
         job = self.submit_toc(url)
@@ -188,6 +236,52 @@ class ScraperClient:
         if job["status"] != "done":
             raise ScraperError(f"toc job {job['id']} {job['status']}: {job.get('error', '')}", job)
         return self.result(job["id"])
+
+    # --- NovelUpdates -------------------------------------------------------
+    def _nu(self, path: str, body: dict, poll: float, timeout: float | None) -> dict:
+        job = self._req("POST", path, {k: v for k, v in body.items() if v is not None})[1]
+        job = self.wait(job["id"], poll=poll, timeout=timeout)
+        if job["status"] != "done":
+            raise ScraperError(f"nu job {job['id']} {job['status']}: {job.get('error', '')}", job)
+        return self.result(job["id"])
+
+    def nu_search(self, names: list[str], poll: float = 3, timeout: float | None = None) -> dict:
+        """Is the series on NU? names: the raw title in every form (Traditional and
+        Simplified). {found, series: {title, url, slug, id} | None, inOurGroup, candidates}."""
+        return self._nu("/nu/search", {"names": names}, poll, timeout)
+
+    def nu_sync_group(self, poll: float = 3, timeout: float | None = None) -> dict:
+        """Re-read our group's NU page. {added: [slug], series: [...]}."""
+        return self._nu("/nu/group/sync", {}, poll, timeout)
+
+    def nu_group_series(self) -> list[dict]:
+        """Our group's series as of the last sync (no browser)."""
+        return self._req("GET", "/nu/group/series")[1]
+
+    def nu_release(self, series: str, release: str, link: str, date: str | None = None,
+                   dry_run: bool | None = None, force: bool | None = None,
+                   poll: float = 3, timeout: float | None = None) -> dict:
+        """Post a release: series is the NU URL or slug, release NU's label (c12, v2c10),
+        link our chapter URL, date MM/DD/YYYY only if released before today."""
+        return self._nu("/nu/releases", {"series": series, "release": release, "link": link, "date": date,
+                                         "dryRun": dry_run, "force": force}, poll, timeout)
+
+    def nu_add_series(self, title: str, associated_names: list[str], genres: list[str],
+                      poll: float = 3, timeout: float | None = None, **fields) -> dict:
+        """Submit a new series (search first). associated_names: raw title first. Other
+        fields as in POST /nu/series, camelCase (description, type, tags, language,
+        authors, year, statusInCoo, coverUrl, dryRun, ...)."""
+        return self._nu("/nu/series", {"title": title, "associatedNames": associated_names,
+                                       "genres": genres, **fields}, poll, timeout)
+
+    def nu_vocabulary(self, poll: float = 3, timeout: float | None = None) -> dict:
+        """NU's genre, tag, type and language lists for new series: {genres, tags, types,
+        languages}, each [{id, name}]. Cache it; it changes rarely."""
+        return self._nu("/nu/vocabulary", {}, poll, timeout)
+
+    def nu_submissions(self, limit: int = 100) -> list[dict]:
+        """What we've submitted to NU, newest first."""
+        return self._req("GET", f"/nu/submissions?limit={limit}")[1]
 
 
 def _main(argv: list[str]) -> int:
@@ -202,6 +296,10 @@ def _main(argv: list[str]) -> int:
     c.add_argument("--from", dest="from_chapter", type=int); c.add_argument("--to", dest="to_chapter", type=int)
     c.add_argument("--max", dest="max_chapters", type=int); c.add_argument("-o", "--out")
     c.add_argument("--backfill", action="store_true", help="submit with priority=low")
+    pg = sub.add_parser("page"); pg.add_argument("page_url")
+    pg.add_argument("--screenshot", action="store_true"); pg.add_argument("--wait", type=int, help="ms after load")
+    pg.add_argument("--viewport", action="store_true", help="screenshot only the window, not the whole page")
+    pg.add_argument("-o", "--out", help="write here instead of stdout")
     for name in ("status", "result", "retry", "cancel"):
         sub.add_parser(name).add_argument("job_id")
     a = ap.parse_args(argv)
@@ -211,6 +309,16 @@ def _main(argv: list[str]) -> int:
                            f"chapters={j['progress'].get('chapters', 0)} {j['progress'].get('lastTitle', '')}"
                            + (f"  BLOCKED, solve at {j['vncUrl']}" if j.get("vncUrl") else ""), file=sys.stderr)
     try:
+        if a.cmd == "page":
+            data = sc.page(a.page_url, format="screenshot" if a.screenshot else None, wait_ms=a.wait,
+                           full_page=False if a.viewport else None)
+            if a.out:
+                with open(a.out, "wb") as f:
+                    f.write(data)
+                print(f"wrote {len(data)} bytes to {a.out}", file=sys.stderr)
+            else:
+                sys.stdout.buffer.write(data)
+            return 0
         if a.cmd == "toc":
             r = sc.toc(a.book_url)
             print(f"{r['chapterCount']} chapters; latest: {r['latest']}", file=sys.stderr)

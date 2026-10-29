@@ -3,7 +3,8 @@
 
 Keeps at most one job on the scraper (see scrape_sync.py for the rules), runs
 the TOC sweeps at scrape_sweep_hours, and starts translations for books in
-auto mode. A standalone process rather than a thread in the admin app, so the
+auto mode. It also ticks the NovelUpdates lane (nu_sync.py), which keeps its
+own single job on the scraper and has its own kill switch (nu_enabled). A standalone process rather than a thread in the admin app, so the
 frequent admin restarts never interrupt a backfill; the scraper's job id is
 persisted on submit, so its own restarts resume polling instead of resubmitting.
 
@@ -69,6 +70,12 @@ def print_status(db):
               f"have={b.get('have_max')} translated={b.get('translated_max')} "
               f"checked={b.get('last_checked_at')} "
               + (f"HOLD: {b['hold_reason']}" if b.get("hold_reason") else ""))
+    nu = db.nu_lane_task()
+    print(f"nu lane: task {nu['id']} {nu['kind']} book {nu['book_id']} ({nu['status']})" if nu
+          else "nu lane: idle")
+    for t in db.list_nu_tasks(statuses=("queued",), order="t.priority, t.id", limit=30):
+        print(f"  queued  #{t['id']:<6} p{t['priority']:<3} {t['kind']:<8} book {t['book_id']} "
+              f"{('after ' + t['not_before']) if t.get('not_before') else ''}")
 
 
 def main(argv=None):
@@ -86,8 +93,10 @@ def main(argv=None):
         print_status(db)
         return 0
 
+    import nu_sync
     import scrape_sync
     engine = scrape_sync.ScrapeEngine(db, logger=log)
+    nu_engine = nu_sync.NuEngine(db, logger=log)
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
@@ -98,17 +107,24 @@ def main(argv=None):
         except Exception:
             log.exception("tick failed")
             state = "error"
-        lane = None
+        try:
+            nu_state = nu_engine.tick()
+        except Exception:
+            log.exception("NovelUpdates tick failed")
+            nu_state = "error"
+        lane = nu_lane = None
         try:
             lane = db.lane_task()
+            nu_lane = db.nu_lane_task()
         except Exception:
             pass
         write_heartbeat({"at": time.time(), "pid": os.getpid(), "state": state,
-                         "lane_task_id": lane["id"] if lane else None})
+                         "lane_task_id": lane["id"] if lane else None,
+                         "nu_state": nu_state, "nu_task_id": nu_lane["id"] if nu_lane else None})
         if args.once:
             break
         # A finished job means the next can be submitted right away.
-        delay = BUSY_SLEEP if state == "busy" and lane else IDLE_SLEEP
+        delay = BUSY_SLEEP if (state == "busy" and lane) or (nu_state == "busy" and nu_lane) else IDLE_SLEEP
         for _ in range(delay):
             if _stop:
                 break

@@ -1057,6 +1057,102 @@ def _m031_books_nu_title(conn, cursor, backend, logger):
         logger.info("Added nu_title column to books table")
 
 
+def _nu_ddl(dialect):
+    """NovelUpdates posting (nu_sync.py). book_nu: per-book NU state (the series,
+    the baseline chapter, holds); nu_releases: one row per chapter we posted or
+    tried to; nu_tasks: the NU lane (one scraper job in flight), book_id NULL for
+    group sync / vocabulary."""
+    my = dialect == "mysql"
+    text = "TEXT"
+    ts = "VARCHAR(50)" if my else "TEXT"
+    short = "VARCHAR(32)" if my else "TEXT"
+    pk = "INTEGER PRIMARY KEY AUTO_INCREMENT" if my else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    big = "MEDIUMTEXT" if my else "TEXT"
+    tail = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" if my else ""
+    stmts = [
+        f"""
+        CREATE TABLE IF NOT EXISTS book_nu (
+            book_id INTEGER PRIMARY KEY,
+            mode {short} NOT NULL DEFAULT 'off',
+            state {short} NOT NULL DEFAULT 'untracked',
+            nu_slug {"VARCHAR(255)" if my else "TEXT"},
+            nu_url {text},
+            nu_series_id {short},
+            start_chapter INTEGER,
+            candidates {big},
+            search_names {text},
+            series_draft {big},
+            draft_dry_run_at {ts},
+            draft_dry_run {big},
+            first_release_label {short},
+            first_release_at {ts},
+            active_since {ts},
+            last_release_label {short},
+            last_release_at {ts},
+            checked_at {ts},
+            hold_reason {short},
+            hold_detail {text},
+            alerted_at {ts},
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error {text},
+            updated_at {ts},
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ){tail}
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS nu_releases (
+            id {pk},
+            book_id INTEGER NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            label {short} NOT NULL,
+            link {text},
+            status {short} NOT NULL,
+            nu_task_id INTEGER,
+            submitted_at {ts},
+            message {text},
+            error {text},
+            created_at {ts} NOT NULL,
+            updated_at {ts},
+            UNIQUE (book_id, chapter_number),
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ){tail}
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS nu_tasks (
+            id {pk},
+            book_id INTEGER,
+            kind {short} NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 50,
+            status {short} NOT NULL DEFAULT 'queued',
+            options {text},
+            scraper_job_id {"VARCHAR(64)" if my else "TEXT"},
+            attempts INTEGER NOT NULL DEFAULT 0,
+            not_before {ts},
+            last_error {text},
+            vnc_url {text},
+            progress {text},
+            result {big},
+            created_at {ts} NOT NULL,
+            started_at {ts},
+            finished_at {ts},
+            {"KEY idx_nu_tasks_status (status, priority, id), KEY idx_nu_tasks_book (book_id, status)," if my else ""}
+            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+        ){tail}
+        """,
+    ]
+    if not my:
+        stmts += [
+            "CREATE INDEX IF NOT EXISTS idx_nu_tasks_status ON nu_tasks(status, priority, id)",
+            "CREATE INDEX IF NOT EXISTS idx_nu_tasks_book ON nu_tasks(book_id, status)",
+        ]
+    return stmts
+
+
+def _m032_novelupdates(conn, cursor, backend, logger):
+    for ddl in _nu_ddl(backend.name):
+        cursor.execute(ddl)
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1089,6 +1185,7 @@ MIGRATIONS = [
     Migration(29, "books_source_title", _m029_books_source_title),
     Migration(30, "translation_requests", _m030_translation_requests),
     Migration(31, "books_nu_title", _m031_books_nu_title),
+    Migration(32, "novelupdates", _m032_novelupdates),
 ]
 
 

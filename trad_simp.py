@@ -240,3 +240,19 @@ def convert_text(value):
     if isinstance(value, str):
         return _convert_one(value)
     return value
+
+
+_s2t = None
+
+
+def to_traditional(text):
+    """Simplified → Traditional (plain OpenCC s2t), for searching sites that
+    store whichever form the submitter typed — NovelUpdates' search doesn't
+    convert. Never used on stored text: chapters stay as t2s left them."""
+    global _s2t
+    if not text:
+        return text
+    if _s2t is None:
+        from opencc import OpenCC
+        _s2t = OpenCC('s2t')
+    return _s2t.convert(text)
