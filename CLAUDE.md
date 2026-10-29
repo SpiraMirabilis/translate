@@ -274,9 +274,13 @@ unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf
   fallback), dry run → reviewed JSON → `--apply`. Chinese titles always go through t2s.
   It writes via `set_book_source_title`, which leaves `modified_date` alone (no ebook rebuild).
 - **NovelUpdates title** (`books.nu_title`, migration 31): the title NovelUpdates lists the
-  novel under, often not ours. Books form + admin API; not in the public JSON API, but
-  every RSS item carries it as a second `<category>` where it differs from our title —
-  NU's bot auto-approves releases whose feed item names the series as NU knows it.
+  novel under, often not ours. Edited on the Books form. Public wherever it differs from our
+  title (case-insensitive): every RSS item carries it as a second `<category>` (NU's bot
+  auto-approves releases whose feed item names the series as NU knows it); the book page
+  shows "Also known as …" (`nu_title` in `/api/public/books/{id}`); and the server-rendered
+  book and chapter pages carry schema.org JSON-LD with `alternateName` = [NU title, original
+  title] (`seo_html.alternate_names` / `_json_ld`, spliced into `<head>` via `page["head"]`)
+  — hidden on chapter pages, visible on the book page.
 - **Header links**: Recommend a Novel, Report an Error (hidden by `error_reports_enabled`)
   and About Us (`/library/about`, `pages/About.jsx` — team blurb, GitHub repo, the
   editor@/abuse@ contact addresses, and a "NUF username: …" line from the

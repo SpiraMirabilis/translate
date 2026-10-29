@@ -71,7 +71,7 @@ class TestBooksCrud:
         admin_client.put(f"/api/books/{book_id}", json={"source_title": ""})
         assert admin_client.get(f"/api/books/{book_id}").json()["source_title"] is None
 
-    def test_nu_title_round_trip_admin_only(self, admin_client):
+    def test_nu_title_round_trip(self, admin_client):
         book_id = _create_book(admin_client, title="NU Book", nu_title="Mirror of the Emperor God")
         assert admin_client.get(f"/api/books/{book_id}").json()["nu_title"] == "Mirror of the Emperor God"
 
@@ -80,8 +80,8 @@ class TestBooksCrud:
         books = admin_client.get("/api/books").json()["books"]
         assert next(b for b in books if b["id"] == book_id)["nu_title"] == "Divine Emperor's Mirror"
 
-        # Never on the public API
-        assert "nu_title" not in admin_client.get(f"/api/public/books/{book_id}").json()
+        # The public book page shows it ("also known as"); the Library list doesn't carry it
+        assert admin_client.get(f"/api/public/books/{book_id}").json()["nu_title"] == "Divine Emperor's Mirror"
         pub = admin_client.get("/api/public/books").json()["books"]
         assert "nu_title" not in next(b for b in pub if b["id"] == book_id)
 

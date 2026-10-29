@@ -286,6 +286,10 @@ export default function BookDetail() {
             {book.source_title && (
               <p lang={book.source_language || 'zh'} className={`mt-1 text-lg ${t.author}`}>{book.source_title}</p>
             )}
+            {/* NovelUpdates' name for the series, only when it isn't ours */}
+            {book.nu_title && book.nu_title.trim().toLowerCase() !== (book.title || '').trim().toLowerCase() && (
+              <p className={`mt-1 text-sm ${t.meta}`}>Also known as <em>{book.nu_title}</em></p>
+            )}
             {book.author && (
               <p className={`flex items-center gap-1.5 mt-2 ${t.author} justify-center sm:justify-start`}>
                 <User size={14} />

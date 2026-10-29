@@ -293,6 +293,8 @@ def get_book(book_id: int, request: Request, response: Response):
         "id": book["id"],
         "title": book["title"],
         "source_title": book.get("source_title"),
+        # NU's name for the series, where it isn't ours ("also known as").
+        "nu_title": book.get("nu_title"),
         "author": book.get("author"),
         "description": book.get("description"),
         "cover_image": book.get("cover_image"),

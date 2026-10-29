@@ -22,6 +22,7 @@ sentinels come out as they do everywhere else.
 from __future__ import annotations
 
 import re
+import json
 from html import escape
 
 from output_formatter import render_lines_html
@@ -117,6 +118,38 @@ def render_prose(lines: list, illustrations: dict | None = None) -> str:
     return _IMG_PLACEHOLDER_RE.sub(img, html)
 
 
+def alternate_names(book: dict) -> list:
+    """Other names the book goes by: the title NovelUpdates lists it under
+    (when it isn't ours) and the original-language title. Shown on the book
+    page and carried as schema.org alternateName on book and chapter pages,
+    so a reader — or a bot — that knows the novel by another name matches it."""
+    ours = (book.get("title") or "").strip().casefold()
+    out = []
+    for name in (book.get("nu_title"), book.get("source_title")):
+        name = (name or "").strip()
+        if name and name.casefold() != ours and name not in out:
+            out.append(name)
+    return out
+
+
+def _json_ld(data: dict) -> str:
+    """A <script type="application/ld+json"> block; `</` is escaped so no
+    value can close the script."""
+    blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    return f'<script type="application/ld+json">{blob}</script>'
+
+
+def _book_ld(book: dict, url: str = None) -> dict:
+    data = {"@type": "Book", "name": book.get("title")}
+    if alternate_names(book):
+        data["alternateName"] = alternate_names(book)
+    if book.get("author"):
+        data["author"] = {"@type": "Person", "name": book["author"]}
+    if url:
+        data["url"] = url
+    return data
+
+
 def chapter_page(book: dict, ch: dict, chapters: list, site_name: str,
                  illustrations: dict | None = None) -> dict:
     """{title, description, html} for /library/read/{book}/{n}."""
@@ -151,7 +184,9 @@ def chapter_page(book: dict, ch: dict, chapters: list, site_name: str,
         f"{nav}{prose}{nav}"
         f"</article></div>"
     )
-    return {"title": title, "description": description, "html": html}
+    ld = {"@context": "https://schema.org", "@type": "Chapter", "name": label,
+          "position": n, "isPartOf": _book_ld(book, f"/library/book/{book_id}")}
+    return {"title": title, "description": description, "html": html, "head": _json_ld(ld)}
 
 
 def book_page(book: dict, chapters: list, site_name: str) -> dict:
@@ -165,17 +200,20 @@ def book_page(book: dict, chapters: list, site_name: str) -> dict:
         f'<li><a href="/library/read/{book_id}/{c["chapter"]}">{_text(_chapter_label(c))}</a></li>'
         for c in chapters)
     desc_html = "".join(f"<p>{_text(p)}</p>" for p in re.split(r"\n\s*\n", desc_src) if p.strip())
+    aka = alternate_names(book)
+    aka_html = f'<p class="aka">Also known as: {" · ".join(_text(n) for n in aka)}</p>' if aka else ""
     html = (
         f'{_OPEN}<article>'
         f"<h1>{_text(book['title'])}</h1>"
         f'<h2>{"by " + _text(book["author"]) if book.get("author") else ""}'
         f'{" · " if book.get("author") else ""}{len(chapters)} chapters</h2>'
         f'<nav><a href="/library">← Library</a></nav>'
-        f"{desc_html}"
+        f"{aka_html}{desc_html}"
         f'<ol class="chapters">{items}</ol>'
         f"</article></div>"
     )
-    return {"title": title, "description": description, "html": html}
+    ld = dict(_book_ld(book), **{"@context": "https://schema.org"})
+    return {"title": title, "description": description, "html": html, "head": _json_ld(ld)}
 
 
 def library_page(books: list, site_name: str) -> dict:
@@ -199,7 +237,7 @@ def library_page(books: list, site_name: str) -> dict:
 def splice(shell: str, page: dict) -> str:
     """Put a page's title, description and #ssr block into the SPA shell."""
     head = (f'<meta name="description" content="{_text(page["description"])}" />'
-            if page.get("description") else "")
+            if page.get("description") else "") + (page.get("head") or "")
     html = _TITLE_RE.sub(f"<title>{_text(page['title'])}</title>", shell, count=1)
     if head:
         html = html.replace("</head>", head + "</head>", 1)

@@ -392,3 +392,26 @@ def test_feed_items_carry_the_nu_title_as_a_category(pub_client, public_book, db
     assert "<category>Split Process Book (NU)</category>" in xml
     db.set_book_nu_title(public_book, "split proc book")      # same name: no duplicate
     assert pub_client.get(f"/api/public/books/{public_book}/feed.rss").text.count("<category>") == 1
+
+
+
+def test_book_and_chapter_pages_carry_alternate_names(pub_client, public_book, db):
+    import json, re
+    def ld(html):
+        m = re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.S)
+        return json.loads(m.group(1)) if m else None
+    # same name as ours: no "also known as", no alternateName
+    db.set_book_nu_title(public_book, "split proc book")
+    page = pub_client.get(f"/library/book/{public_book}").text
+    assert "Also known as" not in page and "alternateName" not in page
+    assert pub_client.get(f"/api/public/books/{public_book}").json()["nu_title"] == "split proc book"
+
+    db.set_book_nu_title(public_book, "The NU Name")
+    db.set_book_source_title(public_book, "原名")
+    page = pub_client.get(f"/library/book/{public_book}").text
+    assert "Also known as: The NU Name · 原名" in page
+    assert ld(page)["alternateName"] == ["The NU Name", "原名"]
+    chapter = pub_client.get(f"/library/read/{public_book}/1").text
+    data = ld(chapter)
+    assert data["@type"] == "Chapter" and data["isPartOf"]["alternateName"] == ["The NU Name", "原名"]
+    assert "Also known as" not in chapter                  # hidden on chapter pages
