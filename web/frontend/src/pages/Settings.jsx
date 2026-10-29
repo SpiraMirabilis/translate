@@ -173,6 +173,26 @@ export default function Settings() {
               Reader error reports
               <span className="text-xs text-slate-500 font-normal">— let readers report translation errors from the reader and book pages</span>
             </label>
+            <div>
+              <label className="label">Geoblocked countries</label>
+              <input
+                className="input font-mono text-sm"
+                value={settings.geoblock_countries ?? ''}
+                onChange={e => setSettings(s => ({ ...s, geoblock_countries: e.target.value }))}
+                placeholder="e.g. CN, RU (blank = off)"
+              />
+              <p className="text-xs text-slate-500 mt-1">Two-letter ISO country codes, as Cloudflare reports them (<code>T1</code> = Tor). Visitors from these countries see only the message below on the public reader; the admin site is never blocked. Best effort — VPNs get through.</p>
+            </div>
+            <div>
+              <label className="label">Geoblock message</label>
+              <textarea
+                className="input text-sm"
+                rows={2}
+                value={settings.geoblock_message ?? ''}
+                onChange={e => setSettings(s => ({ ...s, geoblock_message: e.target.value }))}
+                placeholder="This site isn't available in your region."
+              />
+            </div>
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
               <input
                 type="checkbox"

@@ -177,6 +177,8 @@ def get_settings():
         "public_library": is_public_library(),
         # Read from the store: the public process reads it live per request.
         "error_reports_enabled": bool(settings_store.get("error_reports_enabled", True)),
+        "geoblock_countries": settings_store.get("geoblock_countries", ""),
+        "geoblock_message": settings_store.get("geoblock_message", ""),
         "site_name": _config.site_name,
         "public_site_name": _config.public_site_name,
         "comment_automod_enabled": getattr(_config, "comment_automod_enabled", False),
@@ -256,6 +258,8 @@ class SettingsUpdate(BaseModel):
     debug_mode: Optional[bool] = None
     public_library: Optional[bool] = None
     error_reports_enabled: Optional[bool] = None
+    geoblock_countries: Optional[str] = None
+    geoblock_message: Optional[str] = None
     site_name: Optional[str] = None
     public_site_name: Optional[str] = None
     comment_automod_enabled: Optional[bool] = None
@@ -335,6 +339,15 @@ def update_settings(req: SettingsUpdate):
                 "nu_feed_window_site"):
         if key in updates and updates[key] < 0:
             raise HTTPException(status_code=400, detail=f"{key} must be >= 0")
+    if "geoblock_countries" in updates:
+        from web.services import geoblock
+        try:
+            updates["geoblock_countries"] = ",".join(
+                geoblock.parse_countries(updates["geoblock_countries"]))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"geoblock_countries: {e}")
+    if "geoblock_message" in updates:
+        updates["geoblock_message"] = updates["geoblock_message"].strip()
     if "nu_forum_username" in updates:
         updates["nu_forum_username"] = updates["nu_forum_username"].strip()
     if "nu_alert_email" in updates:

@@ -303,3 +303,74 @@ def test_site_info_carries_nu_forum_username(pub_client):
     assert pub_client.get("/api/public/site_info").json()["nu_forum_username"] == ""
     settings_store.update({"nu_forum_username": "SomeTranslator"})
     assert pub_client.get("/api/public/site_info").json()["nu_forum_username"] == "SomeTranslator"
+
+
+def test_geoblock_blocks_listed_countries(pub_client, public_book):
+    import settings_store
+
+    settings_store.update({"geoblock_countries": "CN,RU", "geoblock_message": "Not here."})
+    try:
+        cn = {"CF-IPCountry": "cn"}
+        api = pub_client.get("/api/public/books", headers=cn)
+        assert api.status_code == 403
+        assert api.json() == {"detail": "Not here.", "geoblocked": True}
+        assert api.headers["cache-control"] == "no-store"
+        page = pub_client.get("/library", headers=cn)
+        assert page.status_code == 403 and "Not here." in page.text
+        assert pub_client.get("/simple", headers={"CF-IPCountry": "RU"}).status_code == 403
+        # Health stays open for the watchdog; unsubscribe must always work.
+        assert pub_client.get("/api/health", headers=cn).status_code == 200
+        assert pub_client.get("/api/public/comments/unsubscribe", headers=cn).status_code != 403
+        # Other countries, and requests with no country header, pass — and the
+        # cacheable API varies on the country so Apache's cache can't leak.
+        ok = pub_client.get("/api/public/books", headers={"CF-IPCountry": "US"})
+        assert ok.status_code == 200
+        assert "CF-IPCountry" in ok.headers["vary"]
+        assert pub_client.get("/api/public/books").status_code == 200
+    finally:
+        settings_store.update({"geoblock_countries": "", "geoblock_message": ""})
+    off = pub_client.get("/api/public/books", headers={"CF-IPCountry": "CN"})
+    assert off.status_code == 200
+    assert "CF-IPCountry" not in off.headers.get("vary", "")
+
+
+def test_geoblock_default_message_and_escaping(pub_client):
+    import settings_store
+    from web.services import geoblock
+
+    settings_store.update({"geoblock_countries": "KP"})
+    try:
+        body = pub_client.get("/library", headers={"CF-IPCountry": "KP"}).text
+        assert "isn&#x27;t available in your region" in body
+        settings_store.update({"geoblock_message": "<b>no</b>"})
+        body = pub_client.get("/library", headers={"CF-IPCountry": "KP"}).text
+        assert "<b>no</b>" not in body and "&lt;b&gt;no&lt;/b&gt;" in body
+    finally:
+        settings_store.update({"geoblock_countries": "", "geoblock_message": ""})
+    assert geoblock.parse_countries(" ru,cn;  kp ru") == ["CN", "KP", "RU"]
+    with pytest.raises(ValueError):
+        geoblock.parse_countries("CN, China")
+
+
+def test_geoblock_settings_round_trip_and_admin_is_never_blocked(
+        admin_client, tmp_path, monkeypatch):
+    import settings_store
+    # web_app doesn't redirect the store; never write the real settings.json.
+    monkeypatch.setattr(settings_store, "_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(settings_store, "_data", None)
+    monkeypatch.setattr(settings_store, "_mtime_ns", None)
+    monkeypatch.setenv("GEOBLOCK_COUNTRIES", "")  # restored after update() syncs env
+    monkeypatch.setenv("GEOBLOCK_MESSAGE", "")
+
+    resp = admin_client.put("/api/settings", json={"geoblock_countries": "ru, cn",
+                                                   "geoblock_message": "  Sorry.  "})
+    assert resp.status_code == 200, resp.text
+    got = admin_client.get("/api/settings", headers={"CF-IPCountry": "CN"})
+    assert got.status_code == 200
+    assert got.json()["geoblock_countries"] == "CN,RU"
+    assert got.json()["geoblock_message"] == "Sorry."
+    assert admin_client.get("/api/public/books",
+                            headers={"CF-IPCountry": "CN"}).status_code == 200
+    bad = admin_client.put("/api/settings", json={"geoblock_countries": "China"})
+    assert bad.status_code == 400
+    assert settings_store.get("geoblock_countries") == "CN,RU"

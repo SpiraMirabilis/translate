@@ -224,6 +224,29 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
 
         app.add_middleware(PublicGateMiddleware)
 
+        # Country geoblock (Settings → Public reader). Added after the gate so
+        # it is the outer layer: a blocked visitor gets the block page for
+        # every path, and nothing inside rewrites its no-store header.
+        class GeoblockMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                from web.services import geoblock
+                blocked = geoblock.blocked_countries()
+                if not blocked:
+                    return await call_next(request)
+                path = request.url.path
+                if (geoblock.request_country(request) in blocked
+                        and not geoblock.is_exempt(path)):
+                    return geoblock.block_response(request)
+                response = await call_next(request)
+                if path.startswith("/api/public/"):
+                    # Keep Apache's disk cache from answering a blocked
+                    # country with a response stored for an allowed one.
+                    vary = response.headers.get("Vary")
+                    response.headers["Vary"] = f"{vary}, CF-IPCountry" if vary else "CF-IPCountry"
+                return response
+
+        app.add_middleware(GeoblockMiddleware)
+
         # The SPA polls /api/auth/status on load (including on Library and
         # Reader pages). Answer it here so the poll gets a clean "not
         # authenticated" instead of a 404 — historically noisy failures on

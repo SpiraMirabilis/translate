@@ -61,6 +61,14 @@
   // "Report an error" modal)? Read live by the public process on every POST.
   // env: ERROR_REPORTS_ENABLED
   "error_reports_enabled": true,
+
+  // Public-reader geoblock (web/services/geoblock.py): comma-separated ISO
+  // country codes from Cloudflare's CF-IPCountry ("CN,RU"; T1 = Tor). Blank =
+  // off. A blocked visitor sees geoblock_message (blank = the stock wording).
+  // env: GEOBLOCK_COUNTRIES
+  "geoblock_countries": "",
+  // env: GEOBLOCK_MESSAGE
+  "geoblock_message": "",
   // env: TRAD_TO_SIMP
   "trad_to_simp": false,
 

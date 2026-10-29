@@ -333,6 +333,22 @@ the recommendations one — an abusive reporter has to be identifiable).
 - Covered by `tests/test_error_reports.py` (which stubs `turnstile.verify` — the
   suite must never make a live siteverify call).
 
+### Country geoblock (`web/services/geoblock.py`, added 2026-10-29)
+Settings → `geoblock_countries` (comma-separated ISO codes, blank = off; normalised to
+`CN,RU` on save, a bad code is a 400) and `geoblock_message` (blank = "This site isn't
+available in your region."). Read live per request by `GeoblockMiddleware`, which exists
+**only in the public process** — the admin site is never blocked.
+- The country is Cloudflare's `CF-IPCountry` header. No header (direct to origin, tests,
+  tooling) = never blocked; `T1` = Tor, `XX` = unknown, both blockable. Best effort only.
+- A blocked visitor gets **403** everywhere: a self-contained HTML page (no SPA assets) or
+  JSON `{detail, geoblocked: true}` under `/api/`, always `no-store`. Exempt:
+  `/api/health` (watchdog) and `/api/public/comments/unsubscribe`.
+- ⚠️ Apache's `mod_cache_disk` serves `/api/public` from disk without asking us, so while
+  any country is blocked those responses carry `Vary: CF-IPCountry` — a blocked country
+  misses the cache instead of getting a stored chapter. Spaces CDN objects (covers, EPUBs)
+  are outside this; a Cloudflare WAF country rule is the hard version.
+- Tests: `tests/test_public_app.py::test_geoblock_*`.
+
 ### Automated source scraping (`scrape_sync.py`, `scrape_worker.py`, added 2026-10-26)
 Raw chapters are scraped by a separate service on a residential IP (a home server —
 data-center IPs get endless Cloudflare challenges; code in `~/scraper/`, client
