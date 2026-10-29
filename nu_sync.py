@@ -584,7 +584,27 @@ class NuEngine:
             if self._planned_at is None or (now - self._planned_at).total_seconds() >= self.plan_seconds:
                 self._planned_at = now
                 self.plan()
-        return self.step_lane()
+        state = self.step_lane()
+        if lane is not None and self.db.nu_lane_task() is None and not load_hold():
+            # A job just ended: line up and submit the next one now, rather
+            # than on the next planning round — posting a backlog is then
+            # paced by the scraper and nu_release_spacing_seconds alone.
+            self._planned_at = self.clock()
+            self.plan()
+            state = self.step_lane()
+        return state
+
+    def seconds_until_due(self):
+        """Seconds until the next queued NU task may be submitted (0 = now),
+        or None when nothing is queued. The worker sleeps no longer than this,
+        so a short release spacing isn't stretched to its poll interval."""
+        rows = self.db.list_nu_tasks(statuses=("queued",), order="t.not_before", limit=1)
+        if not rows:
+            return None
+        due = _parse(rows[0].get("not_before"))
+        if due is None:
+            return 0
+        return max(0.0, (due - self.clock()).total_seconds())
 
     def plan(self):
         now = self.clock()

@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -26,6 +27,9 @@ HEARTBEAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "sc
 # this often while idle (the admin UI's "Check now" lands within IDLE_SLEEP).
 BUSY_SLEEP = 10
 IDLE_SLEEP = 10
+# A NovelUpdates job takes ~20-30 s; poll it this often so the next release
+# follows within a few seconds of the last.
+NU_BUSY_SLEEP = 3
 
 _stop = False
 
@@ -124,7 +128,17 @@ def main(argv=None):
         if args.once:
             break
         # A finished job means the next can be submitted right away.
-        delay = BUSY_SLEEP if (state == "busy" and lane) or (nu_state == "busy" and nu_lane) else IDLE_SLEEP
+        delay = BUSY_SLEEP if state == "busy" and lane else IDLE_SLEEP
+        if nu_state in ("busy", "idle"):
+            if nu_lane:
+                delay = min(delay, NU_BUSY_SLEEP)
+            else:
+                try:
+                    due = nu_engine.seconds_until_due()
+                except Exception:
+                    due = None
+                if due is not None:
+                    delay = min(delay, max(1, math.ceil(due)))
         for _ in range(delay):
             if _stop:
                 break

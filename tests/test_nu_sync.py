@@ -452,3 +452,30 @@ def test_renumber_moves_release_rows(db, nu, engine):
     ok, _ = db.renumber_chapter(book, 1, 7)
     assert ok
     assert db.get_nu_release(book, 7)["status"] == "sent"
+
+
+# -- pacing --------------------------------------------------------------------
+
+def test_next_release_follows_in_the_same_tick(db, nu, engine):
+    book = make_book(db, chapters=[(n, PAST) for n in (1, 2, 3)])
+    go_active(db, book, start=1)
+    engine.plan_seconds = 3600          # only the end of a job may trigger a re-plan
+    engine.tick()                       # plan + submit c1
+    for expected in (["c1", "c2"], ["c1", "c2", "c3"]):
+        engine.tick()                   # c(n) finishes; c(n+1) is submitted at once
+        assert [b["release"] for b in nu.posted()] == expected
+
+
+def test_seconds_until_due_honours_spacing(db, nu, engine, monkeypatch):
+    monkeypatch.setitem(SETTINGS, "nu_release_spacing_seconds", 2)
+    book = make_book(db, chapters=[(1, PAST), (2, PAST)])
+    go_active(db, book, start=1)
+    assert engine.seconds_until_due() is None
+    engine.tick()                       # submit c1
+    engine.tick()                       # c1 done; c2 queued 2 s out
+    assert [b["release"] for b in nu.posted()] == ["c1"]
+    assert 0 < engine.seconds_until_due() <= 2
+    engine.clock.advance(seconds=2)
+    assert engine.seconds_until_due() == 0
+    drain(engine)
+    assert [b["release"] for b in nu.posted()] == ["c1", "c2"]
