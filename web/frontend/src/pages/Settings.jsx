@@ -722,6 +722,19 @@ export default function Settings() {
                 </p>
               </div>
             </div>
+            <div>
+              <label className="label">NovelUpdates Forum (NUF) username</label>
+              <input
+                className="input text-sm max-w-xs"
+                placeholder="Shown on the public About page"
+                value={settings.nu_forum_username ?? ''}
+                onChange={e => setSettings(s => ({ ...s, nu_forum_username: e.target.value }))}
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                NovelUpdates verifies a translation group by a &ldquo;NUF username: …&rdquo; line on its site; the About
+                page shows one when this is set, and nothing when it&apos;s blank.
+              </p>
+            </div>
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"

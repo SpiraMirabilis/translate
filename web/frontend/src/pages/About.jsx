@@ -15,7 +15,7 @@ const THEME_TOGGLE = [
 
 export default function About() {
   const { prefs, setPrefs, theme } = useReaderPrefs()
-  const { site_name, public_site_name } = useSite()
+  const { site_name, public_site_name, nu_forum_username } = useSite()
   const t = LIBRARY_THEME[prefs.theme] || LIBRARY_THEME.light
 
   useEffect(() => {
@@ -119,6 +119,14 @@ export default function About() {
               </a>
             </dd>
           </div>
+          {/* NovelUpdates verifies a translation group by this line on its site
+              (Settings → NovelUpdates; blank hides it). */}
+          {nu_forum_username && (
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <dt>NUF username:</dt>
+              <dd>{nu_forum_username}</dd>
+            </div>
+          )}
         </dl>
       </main>
     </div>

@@ -238,6 +238,7 @@ def get_settings():
         "nu_group_sync_hours": settings_store.get("nu_group_sync_hours", 4),
         "nu_alert_email": settings_store.get("nu_alert_email", ""),
         "nu_ntfy_url": settings_store.get("nu_ntfy_url", ""),
+        "nu_forum_username": settings_store.get("nu_forum_username", ""),
         "has_nu_ntfy_token": bool(_env_value("NU_NTFY_TOKEN")),
         "email_from": os.getenv("EMAIL_FROM", ""),
         "has_openai_key": bool(os.getenv("OPENAI_KEY", "").strip()),
@@ -295,6 +296,7 @@ class SettingsUpdate(BaseModel):
     nu_group_sync_hours: Optional[int] = None
     nu_alert_email: Optional[str] = None
     nu_ntfy_url: Optional[str] = None
+    nu_forum_username: Optional[str] = None
 
 
 @router.put("")
@@ -321,6 +323,8 @@ def update_settings(req: SettingsUpdate):
                 "nu_approval_timeout_hours", "nu_group_sync_hours"):
         if key in updates and updates[key] < 0:
             raise HTTPException(status_code=400, detail=f"{key} must be >= 0")
+    if "nu_forum_username" in updates:
+        updates["nu_forum_username"] = updates["nu_forum_username"].strip()
     if "nu_alert_email" in updates:
         updates["nu_alert_email"] = updates["nu_alert_email"].strip()
         if updates["nu_alert_email"] and "@" not in updates["nu_alert_email"]:

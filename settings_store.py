@@ -134,6 +134,10 @@ SCHEMA = {
     # URL (blank = none; its token is NU_NTFY_TOKEN in .env).
     "nu_alert_email":          ("NU_ALERT_EMAIL",          "",                        str),
     "nu_ntfy_url":             ("NU_NTFY_URL",             "",                        str),
+    # The operator's NovelUpdates Forum username, shown on the public About page
+    # ("NUF username: …") — NU verifies a translation group by that line on its
+    # site. Blank = the line isn't shown. Per deployment, never in code.
+    "nu_forum_username":       ("NU_FORUM_USERNAME",       "",                        str),
 }
 
 # NOTE: DigitalOcean Spaces config (SPACES_ENABLED / SPACES_BUCKET / SPACES_REGION
@@ -247,6 +251,14 @@ def _seed_from_env():
     return out
 
 
+def strip_comments(text):
+    """Drop whole-line // comments, so settings.json (and the example) can
+    explain themselves. Only whole lines: JSON strings can't span lines, so a
+    line starting with // is never inside a value — while a trailing // could
+    be part of a URL. Rewrites by update() don't keep comments."""
+    return "\n".join(line for line in text.split("\n") if not line.lstrip().startswith("//"))
+
+
 def _file_mtime_ns():
     try:
         return os.stat(_PATH).st_mtime_ns
@@ -259,7 +271,7 @@ def _load_locked():
     global _data, _mtime_ns
     if os.path.exists(_PATH):
         with open(_PATH, "r", encoding="utf-8") as f:
-            stored = json.load(f)
+            stored = json.loads(strip_comments(f.read()))
         # Fill in any missing keys with defaults so newly-added settings
         # don't break existing deployments.
         data = {key: stored.get(key, default) for key, (_, default, _) in SCHEMA.items()}
@@ -339,3 +351,72 @@ def update(updates):
         _mtime_ns = _file_mtime_ns()
         _sync_to_env(_data)
         return dict(_data)
+
+
+
+EXAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json.example")
+EXAMPLE_HEADER = """\
+settings.json.example: every setting at its default, explained.
+
+Optional. Without settings.json, the first start creates one from these defaults
+plus any matching environment variables (.env, shown as "env:" below), and the
+admin Settings page edits it after that. To start from this file instead:
+cp settings.json.example settings.json, then edit. A copied file skips the .env
+seeding, so set values here.
+
+Secrets (API keys, passwords, tokens) never go here: they live in .env.
+Whole-line // comments are allowed, but the Settings page rewrites the file
+without them on its first save.
+
+Generated from settings_store.SCHEMA: python3 settings_store.py --write-example"""
+
+
+def _schema_comments():
+    """{key: [comment lines]} from the # comments directly above each SCHEMA
+    entry in this file, so the example explains each setting the way the code
+    does and can't drift from it."""
+    import re
+    src = open(os.path.abspath(__file__), encoding="utf-8").read()
+    block = src[src.index("SCHEMA = {"):]
+    block = block[:block.index("\n}\n")]
+    out, pending = {}, []
+    for line in block.split("\n")[1:]:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            pending.append(stripped.lstrip("#").strip())
+            continue
+        m = re.match(r'"(\w+)"\s*:', stripped)
+        if m:
+            out[m.group(1)] = pending
+        pending = []
+    return out
+
+
+def render_example():
+    """settings.json.example's text: every SCHEMA key at its default, in SCHEMA
+    order (related settings stay together), each under its code comment."""
+    comments = _schema_comments()
+    lines = ["// " + l if l else "//" for l in EXAMPLE_HEADER.split("\n")]
+    lines.append("{")
+    keys = list(SCHEMA)
+    for i, key in enumerate(keys):
+        env_var, default, _ = SCHEMA[key]
+        if comments.get(key):
+            lines.append("")
+            lines += [f"  // {c}" if c else "  //" for c in comments[key]]
+        lines.append(f"  // env: {env_var}")
+        comma = "," if i < len(keys) - 1 else ""
+        lines.append(f"  {json.dumps(key)}: {json.dumps(default, ensure_ascii=False)}{comma}")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["--write-example"]:
+        with open(EXAMPLE_PATH, "w", encoding="utf-8") as f:
+            f.write(render_example())
+        print(f"wrote {EXAMPLE_PATH}")
+    else:
+        print("usage: python3 settings_store.py --write-example", file=sys.stderr)
+        sys.exit(2)

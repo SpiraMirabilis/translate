@@ -1,0 +1,205 @@
+// settings.json.example: every setting at its default, explained.
+//
+// Optional. Without settings.json, the first start creates one from these defaults
+// plus any matching environment variables (.env, shown as "env:" below), and the
+// admin Settings page edits it after that. To start from this file instead:
+// cp settings.json.example settings.json, then edit. A copied file skips the .env
+// seeding, so set values here.
+//
+// Secrets (API keys, passwords, tokens) never go here: they live in .env.
+// Whole-line // comments are allowed, but the Settings page rewrites the file
+// without them on its first save.
+//
+// Generated from settings_store.SCHEMA: python3 settings_store.py --write-example
+{
+  // env: TRANSLATION_MODEL
+  "translation_model": "oai:o3-mini",
+  // env: ADVICE_MODEL
+  "advice_model": "oai:o3-mini",
+  // env: PRONOUN_REPAIR_MODEL
+  "pronoun_repair_model": "claude:claude-haiku-4-5",
+  // env: COMMENT_AUTOMOD_ENABLED
+  "comment_automod_enabled": false,
+  // env: COMMENT_AUTOMOD_MODEL
+  "comment_automod_model": "claude:claude-haiku-4-5",
+
+  // Only read when comment_automod_model is "jev"/"jev:<model>": a Jev verdict
+  // below this confidence leaves the comment pending as "unsure".
+  // env: COMMENT_AUTOMOD_JEV_CONFIDENCE
+  "comment_automod_jev_confidence": 0.9,
+  // env: UNIT_CLEANING_MODEL
+  "unit_cleaning_model": "claude:claude-haiku-4-5",
+  // env: CHARACTER_FIX_MODEL
+  "character_fix_model": "claude:claude-opus-4-8",
+  // env: OVERLOAD_RETRY_WAIT_SECONDS
+  "overload_retry_wait_seconds": 300,
+  // env: JSON_FIX_TIMEOUT_SECONDS
+  "json_fix_timeout_seconds": 300,
+
+  // How many books may translate at once. Chapters within a book always stay
+  // sequential (the entity glossary is built incrementally); different books
+  // share nothing, so they can run in parallel. Bounded because each worker is
+  // another MySQL pool consumer and another concurrent provider stream.
+  // env: MAX_CONCURRENT_TRANSLATIONS
+  "max_concurrent_translations": 3,
+  // env: SITE_NAME
+  "site_name": "T9",
+  // env: PUBLIC_SITE_NAME
+  "public_site_name": "Boonnovels",
+  // env: SITE_BASE_URL
+  "site_base_url": "",
+  // env: EMAIL_FROM
+  "email_from": "",
+  // env: EMAIL_BACKEND
+  "email_backend": "ses",
+  // env: DEBUG
+  "debug_mode": false,
+  // env: T9_PUBLIC_LIBRARY
+  "public_library": true,
+
+  // May readers submit translation error reports (the Reader / book-page
+  // "Report an error" modal)? Read live by the public process on every POST.
+  // env: ERROR_REPORTS_ENABLED
+  "error_reports_enabled": true,
+  // env: TRAD_TO_SIMP
+  "trad_to_simp": false,
+
+  // May the translation model revise notes — and correct gender — on entities
+  // it already knows? Every change is snapshotted (entity_note_revisions /
+  // entity_gender_revisions) and revertible, so this is a kill switch rather
+  // than the safety mechanism.
+  // env: ENTITY_NOTE_UPDATES
+  "entity_note_updates": true,
+
+  // Fleet-wide off switch for collecting footnote candidates during the
+  // translation pass. Which books do it, and with what prompt, is per book
+  // (the footnote_scan module's scan_mode); this only takes it away.
+  // env: FOOTNOTE_INLINE_SCAN
+  "footnote_inline_scan": true,
+  // env: REPETITION_GUARD
+  "repetition_guard": false,
+
+  // Repair a complete-but-malformed chunk response (unescaped quotes etc.)
+  // in place of the JSON Fix modal -- accepted only when the repaired text
+  // is identical to the raw output (json_recovery.try_repair). Truncated
+  // streams are retried regardless of this switch; they are never repaired.
+  // env: JSON_AUTO_REPAIR
+  "json_auto_repair": true,
+
+  // Default for Claude Code and Codex read-only MCP lookup tools: what a
+  // book's claude_code_tools module does on Auto (On/Off per book override it).
+  // The URL is the t9-mcp-readonly.service endpoint.
+  // env: CLAUDE_CODE_MCP_TOOLS
+  "claude_code_mcp_tools": false,
+  // env: CLAUDE_CODE_MCP_URL
+  "claude_code_mcp_url": "http://127.0.0.1:8766/mcp",
+
+  // Jev (TypeSafe System One) -- cheap classification, never translation.
+  // The key is a secret and lives in .env as TYPESAFE_KEY. Chapter-conflict
+  // triage: off | suggest (show Jev's verdict in the panel) | auto (resolve
+  // confident author's-note/ad vs story conflicts without asking).
+  // env: JEV_MODEL
+  "jev_model": "jev-latest",
+  // env: JEV_CHAPTER_CONFLICT
+  "jev_chapter_conflict": "auto",
+  // env: JEV_CONFLICT_CONFIDENCE
+  "jev_conflict_confidence": 0.9,
+
+  // Unit-converter false-positive filter. With a key and this on, Jev decides
+  // each match it is confident about; the per-run cleaning model (if any) gets
+  // only the ones below jev_unit_confidence.
+  // env: JEV_UNIT_FILTER
+  "jev_unit_filter": true,
+  // env: JEV_UNIT_CONFIDENCE
+  "jev_unit_confidence": 0.9,
+  // env: DISABLE_CONTENT_CACHE
+  "disable_content_cache": false,
+  // env: DISABLE_MEDIA_CACHE
+  "disable_media_cache": false,
+  // env: WP_URL
+  "wp_url": "",
+  // env: WP_USERNAME
+  "wp_username": "",
+  // env: GRAMMAR_CHECK_ENABLED
+  "grammar_check_enabled": false,
+  // env: LANGUAGETOOL_URL
+  "languagetool_url": "http://127.0.0.1:8081",
+  // env: GRAMMAR_LANGUAGE
+  "grammar_language": "en-US",
+  // env: POLISH_MODEL
+  "polish_model": "claude:claude-sonnet-4-6",
+
+  // Automated source scraping (scrape_worker.py / t9-scraper.service). The
+  // scraper runs on a home server; its bearer token is a secret and lives in
+  // .env as SCRAPER_TOKEN. Which books are scraped is per book (book_scrape
+  // .mode); scrape_enabled only takes it all away. Read live by the worker.
+  // env: SCRAPE_ENABLED
+  "scrape_enabled": true,
+  // env: SCRAPER_URL
+  "scraper_url": "http://127.0.0.1:8787",
+
+  // TOC sweep hours (server time), comma-separated: "5,13,21".
+  // env: SCRAPE_SWEEP_HOURS
+  "scrape_sweep_hours": "5,13,21",
+  // env: SCRAPE_CHUNK_SIZE
+  "scrape_chunk_size": 50,
+
+  // Auto-translate only starts when the newest queued chapter is at most this
+  // far past the newest translated one (per-book override: book_scrape.auto_gap).
+  // env: SCRAPE_DEFAULT_GAP
+  "scrape_default_gap": 10,
+
+  // The model auto-translate starts use (per-book override:
+  // book_scrape.run_options.translation_model). Deliberately not the model
+  // of the book's latest chapter, which goes stale over a break.
+  // env: SCRAPE_TRANSLATION_MODEL
+  "scrape_translation_model": "claudecode:claude-opus-5-5",
+  // env: SCRAPE_TOC_SPACING_SECONDS
+  "scrape_toc_spacing_seconds": 20,
+
+  // Browser engine per job: "" (the scraper's default), "patchright" or
+  // "extension" — which one draws fewer Cloudflare challenges is still open.
+  // env: SCRAPE_ENGINE
+  "scrape_engine": "",
+
+  // Where the scraper POSTs a job's "blocked on a challenge" notice
+  // (…/api/scraper-notify on this admin site), signed with SCRAPER_NOTIFY_SECRET
+  // from .env; blank = jobs carry no callback. And the noVNC page where the
+  // challenge gets solved: only a fallback — the scraper reports its own URL
+  // with a blocked job, and that wins.
+  // env: SCRAPE_NOTIFY_URL
+  "scrape_notify_url": "",
+  // env: SCRAPER_VNC_URL
+  "scraper_vnc_url": "",
+
+  // NovelUpdates posting (nu_sync.py, the NU lane in t9-scraper.service).
+  // Off until switched on; which books post is per book (book_nu.mode).
+  // env: NU_ENABLED
+  "nu_enabled": false,
+
+  // Pause between two releases of one series.
+  // env: NU_RELEASE_SPACING_SECONDS
+  "nu_release_spacing_seconds": 60,
+
+  // After a series' first release: start group syncs this long after it,
+  // sync this often, and alert when it still isn't approved after the timeout.
+  // env: NU_APPROVAL_WAIT_HOURS
+  "nu_approval_wait_hours": 20,
+  // env: NU_APPROVAL_TIMEOUT_HOURS
+  "nu_approval_timeout_hours": 72,
+  // env: NU_GROUP_SYNC_HOURS
+  "nu_group_sync_hours": 4,
+
+  // Alerts: email (blank = EMAIL_FROM, the editor mailbox) and an ntfy topic
+  // URL (blank = none; its token is NU_NTFY_TOKEN in .env).
+  // env: NU_ALERT_EMAIL
+  "nu_alert_email": "",
+  // env: NU_NTFY_URL
+  "nu_ntfy_url": "",
+
+  // The operator's NovelUpdates Forum username, shown on the public About page
+  // ("NUF username: …") — NU verifies a translation group by that line on its
+  // site. Blank = the line isn't shown. Per deployment, never in code.
+  // env: NU_FORUM_USERNAME
+  "nu_forum_username": ""
+}

@@ -154,11 +154,14 @@ def _cdn_redirect_or_file(rel_path, local_filepath, headers=None):
 
 @router.get("/site_info")
 def site_info(response: Response):
+    import settings_store
     _cache(response, _CACHE_SHORT)
     return {
         "site_name": _config.site_name if _config else "T9",
         "public_site_name": _config.public_site_name if _config else "Boonnovels",
         "azw3_available": azw3.is_available(),
+        # Read live: a Settings change reaches the public process without a restart.
+        "nu_forum_username": settings_store.get("nu_forum_username", "") or "",
     }
 
 

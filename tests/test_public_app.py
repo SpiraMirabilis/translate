@@ -292,3 +292,14 @@ def test_spa_routes_and_404_carry_gtm(pub_client, public_book, gtm_id):
     for path in ("/", "/library", f"/library/book/{public_book}",
                  f"/library/read/{public_book}/1", "/library/whatever", "/queue"):
         assert pub_client.get(path).text.count(gtm_id) == 2, path
+
+
+def test_site_info_carries_nu_forum_username(pub_client):
+    import settings_store
+
+    # Set both ways explicitly: a fresh tmp settings.json seeds from os.environ,
+    # which earlier imports may have filled from the real settings.json.
+    settings_store.update({"nu_forum_username": ""})
+    assert pub_client.get("/api/public/site_info").json()["nu_forum_username"] == ""
+    settings_store.update({"nu_forum_username": "SomeTranslator"})
+    assert pub_client.get("/api/public/site_info").json()["nu_forum_username"] == "SomeTranslator"
