@@ -577,15 +577,13 @@ def main():
           % (mode, args.book_id, side, changed['chapters'], changed['queue'],
              tot['notif'], tot['card'], tot['status'], tot['equip'], tot['choice'], sum(tot.values())))
     if args.apply and changed['chapters'] and not args.source:
-        try:
-            from config import TranslationConfig
-            import os
-            cache = os.path.join(TranslationConfig().script_dir, 'epub_cache', f'{args.book_id}.epub')
-            if os.path.exists(cache):
-                os.remove(cache)
-                print("Invalidated", cache)
-        except Exception:
-            pass
+        # Mark the public EPUB/AZW3 stale (DatabaseManager.invalidate_epub_cache's
+        # soft path) so prewarm rebuilds them; the files live in Spaces.
+        import datetime
+        cur.execute("UPDATE books SET ebook_invalidated_at = ? WHERE id = ?",
+                    (datetime.datetime.now().isoformat(), args.book_id))
+        conn.commit()
+        print("Marked ebooks stale for book", args.book_id)
 
 
 if __name__ == '__main__':

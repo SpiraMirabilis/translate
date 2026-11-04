@@ -3,16 +3,21 @@
 Prewarm public EPUB + AZW3 artifacts so downloads never wait on generation.
 
 Honors SPACES_ENABLED: with Spaces on, artifacts are prewarmed into the
-versioned CDN keys (the public endpoint then redirects to the CDN); with it
-off, they're prewarmed into the local epub_cache/ directory (the endpoint
-serves those files directly).
+versioned CDN keys (the public endpoint then redirects to the CDN) and the
+local build is deleted once its upload is confirmed — only the `.ver` stamp
+stays in epub_cache/, recording which version the CDN serves. With it off,
+they're prewarmed into the local epub_cache/ directory (the endpoint serves
+those files directly).
 
 Designed to run from cron every 5 minutes. On each tick it:
   1. Takes an exclusive lock so a still-running previous instance blocks this one
      (flock is released automatically if the previous process died).
   2. Bails out early when the machine is under load (translation jobs etc.) so it
      never competes with foreground work.
-  3. Walks every public book with published chapters and, for each:
+  3. (Spaces on) deletes any public EPUB/AZW3 still in epub_cache/ that Spaces
+     already holds at the same version and size — older builds, or a copy kept
+     because its upload failed and was since redone.
+  4. Walks every public book with published chapters and, for each:
        - skips the book when both the EPUB and AZW3 are current — checked
          against the versioned Spaces keys, or (Spaces off) against the .ver
          stamps in epub_cache/. A content change moves the book's version basis
@@ -24,7 +29,8 @@ Designed to run from cron every 5 minutes. On each tick it:
          A book that translates all day therefore refreshes about every half
          hour instead of never;
        - otherwise generates the published-only EPUB and converts it to AZW3,
-         uploading to Spaces (pruning stale versions) or leaving them on local disk.
+         uploading to Spaces (confirm, prune stale versions, delete the local
+         file) or leaving them on local disk.
 
 The artifacts are byte-for-byte what web/api/public.py serves, so a prewarmed
 book makes the public /epub and /azw3 endpoints return immediately.
@@ -203,7 +209,8 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
     """Prewarm one book. Returns a short status string for logging.
 
     Currency is judged differently by deployment:
-      - Spaces on:  against the versioned CDN keys (exact per content version).
+      - Spaces on:  against the versioned CDN keys (exact per content version);
+        builds are uploaded, confirmed, and deleted locally.
       - Spaces off: against the .ver stamps on the local epub_cache/ files;
         generated files just stay on disk with no upload.
     A stale artifact is still on disk/CDN and still being served, so the
@@ -247,8 +254,9 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
 
     # Freshness guard — don't rebuild a book that's actively changing, unless
     # what readers are getting meanwhile has grown too old (or doesn't exist).
+    # With Spaces on the served copy is in the CDN and only its stamp is local.
     mins = _minutes_since(book.get("modified_date"))
-    served_age = max(ebook_build.age_minutes(p) for p, needed in
+    served_age = max(ebook_build.age_minutes(p, require_file=not spaces_on) for p, needed in
                      ((epub_path, need_epub), (azw3_path, need_azw3)) if needed)
     if _defer_build(mins, served_age, args):
         return (f"skip: modified {mins:.0f}m ago (<{args.quiet_minutes:g}m), "
@@ -264,33 +272,94 @@ def _process_book(db, config, logger, book, args, azw3_ok, spaces_on):
 
     # Rebuild the EPUB fresh whenever we're doing any work — AZW3 needs a local
     # source EPUB, and a stale on-disk file might belong to an older version.
-    # The per-book flock is shared with the public endpoints, so a reader
-    # request racing this cron tick waits and then reuses the fresh build.
+    # The per-book EPUB lock is shared with the public endpoints, and held
+    # through the AZW3 conversion (lock order EPUB → AZW3, see ebook_build) so
+    # the source EPUB can't be offloaded from under it.
+    built = []
     with ebook_build.book_lock(cache_dir, book_id):
         if not _build_published_epub(db, config, logger, book, epub_path, version_basis):
             return "error: EPUB generation failed / no chapters"
 
-        built = []
         if need_epub:
-            # Local-only: the build above already wrote epub_path — nothing to upload.
-            if spaces_on:
-                if not spaces.upload(config, epub_path, epub_key, "application/epub+zip"):
-                    return "error: EPUB upload failed"
-                spaces.prune_epub_versions(config, book_id, keep_key=epub_key)
+            # Spaces on: upload + confirm, kept on disk until the AZW3 is done.
+            # Local-only: the build above already wrote epub_path — that's it.
+            if spaces_on and not ebook_build.offload(config, book_id, "epub", epub_path,
+                                                     version_basis, drop=False, logger=logger):
+                return "error: EPUB upload failed"
             built.append("epub")
 
-    if need_azw3:
-        with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
-            if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
-                return f"partial: built {built or ['(none)']}, AZW3 conversion failed"
-            ebook_build.write_stamp(azw3_path, version_basis)
-            if spaces_on:
-                if not spaces.upload(config, azw3_path, azw3_key, "application/x-mobi8-ebook"):
-                    return f"partial: built {built}, AZW3 upload failed"
-                spaces.prune_azw3_versions(config, book_id, keep_key=azw3_key)
-        built.append("azw3")
+        status = None
+        if need_azw3:
+            with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
+                if not azw3.convert_epub_to_azw3(epub_path, azw3_path, logger):
+                    status = f"partial: built {built or ['(none)']}, AZW3 conversion failed"
+                else:
+                    ebook_build.write_stamp(azw3_path, version_basis)
+                    if spaces_on and not ebook_build.offload(config, book_id, "azw3", azw3_path,
+                                                             version_basis, logger=logger):
+                        status = f"partial: built {built}, AZW3 upload failed"
+                    else:
+                        built.append("azw3")
 
-    return f"built: {', '.join(built)} ({dest})"
+        # The CDN holds the current EPUB either way by now (uploaded above, or
+        # already there), so the local one was only the AZW3's source.
+        if spaces_on:
+            ebook_build.drop_local(epub_path)
+
+    return status or f"built: {', '.join(built)} ({dest})"
+
+
+def drop_offloaded_copies(db, config, dry_run=False):
+    """Spaces on: delete public EPUB/AZW3 files in epub_cache/ that Spaces
+    makes redundant. Catches copies from builds that predate offloading and
+    from uploads that failed and were later redone. A file goes when either
+      - Spaces holds the book's CURRENT version of that format — the public
+        endpoint serves it from there and never reads the file (covers legacy
+        unstamped AZW3s, and EPUBs rebuilt locally as an AZW3 source); the
+        stamp is rewritten to the current version, which is what the CDN now
+        serves; or
+      - Spaces holds the version the file's stamp records, at the same size.
+    Admin "-full" exports (drafts included, never uploaded) are not touched.
+    Returns (dropped_count, bytes_freed)."""
+    import re
+    cache_dir = db._epub_cache_dir()
+    if not os.path.isdir(cache_dir):
+        return 0, 0
+    dropped = freed = 0
+    for name in sorted(os.listdir(cache_dir)):
+        m = re.fullmatch(r"(\d+)\.(epub|azw3)", name)
+        if not m:
+            continue
+        book_id, fmt = int(m.group(1)), m.group(2)
+        path = os.path.join(cache_dir, name)
+        lock_id = book_id if fmt == "epub" else f"{book_id}-azw3"
+        try:
+            with ebook_build.book_lock(cache_dir, lock_id):
+                if not os.path.exists(path):
+                    continue
+                size = os.path.getsize(path)
+                current, _ = db.ebook_version_basis(book_id)
+                if current is not None and spaces.object_size(
+                        config, ebook_build.spaces_key(config, book_id, fmt, current)) is not None:
+                    ok = True
+                    if not dry_run:
+                        ebook_build.drop_local(path)
+                        ebook_build.write_stamp(path, current)
+                elif dry_run:
+                    basis = ebook_build.read_stamp(path)
+                    ok = (basis is not None and spaces.object_size(
+                        config, ebook_build.spaces_key(config, book_id, fmt, basis)) == size)
+                else:
+                    ok = ebook_build.drop_if_offloaded(config, book_id, fmt, path)
+        except spaces.SpacesUnavailable as e:
+            _context(f"Spaces unavailable during local-copy sweep ({e}) — stopping it.")
+            break
+        except OSError:
+            continue
+        if ok:
+            dropped += 1
+            freed += size
+    return dropped, freed
 
 
 def main():
@@ -342,6 +411,14 @@ def main():
             return 0
 
         db = DatabaseManager(config, logger)
+
+        if spaces_on:
+            n, freed = drop_offloaded_copies(db, config, dry_run=args.dry_run)
+            if n:
+                verb = "Would delete" if args.dry_run else "Deleted"
+                _activity(f"{verb} {n} local ebook copies already in Spaces "
+                          f"({freed / 1048576:.0f} MiB).")
+
         azw3_ok = azw3.is_available()
         if not azw3_ok:
             _context("ebook-convert not available — will prewarm EPUB only (no AZW3).")

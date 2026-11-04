@@ -185,6 +185,28 @@ def exists(config, key):
         raise SpacesUnavailable(str(e)) from e
 
 
+def object_size(config, key):
+    """Byte size of the object at `key`, or None if it definitively doesn't
+    exist (404) or Spaces is disabled. Raises SpacesUnavailable when the check
+    itself failed — same contract as exists()."""
+    client = _get_client(config)
+    if client is None:
+        return None
+    try:
+        head = client.head_object(Bucket=config.spaces_bucket, Key=key)
+        return int(head.get("ContentLength", -1))
+    except Exception as e:
+        code = None
+        resp = getattr(e, "response", None)
+        if isinstance(resp, dict):
+            code = str(resp.get("ResponseMetadata", {}).get("HTTPStatusCode", "")) \
+                or str(resp.get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        _logger.error(f"Spaces object_size({key}) check failed (treating as unavailable): {e}")
+        raise SpacesUnavailable(str(e)) from e
+
+
 def delete(config, key):
     """Best-effort delete of an object. Returns True if the call succeeded."""
     client = _get_client(config)

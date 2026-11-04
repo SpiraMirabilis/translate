@@ -1016,6 +1016,17 @@ Kindle file effectively undownloadable.
   `web/api/public.py`): current CDN key → the CDN key of the version the local stamp
   records → the local file. Building in the request happens only when no copy exists at
   all. `/azw3/status` reports `cached` (any copy servable) and `stale`.
+- **With Spaces on, Spaces holds the only copy** (2026-11-04). `ebook_build.offload`
+  uploads a build, confirms it (HEAD size == local size), prunes the other versions and
+  deletes the local file, **keeping the `.ver` stamp** — which then records the version
+  the CDN serves (`served_version` reads the stamp even with no file; rung 2 of the
+  ladder). An unconfirmed upload keeps the file as the serving copy, and prewarm retries.
+  Builds hold the per-book EPUB lock through the AZW3 conversion (lock order EPUB → AZW3)
+  so the source EPUB can't be offloaded mid-convert; an on-demand build re-checks the CDN
+  inside the lock, so a race loser redirects instead of rebuilding. Every prewarm tick
+  first runs `drop_offloaded_copies`: any `{id}.epub|azw3` still on disk whose stamped
+  version is in Spaces at the same size is deleted. Admin `{id}-full.*` exports (drafts
+  included) are local-only and never offloaded. Spaces off: unchanged, epub_cache/ serves.
 - **`prewarm_ebooks.py`** rebuilds stale/missing artifacts. A book modified within
   `--quiet-minutes` (15) is deferred **unless** the copy being served is older than
   `--max-stale-minutes` (30) or missing — so a book translating all day refreshes about

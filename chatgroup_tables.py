@@ -42,12 +42,11 @@ Usage:
     python3 chatgroup_tables.py --book-id 43 --chapters 2-50 --apply
 """
 import argparse
+import datetime
 import json
-import os
 import re
 
 import db_backend
-from config import TranslationConfig
 
 # Header emitted once per contiguous chat block. Edit here to taste.
 HEADER = ["| Username | Message |", "|:---|:---|"]
@@ -299,11 +298,12 @@ def main():
           f"({len(usernames)} usernames)")
 
     if args.apply and chapters_changed:
-        cache = os.path.join(
-            TranslationConfig().script_dir, "epub_cache", f"{args.book_id}.epub")
-        if os.path.exists(cache):
-            os.remove(cache)
-            print("Invalidated", cache)
+        # Mark the public EPUB/AZW3 stale (DatabaseManager.invalidate_epub_cache's
+        # soft path) so prewarm rebuilds them; the files live in Spaces.
+        cur.execute("UPDATE books SET ebook_invalidated_at = ? WHERE id = ?",
+                    (datetime.datetime.now().isoformat(), args.book_id))
+        conn.commit()
+        print("Marked ebooks stale for book", args.book_id)
     conn.close()
 
 

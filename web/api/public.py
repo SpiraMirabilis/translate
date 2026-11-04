@@ -528,8 +528,7 @@ def _cdn_key_if_present(book_id: int, fmt: str, version_basis):
         import spaces
         if not spaces.is_enabled(_db.config):
             return None
-        ver = spaces.epub_version(book_id, version_basis)
-        key = getattr(spaces, _EBOOK_FORMATS[fmt][1])(_db.config, book_id, ver)
+        key = ebook_build.spaces_key(_db.config, book_id, fmt, version_basis)
         return key if spaces.exists(_db.config, key) else None
     except Exception:
         return None
@@ -545,7 +544,9 @@ def _servable_ebook(book_id: int, fmt: str, version_basis):
          prewarm hasn't replaced yet (its prune only runs after the new upload,
          so the old key outlives the window);
       3. the local file, whatever its stamp says (Spaces off, a legacy unstamped
-         file, or prewarm mid-upload).
+         file, or an upload that failed). With Spaces on the local copy is
+         deleted once its upload is confirmed (ebook_build.offload), so this
+         rung is normally empty there; the stamp survives to drive rung 2.
     """
     key = _cdn_key_if_present(book_id, fmt, version_basis)
     if key:
@@ -577,67 +578,87 @@ def _ebook_response(book_id: int, book: dict, fmt: str, kind: str, target: str, 
     )
 
 
-def _ensure_cached_epub(book_id: int, book: dict, version_basis, latest_published) -> str:
-    """Ensure the book's EPUB exists on disk (generating on demand), mirror it to
-    Spaces/CDN, and return the local cached path. Used by the EPUB and AZW3
-    endpoints only when no copy of the book exists at all — a stale copy is
-    served instead and left for prewarm to replace. Raises HTTPException on
-    generation failure / no chapters."""
-    cache_dir = _db._epub_cache_dir()
-    cached_path = os.path.join(cache_dir, f"{book_id}.epub")
+def _build_public_epub_locked(book_id: int, book: dict, version_basis) -> str:
+    """Build the book's published-only EPUB onto its cache path unless the file
+    there is already current, and return the path. Caller holds the book's EPUB
+    lock. Raises HTTPException on generation failure / no chapters."""
+    cached_path = _ebook_cache_path(book_id, "epub")
+    if ebook_build.is_current(cached_path, version_basis):
+        return cached_path
 
-    # The per-book flock serializes concurrent builders (request threads,
-    # prewarm cron, a second process) — the loser of the race re-checks the
-    # stamp and serves the winner's fresh file instead of rebuilding.
-    with ebook_build.book_lock(cache_dir, book_id):
-        if not ebook_build.is_current(cached_path, version_basis):
-            from output_formatter import OutputFormatter
+    from output_formatter import OutputFormatter
 
-            # Need translator config for OutputFormatter — get it from the init-time db manager
-            formatter = OutputFormatter(_db.config, _db.logger)
-            book_info = {
-                "id": book_id,
-                "title": book.get("title", "Unknown"),
-                "author": book.get("author") or "Translator",
-                "language": book.get("language") or "en",
-            }
-            if book.get("cover_image"):
-                cover_full = os.path.join(_db.config.script_dir, book["cover_image"])
-                if os.path.exists(cover_full):
-                    book_info["cover_image"] = cover_full
+    # Need translator config for OutputFormatter — get it from the init-time db manager
+    formatter = OutputFormatter(_db.config, _db.logger)
+    book_info = {
+        "id": book_id,
+        "title": book.get("title", "Unknown"),
+        "author": book.get("author") or "Translator",
+        "language": book.get("language") or "en",
+    }
+    if book.get("cover_image"):
+        cover_full = os.path.join(_db.config.script_dir, book["cover_image"])
+        if os.path.exists(cover_full):
+            book_info["cover_image"] = cover_full
 
-            all_chapters = [
-                {
-                    "chapter": ch["chapter"],
-                    "title": ch.get("title") or f"Chapter {ch['chapter']}",
-                    "content": ch.get("content", []),
-                }
-                for ch in _db.get_chapters_bulk(book_id, published_only=True)
-            ]
-            if not all_chapters:
-                raise HTTPException(status_code=404, detail="No chapters available")
+    all_chapters = [
+        {
+            "chapter": ch["chapter"],
+            "title": ch.get("title") or f"Chapter {ch['chapter']}",
+            "content": ch.get("content", []),
+        }
+        for ch in _db.get_chapters_bulk(book_id, published_only=True)
+    ]
+    if not all_chapters:
+        raise HTTPException(status_code=404, detail="No chapters available")
 
-            # Build directly onto the cache path (atomic tmp+replace inside).
-            output_path = formatter.save_book_as_epub(all_chapters, book_info,
-                                                      output_path=cached_path)
-            if not output_path or not os.path.exists(cached_path):
-                raise HTTPException(status_code=500, detail="Failed to generate EPUB")
-            ebook_build.write_stamp(cached_path, version_basis)
-
-        # Mirror the EPUB to Spaces under its version key, prune stale
-        # versions. Kept inside the lock so a concurrent rebuild can't swap
-        # the file mid-upload or prune the key another request just wrote.
-        try:
-            import spaces
-            if spaces.is_enabled(_db.config):
-                ver = spaces.epub_version(book_id, version_basis)
-                key = spaces.epub_key(_db.config, book_id, ver)
-                if spaces.upload(_db.config, cached_path, key, "application/epub+zip"):
-                    spaces.prune_epub_versions(_db.config, book_id, keep_key=key)
-        except Exception:
-            pass
-
+    # Build directly onto the cache path (atomic tmp+replace inside).
+    output_path = formatter.save_book_as_epub(all_chapters, book_info,
+                                              output_path=cached_path)
+    if not output_path or not os.path.exists(cached_path):
+        raise HTTPException(status_code=500, detail="Failed to generate EPUB")
+    ebook_build.write_stamp(cached_path, version_basis)
     return cached_path
+
+
+def _build_and_offload(book_id: int, book: dict, fmt: str, version_basis):
+    """Last-resort on-demand build, for a book with no servable copy at all.
+    Returns (kind, target) for _ebook_response: the CDN key once the artifact
+    is uploaded and confirmed (the local file is then deleted — Spaces holds
+    the only copy), else the local file (Spaces off, or the upload failed).
+
+    Locks: the per-book EPUB lock, then (AZW3) the AZW3 lock inside it — the
+    conversion reads the EPUB from disk, and holding the EPUB lock is what
+    stops a concurrent build from offloading it mid-conversion. The loser of a
+    build race re-checks the CDN first and redirects to the winner's upload
+    instead of building again.
+    """
+    cache_dir = _db._epub_cache_dir()
+    with ebook_build.book_lock(cache_dir, book_id):
+        key = _cdn_key_if_present(book_id, fmt, version_basis)
+        if key:
+            return "cdn", key
+        epub_path = _build_public_epub_locked(book_id, book, version_basis)
+        if fmt == "epub":
+            key = ebook_build.offload(_db.config, book_id, "epub", epub_path,
+                                      version_basis, logger=_db.logger)
+            return ("cdn", key) if key else ("file", epub_path)
+
+        # AZW3: the EPUB is mirrored too (it's current and already built) but
+        # kept on disk until the conversion is done.
+        epub_key = ebook_build.offload(_db.config, book_id, "epub", epub_path,
+                                       version_basis, drop=False, logger=_db.logger)
+        azw3_path = _ebook_cache_path(book_id, "azw3")
+        with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
+            if not ebook_build.is_current(azw3_path, version_basis):
+                if not azw3.convert_epub_to_azw3(epub_path, azw3_path, _db.logger):
+                    raise HTTPException(status_code=500, detail="Failed to generate AZW3")
+                ebook_build.write_stamp(azw3_path, version_basis)
+            key = ebook_build.offload(_db.config, book_id, "azw3", azw3_path,
+                                      version_basis, logger=_db.logger)
+        if epub_key:
+            ebook_build.drop_local(epub_path)
+        return ("cdn", key) if key else ("file", azw3_path)
 
 
 @router.get("/books/{book_id}/epub")
@@ -650,15 +671,15 @@ def download_epub(book_id: int, request: Request):
     book = _get_public_book(book_id)
 
     ip = client_ip(request)
-    version_basis, latest_published = _epub_version_basis(book_id, book)
+    version_basis, _latest_published = _epub_version_basis(book_id, book)
 
     found = _servable_ebook(book_id, "epub", version_basis)
     if found:
         kind, target, _stale = found
         return _ebook_response(book_id, book, "epub", kind, target, ip)
 
-    cached_path = _ensure_cached_epub(book_id, book, version_basis, latest_published)
-    return _ebook_response(book_id, book, "epub", "file", cached_path, ip)
+    kind, target = _build_and_offload(book_id, book, "epub", version_basis)
+    return _ebook_response(book_id, book, "epub", kind, target, ip)
 
 
 @router.get("/books/{book_id}/azw3")
@@ -676,40 +697,15 @@ def download_azw3(book_id: int, request: Request):
         raise HTTPException(status_code=503, detail="AZW3 conversion not available")
 
     ip = client_ip(request)
-    version_basis, latest_published = _epub_version_basis(book_id, book)
+    version_basis, _latest_published = _epub_version_basis(book_id, book)
 
     found = _servable_ebook(book_id, "azw3", version_basis)
     if found:
         kind, target, _stale = found
         return _ebook_response(book_id, book, "azw3", kind, target, ip)
 
-    # Nothing to serve: build the source EPUB, then convert.
-    epub_path = _ensure_cached_epub(book_id, book, version_basis, latest_published)
-    cache_dir = _db._epub_cache_dir()
-    azw3_path = _ebook_cache_path(book_id, "azw3")
-
-    # Separate lock id from the EPUB build: an EPUB download shouldn't queue
-    # behind a long-running Calibre conversion. Serializing the conversion per
-    # book also caps the ebook-convert processes one hot book can spawn, and the
-    # loser of a race finds the winner's stamp and skips the rebuild.
-    with ebook_build.book_lock(cache_dir, f"{book_id}-azw3"):
-        if not ebook_build.is_current(azw3_path, version_basis):
-            if not azw3.convert_epub_to_azw3(epub_path, azw3_path, _db.logger):
-                raise HTTPException(status_code=500, detail="Failed to generate AZW3")
-            ebook_build.write_stamp(azw3_path, version_basis)
-
-        # Mirror the AZW3 to Spaces under its version key, prune stale versions.
-        try:
-            import spaces
-            if spaces.is_enabled(_db.config):
-                ver = spaces.epub_version(book_id, version_basis)
-                key = spaces.azw3_key(_db.config, book_id, ver)
-                if spaces.upload(_db.config, azw3_path, key, "application/x-mobi8-ebook"):
-                    spaces.prune_azw3_versions(_db.config, book_id, keep_key=key)
-        except Exception:
-            pass
-
-    return _ebook_response(book_id, book, "azw3", "file", azw3_path, ip)
+    kind, target = _build_and_offload(book_id, book, "azw3", version_basis)
+    return _ebook_response(book_id, book, "azw3", kind, target, ip)
 
 
 @router.get("/books/{book_id}/azw3/status")
