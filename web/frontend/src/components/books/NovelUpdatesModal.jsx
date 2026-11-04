@@ -5,7 +5,7 @@ import { api } from '../../services/api'
 import { relativeTime } from '../../lib/relativeTime'
 import { TASK_STATUS_CHIP } from '../../lib/scrape'
 import {
-  STATE_LABEL, STATE_CHIP, HOLD_LABEL, RELEASE_CHIP, nuTaskLabel, nuTaskSummary, screenshotUrl,
+  STATE_LABEL, STATE_CHIP, HOLD_LABEL, RELEASE_CHIP, nuTaskLabel, nuTaskSummary, screenshotUrl, importBookTags,
 } from '../../lib/novelupdates'
 
 const OPEN = ['queued', 'running', 'blocked', 'cancelling']
@@ -329,8 +329,9 @@ function DraftEditor({ bookId, data, busy, run, spin }) {
   const [draft, setDraft] = useState(st.series_draft || {})
   const [dirty, setDirty] = useState(false)
   const [tagInput, setTagInput] = useState('')
+  const [imported, setImported] = useState(null)
 
-  useEffect(() => { setDraft(st.series_draft || {}); setDirty(false) }, [st.series_draft])
+  useEffect(() => { setDraft(st.series_draft || {}); setDirty(false); setImported(null) }, [st.series_draft])
 
   const set = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setDirty(true) }
   const toggle = (k, name) => set(k, (draft[k] || []).includes(name)
@@ -339,6 +340,12 @@ function DraftEditor({ bookId, data, busy, run, spin }) {
     const hit = (vocab?.tags || []).find(t => t.toLowerCase() === name.trim().toLowerCase())
     if (hit && !(draft.tags || []).includes(hit)) set('tags', [...(draft.tags || []), hit])
     setTagInput('')
+  }
+  const importTags = () => {
+    const { added, ...lists } = importBookTags(data.book?.tags, vocab, draft)
+    setDraft(d => ({ ...d, ...lists }))
+    setDirty(true)
+    setImported(added)
   }
   const dry = st.draft_dry_run
   const canSubmit = data.draft_dry_run_current && !dirty
@@ -388,6 +395,16 @@ function DraftEditor({ bookId, data, busy, run, spin }) {
         </Field>
       </div>
 
+      <div className="flex items-center gap-2 flex-wrap mt-3 text-xs">
+        <button className="btn btn-secondary text-xs" disabled={!vocab || !(data.book?.tags || []).length}
+                title="Add every book tag that NU also has, as a genre or a tag; keeps what the draft already holds"
+                onClick={importTags}>Import book tags</button>
+        <span className="text-slate-500">
+          {imported
+            ? (imported.length ? `Added ${imported.join(', ')} — save the draft to keep them.` : 'Nothing new to add.')
+            : `Book tags: ${(data.book?.tags || []).join(', ') || 'none'}`}
+        </span>
+      </div>
       <Field label={`Genres (${(draft.genres || []).length}, at least one)`} className="mt-3">
         <div className="flex flex-wrap gap-1">
           {(vocab?.genres || draft.genres || []).map(g => (

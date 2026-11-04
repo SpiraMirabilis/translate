@@ -1,6 +1,8 @@
 // Shared labels for the NovelUpdates UI (NovelUpdatesModal + the NovelUpdates
 // page). Mirrors nu_sync.py: states, holds, release statuses and task kinds.
 
+import tagVocab from '../../../../tag_vocab.json'
+
 export const STATE_LABEL = {
   untracked:          'Not looked up',
   searching:          'Searching NU…',
@@ -90,3 +92,35 @@ export function nuTaskSummary(t) {
 
 // The screenshot a dry run or a submit left behind, served through the admin API.
 export const screenshotUrl = (name) => name ? `/api/nu/screenshots/${encodeURIComponent(name)}` : null
+
+// Book tags → NU genres/tags, the way nu_sync.build_series_draft matches them:
+// by name, ignoring case and hyphen/space differences ("weak-to-strong" =
+// "Weak to Strong"). A tag that misses is retried as its tag_vocab alias
+// target, but the raw tag goes first — several aliases fold onto a broader
+// tag of ours ("supernatural" → "urban fantasy") where NU has the original.
+// Additive: what the draft already holds stays, a genre wins over a same-named
+// tag, and unmatchedTags is recomputed from the book's tags.
+const tagKey = (s) => String(s || '').trim().toLowerCase().replace(/[\s_-]+/g, ' ')
+const NOT_A_TAG = new Set(["editor's choice"])
+
+export function importBookTags(bookTags, vocab, draft = {}) {
+  const index = (names) => new Map((names || []).map(n => [tagKey(n), n]))
+  const genreBy = index(vocab?.genres)
+  const tagBy = index(vocab?.tags)
+  const aliases = new Map(Object.entries(tagVocab.aliases || {}).map(([k, v]) => [tagKey(k), v]))
+  const genres = [...(draft.genres || [])]
+  const tags = [...(draft.tags || [])]
+  const added = []
+  const unmatched = []
+  for (const raw of bookTags || []) {
+    if (!raw || NOT_A_TAG.has(tagKey(raw))) continue
+    const keys = [tagKey(raw)]
+    const alias = aliases.get(keys[0])
+    if (alias && tagKey(alias) !== keys[0]) keys.push(tagKey(alias))
+    const key = keys.find(k => genreBy.has(k) || tagBy.has(k))
+    if (!key) { unmatched.push(raw); continue }
+    const [list, name] = genreBy.has(key) ? [genres, genreBy.get(key)] : [tags, tagBy.get(key)]
+    if (!list.includes(name)) { list.push(name); added.push(name) }
+  }
+  return { genres, tags, unmatchedTags: unmatched, added }
+}

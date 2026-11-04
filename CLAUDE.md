@@ -246,11 +246,19 @@ unit-tested) and the parts live in `components/library/` (`BookCard`, `BookShelf
 - **Filter chips come from `tag_vocab.json`** (repo root) — canonical tags grouped by
   axis (`genre` always shown; premise/setting/romance/tone/theme behind "More"), imported
   at build time; a tag no public book carries is not offered. `aliases` fold legacy
-  variants, `drop` lists tags retired on purpose. **Re-tagging a book**: edit tags in the
-  admin Books form or run `build_tag_dossiers.py --out DIR --book N` → classify (the
-  2026-10-11 pass used Sonnet subagents, brief in the session scratchpad) →
-  `apply_book_tags.py --file proposals.json [--apply]`, which folds aliases and always
-  carries an existing `editor's choice` over — curation is never the model's call.
+  variants, `drop` lists tags retired on purpose. **Tags follow NovelUpdates** (2026-10-29):
+  where NU has an equivalent, the canonical name *is* NU's, lowercased (`modern day`,
+  `weak to strong`, `gender bender`, `overpowered protagonist`, `fanfiction`, …), and any NU
+  genre/tag name (`logs/nu_vocabulary.json`) is a valid tag without a filter chip — so
+  `build_series_draft` maps a book's tags straight onto the add-series form. Never alias
+  or drop an NU name. House tags with no NU equivalent (`litrpg`, `no romance`,
+  `sect life`, `system`, …) stay. **Re-tagging**: edit tags in the admin Books form, or
+  `retag_books.py --out proposals.json [--book N]` (Sonnet reads the description, the
+  BOOK-SPECIFIC NOTES and the current tags, may call local `chapter_summaries` /
+  `read_chapter` tools, and answers NU genres + NU tags + kept house tags; resumable) →
+  `apply_book_tags.py --file proposals.json [--apply]`, which folds aliases, accepts NU
+  names and the proposal's `keep` list, and always carries an existing `editor's choice`
+  over — curation is never the model's call.
 - **Sorts**: `trending` (views in the last 30 days, `recent_book_views` in
   `db/logs_repo.py`; index-only via `idx_reader_log_viewed_book`, migration 23 — it was
   ~1 s without. Memoised 5 min per process in `public.py`, **stale-while-revalidate**: an
@@ -343,11 +351,21 @@ Settings → `geoblock_countries` (comma-separated ISO codes, blank = off; norma
 `CN,RU` on save, a bad code is a 400) and `geoblock_message` (blank = "This site isn't
 available in your region."). Read live per request by `GeoblockMiddleware`, which exists
 **only in the public process** — the admin site is never blocked.
+- The message is **Markdown, one block per line** — a paragraph (`[text](mailto:…)`,
+  `*em*`, `**strong**`, `![alt](src)`) or a `#`–`###` heading, which replaces the page's
+  site-name `<h1>`; lists etc. flatten to a paragraph. Bare emails/URLs link themselves
+  (`geoblock.render_message`: escape → python-markdown → bleach, http/https/mailto only →
+  `linkify`). Not the Reader's pipeline — the block page ships no JS. The JSON `detail`
+  keeps the text as typed.
+- ⚠️ **Images the message shows are exempt from the block** (`message_image_paths`: the
+  path of each `<img src>`, image extensions only, host not checked) — otherwise a blocked
+  visitor's browser gets the 403 page for the image too. Stock image: `401.png` in
+  `web/frontend/public/`.
 - The country is Cloudflare's `CF-IPCountry` header. No header (direct to origin, tests,
   tooling) = never blocked; `T1` = Tor, `XX` = unknown, both blockable. Best effort only.
 - A blocked visitor gets **403** everywhere: a self-contained HTML page (no SPA assets) or
   JSON `{detail, geoblocked: true}` under `/api/`, always `no-store`. Exempt:
-  `/api/health` (watchdog) and `/api/public/comments/unsubscribe`.
+  `/api/health` (watchdog), `/api/public/comments/unsubscribe`, and the message's images.
 - ⚠️ Apache's `mod_cache_disk` serves `/api/public` from disk without asking us, so while
   any country is blocked those responses carry `Vary: CF-IPCountry` — a blocked country
   misses the cache instead of getting a stored chapter. Spaces CDN objects (covers, EPUBs)
@@ -583,6 +601,10 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
   (`pending_title`): automatically on Auto, or the **Post c1 now** button
   (`post_first_release`, any mode). A pending id the Series box doesn't offer holds the
   book (`bad_slug`). "I posted c1 by hand" stays as the fallback.
+- **`GET /api/public/nu-tags.json`** (both processes, public-library gated) serves NU's
+  genres and tags from that cache (`nu_sync.public_vocab_json`: `{source, fetched_at,
+  genres, tags}`, `{"id", "name"}` entries sorted by name, one per line), 404 before the
+  first fetch, ETag + 5-min cache.
 - **UI**: `/novelupdates` page (nav badge `nu`), Books → Actions → NovelUpdates
   (`NovelUpdatesModal.jsx`), Settings → NovelUpdates. API `web/api/nu_api.py` (admin only).
 - Tests: `tests/test_nu_sync.py` (fake scraper asserting one NU job in flight),

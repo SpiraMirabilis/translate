@@ -192,6 +192,7 @@ export default function Settings() {
                 onChange={e => setSettings(s => ({ ...s, geoblock_message: e.target.value }))}
                 placeholder="This site isn't available in your region."
               />
+              <p className="text-xs text-slate-500 mt-1">Markdown, one paragraph or heading per line: <code># Heading</code>, <code>[text](mailto:you@example.com)</code>, <code>![alt](/image.png)</code>, <code>*italic*</code>, <code>**bold**</code>. Bare email addresses and URLs link themselves; images the message shows stay loadable for blocked visitors.</p>
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
               <input

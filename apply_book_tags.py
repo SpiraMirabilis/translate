@@ -3,15 +3,20 @@
 
     python3 apply_book_tags.py --file tag_proposals.json [--book 90 ...] [--apply]
 
-Proposals: {"<book_id>": {"tags": [...], ...}} (extra keys ignored). Dry run by
-default: prints current → final per book. Canonical tags come from the vocab's
-axes; aliases fold; `drop` tags vanish; anything else is kept only when it
-looks like a fandom name on a fan-fiction book, otherwise reported as unknown.
+Proposals: {"<book_id>": {"tags": [...], "keep": [...], ...}} (extra keys
+ignored). Dry run by default: prints current → final per book. Canonical tags
+come from the vocab's axes; NovelUpdates genre/tag names (the cached
+logs/nu_vocabulary.json) are valid too; aliases fold; `drop` tags vanish.
+Anything else survives only when the proposal lists it under `keep` (a house
+tag judged descriptive enough to stand) or it is a fandom name on a
+fan-fiction book; otherwise it is reported as unknown.
 Writes go through DatabaseManager.set_book_tags — the only tag write path.
 """
 import argparse
 import json
 import sys
+
+import nu_sync
 
 from config import TranslationConfig
 from logger import Logger
@@ -24,7 +29,10 @@ def load_vocab(path=VOCAB_PATH):
     with open(path, encoding="utf-8") as f:
         v = json.load(f)
     canonical = [t for axis in v["axes"].values() for t in axis]
+    nu = nu_sync.load_vocab() or {}
+    nu_names = [n.lower() for key in ("genres", "tags") for n in nu_sync._names(nu, key)]
     return {
+        "nu": set(nu_names),
         "canonical": canonical,
         "order": {t: i for i, t in enumerate(canonical)},
         "aliases": {k.lower(): val.lower() for k, val in v.get("aliases", {}).items()},
@@ -32,12 +40,14 @@ def load_vocab(path=VOCAB_PATH):
     }
 
 
-def fold(tags, vocab, allow_free=False):
-    """Normalise a tag list: lowercase, alias-fold, drop, dedupe, canonical order first.
+def fold(tags, vocab, allow_free=False, keep=()):
+    """Normalise a tag list: lowercase, alias-fold, drop, dedupe, canonical order
+    first, then NU names, then the rest alphabetically.
 
     Returns (final_tags, unknown_tags). Unknown tags are kept when allow_free is
-    set (fandom names on fan fiction), else left out.
+    set (fandom names on fan fiction) or they are listed in `keep`, else left out.
     """
+    keep = {k.strip().lower() for k in keep or ()}
     seen, final, unknown = set(), [], []
     for t in tags or []:
         if not isinstance(t, str):
@@ -47,13 +57,13 @@ def fold(tags, vocab, allow_free=False):
         if not s or s in vocab["drop"] or s in seen:
             continue
         seen.add(s)
-        if s in vocab["order"]:
+        if s in vocab["order"] or s in vocab["nu"] or s in keep:
             final.append(s)
         else:
             unknown.append(s)
             if allow_free:
                 final.append(s)
-    final.sort(key=lambda t: (vocab["order"].get(t, 10_000), t))
+    final.sort(key=lambda t: (vocab["order"].get(t, 10_000 if t in vocab["nu"] else 20_000), t))
     return final, unknown
 
 
@@ -86,8 +96,9 @@ def main():
         if any(vocab["aliases"].get(t.lower(), t.lower()) == "editor's choice"
                for t in (book.get("tags") or [])):
             proposed.append("editor's choice")
-        fanfic = "fan fiction" in {vocab["aliases"].get(t.lower(), t.lower()) for t in proposed}
-        final, unknown = fold(proposed, vocab, allow_free=fanfic)
+        fanfic = "fanfiction" in {vocab["aliases"].get(t.lower(), t.lower()) for t in proposed}
+        keep = prop.get("keep", []) if isinstance(prop, dict) else []
+        final, unknown = fold(proposed, vocab, allow_free=fanfic, keep=keep)
         current = sorted(t.lower() for t in (book.get("tags") or []))
         if sorted(final) == current:
             continue

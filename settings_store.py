@@ -54,7 +54,9 @@ SCHEMA = {
     "error_reports_enabled":   ("ERROR_REPORTS_ENABLED",   True,                      bool),
     # Public-reader geoblock (web/services/geoblock.py): comma-separated ISO
     # country codes from Cloudflare's CF-IPCountry ("CN,RU"; T1 = Tor). Blank =
-    # off. A blocked visitor sees geoblock_message (blank = the stock wording).
+    # off. A blocked visitor sees geoblock_message (blank = the stock wording):
+    # Markdown, one paragraph or #–### heading per line (links, emphasis,
+    # images — which blocked visitors may load), bare emails linked.
     "geoblock_countries":      ("GEOBLOCK_COUNTRIES",      "",                        str),
     "geoblock_message":        ("GEOBLOCK_MESSAGE",        "",                        str),
     "trad_to_simp":            ("TRAD_TO_SIMP",            False,                     bool),

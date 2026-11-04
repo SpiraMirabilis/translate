@@ -305,6 +305,34 @@ def test_site_info_carries_nu_forum_username(pub_client):
     assert pub_client.get("/api/public/site_info").json()["nu_forum_username"] == "SomeTranslator"
 
 
+def test_nu_tags_json(pub_client, tmp_path, monkeypatch):
+    import json
+    import nu_sync
+    monkeypatch.setattr(nu_sync, "VOCAB_FILE", str(tmp_path / "nu_vocabulary.json"))
+    assert pub_client.get("/api/public/nu-tags.json").status_code == 404
+
+    nu_sync.save_vocab({"fetchedAt": "2026-10-29T05:10:37.950Z",
+                        "genres": [{"id": "13", "name": "Adventure"}, {"id": "8", "name": "Action"}],
+                        "tags": [{"id": "4859", "name": "ability Steal"},
+                                 {"id": "16185", "name": "Abandoned Children"}],
+                        "types": [{"id": "2444", "name": "Web Novel"}]})
+    resp = pub_client.get("/api/public/nu-tags.json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert 'filename="nu_tags.json"' in resp.headers["content-disposition"]
+    assert json.loads(resp.text) == {
+        "source": nu_sync.PUBLIC_VOCAB_SOURCE,
+        "fetched_at": "2026-10-29T05:10:37.950Z",
+        "genres": [{"id": 8, "name": "Action"}, {"id": 13, "name": "Adventure"}],
+        "tags": [{"id": 16185, "name": "Abandoned Children"},
+                 {"id": 4859, "name": "ability Steal"}],
+    }
+    assert '\n    {"id": 8, "name": "Action"},\n' in resp.text
+    again = pub_client.get("/api/public/nu-tags.json",
+                           headers={"If-None-Match": resp.headers["etag"]})
+    assert again.status_code == 304
+
+
 def test_geoblock_blocks_listed_countries(pub_client, public_book):
     import settings_store
 
@@ -341,10 +369,39 @@ def test_geoblock_default_message_and_escaping(pub_client):
     settings_store.update({"geoblock_countries": "KP"})
     try:
         body = pub_client.get("/library", headers={"CF-IPCountry": "KP"}).text
-        assert "isn&#x27;t available in your region" in body
+        assert "<p>This site isn't available in your region.</p>" in body
         settings_store.update({"geoblock_message": "<b>no</b>"})
         body = pub_client.get("/library", headers={"CF-IPCountry": "KP"}).text
         assert "<b>no</b>" not in body and "&lt;b&gt;no&lt;/b&gt;" in body
+        # Inline Markdown and bare addresses link; unsafe schemes lose the href;
+        # headings render (and replace the site-name one); lists flatten.
+        settings_store.update({"geoblock_message":
+                               "Write to editor@example.com.\n"
+                               "[Abuse](mailto:abuse@example.com) — **sorry**\n"
+                               "[x](javascript:alert(1))\n# Heading\n- item"})
+        body = pub_client.get("/library", headers={"CF-IPCountry": "KP"}).text
+        assert ('<p>Write to <a href="mailto:editor@example.com">'
+                'editor@example.com</a>.</p>') in body
+        assert ('<p><a href="mailto:abuse@example.com">Abuse</a> — '
+                '<strong>sorry</strong></p>') in body
+        assert "javascript:" not in body and "<p><a>x</a></p>" in body
+        assert body.count("<h1>") == 1 and "<h1>Heading</h1>" in body
+        assert "<li>" not in body and "<p>item</p>" in body
+        # The JSON keeps the text as typed.
+        api = pub_client.get("/api/public/books", headers={"CF-IPCountry": "KP"})
+        assert api.json()["detail"].startswith("Write to editor@example.com.")
+        # An image renders, and its path (only that one, only an image path)
+        # gets past the block so the visitor can load it.
+        settings_store.update({"geoblock_message":
+                               "![Closed](https://example.com/401.png)\n"
+                               "![page](/library) ![bad](javascript:x.png)"})
+        body = pub_client.get("/library", headers={"CF-IPCountry": "KP"}).text
+        assert '<img alt="Closed" src="https://example.com/401.png">' in body
+        assert "javascript:" not in body
+        assert geoblock.is_exempt("/401.png")
+        assert not geoblock.is_exempt("/library") and not geoblock.is_exempt("/404.png")
+        img = pub_client.get("/401.png", headers={"CF-IPCountry": "KP"})
+        assert "geoblocked" not in img.text[:200] and img.status_code != 403
     finally:
         settings_store.update({"geoblock_countries": "", "geoblock_message": ""})
     assert geoblock.parse_countries(" ru,cn;  kp ru") == ["CN", "KP", "RU"]

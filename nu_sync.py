@@ -187,6 +187,41 @@ def save_vocab(vocab):
     os.replace(tmp, VOCAB_FILE)
 
 
+PUBLIC_VOCAB_SOURCE = ("https://www.novelupdates.com (series submission form, "
+                       "via the scraper's NU vocabulary job)")
+
+
+def public_vocab_json(vocab=None):
+    """NU's genres and tags as of the last vocabulary fetch, as the JSON text
+    /api/public/nu-tags.json serves: `{source, fetched_at, genres, tags}`, each
+    entry `{"id": int, "name": str}`, sorted by name, one entry per line.
+    None when nothing has been fetched yet."""
+    vocab = load_vocab() if vocab is None else vocab
+    if not vocab or not (vocab.get("genres") or vocab.get("tags")):
+        return None
+
+    def entries(key):
+        items = []
+        for item in vocab.get(key) or []:
+            name = str(item.get("name") or "").strip()
+            try:
+                items.append({"id": int(item["id"]), "name": name})
+            except (KeyError, TypeError, ValueError):
+                continue
+        items.sort(key=lambda i: i["name"].casefold())
+        if not items:
+            return "[]"
+        return "[\n" + ",\n".join("    " + json.dumps(i, ensure_ascii=False)
+                                   for i in items) + "\n  ]"
+
+    return ("{\n"
+            f'  "source": {json.dumps(PUBLIC_VOCAB_SOURCE)},\n'
+            f'  "fetched_at": {json.dumps(vocab.get("fetchedAt") or vocab.get("cachedAt"))},\n'
+            f'  "genres": {entries("genres")},\n'
+            f'  "tags": {entries("tags")}\n'
+            "}\n")
+
+
 def vocab_stale(now=None):
     v = load_vocab()
     at = _parse((v or {}).get("cachedAt"))
@@ -258,22 +293,43 @@ def _names(vocab, key):
     return [x.get("name") for x in (vocab or {}).get(key) or [] if x.get("name")]
 
 
+def _tag_key(name):
+    return re.sub(r"[\s_-]+", " ", (name or "").strip().lower())
+
+
+def _tag_aliases():
+    try:
+        with open(os.path.join(_HERE, "tag_vocab.json"), encoding="utf-8") as f:
+            return {_tag_key(k): v for k, v in (json.load(f).get("aliases") or {}).items()}
+    except (OSError, ValueError):
+        return {}
+
+
 def build_series_draft(book, vocab=None, cover_url=None):
     """A first draft of the add-series form from what the book already holds.
-    Book tags are matched case-insensitively against NU's genre and tag
-    names; what doesn't match is listed for the human, never guessed."""
+    Book tags are matched by name against NU's genres and tags, ignoring case
+    and hyphen/space differences; a miss is retried as its tag_vocab alias
+    target (raw first: some aliases fold onto a broader tag of ours where NU
+    keeps the original). What doesn't match is listed for the human, never
+    guessed. Mirrored by importBookTags in web/frontend/src/lib/novelupdates.js."""
     tags = [t for t in (book.get("tags") or []) if t]
-    genre_by_lower = {n.lower(): n for n in _names(vocab, "genres")}
-    tag_by_lower = {n.lower(): n for n in _names(vocab, "tags")}
+    genre_by_key = {_tag_key(n): n for n in _names(vocab, "genres")}
+    tag_by_key = {_tag_key(n): n for n in _names(vocab, "tags")}
+    aliases = _tag_aliases()
     genres, nu_tags, unmatched = [], [], []
     for t in tags:
-        key = t.lower()
-        if key in genre_by_lower:
-            genres.append(genre_by_lower[key])
-        elif key in tag_by_lower:
-            nu_tags.append(tag_by_lower[key])
-        elif key not in ("editor's choice",):
+        keys = [_tag_key(t)]
+        if keys[0] == "editor's choice":
+            continue
+        if keys[0] in aliases:
+            keys.append(_tag_key(aliases[keys[0]]))
+        key = next((k for k in keys if k in genre_by_key or k in tag_by_key), None)
+        if key is None:
             unmatched.append(t)
+            continue
+        target, name = (genres, genre_by_key[key]) if key in genre_by_key else (nu_tags, tag_by_key[key])
+        if name not in target:
+            target.append(name)
     lang = LANGUAGES.get((book.get("source_language") or "zh").lower())
     if lang and vocab and lang not in _names(vocab, "languages"):
         lang = None

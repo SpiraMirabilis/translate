@@ -165,6 +165,25 @@ def site_info(response: Response):
     }
 
 
+@router.get("/nu-tags.json")
+def nu_tags(request: Request):
+    """NovelUpdates' genres and tags as of the NU lane's last vocabulary fetch
+    (logs/nu_vocabulary.json, refreshed weekly by the scrape worker)."""
+    import nu_sync
+    text = nu_sync.public_vocab_json()
+    if text is None:
+        raise HTTPException(status_code=404, detail="NovelUpdates vocabulary not fetched yet")
+    etag = '"%s"' % hashlib.md5(text.encode("utf-8")).hexdigest()
+    headers = {"ETag": etag,
+               "Content-Disposition": 'inline; filename="nu_tags.json"'}
+    if etag in request.headers.get("if-none-match", ""):
+        resp = Response(status_code=304, headers=headers)
+    else:
+        resp = Response(text, media_type="application/json", headers=headers)
+    _cache(resp, _CACHE_SHORT)
+    return resp
+
+
 # ------------------------------------------------------------------
 # Rate limiting + Origin/Referer guard (shared, web/services/public_guard.py)
 # ------------------------------------------------------------------
