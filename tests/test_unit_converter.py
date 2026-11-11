@@ -443,6 +443,65 @@ def test_gongli_takes_a_vague_count():
     assert _conv("Gongli Village") == "Gongli Village"
 
 
+# ── mi (米): the same treatment — one meter ──────────────────────
+
+
+def test_mi_is_replaced_with_meters():
+    # Book 162 ch80.
+    assert _conv("a Knight Bee half a mi tall flew over") == "a Knight Bee half a meter tall flew over"
+    assert _conv("It was 15 mi long.") == "It was 15 meters long."
+    assert _conv("two or three mi") == "two or three meters"
+    assert _conv("only a mi away") == "only a meter away"
+    assert _conv("a ten-mi-tall statue") == "a ten-meter-tall statue"
+    assert _conv("dozens of mi") == "dozens of meters"
+
+
+def test_one_to_one_compound_stays_singular_after_emphasis_or_adjective():
+    # Book 106 ch130, book 117 ch153: the swap path pluralised these.
+    assert _conv("the whole ten-mi branch died") == "the whole ten-meter branch died"
+    assert _conv("beneath the giant 19.7-mi statue") == "beneath the giant 19.7-meter statue"
+    assert _conv("and the whole ten-gongli road") == "and the whole ten-kilometer road"
+
+
+def test_mi_does_not_touch_names_or_words():
+    assert _conv("a Mi family elder") == "a Mi family elder"     # 米/糜 surname
+    assert _conv("two Mi Zhu") == "two Mi Zhu"
+    assert _conv("do re mi") == "do re mi"
+    assert _conv("two miles") == "two miles"
+    assert _conv("three li away") == "three li (1.5 km) away"
+
+
+# ── gongfen (公分) and zhongtou (钟头): one centimeter, one hour ───
+
+
+def test_gongfen_is_replaced_with_centimeters():
+    # Book 133 ch57.
+    assert _conv("A wooden box two mi long and eighty gongfen wide.") == (
+        "A wooden box two meters long and eighty centimeters wide.")
+    assert _conv("about 15 gongfen") == "about 15 centimeters"
+    assert _conv("half a gongfen") == "half a centimeter"
+    assert _conv("a gongfen-thick plate") == "a centimeter-thick plate"
+
+
+def test_zhongtou_is_replaced_with_hours_keeping_the_count():
+    # Book 161 ch52.
+    assert _conv("a little over one zhongtou") == "a little over one hour"
+    assert _conv("20 zhongtou") == "20 hours"           # not "twenty hours"
+    assert _conv("two or three zhongtou") == "two or three hours"
+    assert _conv("several zhongtou") == "several hours"
+    assert _conv("a two-zhongtou drive") == "a two-hour drive"
+    assert _conv("the zhongtou passed") == "the hour passed"
+
+
+def test_zhongtou_fixes_the_article_for_hour():
+    # One-to-one, so half is "half an hour", not "thirty minutes" — and the
+    # source's "a" has to become "an" in front of the silent h.
+    assert _conv("half a zhongtou") == "half an hour"
+    assert _conv("A zhongtou later") == "An hour later"
+    assert _conv("a quarter of a zhongtou") == "a quarter of an hour"
+    assert _conv("a full zhongtou") == "a full hour"
+
+
 # ── gongjin (公斤): the same treatment — one kilogram, i.e. two jin ──
 
 

@@ -930,21 +930,31 @@ _COMPOUND_STOP = frozenset((
     "of and or but nor than then later ago away before after earlier since "
     "passed in on at to for from with by into was were is are had has have"
 ).split())
+# Up to two adjectives may sit between the determiner and the count: "the giant
+# 19.7-mi statue", "a long, narrow two-li valley".
 _DETERMINER_BEFORE_RE = re.compile(
     r"(?:\b(?:a|an|the|this|that|each|every|his|her|its|their|our|my|your|whose)"
-    r"|['’]s)\s+$", re.IGNORECASE)
+    r"|['’]s)\s+(?:[a-z]+,?\s+){0,2}$", re.IGNORECASE)
 
 
 def _swap_unit_word(match: re.Match, base_unit: str, *, singular: bool) -> str:
     """Replace only the unit word of a match, leaving the count as written."""
-    singular = singular or _is_compound_adjective(match, None, None, match.group("more"))
+    # An emphasis phrase the match absorbed ("the whole ten-mi branch") is the
+    # determiner the compound test looks for in front of the count.
+    singular = singular or _is_compound_adjective(match, match.group("det"), None,
+                                                  match.group("more"))
     label = base_unit if singular or base_unit.endswith("s") else base_unit + "s"
     full = match.group(0)
-    return full[:match.start("unit") - match.start()] + _match_case(match.group("unit"), label)
-
-
-def _scales(base_unit: str) -> bool:
-    return base_unit in SCALE_DOWN or base_unit in SCALE_UP
+    head = full[:match.start("unit") - match.start()]
+    # The article in front was chosen for the source word: "half a zhongtou"
+    # -> "half an hour".
+    m = re.search(r"(?<![\w'])(an?)(\s+)$", head, re.IGNORECASE)
+    if m:
+        want = "an" if _takes_an(label) else "a"
+        if m.group(1)[:1].isupper():
+            want = want.capitalize()
+        head = head[:m.start(1)] + want + m.group(2)
+    return head + _match_case(match.group("unit"), label)
 
 
 def _is_compound_adjective(match: re.Match, art: Optional[str],
@@ -970,6 +980,8 @@ _COMPOUND_FRACTION = {0.25: "quarter", 0.5: "half", 0.75: "three-quarter"}
 
 def _takes_an(word: str) -> bool:
     w = word.lower()
+    if w.startswith("hour"):            # silent h: "an hour", "an hour-long wait"
+        return True
     return w[:1] in "aeiou" and not w.startswith("one")
 
 
@@ -1035,7 +1047,9 @@ def _convert_match(match: re.Match, uset: _UnitSet) -> str:
     # Only for hour-based replace units; anything else is left untouched so we
     # don't misstate magnitude ("several jiazi", "several ke") or try to annotate
     # an uncountable phrase ("several zhang").
-    one_to_one = action == "replace" and base_value == 1.0 and not _scales(base_unit)
+    # Scaling is irrelevant here: "half a zhongtou" is "half an hour", not
+    # "thirty minutes", and "20 zhongtou" stays "20 hours".
+    one_to_one = action == "replace" and base_value == 1.0
     if vague_str:
         if one_to_one and not det_str:
             return _swap_unit_word(match, base_unit, singular=False)
