@@ -28,14 +28,16 @@ same canonical form before matching. Patterns are confusable-aware globs
 (``*``/``?``/``[...]`` supported).
 
 Both defaults ship as *editable per-book settings*: the whole-line list defaults
-to ``twkan`` and the substring list to ``69shux.com``. Users add site-specific
-markers to either list (one glob per line) through the Modules settings dialog;
-clearing a list disables that strategy. When a book has no stored settings, the
-schema defaults apply, so the original twkan strip keeps working unchanged and
-inline 69shux.com markers are now excised too.
+to ``twkan`` plus twkan's page-break notice and novels.com.tw's watermark line,
+and the substring list to ``69shux.com`` (also with twkan's trailing ``閱讀``)
+plus uukanshu's ``.\\nＣＯＭ`` remnant; CJK patterns come in both scripts.
+Users add site-specific markers to either list (one glob per line, ``#`` for
+comments) through the Modules settings dialog; clearing a list disables that
+strategy. When a book has no stored settings, the schema defaults apply; a book
+whose lists were saved keeps them, so new defaults don't reach it.
 
-It auto-enables for books whose ``source_url`` matches twkan.com (or when
-force-enabled per book). Like all transform hooks it is idempotent: a
+It is on for every book (``default_enabled``) unless disabled per book, so
+other sites' markers belong here too. Like all transform hooks it is idempotent: a
 delete-matched line is gone (can't re-match), and an excised line no longer
 contains the marker skeleton (can't re-excise). It runs at source ingest only —
 enabling it does not retroactively rewrite already-stored chapters.
@@ -57,8 +59,26 @@ from strip_queue_confusable_lines import (
 )
 
 # Built-in exemplar patterns, exposed as the editable settings defaults.
-_DEFAULT_LINE_PATTERNS = "twkan"
-_DEFAULT_SUBSTRING_PATTERNS = "69shux.com"
+# Trad→Simp runs before this module (registry order), so a book that converts
+# reaches it in Simplified and one that doesn't in Traditional: CJK patterns
+# come in both forms. The skeleton folds Latin/digit lookalikes, not scripts.
+_DEFAULT_LINE_PATTERNS = "\n".join([
+    "twkan",
+    "# twkan page-break notice inside a merged chapter",
+    "這章沒有結束*下一頁*",
+    "这章没有结束*下一页*",
+    "# novels.com.tw watermark line",
+    "繁體小說網首發",
+    "繁体小说网首发",
+])
+_DEFAULT_SUBSTRING_PATTERNS = "\n".join([
+    "69shux.com",
+    "# twkan appends 閱讀 after the marker: …。𝟨𝟫𝙨𝙝𝙪𝙭.𝙘𝙤𝙢閱讀",
+    "69shux.com閱讀",
+    "69shux.com阅读",
+    "# uukanshu: a literal backslash-n, then a lookalike COM (…。.\\nＣＯＭ)",
+    ".\\ncom",
+])
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +251,8 @@ class TwkanModule(TranslationModule):
                   "(confusable-aware). Whole-line ads are deleted; inline ad "
                   "markers spliced into real sentences are excised in place. "
                   "Defaults cover twkan.com / 69shux.com; add site-specific "
-                  "patterns per book.")
+                  "patterns per book. Defaults also cover uukanshu and "
+                  "novels.com.tw leftovers.")
     auto_url_patterns = ["twkan.com"]
 
     settings_schema = [
@@ -240,13 +261,17 @@ class TwkanModule(TranslationModule):
          "label": "Whole-line ad patterns (one per line)",
          "help": ("Confusable-aware glob patterns. Any source line whose text "
                   "matches one is deleted entirely — use for ads on their own "
-                  "dedicated line. Clear to disable. Default: twkan.")},
+                  "dedicated line. Lines starting with # are comments. Clear to "
+                  "disable. Defaults: twkan, twkan's page-break notice, "
+                  "novels.com.tw's watermark.")},
         {"key": "substring_patterns", "type": "textarea",
          "default": _DEFAULT_SUBSTRING_PATTERNS,
          "label": "Inline ad markers to excise (one per line)",
          "help": ("Confusable-aware glob patterns. Each match is cut out in "
                   "place, keeping the rest of the line — use for markers spliced "
-                  "into real sentences. Clear to disable. Default: 69shux.com.")},
+                  "into real sentences. Lines starting with # are comments. "
+                  "Clear to disable. Defaults: 69shux.com (with twkan's "
+                  "trailing 閱讀), uukanshu's .\\nCOM remnant.")},
     ]
 
     def _matchers(self, ctx):
