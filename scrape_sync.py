@@ -388,6 +388,54 @@ def toc_indices(toc_chapters, url):
     return [i for i, c in enumerate(toc_chapters or []) if url_key(c.get("url")) == key]
 
 
+def entry_url(ch):
+    """The URL that identifies a scraped chapter: the TOC entry it was
+    aligned to (align_to_toc), else the first page it came from."""
+    if ch.get("tocUrl"):
+        return ch["tocUrl"]
+    urls = ch.get("sourceUrls") or []
+    return urls[0] if urls else None
+
+
+def align_to_toc(chapters, toc_chapters, from_url):
+    """Tag each scraped chapter with the TOC entry it is (`tocUrl`) when its
+    first page isn't a TOC URL itself.
+
+    The cursor and the chunk chain assume sourceUrls[0] is the chapter's TOC
+    entry. A site that serves the whole novel as one paginated document
+    (52shuku: TOC entries `book.html?chapter=N`, chapters on `book_N.html`,
+    one or two to a page) breaks that: the page URL is in no TOC, so the
+    cursor can't be placed (no next chunk, then a "vanished cursor" hold),
+    and two chapters starting on one page look like one (book 166,
+    2026-11-13: every 3rd-4th chapter dropped). Such a chapter is matched to
+    the next TOC entry, from where the batch started, carrying the same
+    第N章 number. No match leaves it on its page URL, as before.
+    Returns shallow copies; the input is untouched."""
+    if not chapters or not toc_chapters:
+        return list(chapters or [])
+    keys = {url_key(c.get("url")) for c in toc_chapters}
+    starts = toc_indices(toc_chapters, from_url)
+    pos = min(starts) if starts else 0
+    out = []
+    for ch in chapters:
+        ch = dict(ch)
+        out.append(ch)
+        urls = ch.get("sourceUrls") or []
+        if urls and url_key(urls[0]) in keys:
+            hits = toc_indices(toc_chapters, urls[0])
+            pos = next((i for i in hits if i >= pos), hits[0]) + 1
+            continue
+        n = title_number(ch.get("title"))[0]
+        if n is None:
+            continue
+        for j in range(pos, len(toc_chapters)):
+            if title_number(toc_chapters[j].get("title"))[0] == n:
+                ch["tocUrl"] = toc_chapters[j].get("url")
+                pos = j + 1
+                break
+    return out
+
+
 def batch_behind_request(toc_chapters, chapters, from_url):
     """The TOC entry a chapters batch ended on, when that is *before* the
     entry it was asked to start from — the scraper handed back pages we did
@@ -401,7 +449,7 @@ def batch_behind_request(toc_chapters, chapters, from_url):
     if not from_url or not chapters:
         return None
     starts = toc_indices(toc_chapters, from_url)
-    last = next((u[0] for u in ((c.get("sourceUrls") or []) for c in reversed(chapters)) if u), None)
+    last = next((u for u in (entry_url(c) for c in reversed(chapters)) if u), None)
     ends = toc_indices(toc_chapters, last)
     if not starts or not ends or max(ends) >= min(starts):
         return None
@@ -537,12 +585,14 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
               "last_url": None, "last_number": None}
     to_queue = []
     prior_urls = set(prior_urls or ())
-    batch_urls = set()     # URLs queued from this batch: one page listed twice is one chapter
+    # (url, text) queued from this batch: one page listed twice is one chapter.
+    # The text is part of the key because two chapters can start on one page
+    # (a paginated single-document site, when align_to_toc found no entry).
+    batch_seen = set()
     prev = base_number
     anchor_i = -1          # batch index of the last numbered entry (-1 = the base)
     for i, ch in enumerate(chapters):
-        urls = ch.get("sourceUrls") or []
-        url = urls[0] if urls else None
+        url = entry_url(ch)
         if url:
             report["last_url"] = url
         title = (ch.get("title") or "").strip()
@@ -593,7 +643,7 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
         if url and url in prior_urls or (not prior_urls and number in prior_added):
             report["skipped_existing"].append(number)   # queued by this task before a retry
             continue
-        if url and url in batch_urls:
+        if url and (url, text) in batch_seen:
             report["skipped_existing"].append(number)
             report["anomalies"].append(
                 f"ch{number} ({title}) repeats a page already in this batch — skipped")
@@ -616,7 +666,7 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
                 f"anyway; the translation conflict check will compare them")
         to_queue.append((number, title or f"Chapter {number}", text.splitlines(), url))
         if url:
-            batch_urls.add(url)
+            batch_seen.add((url, text))
     return to_queue, report
 
 
@@ -1156,11 +1206,12 @@ class ScrapeEngine:
         # known by URL (repeats share numbers, so numbers can't tell).
         prior = task.get("result_summary") or {}
         prior_urls = set(prior.get("added_urls") or [])
-        behind = batch_behind_request(toc_chs, result.get("chapters") or [], task.get("from_url"))
+        chapters = align_to_toc(result.get("chapters") or [], toc_chs, task.get("from_url"))
+        behind = batch_behind_request(toc_chs, chapters, task.get("from_url"))
         if behind is not None:
             return self.reject_backwards_batch(task, result, behind, prior_urls)
         to_queue, report = number_chapters(
-            result.get("chapters") or [],
+            chapters,
             offset=state.get("number_offset") or 0,
             base_number=opts.get("base_number"),
             numbered=toc_is_numbered(toc_chs),

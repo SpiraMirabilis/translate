@@ -1047,3 +1047,74 @@ def test_job_in_flight_for_the_old_source_is_discarded(db, book):
     assert queued_numbers(db, book) == [1]              # nothing from the old source landed
     assert not db.get_book_scrape(book)["linked"]
 
+
+# -- a paginated single-document site (52shuku): TOC URLs aren't page URLs ---
+
+PAGED_URL = "https://www.52shuku.net/yanqing/23_b/bjYGi.html"
+
+
+class PagedScraper(FakeScraper):
+    """TOC entries are `book.html?chapter=N`; each chapter comes back on the
+    pages it spans, two chapters starting on each page — as 52shuku does."""
+
+    def __init__(self, n):
+        super().__init__([{"title": f"第{i}章", "url": f"{PAGED_URL}?chapter={i}",
+                           "text": f"正文{i}"} for i in range(1, n + 1)])
+        self.sites = ["52shuku.net"]
+
+    def result(self, job_id):
+        out = super().result(job_id)
+        if self.jobs[job_id]["kind"] == "chapters":
+            for ch in out.get("chapters", []):
+                n = scrape_sync.parse_title_number(ch["title"])
+                ch["title"] = f"第{n}章 标题{n}"
+                ch["sourceUrls"] = [PAGED_URL.replace(".html", f"_{(n + 1) // 2 + 1}.html"),
+                                    PAGED_URL.replace(".html", f"_{(n + 1) // 2 + 2}.html")]
+        return out
+
+
+def test_paged_site_queues_every_chapter_and_keeps_the_chain(db):
+    book_id = db.create_book("Paged")
+    db.update_book(book_id, source_url=PAGED_URL)
+    scraper = PagedScraper(7)
+    engine = make_engine(db, scraper)
+    scrape_sync.enqueue_check(db, book_id)
+    drain(engine)
+    scrape_sync.link_book(db, book_id, -1, 0)
+    db.update_book_scrape(book_id, mode="queue")
+    scrape_sync.enqueue_check(db, book_id, reason="forced")
+    drain(engine)
+    assert queued_numbers(db, book_id) == [1, 2, 3, 4, 5, 6, 7]
+    state = db.get_book_scrape(book_id)
+    assert state["cursor_url"] == f"{PAGED_URL}?chapter=7" and state["cursor_number"] == 7
+    assert state["pending_count"] == 0 and not state.get("hold_reason")
+    assert not state.get("warnings")
+    assert len([1 for k, _ in scraper.calls if k == "chapters"]) == 4   # chunks of 2
+
+    # The next TOC check finds the cursor where it left it — no vanished-cursor hold.
+    scrape_sync.enqueue_check(db, book_id)
+    drain(engine)
+    assert not db.get_book_scrape(book_id).get("hold_reason")
+
+
+def test_align_to_toc_matches_by_number_from_the_start_entry():
+    toc = [{"title": f"第{n}章", "url": f"t{n}"} for n in (1, 2, 3)] + \
+          [{"title": f"第{n}章", "url": f"v{n}"} for n in (1, 2)]   # a volume restarting at 1
+    chs = [{"title": "第1章 a", "sourceUrls": ["p1"]}, {"title": "第2章 b", "sourceUrls": ["p1", "p2"]},
+           {"title": "请假条", "sourceUrls": ["p2"]}]
+    out = scrape_sync.align_to_toc(chs, toc, "v1")
+    assert [scrape_sync.entry_url(c) for c in out] == ["v1", "v2", "p2"]
+    assert "tocUrl" not in chs[0]                                     # input untouched
+    # A chapter already on a TOC URL keeps it and moves the pointer on.
+    out = scrape_sync.align_to_toc([{"title": "第2章", "sourceUrls": ["t2"]},
+                                    {"title": "第3章", "sourceUrls": ["p9"]}], toc, "t1")
+    assert [scrape_sync.entry_url(c) for c in out] == ["t2", "t3"]
+
+
+def test_two_chapters_starting_on_one_page_are_both_queued():
+    chs = [{"title": "第1章 a", "text": "一", "sourceUrls": ["p2"]},
+           {"title": "第2章 b", "text": "二", "sourceUrls": ["p2", "p3"]}]
+    to_queue, report = scrape_sync.number_chapters(
+        chs, offset=0, base_number=0, numbered=True, existing=set(), new_only=True)
+    assert [n for n, *_ in to_queue] == [1, 2]
+    assert not report["anomalies"]

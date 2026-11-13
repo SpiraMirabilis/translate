@@ -403,13 +403,20 @@ job at a time**, so t9 owns the lane:
   last chapter ingested (`sourceUrls[0]` = the TOC entry's `url`); catch-ups scrape
   with `fromUrl` = the first entry after it. Sites insert/delete notice "chapters"
   mid-TOC. A cursor that vanishes from the TOC **holds** the book (relink).
+  ⚠️ **Paginated single-document sites break `sourceUrls[0]` = TOC URL** (52shuku: TOC
+  `book.html?chapter=N`, chapters on `book_N.html`, 1–2 starting per page).
+  `align_to_toc` tags such a chapter with `tocUrl` = the next TOC entry (from the batch's
+  `fromUrl`) carrying the same 第N章, and `entry_url()` is what the cursor, the chain, the
+  backwards check and retry dedup use. Without it, book 166 (2026-11-13) dropped every
+  3rd–4th chapter and stopped after its first chunk with a page-URL cursor.
   ⚠️ **A batch that ends before its own `fromUrl` is rejected whole and holds the book**
   (`batch_behind_request` / `reject_backwards_batch`): nothing queued, cursor unmoved, no
   follow-on chunk. The next chunk starts after the batch's last URL, so trusting such a
   batch loops forever — book 165 on 2026-11-11: the scraper's jpxs123 book-text path
   answered every `fromUrl` past ch1598 with the same ch1598–1644 run (678 chunks, 32k
   queue rows). A held book's TOC checks never start a catch-up. A URL repeated within
-  one batch is queued once.
+  one batch **with the same text** is queued once (different text = two chapters
+  that start on one page, both queued).
 - **Changing a book's source URL** (`update_book`, any caller → `scrape_sync.on_source_url_changed`)
   drops the stored TOC, the link/cursor, holds and warnings, and withdraws open
   toc/chapters tasks (a job in flight is cancelled and its result discarded via
