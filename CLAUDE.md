@@ -410,6 +410,13 @@ job at a time**, so t9 owns the lane:
   answered every `fromUrl` past ch1598 with the same ch1598–1644 run (678 chunks, 32k
   queue rows). A held book's TOC checks never start a catch-up. A URL repeated within
   one batch is queued once.
+- **Changing a book's source URL** (`update_book`, any caller → `scrape_sync.on_source_url_changed`)
+  drops the stored TOC, the link/cursor, holds and warnings, and withdraws open
+  toc/chapters tasks (a job in flight is cancelled and its result discarded via
+  `options.discard`). With mode queue/auto a forced TOC check of the new source is
+  queued — it auto-links by title and catches up like Check Source Now. Unplaced
+  entries and `number_offset` are kept. A URL differing only in scheme/`www.`/trailing
+  slash is not a change (`url_key`).
 - **Numbering**: 第N章 parsed from the title + `number_offset` (set by linking).
   (twkan prefixes every title with its *TOC position* — `342.第341章 …` — so the
   position and the author's number can differ; numbering follows 第N章.)

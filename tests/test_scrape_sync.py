@@ -986,3 +986,64 @@ def test_batch_behind_request_judges_every_toc_occurrence():
     assert scrape_sync.batch_behind_request(toc, [ch("u5"), ch("u2")], "u5") is None  # repost listed later
     assert scrape_sync.batch_behind_request(toc, [ch("u4")], "u4") is None
     assert scrape_sync.batch_behind_request(toc, [ch("elsewhere")], "u4") is None
+
+
+# -- a changed source URL drops what we knew about the old one ---------------
+
+NEW_URL = "https://twkan.com/book/2.html"
+
+
+def test_source_url_change_resets_the_toc_and_rechecks_when_scraping(db, book):
+    scraper = FakeScraper([entry(n) for n in range(1, 4)])
+    engine = make_engine(db, scraper)
+    seed_queue(db, book, [1])
+    check_and_link(db, engine, book)
+    db.update_book_scrape(book, mode="queue", hold_reason="old", warnings="old warning")
+    stale = scrape_sync.queue_chapter_chunk(db, book, "backfill", [entry(2)], base_number=1)
+
+    # Same URL spelled differently: nothing happens.
+    db.update_book(book, source_url="http://www.twkan.com/book/1.html/")
+    assert db.get_book_scrape(book, include_toc=True)["last_toc"]
+    assert db.get_scrape_task(stale)["status"] == "queued"
+
+    db.update_book(book, source_url=NEW_URL)
+    state = db.get_book_scrape(book, include_toc=True)
+    assert state["last_toc"] is None and not state["linked"] and state["cursor_url"] is None
+    assert state["hold_reason"] is None and state["warnings"] is None and state["mode"] == "queue"
+    assert db.get_scrape_task(stale)["status"] == "cancelled"
+    check = db.next_scrape_task(engine._now())
+    assert check["kind"] == "toc" and check["reason"] == "forced"
+
+    drain(engine)
+    tocs = [c for c in scraper.calls if c[0] == "toc"]
+    assert tocs[-1][1]["url"] == NEW_URL
+    assert db.get_book_scrape(book)["linked"]          # auto-linked by title on the new source
+    assert queued_numbers(db, book) == [1, 2, 3]       # and caught up, like Check Source Now
+
+
+def test_source_url_change_with_scraping_off_only_forgets(db, book):
+    scraper = FakeScraper([entry(n) for n in range(1, 4)])
+    engine = make_engine(db, scraper)
+    seed_queue(db, book, [1])
+    check_and_link(db, engine, book)
+    db.update_book(book, source_url=NEW_URL)
+    assert db.get_book_scrape(book, include_toc=True)["last_toc"] is None
+    assert db.next_scrape_task(engine._now()) is None
+
+
+def test_job_in_flight_for_the_old_source_is_discarded(db, book):
+    scraper = FakeScraper([entry(n) for n in range(1, 5)])
+    engine = make_engine(db, scraper)
+    seed_queue(db, book, [1])
+    check_and_link(db, engine, book)
+    tid = scrape_sync.enqueue_backfill(db, book, 1)
+    engine.tick()                                       # submitted: now on the scraper
+    assert db.get_scrape_task(tid)["status"] == "running"
+    scraper.entries = [entry(n, f"第{n}章 别的书{n}") for n in range(1, 5)]  # new source: no title match
+    db.update_book(book, source_url=NEW_URL)
+    assert db.get_scrape_task(tid)["status"] == "cancelling"
+    drain(engine)
+    assert db.get_scrape_task(tid)["status"] == "cancelled"
+    assert queued_numbers(db, book) == [1]              # nothing from the old source landed
+    assert not db.get_book_scrape(book)["linked"]
+

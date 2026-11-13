@@ -326,7 +326,8 @@ class BooksRepo:
             module_task_runner.claim(book_id, "module change")
         events_started = False
         try:
-            before_ids = resolve_module_ids(self.get_book(book_id=book_id)) if module_trigger else set()
+            book_before = self.get_book(book_id=book_id) if module_trigger else None
+            before_ids = resolve_module_ids(book_before) if module_trigger else set()
             with self._conn() as conn:
                 cursor = conn.cursor()
 
@@ -394,6 +395,22 @@ class BooksRepo:
                     start_book_module_events(self, book_after, before_ids, after_ids,
                                              self.config, self.logger)
                     events_started = True
+
+            # A new source URL invalidates the stored TOC and the cursor into
+            # it; scraping books get a fresh TOC check of the new source.
+            if 'source_url' in kwargs and book_before:
+                try:
+                    import scrape_sync
+                    reset = scrape_sync.on_source_url_changed(
+                        self, book_id, book_before.get('source_url'), kwargs.get('source_url'))
+                    if reset is not None:
+                        self.logger.info(
+                            f"Book {book_id}: source URL changed — scrape TOC and link reset"
+                            + (f", cancelled task(s) {reset['cancelled']}" if reset['cancelled'] else "")
+                            + (f", TOC check queued as task {reset['check_task']}" if reset['check_task'] else ""))
+                except Exception as e:
+                    self.logger.error(f"Book {book_id}: scrape reset after source URL change failed: "
+                                      f"{e}\n{traceback.format_exc()}")
 
             self.logger.info(f"Updated book with ID {book_id}")
             return True

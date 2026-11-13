@@ -977,6 +977,12 @@ class ScrapeEngine:
 
     def finish(self, task, job, sc):
         status = job.get("status")
+        if (task.get("options") or {}).get("discard"):
+            # Its book's source URL changed while it ran: what it read belongs
+            # to the old source and must not land as TOC, chapters or cursor.
+            self.db.update_scrape_task(task["id"], status="cancelled", finished_at=self._now(),
+                                       vnc_url=None)
+            return
         if task["status"] == "suspending" and status != "done":
             # Paused mid-job: nothing is ingested now — the resumed job's
             # result carries these pages as well.
@@ -1501,6 +1507,47 @@ def enqueue_check(db, book_id, *, catchup=False, reason="manual", priority=PRIOR
     db.update_book_scrape(book_id, consecutive_failures=0)
     return db.create_scrape_task(book_id, "toc", reason=reason, priority=priority,
                                  options={"catchup": True} if catchup else None)
+
+
+def on_source_url_changed(db, book_id, old_url, new_url):
+    """A book's source URL changed: everything stored about the old source —
+    its TOC, the link and cursor into it, holds and warnings about it — is
+    dropped, and its open toc/chapters tasks are withdrawn (a job in flight is
+    cancelled and its result discarded). If scraping is on for the book, a
+    forced TOC check of the new source is queued; an unlinked book auto-links
+    on that read when our latest chapters' titles place it, and catches up as
+    "Check Source Now" would. Parked unplaced entries and number_offset (our
+    numbering vs the author's 第N章, not a property of the site) are kept.
+
+    Returns None when nothing changed, else {"cancelled": [...], "check_task": id|None}."""
+    if url_key(old_url) == url_key(new_url):
+        return None
+    state = db.get_book_scrape(book_id)
+    if not state.get("exists"):
+        return None
+    cancelled = []
+    for t in db.list_scrape_tasks(statuses=("queued", "running", "blocked", "cancelling", "suspending"),
+                                  book_id=book_id, limit=None):
+        if t["kind"] not in ("toc", "chapters"):
+            continue
+        opts = {**(t.get("options") or {}), "discard": True}
+        if t["status"] == "queued" and not t.get("scraper_job_id"):
+            db.update_scrape_task(t["id"], status="cancelled", options=opts, finished_at=now_iso(),
+                                  last_error="source URL changed")
+        else:
+            # On the scraper (or suspended there): the worker cancels the job
+            # on its next poll, and finish() drops the result.
+            db.update_scrape_task(t["id"], status="cancelling", options=opts,
+                                  last_error="source URL changed")
+        cancelled.append(t["id"])
+    db.update_book_scrape(book_id, last_toc=None, toc_count=None, toc_latest_title=None,
+                          pending_count=None, linked=0, cursor_url=None, cursor_number=None,
+                          last_checked_at=None, consecutive_failures=0, last_error=None,
+                          hold_reason=None, warnings=None)
+    check = None
+    if new_url and state.get("mode") in ("queue", "auto"):
+        check = enqueue_check(db, book_id, reason="forced")
+    return {"cancelled": cancelled, "check_task": check}
 
 
 def apply_link(db, book_id, chs, index, chapter_number, number_offset):
