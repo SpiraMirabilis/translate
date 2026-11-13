@@ -924,3 +924,65 @@ def test_resolve_append_refuses_a_chapter_being_translated(db, book):
     with pytest.raises(scrape_sync.UnplacedError) as e:
         scrape_sync.resolve_unplaced(db, book, "abc", "append", 2)
     assert e.value.status == 409
+
+
+# -- a scraper handing back the wrong range (book 165, 2026-11-11) -----------
+
+class BackwardsScraper(FakeScraper):
+    """Asked for chapters from `trap`, returns the two entries before it —
+    the batch ends behind its own start, so a naive chain asks again forever."""
+    def __init__(self, entries, trap):
+        super().__init__(entries)
+        self.trap = trap
+
+    def result(self, job_id):
+        job = self.jobs[job_id]
+        if job["kind"] == "chapters" and job["params"]["from_url"] == self.trap:
+            start = next(i for i, e in enumerate(self.entries) if e["url"] == self.trap)
+            job["stopReason"] = "maxChapters"
+            return {"site": "twkan", "job": {"stopReason": "maxChapters"},
+                    "chapters": [{"title": e["title"], "text": e["text"], "sourceUrls": [e["url"]]}
+                                 for e in self.entries[start - 2:start]]}
+        return super().result(job_id)
+
+
+def test_batch_ending_behind_its_start_holds_instead_of_looping(db, book):
+    entries = [entry(n) for n in range(1, 9)]
+    scraper = BackwardsScraper(entries, trap=entries[4]["url"])   # from ch5 → ch3, ch4
+    engine = make_engine(db, scraper)
+    seed_queue(db, book, [1, 2])
+    check_and_link(db, engine, book)
+    db.update_book_scrape(book, mode="queue")
+    scrape_sync.enqueue_check(db, book, catchup=True)
+    drain(engine)                       # used to raise: the lane never went idle
+    assert queued_numbers(db, book) == [1, 2, 3, 4]   # the bad batch queued nothing
+    state = db.get_book_scrape(book)
+    assert "went backwards" in state["hold_reason"] and "第5章" in state["hold_reason"]
+    assert state["cursor_number"] == 4                # never moved by the bad batch
+    chapters_jobs = [c for c in scraper.calls if c[0] == "chapters"]
+    assert len(chapters_jobs) == 2
+
+    # Held: the next check reads the TOC but queues no catch-up.
+    scrape_sync.enqueue_check(db, book, reason="forced")
+    drain(engine)
+    assert len([c for c in scraper.calls if c[0] == "chapters"]) == 2
+    toc_task = db.list_scrape_tasks(book_id=book, limit=1)[0]
+    assert toc_task["kind"] == "toc" and "went backwards" in toc_task["result_summary"]["held"]
+
+
+def test_page_repeated_within_one_batch_is_queued_once():
+    chs = [{"title": e["title"], "text": e["text"], "sourceUrls": [e["url"]]}
+           for e in (entry(1), entry(2), entry(1), entry(3))]
+    to_queue, report = scrape_sync.number_chapters(
+        chs, offset=0, base_number=0, numbered=True, existing=set(), new_only=True)
+    assert [n for n, *_ in to_queue] == [1, 2, 3]
+    assert any("repeats a page already in this batch" in a for a in report["anomalies"])
+
+
+def test_batch_behind_request_judges_every_toc_occurrence():
+    toc = [{"title": f"t{n}", "url": f"u{n}"} for n in range(1, 6)] + [{"title": "t2 again", "url": "u2"}]
+    ch = lambda u: {"sourceUrls": [u]}
+    assert scrape_sync.batch_behind_request(toc, [ch("u2"), ch("u3")], "u5")["title"] == "t3"
+    assert scrape_sync.batch_behind_request(toc, [ch("u5"), ch("u2")], "u5") is None  # repost listed later
+    assert scrape_sync.batch_behind_request(toc, [ch("u4")], "u4") is None
+    assert scrape_sync.batch_behind_request(toc, [ch("elsewhere")], "u4") is None

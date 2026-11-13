@@ -380,6 +380,34 @@ def toc_index(toc_chapters, url):
     return None
 
 
+def toc_indices(toc_chapters, url):
+    """Every index `url` sits at in the TOC (a repost can list one page twice)."""
+    key = url_key(url)
+    if not key:
+        return []
+    return [i for i, c in enumerate(toc_chapters or []) if url_key(c.get("url")) == key]
+
+
+def batch_behind_request(toc_chapters, chapters, from_url):
+    """The TOC entry a chapters batch ended on, when that is *before* the
+    entry it was asked to start from — the scraper handed back pages we did
+    not ask for. None when the batch moved forward or can't be judged (no
+    start URL, or either end missing from the TOC).
+
+    This is what keeps a chain of chunks finite: the next chunk starts after
+    the batch's last entry, so a batch that ends behind its own start asks
+    for the same range again, forever (book 165, 2026-11-11: 678 chunks of
+    ch1598-1644, 32k queue rows)."""
+    if not from_url or not chapters:
+        return None
+    starts = toc_indices(toc_chapters, from_url)
+    last = next((u[0] for u in ((c.get("sourceUrls") or []) for c in reversed(chapters)) if u), None)
+    ends = toc_indices(toc_chapters, last)
+    if not starts or not ends or max(ends) >= min(starts):
+        return None
+    return toc_chapters[max(ends)]
+
+
 def cursor_index(state, toc_chapters):
     """Index of the cursor entry; -1 = linked before the first entry
     (everything is new); None = unlinked, or the cursor vanished."""
@@ -509,6 +537,7 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
               "last_url": None, "last_number": None}
     to_queue = []
     prior_urls = set(prior_urls or ())
+    batch_urls = set()     # URLs queued from this batch: one page listed twice is one chapter
     prev = base_number
     anchor_i = -1          # batch index of the last numbered entry (-1 = the base)
     for i, ch in enumerate(chapters):
@@ -564,6 +593,11 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
         if url and url in prior_urls or (not prior_urls and number in prior_added):
             report["skipped_existing"].append(number)   # queued by this task before a retry
             continue
+        if url and url in batch_urls:
+            report["skipped_existing"].append(number)
+            report["anomalies"].append(
+                f"ch{number} ({title}) repeats a page already in this batch — skipped")
+            continue
         if number in existing:
             if not new_only:
                 key = title_key(title)
@@ -581,6 +615,8 @@ def number_chapters(chapters, *, offset, base_number, numbered, existing,
                 f"ch{number} ({title}) collides with the ch{number} we already have — queued "
                 f"anyway; the translation conflict check will compare them")
         to_queue.append((number, title or f"Chapter {number}", text.splitlines(), url))
+        if url:
+            batch_urls.add(url)
     return to_queue, report
 
 
@@ -1033,7 +1069,11 @@ class ScrapeEngine:
         # what's new for a switched-on book; a plain manual check only reads.
         want = opts.get("catchup") or (task.get("reason") in ("sweep", "forced")
                                        and state["mode"] in ("queue", "auto"))
-        if new and want and not self.db.has_open_scrape_task(book_id, kinds=("chapters",)):
+        if new and want and state.get("hold_reason"):
+            # A held book only gets its TOC read; scraping resumes once a
+            # human clears the hold (or relinks, which clears it too).
+            summary["held"] = state["hold_reason"]
+        elif new and want and not self.db.has_open_scrape_task(book_id, kinds=("chapters",)):
             queue_chapter_chunk(self.db, book_id, "catchup", new,
                                 base_number=state.get("cursor_number"), mode=state["mode"])
             summary["catchup_queued"] = len(new)
@@ -1110,6 +1150,9 @@ class ScrapeEngine:
         # known by URL (repeats share numbers, so numbers can't tell).
         prior = task.get("result_summary") or {}
         prior_urls = set(prior.get("added_urls") or [])
+        behind = batch_behind_request(toc_chs, result.get("chapters") or [], task.get("from_url"))
+        if behind is not None:
+            return self.reject_backwards_batch(task, result, behind, prior_urls)
         to_queue, report = number_chapters(
             result.get("chapters") or [],
             offset=state.get("number_offset") or 0,
@@ -1182,6 +1225,28 @@ class ScrapeEngine:
         self._activity(book_id, "; ".join(parts),
                        type_="scrape_error" if report["anomalies"] else "scrape")
         return report
+
+    def reject_backwards_batch(self, task, result, behind, prior_urls):
+        """A batch that ended before the entry it was asked to start from is
+        not trusted at all: nothing is queued, the cursor stays put, and the
+        book is held so neither the chain nor the next sweep asks again.
+        last_url is None in the report, so on_chapters_done queues no
+        follow-on chunk."""
+        book_id = task["book_id"]
+        chapters = result.get("chapters") or []
+        state = self.db.get_book_scrape(book_id, include_toc=True)
+        toc_chs = (state.get("last_toc") or {}).get("chapters") or []
+        starts = toc_indices(toc_chs, task.get("from_url"))
+        asked = toc_chs[min(starts)].get("title") if starts else task.get("from_url")
+        msg = (f"the scraper went backwards: asked for chapters from “{asked}”, it "
+               f"returned {len(chapters)} ending at “{behind.get('title')}” — nothing "
+               f"from that batch was queued; check the source, then clear the hold")
+        self.db.update_book_scrape(book_id, hold_reason=msg, last_error=msg)
+        self._activity(book_id, msg, type_="scrape_error")
+        self._log("warning", f"[book {book_id}] task {task['id']}: {msg}")
+        return {"received": len(chapters), "added": [], "added_urls": sorted(prior_urls),
+                "skipped_existing": [], "anomalies": [msg], "rejected": msg,
+                "last_url": None, "last_number": None}
 
     def on_chapters_done(self, task, job, report):
         book_id = task["book_id"]

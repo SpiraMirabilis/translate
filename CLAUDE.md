@@ -403,6 +403,13 @@ job at a time**, so t9 owns the lane:
   last chapter ingested (`sourceUrls[0]` = the TOC entry's `url`); catch-ups scrape
   with `fromUrl` = the first entry after it. Sites insert/delete notice "chapters"
   mid-TOC. A cursor that vanishes from the TOC **holds** the book (relink).
+  ⚠️ **A batch that ends before its own `fromUrl` is rejected whole and holds the book**
+  (`batch_behind_request` / `reject_backwards_batch`): nothing queued, cursor unmoved, no
+  follow-on chunk. The next chunk starts after the batch's last URL, so trusting such a
+  batch loops forever — book 165 on 2026-11-11: the scraper's jpxs123 book-text path
+  answered every `fromUrl` past ch1598 with the same ch1598–1644 run (678 chunks, 32k
+  queue rows). A held book's TOC checks never start a catch-up. A URL repeated within
+  one batch is queued once.
 - **Numbering**: 第N章 parsed from the title + `number_offset` (set by linking).
   (twkan prefixes every title with its *TOC position* — `342.第341章 …` — so the
   position and the author's number can differ; numbering follows 第N章.)
