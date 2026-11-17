@@ -45,6 +45,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 from config import TranslationConfig
 from database import DatabaseManager
@@ -60,6 +61,45 @@ _NUM_CHARS = "0-9０-９〇零一二三四五六七八九十百千两"
 # Tolerate leading whitespace (incl. the ideographic space) — some raws indent.
 CHAPTER_RE = re.compile(rf"^[\s　]*第\s*([{_NUM_CHARS}]{{1,12}})\s*章\s*(.*?)\s*$")
 VOLUME_RE = re.compile(rf"^[\s　]*第\s*([{_NUM_CHARS}]{{1,12}})\s*卷\s*(.*?)\s*$")
+
+# An *indented* line is prose unless the 章/卷 is followed by whitespace or
+# ends the line: body text opens paragraphs with 第一章的名字…, 第二章3k字送上~
+# (an author's "2nd update today" note), and those must not split the chapter.
+_INDENTED_TAIL_RE = re.compile(r"[章卷](?:[\s　]|$)")
+
+# Zero-width joiners/selectors that ride along with an emoji marker.
+_MARKER_EXTRAS = {"‍", "︎", "️"}
+
+
+def _strip_marker(line):
+    """Drop a leading decorative symbol from a header candidate.
+
+    Some sites flag paid chapters by prefixing the header (``🍎 第77章 …``);
+    without this every flagged chapter is folded into the previous one.
+    Only symbol characters (Unicode category S*) are stripped, never letters
+    or punctuation, so a quoted ``“第一章…`` line stays prose.
+    """
+    s = line.lstrip(" \t　")
+    i = 0
+    while i < len(s) and (unicodedata.category(s[i]).startswith("S")
+                          or s[i] in _MARKER_EXTRAS):
+        i += 1
+    if i == 0:
+        return line
+    return s[i:].lstrip(" \t　")
+
+
+def match_header(regex, line):
+    """Match a 第…章 / 第…卷 header, guarding against indented prose."""
+    stripped = _strip_marker(line)
+    m = regex.match(stripped)
+    if not m:
+        return None
+    if stripped[:1] in (" ", "\t", "　"):
+        tail = re.search(r"[章卷]", stripped)
+        if not _INDENTED_TAIL_RE.match(stripped, tail.start()):
+            return None
+    return m
 
 _CN_DIGITS = {"〇": 0, "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
               "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -121,7 +161,7 @@ def parse_chapters(path):
                         "title": title, "line_no": line_no, "explicit": explicit})
 
     for i, line in enumerate(lines, 1):
-        vm = VOLUME_RE.match(line)
+        vm = match_header(VOLUME_RE, line)
         if vm:
             open_volume(line.strip(), vm.group(2), i, True)
             prev_num = None
@@ -130,7 +170,7 @@ def parse_chapters(path):
                 current = None
             continue
 
-        m = CHAPTER_RE.match(line)
+        m = match_header(CHAPTER_RE, line)
         if m:
             num = parse_number(m.group(1))
             # Implicit volume break: numbering falls back to 1 (or otherwise
