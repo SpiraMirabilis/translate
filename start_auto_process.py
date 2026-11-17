@@ -24,6 +24,31 @@ from dotenv import load_dotenv
 
 import t9_client
 
+# The ProcessNextRequest fields that describe the run itself (not the slot).
+def describe_item(item: dict | None) -> str:
+    """'chapter N' from a started item, else its title (servers before
+    2026-11-12 reported only the title), else '?'."""
+    item = item or {}
+    if item.get("chapter_number") is not None:
+        return f"chapter {item['chapter_number']}"
+    return repr(item["title"]) if item.get("title") else "chapter ?"
+
+
+RUN_OPTION_KEYS = ("translation_model", "advice_model", "cleaning_model",
+                   "no_review", "two_pass", "no_clean", "no_stream",
+                   "save_as_draft", "max_chapters")
+
+
+def start_auto(client: httpx.Client, payload: dict,
+               all_books: bool = False) -> httpx.Response:
+    """POST process-next (or process-all) and return the raw response.
+
+    The caller interprets the status: 200 started, 202 waiting for a slot,
+    401 not authenticated, 404 empty queue, 409 refused.
+    """
+    endpoint = "/api/queue/process-all" if all_books else "/api/queue/process-next"
+    return client.post(endpoint, json=payload)
+
 
 def main() -> int:
     load_dotenv()  # pick up T9_PASSWORD from .env
@@ -94,7 +119,7 @@ def main() -> int:
     # Mint the session cookie locally instead of POSTing /api/auth/login — see
     # t9_client. Login is rate-limited 5/min and 20/hour per IP.
     with t9_client.client(args.url, args.password, timeout=30) as client:
-        r = client.post(endpoint, json=payload)
+        r = start_auto(client, payload, all_books=args.all)
         if r.status_code == 401:
             print("Not authenticated — set T9_PASSWORD (in .env) or pass --password.",
                   file=sys.stderr)
@@ -113,8 +138,7 @@ def main() -> int:
             started = data.get("started", [])
             for entry in started:
                 item = entry.get("item") or {}
-                print(f"Started book {entry['book_id']} — chapter "
-                      f"{item.get('chapter_number', '?')}")
+                print(f"Started book {entry['book_id']} — {describe_item(item)}")
             for entry in data.get("queued", []):
                 print(f"Queued book {entry['book_id']} — waiting for a free slot "
                       f"(position {entry.get('position', '?')})")
@@ -128,7 +152,7 @@ def main() -> int:
         else:
             item = data.get("item") or {}
             print(f"Auto-process started on book {item.get('book_id', args.book_id)} "
-                  f"— chapter {item.get('chapter_number', '?')}"
+                  f"— {describe_item(item)}"
                   f"{f', {args.max_chapters} chapter(s) max' if args.max_chapters else ''}.")
     return 0
 

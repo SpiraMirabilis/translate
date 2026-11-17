@@ -24,6 +24,25 @@ from dotenv import load_dotenv
 import t9_client
 
 
+class NotAuthenticated(RuntimeError):
+    """The admin server answered 401 — T9_PASSWORD is missing or wrong."""
+
+
+def stop_auto(client: httpx.Client, book_id: int | None = None) -> dict:
+    """POST /api/queue/stop-auto; return the server's JSON body.
+
+    Omitting book_id stops EVERY running book. The in-flight chapter always
+    finishes — this never cancels one.
+    """
+    payload = {} if book_id is None else {"book_id": book_id}
+    r = client.post("/api/queue/stop-auto", json=payload)
+    if r.status_code == 401:
+        raise NotAuthenticated("Not authenticated — set T9_PASSWORD (in .env) "
+                               "or pass --password.")
+    r.raise_for_status()
+    return r.json()
+
+
 def main() -> int:
     load_dotenv()  # pick up T9_PASSWORD from .env
 
@@ -42,15 +61,11 @@ def main() -> int:
     # t9_client. Login is rate-limited, and a stop that fails on a 429 turns the
     # "drain before sweeping" safeguard into a silent no-op.
     with t9_client.client(args.url, args.password, timeout=15) as client:
-        payload = {} if args.book_id is None else {"book_id": args.book_id}
-        r = client.post("/api/queue/stop-auto", json=payload)
-        if r.status_code == 401:
-            print("Not authenticated — set T9_PASSWORD (in .env) or pass --password.",
-                  file=sys.stderr)
+        try:
+            body = stop_auto(client, args.book_id)
+        except NotAuthenticated as exc:
+            print(exc, file=sys.stderr)
             return 1
-        r.raise_for_status()
-
-        body = r.json()
         status = body.get("status")
         if status == "stopping":
             stopped = body.get("stopped") or []

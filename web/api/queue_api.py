@@ -975,7 +975,8 @@ def start_now(req: ProcessNextRequest):
     return {
         "status": "started",
         "auto_process": req.auto_process,
-        "item": {"title": queue_item.get("title"), "book_id": queue_item["book_id"]},
+        "item": {"title": queue_item.get("title"), "book_id": queue_item["book_id"],
+                 "chapter_number": queue_item.get("chapter_number")},
     }
 
 
