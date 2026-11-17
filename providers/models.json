@@ -82,15 +82,15 @@
     "anthropic": {
       "class": "ClaudeProvider",
       "api_key_env": "ANTHROPIC_KEY",
-      "default_model": "claude-sonnet-4-6",
+      "default_model": "claude-sonnet-5-5",
       "models": [
-        "claude-sonnet-4-6",
-        "claude-opus-4-6",
-        "claude-haiku-4-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-haiku-5-5",
         "claude-3-5-haiku-20241022"
       ],
-      "max_chars": 8500,
-      "max_output_tokens": 8192,
+      "max_chars": 13000,
+      "max_output_tokens": 30000,
       "connect_timeout_seconds": 15,
       "request_timeout_seconds": 600,
       "max_retries": 2
@@ -131,9 +131,9 @@
         "sonnet",
         "opus",
         "haiku",
-        "claude-sonnet-4-6",
-        "claude-opus-4-6",
-        "claude-haiku-4-5"
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-haiku-5-5"
       ],
       "max_chars": 16000,
       "timeout": 1800
