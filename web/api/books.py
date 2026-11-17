@@ -328,9 +328,12 @@ def get_book(book_id: int):
 def update_book(book_id: int, req: BookUpdate):
     book = get_book_or_404(book_id)
     dump = req.model_dump()
-    # Allow total_source_chapters=null to clear the value
+    # An explicit null clears these; an omitted field is left alone. The edit
+    # form doesn't send trad_to_simp, so treating "absent" as null wiped it on
+    # every save.
     nullable_fields = {'total_source_chapters', 'trad_to_simp', 'modules'}
-    kwargs = {k: v for k, v in dump.items() if v is not None or k in nullable_fields}
+    kwargs = {k: v for k, v in dump.items()
+              if v is not None or (k in nullable_fields and k in req.model_fields_set)}
     if 'status' in kwargs and kwargs['status'] not in ('ongoing', 'ongoing-trial', 'hiatus', 'completed', 'dropped'):
         raise HTTPException(status_code=400, detail="Invalid status. Must be one of: ongoing, ongoing-trial, hiatus, completed, dropped")
     if 'tags' in kwargs:

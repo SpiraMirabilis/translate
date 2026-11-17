@@ -88,6 +88,16 @@ class TestBooksCrud:
         admin_client.put(f"/api/books/{book_id}", json={"nu_title": ""})
         assert admin_client.get(f"/api/books/{book_id}").json()["nu_title"] is None
 
+    def test_omitted_trad_to_simp_is_kept(self, admin_client):
+        # The edit form doesn't send trad_to_simp; a save must not clear it.
+        book_id = _create_book(admin_client, title="Trad Book")
+        admin_client.put(f"/api/books/{book_id}", json={"trad_to_simp": 1})
+        admin_client.put(f"/api/books/{book_id}", json={"status": "hiatus"})
+        assert admin_client.get(f"/api/books/{book_id}").json()["trad_to_simp"] == 1
+
+        admin_client.put(f"/api/books/{book_id}", json={"trad_to_simp": None})
+        assert admin_client.get(f"/api/books/{book_id}").json()["trad_to_simp"] is None
+
     def test_update_invalid_status_rejected(self, admin_client):
         book_id = _create_book(admin_client, title="Status Book")
         resp = admin_client.put(f"/api/books/{book_id}", json={"status": "bogus"})
