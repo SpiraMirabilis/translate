@@ -122,3 +122,20 @@ def test_unrecognized_bad_request_surfaces():
     with pytest.raises(FakeBadRequest):
         p.chat_completion(messages=[{"role": "user", "content": "hi"}],
                           model="claude-opus-4-8", temperature=0)
+
+
+def test_requests_carry_automatic_cache_control():
+    p = make_provider([])
+    p.chat_completion([{"role": "system", "content": "sys"},
+                       {"role": "user", "content": "hi"}], model="m")
+    assert p.client.messages.calls[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_usage_counts_cached_tokens_in_prompt():
+    usage = types.SimpleNamespace(input_tokens=10, output_tokens=5,
+                                  cache_read_input_tokens=900,
+                                  cache_creation_input_tokens=90)
+    u = ClaudeProvider._usage_dict(usage)
+    assert u["prompt_tokens"] == 1000
+    assert u["total_tokens"] == 1005
+    assert u["cache_read_input_tokens"] == 900

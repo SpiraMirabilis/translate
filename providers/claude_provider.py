@@ -141,7 +141,11 @@ class ClaudeProvider(ModelProvider):
             "model": model,
             "messages": claude_messages,
             "max_tokens": self.max_output_tokens,  # Use configured max output tokens
-            "stream": stream
+            "stream": stream,
+            # Automatic prompt caching: the API places the breakpoint on the
+            # last cacheable block, so the system prompt (book prompt + glossary)
+            # and any shared prefix are read back at ~0.1x on the next chunk.
+            "cache_control": {"type": "ephemeral"},
         }
         # Only send temperature if this model is not known to reject it.
         if model not in _MODELS_REJECTING_TEMPERATURE:
@@ -225,17 +229,30 @@ class ClaudeProvider(ModelProvider):
                         "finish_reason": "stop" if response.stop_reason == "end_turn" else response.stop_reason
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": getattr(response.usage, 'input_tokens', 0) if response.usage else 0,
-                    "completion_tokens": getattr(response.usage, 'output_tokens', 0) if response.usage else 0,
-                    "total_tokens": (
-                        getattr(response.usage, 'input_tokens', 0) + 
-                        getattr(response.usage, 'output_tokens', 0)
-                    ) if response.usage else 0
-                },
+                "usage": self._usage_dict(response.usage),
                 "model": response.model if hasattr(response, 'model') else model
             }
     
+    @staticmethod
+    def _usage_dict(usage: Any) -> Dict[str, int]:
+        """OpenAI-shaped usage. With caching on, Anthropic's `input_tokens`
+        counts only the uncached remainder, so prompt_tokens adds the cache
+        read/write tokens back in to stay the full prompt size."""
+        if not usage:
+            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        uncached = getattr(usage, "input_tokens", 0) or 0
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        prompt = uncached + cache_read + cache_write
+        completion = getattr(usage, "output_tokens", 0) or 0
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_write,
+        }
+
     def get_response_content(self, response: Dict[str, Any]) -> str:
         """Extract content from completed response."""
         return response["choices"][0]["message"]["content"]
