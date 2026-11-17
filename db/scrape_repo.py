@@ -15,6 +15,7 @@ _BOOK_SCRAPE_FIELDS = {
     "run_options", "last_toc", "toc_count", "toc_latest_title", "pending_count",
     "last_checked_at", "last_sweep_at", "last_new_at", "consecutive_failures",
     "last_error", "hold_reason", "warnings", "unplaced", "unplaced_pending",
+    "cursor_unverified",
 }
 _BOOK_SCRAPE_JSON = {"run_options", "last_toc", "unplaced"}
 # Big JSON blobs left out of ordinary reads.
@@ -80,7 +81,7 @@ class ScrapeRepo:
                     "number_offset": 0, "linked": 0, "cursor_url": None,
                     "cursor_number": None, "run_options": None, "last_toc": None,
                     "consecutive_failures": 0, "hold_reason": None, "warnings": None,
-                    "unplaced": None, "unplaced_pending": 0}
+                    "unplaced": None, "unplaced_pending": 0, "cursor_unverified": 0}
         out = _decode(dict(zip(names, row)), _BOOK_SCRAPE_JSON)
         out["exists"] = True
         return out

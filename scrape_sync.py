@@ -557,6 +557,51 @@ def held_title_keys(db, book_id, number):
     return keys - {""}
 
 
+HELD_TEXT_WINDOW = 10      # our chapters either side of the cursor number
+HELD_TEXT_MIN_SHARE = 0.6  # of the scraped chapter's lines found in one of ours
+
+
+def _text_lines(text):
+    """Long lines of a chapter, folded for comparison: simplified script,
+    NFKC, no whitespace. Short lines ("……", "“嗯。”") match anywhere."""
+    out = []
+    for line in to_simplified(text or "").splitlines():
+        k = "".join(unicodedata.normalize("NFKC", line).split())
+        if len(k) >= 8:
+            out.append(k)
+    return out
+
+
+def chapter_text_held(db, book_id, text, number, window=HELD_TEXT_WINDOW):
+    """Whether a scraped chapter's text is one we hold: most of its lines occur
+    in one of our chapters numbered within `window` of `number` (saved source
+    or queued content). Containment, not line equality, so a held chapter
+    whose paragraphs were split or that absorbed a neighbour still counts.
+    No text to compare (or no number) counts as held: nothing to object to."""
+    lines = _text_lines(text)
+    if not lines or number is None:
+        return True
+    queued = {}
+    for row in db.list_queue(book_id=book_id, include_content=True, include_processing=True):
+        try:
+            n = int(row.get("chapter_number"))
+        except (TypeError, ValueError):
+            continue
+        if abs(n - number) <= window:
+            content = row.get("content") or row.get("untranslated_content") or ""
+            queued.setdefault(n, []).append(content if isinstance(content, str) else "\n".join(content))
+    for n in range(max(1, number - window), number + window + 1):
+        held = list(queued.get(n, []))
+        src = db.chapter_source(book_id, n)
+        if src:
+            held.append("\n".join(src[1]))
+        for h in held:
+            blob = "".join(_text_lines(h))
+            if blob and sum(1 for l in lines if l in blob) >= HELD_TEXT_MIN_SHARE * len(lines):
+                return True
+    return False
+
+
 def number_chapters(chapters, *, offset, base_number, numbered, existing,
                     new_only=False, prior_added=(), prior_urls=(), titles_at=None):
     """Assign our chapter numbers to a scraped batch and decide what to queue.
@@ -686,7 +731,7 @@ def format_ranges(nums):
 
 
 def queue_chapter_chunk(db, book_id, reason, entries, *, base_number, mode=None, priority=None,
-                        to_url=None, chain_added=0):
+                        to_url=None, chain_added=0, verify_url=None):
     """Queue the next chunk of `entries` (TOC entries, in order) as a chapters
     task. The chunk ends after scrape_chunk_size chapters; its completion
     queues the following one, behind anything of higher priority."""
@@ -698,11 +743,15 @@ def queue_chapter_chunk(db, book_id, reason, entries, *, base_number, mode=None,
         else:
             priority = PRIORITY_CATCHUP_AUTO if mode == "auto" else PRIORITY_CATCHUP
     chunk = max(1, int(setting("scrape_chunk_size")))
+    options = {"base_number": base_number, "chain_added": chain_added}
+    if verify_url:
+        # entries[0] is the cursor's own entry, re-read to check the link.
+        options["verify_url"] = verify_url
     return db.create_scrape_task(
         book_id, "chapters", reason=reason, priority=priority,
         from_url=entries[0]["url"], to_url=to_url or entries[-1]["url"],
         max_chapters=min(len(entries), chunk),
-        options={"base_number": base_number, "chain_added": chain_added})
+        options=options)
 
 
 # ---------------------------------------------------------------------------
@@ -1130,8 +1179,10 @@ class ScrapeEngine:
             # human clears the hold (or relinks, which clears it too).
             summary["held"] = state["hold_reason"]
         elif new and want and not self.db.has_open_scrape_task(book_id, kinds=("chapters",)):
-            queue_chapter_chunk(self.db, book_id, "catchup", new,
-                                base_number=state.get("cursor_number"), mode=state["mode"])
+            verify = state.get("cursor_unverified") and idx is not None and idx >= 0
+            queue_chapter_chunk(self.db, book_id, "catchup", chs[idx:] if verify else new,
+                                base_number=state.get("cursor_number"), mode=state["mode"],
+                                verify_url=chs[idx]["url"] if verify else None)
             summary["catchup_queued"] = len(new)
         self.db.update_scrape_task(task["id"], status="done", finished_at=self._now(),
                                    result_summary=summary)
@@ -1210,6 +1261,10 @@ class ScrapeEngine:
         behind = batch_behind_request(toc_chs, chapters, task.get("from_url"))
         if behind is not None:
             return self.reject_backwards_batch(task, result, behind, prior_urls)
+        if opts.get("verify_url"):
+            chapters, held = self.verify_cursor(task, state, chapters, prior_urls)
+            if held is not None:
+                return held
         to_queue, report = number_chapters(
             chapters,
             offset=state.get("number_offset") or 0,
@@ -1282,6 +1337,50 @@ class ScrapeEngine:
         self._activity(book_id, "; ".join(parts),
                        type_="scrape_error" if report["anomalies"] else "scrape")
         return report
+
+    def verify_cursor(self, task, state, chapters, prior_urls):
+        """The first catch-up after a link re-reads the cursor's own entry
+        (options.verify_url). That chapter is never queued — the link says we
+        have it — but we check that we do: its text must be among our chapters
+        near the cursor number, saved or queued. Book 166 (2026-11-16) was
+        linked at 第232章 as our ch232, but our 232 was the source's second
+        第231章, so the catch-up from 第233章 silently skipped 第232章.
+        Returns (chapters to ingest, None) or (None, report) after holding
+        the book. A hold cleared by hand (or a relink) drops the check."""
+        book_id = task["book_id"]
+        url_key_ = url_key(task["options"]["verify_url"])
+        head = 0
+        while head < len(chapters) and url_key(entry_url(chapters[head]) or "") == url_key_:
+            head += 1
+        rest = chapters[head:]
+        if not state.get("cursor_unverified"):
+            return rest, None               # verified already (a retry), or overridden
+        if not head:
+            # The scraper didn't hand the entry back under its TOC url: can't
+            # check, so don't block on it.
+            self.db.update_book_scrape(book_id, cursor_unverified=0)
+            self._log("warning", f"[book {book_id}] task {task['id']}: cursor entry not in the "
+                                 f"batch; link left unverified")
+            return rest, None
+        number = state.get("cursor_number")
+        missing = [c for c in chapters[:head]
+                   if not chapter_text_held(self.db, book_id, c.get("text") or "", number)]
+        if not missing:
+            self.db.update_book_scrape(book_id, cursor_unverified=0)
+            return rest, None
+        c = missing[0]
+        first = next((l.strip() for l in (c.get("text") or "").splitlines() if l.strip()), "")[:40]
+        msg = (f"link check failed: the source's “{(c.get('title') or '').strip()}” (the entry linked "
+               f"as our ch{number}) is not a chapter we have — its text («{first}…») matches none "
+               f"of our chapters near ch{number}, saved or queued. Our numbering has drifted from "
+               f"the source (a repeated or skipped 第N章 upstream), so catching up from there "
+               f"would skip it. Relink at the right entry, or clear the hold to continue anyway.")
+        self.db.update_book_scrape(book_id, hold_reason=msg, last_error=msg)
+        self._activity(book_id, msg, type_="scrape_error")
+        self._log("warning", f"[book {book_id}] task {task['id']}: {msg}")
+        return None, {"received": len(chapters), "added": [], "added_urls": sorted(prior_urls),
+                      "skipped_existing": [], "anomalies": [msg], "rejected": msg,
+                      "last_url": None, "last_number": None}
 
     def reject_backwards_batch(self, task, result, behind, prior_urls):
         """A batch that ended before the entry it was asked to start from is
@@ -1594,7 +1693,7 @@ def on_source_url_changed(db, book_id, old_url, new_url):
     db.update_book_scrape(book_id, last_toc=None, toc_count=None, toc_latest_title=None,
                           pending_count=None, linked=0, cursor_url=None, cursor_number=None,
                           last_checked_at=None, consecutive_failures=0, last_error=None,
-                          hold_reason=None, warnings=None)
+                          hold_reason=None, warnings=None, cursor_unverified=0)
     check = None
     if new_url and state.get("mode") in ("queue", "auto"):
         check = enqueue_check(db, book_id, reason="forced")
@@ -1606,12 +1705,16 @@ def apply_link(db, book_id, chs, index, chapter_number, number_offset):
     as our chapter `chapter_number`, with the given title-number offset."""
     if index == -1:
         db.update_book_scrape(book_id, linked=1, cursor_url=None, cursor_number=None,
-                              pending_count=len(chs), hold_reason=None, last_error=None)
+                              pending_count=len(chs), hold_reason=None, last_error=None,
+                              cursor_unverified=0)
         return {"linked": True, "cursor_url": None, "pending": len(chs)}
     entry = chs[index]
+    # Unverified until a catch-up has read this entry and found its text among
+    # ours (ScrapeEngine.verify_cursor): the link only says "our ch N is this
+    # entry", and a repeated or skipped 第N章 upstream makes that wrong.
     db.update_book_scrape(book_id, linked=1, cursor_url=entry["url"], cursor_number=chapter_number,
                           number_offset=number_offset, pending_count=len(chs) - index - 1,
-                          hold_reason=None, last_error=None)
+                          hold_reason=None, last_error=None, cursor_unverified=1)
     return {"linked": True, "cursor_url": entry["url"], "cursor_number": chapter_number,
             "number_offset": number_offset, "pending": len(chs) - index - 1}
 

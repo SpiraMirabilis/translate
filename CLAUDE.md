@@ -414,7 +414,16 @@ job at a time**, so t9 owns the lane:
   follow-on chunk. The next chunk starts after the batch's last URL, so trusting such a
   batch loops forever — book 165 on 2026-11-11: the scraper's jpxs123 book-text path
   answered every `fromUrl` past ch1598 with the same ch1598–1644 run (678 chunks, 32k
-  queue rows). A held book's TOC checks never start a catch-up. A URL repeated within
+  queue rows). A held book's TOC checks never start a catch-up.
+  ⚠️ **A link is checked by content before anything is skipped** (`cursor_unverified`,
+  migration 35): a manual or auto link marks the cursor unverified, and the next
+  catch-up starts *at* the cursor entry. `ScrapeEngine.verify_cursor` never queues that
+  chapter, but requires its text among ours (`chapter_text_held`: saved or queued,
+  ±10 numbers, ≥60% of its long lines); otherwise it holds the book. A link says "our
+  chN is entry X", and a repeated or skipped 第N章 upstream makes that wrong — book 166
+  (2026-11-16) repeats 第231章, our renumbered second copy was ch232, and a relink at
+  "第232章 = ch232" silently skipped the source's real 第232章. Clearing the hold =
+  continue anyway (it clears the flag). A URL repeated within
   one batch **with the same text** is queued once (different text = two chapters
   that start on one page, both queued).
 - **Changing a book's source URL** (`update_book`, any caller → `scrape_sync.on_source_url_changed`)

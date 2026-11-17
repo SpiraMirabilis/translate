@@ -246,6 +246,8 @@ def update_book_scrape(book_id: int, req: BookScrapeUpdate):
     if req.clear_hold:
         fields["hold_reason"] = None
         fields["last_error"] = None
+        # Clearing a failed link check means "continue anyway".
+        fields["cursor_unverified"] = 0
     if req.clear_warnings:
         fields["warnings"] = None
     if fields:

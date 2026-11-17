@@ -1174,6 +1174,15 @@ def _m034_recommendations_book_id(conn, cursor, backend, logger):
                           "ALTER TABLE recommendations ADD COLUMN book_id INTEGER")
 
 
+def _m035_book_scrape_cursor_unverified(conn, cursor, backend, logger):
+    """`cursor_unverified`: set by a link (manual or auto). The next catch-up
+    re-reads the cursor's own entry and checks we hold that chapter's text, so
+    a link placed by our chapter *number* can't silently skip a chapter when
+    the source repeated or skipped a 第N章 (book 166, 2026-11-16)."""
+    add_column_if_missing(conn, cursor, backend, "book_scrape", "cursor_unverified",
+                          "ALTER TABLE book_scrape ADD COLUMN cursor_unverified INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1209,6 +1218,7 @@ MIGRATIONS = [
     Migration(32, "novelupdates", _m032_novelupdates),
     Migration(33, "nu_backlog", _m033_nu_backlog),
     Migration(34, "recommendations_book_id", _m034_recommendations_book_id),
+    Migration(35, "book_scrape_cursor_unverified", _m035_book_scrape_cursor_unverified),
 ]
 
 

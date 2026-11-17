@@ -229,7 +229,9 @@ def test_daily_sweep_catches_up_in_chunks(db, book):
     assert state["cursor_url"].endswith("/7.html") and state["cursor_number"] == 7
     assert state["pending_count"] == 0
     chapter_jobs = [p for k, p in scraper.calls if k == "chapters"]
-    assert [p["max_chapters"] for p in chapter_jobs] == [2, 2]  # chunked: 4-5, 6-7
+    # Chunked: the first catch-up after a link re-reads the cursor entry (ch3)
+    # to check the link, so 3-4, 5-6, 7.
+    assert [p["max_chapters"] for p in chapter_jobs] == [2, 2, 1]
     assert {p["priority"] for p in chapter_jobs} == {None}  # catch-ups run at normal priority
 
     # Same day: no second sweep.
@@ -952,7 +954,7 @@ def test_batch_ending_behind_its_start_holds_instead_of_looping(db, book):
     engine = make_engine(db, scraper)
     seed_queue(db, book, [1, 2])
     check_and_link(db, engine, book)
-    db.update_book_scrape(book, mode="queue")
+    db.update_book_scrape(book, mode="queue", cursor_unverified=0)   # not a link test
     scrape_sync.enqueue_check(db, book, catchup=True)
     drain(engine)                       # used to raise: the lane never went idle
     assert queued_numbers(db, book) == [1, 2, 3, 4]   # the bad batch queued nothing
@@ -1118,3 +1120,80 @@ def test_two_chapters_starting_on_one_page_are_both_queued():
         chs, offset=0, base_number=0, numbered=True, existing=set(), new_only=True)
     assert [n for n, *_ in to_queue] == [1, 2]
     assert not report["anomalies"]
+
+
+# -- link check: a link placed by number must be a chapter we hold ------------
+# Book 166 (2026-11-16): the source repeats 第231章, we renumbered the second
+# one to our ch232, and a relink "at 第232章 = our ch232" skipped the source's
+# real 第232章. The first catch-up after a link re-reads the cursor entry.
+
+def drift_entry(i, n):
+    return {"title": f"第{n}章 标题{i}", "url": f"https://twkan.com/txt/1/{i}.html",
+            "text": f"这是第{i}个条目的正文，内容各不相同。\n第{i}条的第二行文字也足够长。"}
+
+
+DRIFT = [drift_entry(1, 1), drift_entry(2, 1), drift_entry(3, 2), drift_entry(4, 3),
+         drift_entry(5, 4)]                     # the source repeats 第1章
+
+
+def seed_held(db, book_id, held):
+    """held: {our number: index into DRIFT}."""
+    for n, i in held.items():
+        db.add_to_queue(book_id=book_id, content=DRIFT[i]["text"].split("\n"),
+                        title=DRIFT[i]["title"], chapter_number=n)
+
+
+def test_link_at_a_chapter_we_dont_hold_holds_the_book(db, book):
+    scraper = FakeScraper(DRIFT)
+    engine = make_engine(db, scraper)
+    seed_held(db, book, {1: 0, 2: 1})           # our ch2 = the source's second 第1章
+    scrape_sync.enqueue_check(db, book)
+    drain(engine)
+    scrape_sync.link_book(db, book, 2, 2)       # "第2章 = our ch2" — but we never got it
+    db.update_book_scrape(book, mode="queue")
+    scrape_sync.enqueue_check(db, book, reason="forced")
+    drain(engine)
+    state = db.get_book_scrape(book)
+    assert "link check failed" in state["hold_reason"] and "标题3" in state["hold_reason"]
+    assert queued_numbers(db, book) == [1, 2]   # nothing queued, nothing skipped
+    assert state["cursor_unverified"] == 1
+
+    # Clearing the hold by hand means "continue anyway".
+    db.update_book_scrape(book, hold_reason=None, cursor_unverified=0)
+    scrape_sync.enqueue_check(db, book, reason="forced")
+    drain(engine)
+    assert queued_numbers(db, book) == [1, 2, 3, 4]
+
+
+def test_link_at_a_chapter_we_hold_is_verified_and_not_requeued(db, book):
+    scraper = FakeScraper(DRIFT)
+    engine = make_engine(db, scraper)
+    seed_held(db, book, {1: 0, 2: 1, 3: 2})     # ch3 = the source's 第2章 (shifted by one)
+    scrape_sync.enqueue_check(db, book)
+    drain(engine)
+    scrape_sync.link_book(db, book, 2, 3)
+    db.update_book_scrape(book, mode="queue")
+    scrape_sync.enqueue_check(db, book, reason="forced")
+    drain(engine)
+    state = db.get_book_scrape(book)
+    assert state["hold_reason"] is None and state["cursor_unverified"] == 0
+    assert queued_numbers(db, book) == [1, 2, 3, 4, 5]   # 第3章/第4章 → our 4, 5
+    first = [p for k, p in scraper.calls if k == "chapters"][0]
+    assert first["from_url"] == DRIFT[2]["url"]          # re-read the cursor entry
+
+    # Verified: the next catch-up starts after the cursor again.
+    scraper.entries = DRIFT + [drift_entry(6, 5)]
+    scrape_sync.enqueue_check(db, book, reason="forced")
+    drain(engine)
+    last = [p for k, p in scraper.calls if k == "chapters"][-1]
+    assert last["from_url"] == drift_entry(6, 5)["url"]
+    assert queued_numbers(db, book) == [1, 2, 3, 4, 5, 6]
+
+
+def test_chapter_text_held_tolerates_split_paragraphs(db, book):
+    text = "第一段很长的正文内容在这里。第二句话也在同一段里面。\n另一段同样足够长的正文。"
+    db.add_to_queue(book_id=book, content=["第一段很长的正文内容在这里。", "第二句话也在同一段里面。",
+                                           "另一段同样足够长的正文。"], chapter_number=7)
+    assert scrape_sync.chapter_text_held(db, book, text, 5)
+    assert not scrape_sync.chapter_text_held(db, book, "完全不同的一段足够长的文字。", 5)
+    assert not scrape_sync.chapter_text_held(db, book, text, 30)   # outside the window
