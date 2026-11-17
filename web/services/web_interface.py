@@ -356,6 +356,75 @@ class WebInterface(UserInterface):
         })
         return decision, result
 
+    def _gap_slide_target(self, book_id, chapter_number, jev=None):
+        """The free slot a conflicting queue item should slide into, or None.
+
+        Slides only on the narrowest evidence: chapter N+1 is neither saved nor
+        queued, and the next item in this book's queue (by position, after the
+        one in flight) is chapter N+2 -- so the incoming item sits exactly where
+        the missing chapter belongs. A wider gap, no following item, or a
+        pasted (unqueued) chapter all leave the decision to the user. An
+        incoming side Jev confidently calls filler is never slid: an author's
+        note must not be filed as the missing story chapter.
+        """
+        import settings_store
+        if not settings_store.get("chapter_conflict_gap_slide", True):
+            return None
+        cqi = getattr(self, '_current_queue_item', None)
+        if not isinstance(cqi, dict) or cqi.get('id') is None:
+            return None
+        if jev and not jev.get("error"):
+            inc = jev.get("incoming") or {}
+            if (inc.get("choice") == "filler"
+                    and inc.get("confidence", 0.0) >= jev.get("threshold", 1.0)):
+                return None
+
+        target = chapter_number + 1
+        try:
+            items = self.entity_manager.list_queue(book_id=book_id, include_processing=True)
+            others = [i for i in items if i.get('id') != cqi['id']]
+            if any(i.get('chapter_number') == target for i in others):
+                return None
+            pos = cqi.get('position')
+            following = [i for i in others
+                         if pos is None or (i.get('position') is not None and i['position'] > pos)]
+            if not following or following[0].get('chapter_number') != chapter_number + 2:
+                return None
+            if self.entity_manager.get_chapter(book_id=book_id, chapter_number=target):
+                return None
+        except Exception as e:
+            self.logger.error(f"Chapter conflict gap check failed: {e}")
+            return None
+        return target
+
+    def _slide_incoming(self, book_id, book_title, chapter_number, target):
+        """Renumber the in-flight queue item to ``target`` and say so."""
+        cqi = self._current_queue_item
+        self.entity_manager.update_queue_chapter_number(cqi['id'], target)
+        cqi['chapter_number'] = target
+        self.chapter_number = target
+        try:
+            self.job_manager.chapter_number = target
+        except Exception:
+            pass
+        self.logger.info(
+            f"Chapter conflict book {book_id} ch{chapter_number}: chapter {target} is "
+            f"missing and the next queued is {target + 1} — sliding the incoming item to {target}")
+        self.job_manager.log_activity(
+            type='info',
+            message=(f'Chapter {chapter_number} of "{book_title or book_id}" already exists; '
+                     f'chapter {target} was missing and the next queued is {target + 1}, '
+                     f'so the incoming chapter was slid into {target}.'),
+            book_id=book_id, chapter=target, book_name=book_title,
+        )
+        self.job_manager.send_message_sync({
+            "type": "chapter_conflict_auto_resolved",
+            "book_id": book_id,
+            "chapter_number": chapter_number,
+            "decision": "slide",
+            "new_chapter_number": target,
+        })
+
     def check_chapter_conflict(self, chapter_text):
         """
         If a chapter with this (book_id, chapter_number) already exists and
@@ -377,6 +446,12 @@ class WebInterface(UserInterface):
         conflicts (renumber_new) the panel re-opens for the new number; if
         the renumber_existing target is occupied with different content the
         panel re-opens with an inline error so the user can pick again.
+
+        Before the panel opens, two automatic steps can settle it: Jev triage
+        (one side is only an author's note/ad), then the gap slide (chapter N+1
+        is free and the next queued item is N+2, so the incoming item is
+        renumbered to N+1 -- see `_gap_slide_target`). Neither runs on a
+        re-prompt after a bad renumber.
 
         Returns True to proceed, False if the user cancelled.
         """
@@ -442,6 +517,15 @@ class WebInterface(UserInterface):
                     return True
                 if auto_decision == "cancel":
                     return False
+
+                # Gap slide: the source mislabelled the chapter that belongs in
+                # an unfilled slot right after this one (300 stored, incoming
+                # "300", next queued 302 -> it's 301). Renumber and re-check.
+                slot = self._gap_slide_target(book_id, chapter_number, jev)
+                if slot is not None:
+                    self._slide_incoming(book_id, book_title, chapter_number, slot)
+                    chapter_number = slot
+                    continue
 
             payload = {
                 "book_id": book_id,

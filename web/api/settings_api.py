@@ -215,6 +215,7 @@ def get_settings():
         # Jev: read from the store -- chapter_triage consults it live.
         "jev_model": settings_store.get("jev_model", "jev-latest"),
         "jev_chapter_conflict": settings_store.get("jev_chapter_conflict", "auto"),
+        "chapter_conflict_gap_slide": settings_store.get("chapter_conflict_gap_slide", True),
         "jev_conflict_confidence": settings_store.get("jev_conflict_confidence", 0.9),
         "jev_unit_filter": settings_store.get("jev_unit_filter", True),
         "jev_unit_confidence": settings_store.get("jev_unit_confidence", 0.9),
@@ -287,6 +288,7 @@ class SettingsUpdate(BaseModel):
     polish_model: Optional[str] = None
     jev_model: Optional[str] = None
     jev_chapter_conflict: Optional[str] = None
+    chapter_conflict_gap_slide: Optional[bool] = None
     jev_conflict_confidence: Optional[float] = None
     jev_unit_filter: Optional[bool] = None
     jev_unit_confidence: Optional[float] = None

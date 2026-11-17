@@ -920,6 +920,14 @@ inside the app, never translation.
     WS event (the jobs reducer ignores it). Every verdict is logged
     (`Jev triage book N chM: …`) for threshold calibration. Not run on a re-prompt
     after a bad renumber, and the CLI path (which never prompts) is unchanged.
+  - **Gap slide** (2026-11-17, not Jev — runs right after it, `_gap_slide_target`):
+    chN conflicts, N+1 is neither saved nor queued, and the book's next queued item
+    (by position, after the one in flight) is N+2 → the incoming item is renumbered
+    to N+1 with no prompt (activity line + `chapter_conflict_auto_resolved`,
+    `decision: "slide"`). Never slides a pasted chapter, a wider gap, or an incoming
+    side Jev confidently called filler; a Jev decision wins. Kill switch
+    `chapter_conflict_gap_slide` (default on, Settings → Translation Safeguards).
+    Tests: `tests/test_chapter_conflict_gap_slide.py`.
   - Calibration 2026-09-29 on 22 stored author's-note chapters and 11 story chapters:
     21/22 notes `filler` ≥0.98 (the 22nd, a short "got a site message" note, 0.55 →
     modal), every story chapter `story` 1.00.

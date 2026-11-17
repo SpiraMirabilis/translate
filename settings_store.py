@@ -75,6 +75,12 @@ SCHEMA = {
     # is identical to the raw output (json_recovery.try_repair). Truncated
     # streams are retried regardless of this switch; they are never repaired.
     "json_auto_repair":        ("JSON_AUTO_REPAIR",        True,                      bool),
+    # Chapter conflict on chN where N+1 is free (neither saved nor queued) and
+    # the next queued item for the book is N+2: renumber the incoming item to
+    # N+1 without asking -- it is the missing chapter under a mistyped number.
+    # Runs after Jev triage; an incoming chapter Jev confidently calls filler
+    # is never slid.
+    "chapter_conflict_gap_slide": ("CHAPTER_CONFLICT_GAP_SLIDE", True,             bool),
     # Default for Claude Code and Codex read-only MCP lookup tools: what a
     # book's claude_code_tools module does on Auto (On/Off per book override it).
     # The URL is the t9-mcp-readonly.service endpoint.

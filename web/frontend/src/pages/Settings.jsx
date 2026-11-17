@@ -308,6 +308,15 @@ export default function Settings() {
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
+                checked={settings.chapter_conflict_gap_slide !== false}
+                onChange={e => setSettings(s => ({ ...s, chapter_conflict_gap_slide: e.target.checked }))}
+              />
+              Slide a conflicting chapter into a gap
+              <span className="text-xs text-slate-500 font-normal">— when an incoming chapter claims a number already saved (say 300), chapter 301 is neither saved nor queued, and the next queued chapter is 302, the incoming one is renumbered to 301 without asking. Runs after Jev triage; a chapter Jev calls an author's note is never slid. Wider gaps still open the conflict panel.</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={settings.claude_code_mcp_tools === true}
                 onChange={e => setSettings(s => ({ ...s, claude_code_mcp_tools: e.target.checked }))}
               />
