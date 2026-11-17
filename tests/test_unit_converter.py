@@ -513,6 +513,26 @@ def test_gongjin_is_replaced_with_kilograms():
     assert _conv("Half a gongjin of pork") == "Half a kilogram of pork"
 
 
+# ── dun (吨): one tonne, a word swap like gongjin; strict, since "dun" is English ──
+
+def test_dun_is_replaced_with_tons():
+    # Book 162 ch98.
+    assert (_conv("weighed at least two or three dun. Compared with it")
+            == "weighed at least two or three tons. Compared with it")
+    assert _conv("It weighed 15 dun.") == "It weighed 15 tons."
+    assert _conv("one dun") == "one ton"
+    assert _conv("2.5 dun") == "2.5 tons"
+    assert _conv("several hundred dun of steel") == "several hundred tons of steel"
+    assert _conv("a hundred thousand dun") == "a hundred thousand tons"
+
+
+def test_dun_the_english_word_is_left_alone():
+    for s in ("a dun horse", "the dun-colored cloak", "He came to dun the debtor.",
+              "the duns were paid", '"Dun-dun-dun!"', "Dun, dun, dun.",
+              "Three Dun brothers arrived."):
+        assert _conv(s) == s
+
+
 def test_gongjin_is_not_read_as_jin():
     assert "jin (" not in _conv("Three gongjin of rice.")
     assert _conv("three jin of rice") == "three jin (1.5 kg) of rice"

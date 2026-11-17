@@ -1357,7 +1357,8 @@ JEV_UNIT_CRITERIA = {
         "'Zhang Wei'), part of a place name ('Li Village', 'Nine Li Town'), a number "
         "beside a name ('Chapter 3 Zhang Wei'), part of an English word, a different "
         "meaning (jin as gold or money, chi as qi/tai chi, liang as bright, ping as "
-        "a sound or network ping, dan as a pill or elixir, kin as relatives), or "
+        "a sound or network ping, dan as a pill or elixir, kin as relatives, dun as "
+        "a currency or a dull brown colour), or "
         "figurative use where a metric conversion would be nonsensical."
     ),
 }

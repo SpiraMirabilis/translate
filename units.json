@@ -13,6 +13,7 @@
     "mi":          { "value": 1.0,    "unit": "meter",     "type": "length", "action": "replace", "numeral": "english" },
     "gongfen":     { "value": 1.0,    "unit": "centimeter", "type": "length", "action": "replace", "numeral": "english" },
     "gongjin":     { "value": 1.0,    "unit": "kilogram",  "type": "mass",   "action": "replace", "numeral": "english" },
+    "dun":         { "value": 1.0,    "unit": "ton",       "type": "mass",   "action": "replace", "numeral": "english", "strict": true },
     "jin":         { "value": 0.5,    "unit": "kg",   "type": "mass",   "action": "annotate" },
     "liang":       { "value": 0.05,   "unit": "kg",   "type": "mass",   "action": "annotate" },
     "qian":        { "value": 0.005,  "unit": "kg",   "type": "mass",   "action": "annotate" },
