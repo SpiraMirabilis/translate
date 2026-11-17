@@ -119,6 +119,34 @@ def test_the_cap_places_in_reading_order_and_leaves_the_rest_pending(db):
     assert "[1]" in _content(db, chapter_id)[1] and "[2]" in _content(db, chapter_id)[2]
 
 
+def test_the_cap_is_per_chapter_not_per_save(db):
+    """A retranslation runs the placer again; it must top the chapter up to the
+    cap, not add another cap's worth (book 99 ch655 collected 8 this way)."""
+    book_id, chapter_id = _chapter(db)
+    _store(db, book_id, chapter_id, [STRAW, TANG], cap=2)
+    res = _store(db, book_id, chapter_id, [STRAW, TANG, ROOSTER], cap=2)
+    assert res["placed"] == []
+    assert "cap" in dict((r["term_zh"], why) for r, why in res["unplaced"])["铁公鸡"]
+    assert _rows(db, book_id)["铁公鸡"]["status"] == "pending"
+    assert len(db.get_book_footnotes(book_id)) == 2
+
+    res = _store(db, book_id, chapter_id, [ROOSTER], cap=3)
+    assert [r["term_zh"] for r in res["placed"]] == ["铁公鸡"]
+
+
+def test_an_orphaned_placement_does_not_use_up_the_cap(db):
+    book_id, chapter_id = _chapter(db)
+    _store(db, book_id, chapter_id, [STRAW], cap=1)
+    # The retranslation reworded the anchor away and offers no replacement.
+    reworded = [TRANSLATION[0], "Chen Yuan looked at the effigies.",
+                *TRANSLATION[2:]]
+    db.save_chapter(book_id, 3, "Chapter 3", SOURCE.split("\n"), reworded)
+    db.rerender_chapter_footnotes(chapter_id)
+    assert db.get_book_footnotes(book_id)[0]["status"] == "orphaned"
+    res = _store(db, book_id, chapter_id, [TANG], cap=1)
+    assert [r["term_zh"] for r in res["placed"]] == ["唐僧肉"]
+
+
 def test_cap_zero_places_nothing(db):
     book_id, chapter_id = _chapter(db)
     res = _store(db, book_id, chapter_id, [STRAW], cap=0)

@@ -167,8 +167,12 @@ class FootnoteScanModule(TranslationModule):
                 "key": AUTO_APPLY_MAX_SETTING,
                 "type": "number",
                 "label": "Auto-apply: max footnotes per chapter",
-                "help": "At most this many are placed per chapter, in reading "
-                        "order; the rest stay pending for review. 0 places none.",
+                "help": "At most this many footnotes are placed per chapter, in "
+                        "reading order; the rest stay pending for review. "
+                        "Footnotes a chapter already got from candidates count "
+                        "toward it, so a retranslation tops the chapter up to "
+                        "this number rather than adding this many again. "
+                        "0 places none (same as turning auto-apply off).",
                 "default": AUTO_APPLY_MAX_DEFAULT,
             },
             {

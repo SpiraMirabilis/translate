@@ -956,7 +956,23 @@ def apply_inline_candidates(db, book_id, chapter_number, chapter_id, incoming=()
             out["reanchored"].append(dict(r, term_en=term))
             changed = True
 
-    # 2. Place the pending rows, reading order, up to the cap.
+    # 2. Place the pending rows, reading order, up to the cap. The cap is per
+    #    CHAPTER, not per call: a retranslation (or a different chapter saved
+    #    under the same number) runs this again, and counting only this call's
+    #    placements let a chapter collect 4 more each time. Footnotes this
+    #    chapter already holds through a candidate (auto-placed, or placed from
+    #    the review) use up the budget; an orphaned one doesn't render, so it
+    #    doesn't. Hand-added footnotes with no candidate are not the placer's
+    #    and don't count.
+    held = sum(
+        1 for r in rows
+        if r.get("footnote_id") and r["status"] in ("applied", "accepted")
+        and (by_id.get(r["footnote_id"]) or {}).get("chapter_id") == chapter_id
+        and (by_id.get(r["footnote_id"]) or {}).get("status") != "orphaned")
+    # Step 1 only re-points footnotes the snapshot above saw as orphaned
+    # (so `held` skipped them); they render again now.
+    held += len(out["reanchored"])
+    budget = max(0, cap - held)
     placeable = []
     for r in rows:
         if r["status"] != "pending" or r.get("footnote_id"):
@@ -970,7 +986,7 @@ def apply_inline_candidates(db, book_id, chapter_number, chapter_id, incoming=()
         placeable.append((loc, r))
     placeable.sort(key=lambda p: (p[0][0], p[0][1], p[1]["id"]))
     for i, (loc, r) in enumerate(placeable):
-        if i >= cap:
+        if i >= budget:
             out["unplaced"].append((r, f"over the per-chapter cap of {cap}"))
             continue
         term = r["term_en"].strip()
