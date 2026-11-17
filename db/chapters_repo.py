@@ -941,6 +941,31 @@ class ChaptersRepo:
                     "UPDATE nu_releases SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
                     (new_chapter_number, book_id, chapter_number),
                 )
+                # Chapter-stamped glossary history: notes_as_of() rewinds by
+                # these stamps, so a stamp left behind reads as a revision
+                # made in whatever chapter later takes the old number.
+                for table in ("entity_note_revisions", "entity_gender_revisions",
+                              "error_reports", "footnote_candidates"):
+                    cursor.execute(
+                        f"UPDATE {table} SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                        (new_chapter_number, book_id, chapter_number),
+                    )
+                # PK (book_id, chapter_number): a row already at the target
+                # belongs to no chapter (the target is free) and would block
+                # the move.
+                cursor.execute(
+                    "DELETE FROM footnote_scans WHERE book_id = ? AND chapter_number = ?",
+                    (book_id, new_chapter_number),
+                )
+                cursor.execute(
+                    "UPDATE footnote_scans SET chapter_number = ? WHERE book_id = ? AND chapter_number = ?",
+                    (new_chapter_number, book_id, chapter_number),
+                )
+                for col in ("origin_chapter", "last_chapter"):
+                    cursor.execute(
+                        f"UPDATE entities SET {col} = ? WHERE book_id = ? AND {col} = ?",
+                        (new_chapter_number, book_id, chapter_number),
+                    )
                 # activity_log uses column name `chapter`, not `chapter_number`
                 cursor.execute(
                     "UPDATE activity_log SET chapter = ? WHERE book_id = ? AND chapter = ?",
