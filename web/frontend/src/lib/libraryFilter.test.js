@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  applyFilters, buildShelves, libraryStats, tagsWithLanguage, axisChips,
+  applyFilters, buildShelves, libraryStats, tagsWithLanguage, filterChips, filterVocab,
   continueReading, hasActiveFilters, sortTags,
 } from './libraryFilter'
 
@@ -8,7 +8,7 @@ const NOW = new Date('2026-10-11T12:00:00Z').getTime()
 const iso = (hoursAgo) => new Date(NOW - hoursAgo * 3600 * 1000).toISOString()
 
 const books = [
-  { id: 1, title: 'Mirror of the Divine Emperor', source_title: '神帝之镜', author: 'A', description: 'A xianxia saga',
+  { id: 1, title: 'Mirror of the Divine Emperor', source_title: '神帝之镜', nu_title: 'Looking Glass of the God-King', author: 'A', description: 'A xianxia saga',
     tags: ['xianxia', 'female protagonist', 'no romance'], status: 'ongoing', source_language: 'zh',
     chapter_count: 1754, created_date: iso(24 * 400), last_chapter_date: iso(3) },
   { id: 2, title: 'Genius Warlock', author: 'B', description: 'Western fantasy',
@@ -36,6 +36,7 @@ describe('applyFilters', () => {
   it('matches every query word across title/author/description/tags, case-insensitively', () => {
     expect(ids(applyFilters(books, { q: 'MIRROR' }))).toEqual([1])
     expect(ids(applyFilters(books, { q: '神帝' }))).toEqual([1])
+    expect(ids(applyFilters(books, { q: 'looking glass' }))).toEqual([1])
     expect(ids(applyFilters(books, { q: 'xianxia' }))).toEqual([1, 3])
     expect(ids(applyFilters(books, { q: 'xianxia saga' }))).toEqual([1])
     expect(ids(applyFilters(books, { q: 'nothing here' }))).toEqual([])
@@ -55,12 +56,30 @@ describe('applyFilters', () => {
   })
 })
 
-describe('axisChips', () => {
-  it('lists vocabulary tags in vocabulary order with counts, skipping unused ones', () => {
-    expect(axisChips(books, 'genre')).toEqual([
-      { tag: 'xianxia', count: 2 }, { tag: 'western fantasy', count: 1 },
+describe('filterChips', () => {
+  const nu = {
+    genres: [{ id: 1, name: 'Xianxia' }, { id: 2, name: 'Fantasy' }, { id: 3, name: 'Smut' }],
+    tags: [{ id: 9, name: 'Male Protagonist' }, { id: 10, name: 'Female Protagonist' }, { id: 11, name: 'Cooking' }],
+  }
+  it('offers NU genres and tags that some book carries, most-carried first', () => {
+    const { genres, tags } = filterChips(books, nu)
+    expect(genres).toEqual([{ tag: 'xianxia', count: 2 }])
+    expect(tags).toEqual([
+      { tag: 'male protagonist', count: 2 },
+      { tag: 'female protagonist', count: 1 },
+      { tag: 'no romance', count: 1 },          // house tag, no NU equivalent
     ])
-    expect(axisChips(books, 'romance')).toEqual([{ tag: 'no romance', count: 1 }])
+  })
+  it('never offers fandom tags, editor\'s choice or a genre twice', () => {
+    const v = filterVocab(nu)
+    expect(v.tags).not.toContain("editor's choice")
+    expect(v.tags).not.toContain('xianxia')
+    expect(v.tags).not.toContain('harry potter')
+  })
+  it('falls back to tag_vocab.json before the NU list loads', () => {
+    const { genres, tags } = filterChips(books, undefined)
+    expect(genres).toEqual([{ tag: 'xianxia', count: 2 }, { tag: 'western fantasy', count: 1 }])
+    expect(tags.map(c => c.tag)).toContain('no romance')
   })
   it('sortTags follows the vocabulary, unknowns last', () => {
     expect(sortTags(['harry potter', 'male protagonist', 'xianxia'])).toEqual(['xianxia', 'male protagonist', 'harry potter'])

@@ -80,10 +80,14 @@ class TestBooksCrud:
         books = admin_client.get("/api/books").json()["books"]
         assert next(b for b in books if b["id"] == book_id)["nu_title"] == "Divine Emperor's Mirror"
 
-        # The public book page shows it ("also known as"); the Library list doesn't carry it
+        # The public book page shows it ("also known as"); the Library list carries
+        # it for search, but only where it differs from our own title
         assert admin_client.get(f"/api/public/books/{book_id}").json()["nu_title"] == "Divine Emperor's Mirror"
         pub = admin_client.get("/api/public/books").json()["books"]
-        assert "nu_title" not in next(b for b in pub if b["id"] == book_id)
+        assert next(b for b in pub if b["id"] == book_id)["nu_title"] == "Divine Emperor's Mirror"
+        admin_client.put(f"/api/books/{book_id}", json={"nu_title": "nu book"})
+        pub = admin_client.get("/api/public/books").json()["books"]
+        assert next(b for b in pub if b["id"] == book_id)["nu_title"] is None
 
         admin_client.put(f"/api/books/{book_id}", json={"nu_title": ""})
         assert admin_client.get(f"/api/books/{book_id}").json()["nu_title"] is None

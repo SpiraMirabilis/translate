@@ -62,7 +62,7 @@ const norm = (s) => (s || '').toString().toLowerCase()
 function matchesQuery(book, q) {
   const words = norm(q).split(/\s+/).filter(Boolean)
   if (!words.length) return true
-  const hay = [book.title, book.source_title, book.author, book.description, ...(book.tags || [])]
+  const hay = [book.title, book.source_title, book.nu_title, book.author, book.description, ...(book.tags || [])]
     .map(norm).join(' \n ')
   return words.every(w => hay.includes(w))
 }
@@ -101,13 +101,39 @@ export function tagCounts(books) {
   return counts
 }
 
-// Chips for one vocabulary axis, in vocabulary order, dropping tags no book
-// carries (min 1) so the bar never offers an empty result.
-export function axisChips(books, axis, { min = 1 } = {}) {
-  const counts = tagCounts(books)
-  return (AXES[axis] || [])
+// The filter vocabulary: NovelUpdates' genres and tags (/api/public/nu-tags.json,
+// `{genres: [{id, name}], tags: [...]}`), plus our house tags — canonical
+// tag_vocab.json entries NU has no equivalent for (litrpg, no romance, sect
+// life, …). Until the NU list has loaded (or if it 404s before the first
+// fetch), tag_vocab.json stands in: its genre axis as genres, the rest as tags.
+// Fandom tags and "editor's choice" (it has its own shelf) never get a chip.
+const HOUSE_TAGS = Object.entries(vocab.axes)
+  .filter(([axis]) => axis !== 'genre' && axis !== 'special')
+  .flatMap(([, tags]) => tags)
+
+export function filterVocab(nu) {
+  const names = (list) => (list || []).map(i => norm(typeof i === 'string' ? i : i?.name)).filter(Boolean)
+  const genres = names(nu?.genres)
+  if (!genres.length) return { genres: [...vocab.axes.genre], tags: [...HOUSE_TAGS] }
+  const genreSet = new Set(genres)
+  const tags = [...new Set([...names(nu.tags), ...HOUSE_TAGS])].filter(t => !genreSet.has(t))
+  return { genres, tags }
+}
+
+// Chips for a vocabulary list, most-carried first (ties alphabetical),
+// dropping tags no book carries (min 1) so the bar never offers an empty result.
+export function vocabChips(books, list, { min = 1, counts = tagCounts(books) } = {}) {
+  return [...new Set(list)]
     .map(tag => ({ tag, count: counts.get(tag) || 0 }))
     .filter(c => c.count >= min)
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+}
+
+// Both chip groups at once (one tag count pass).
+export function filterChips(books, nu) {
+  const v = filterVocab(nu)
+  const counts = tagCounts(books)
+  return { genres: vocabChips(books, v.genres, { counts }), tags: vocabChips(books, v.tags, { counts }) }
 }
 
 export function languageChips(books) {

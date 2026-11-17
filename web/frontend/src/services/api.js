@@ -358,6 +358,9 @@ export const api = {
 // ------------------------------------------------------------------
 export const publicApi = {
   listBooks:        (sort)         => get(`/api/public/books${sort ? `?sort=${encodeURIComponent(sort)}` : ''}`),
+  // NovelUpdates' genre/tag vocabulary — the Library's filter chips. 404 until
+  // the NU lane's first vocabulary fetch.
+  getNuTags:        ()             => get('/api/public/nu-tags.json'),
   getBook:          (id)           => get(`/api/public/books/${id}`),
   listChapters:     (bookId)       => get(`/api/public/books/${bookId}/chapters`),
   getChapter:       (bookId, num)  => get(`/api/public/books/${bookId}/chapters/${num}`),

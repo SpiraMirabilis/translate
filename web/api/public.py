@@ -244,6 +244,14 @@ def list_books(request: Request, response: Response, sort: str = 'popular'):
     return public_book_list(sort)
 
 
+def _nu_alias(book) -> str | None:
+    """books.nu_title when it differs from our title (case-insensitive), else None."""
+    nu = (book.get("nu_title") or "").strip()
+    if not nu or nu.casefold() == (book.get("title") or "").strip().casefold():
+        return None
+    return nu
+
+
 def public_book_list(sort: str = 'popular') -> dict:
     """The Library payload, `{"books": [...]}` — public books, public fields.
 
@@ -266,6 +274,9 @@ def public_book_list(sort: str = 'popular') -> dict:
             "id": b["id"],
             "title": b["title"],
             "source_title": b.get("source_title"),
+            # NU's name for the series, only where it isn't ours — the Library
+            # search box matches it (readers arrive knowing NU's title).
+            "nu_title": _nu_alias(b),
             "author": b.get("author"),
             "description": b.get("description"),
             "cover_image": b.get("cover_image"),

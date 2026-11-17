@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Search, X, SlidersHorizontal, ChevronDown } from 'lucide-react'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
-import { axisChips, languageChips, hasActiveFilters } from '../../lib/libraryFilter'
+import { publicApi } from '../../services/api'
+import { filterChips, languageChips, hasActiveFilters } from '../../lib/libraryFilter'
 
 const STATUS_OPTIONS = [
   { id: '',          label: 'All' },
@@ -15,10 +17,11 @@ const PROTAGONIST = [
   { tag: 'male protagonist',   label: '♂ Male MC' },
 ]
 
-// Axes always on show vs. behind "More filters".
-const PRIMARY_AXES = ['genre']
-const MORE_AXES = ['premise', 'setting', 'romance', 'tone', 'theme']
-const AXIS_LABEL = { premise: 'Premise', setting: 'Setting', romance: 'Romance', tone: 'Tone', theme: 'Theme' }
+// The toolbar is sticky, so its always-visible row must stay one line: only
+// the most-carried genres sit there (selected ones are promoted), the rest
+// move into "More". Tags shown in "More" before "Show all" likewise.
+const GENRE_PREVIEW = 6
+const TAG_PREVIEW = 30
 
 function Chip({ active, onClick, t, children, count }) {
   return (
@@ -42,6 +45,19 @@ export default function LibraryToolbar({ books, filters, onChange, sort, setSort
   const debouncedQ = useDebouncedValue(q, 200)
   const inputRef = useRef(null)
   const [more, setMore] = useState(false)
+  const [tagQuery, setTagQuery] = useState('')
+  const [allTags, setAllTags] = useState(false)
+
+  // NovelUpdates' genres + tags drive the chips; only the ones some book
+  // carries are offered. A 404 (vocabulary not fetched yet) falls back to
+  // tag_vocab.json inside filterChips.
+  const { data: nuVocab } = useQuery({
+    queryKey: ['public', 'nu-tags'],
+    queryFn: publicApi.getNuTags,
+    staleTime: 60 * 60 * 1000,
+    retry: false,
+  })
+  const chips = useMemo(() => filterChips(books, nuVocab), [books, nuVocab])
 
   // Local → URL, and URL → local (back button, "Clear all").
   useEffect(() => { if (debouncedQ !== (filters.q || '')) onChange({ q: debouncedQ }) }, [debouncedQ]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -68,8 +84,14 @@ export default function LibraryToolbar({ books, filters, onChange, sort, setSort
   }
   const active = hasActiveFilters(filters)
   const langs = languageChips(books)
-  const moreCount = MORE_AXES.reduce((n, a) => n + axisChips(books, a).filter(c => selected.has(c.tag)).length, 0)
-    + (filters.lang ? 1 : 0)
+  const topGenres = chips.genres.filter((c, i) => i < GENRE_PREVIEW || selected.has(c.tag))
+  const moreGenres = chips.genres.filter(c => !topGenres.includes(c))
+  const moreCount = chips.tags.filter(c => selected.has(c.tag)).length + (filters.lang ? 1 : 0)
+  const tq = tagQuery.trim().toLowerCase()
+  const matchingTags = tq ? chips.tags.filter(c => c.tag.includes(tq)) : chips.tags
+  const shownTags = tq || allTags
+    ? matchingTags
+    : matchingTags.filter((c, i) => i < TAG_PREVIEW || selected.has(c.tag))
 
   return (
     <div className="space-y-2.5">
@@ -81,7 +103,7 @@ export default function LibraryToolbar({ books, filters, onChange, sort, setSort
             type="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search title, original title, author, tag…"
+            placeholder="Search title, original or NU title, author, tag…"
             aria-label="Search books"
             className={`flex-1 min-w-0 bg-transparent text-sm outline-none ${t.searchText}`}
           />
@@ -115,7 +137,7 @@ export default function LibraryToolbar({ books, filters, onChange, sort, setSort
           <Chip key={p.tag} t={t} active={selected.has(p.tag)} onClick={() => toggleTag(p.tag)}>{p.label}</Chip>
         ))}
         <span className={`w-px h-5 mx-0.5 shrink-0 ${t.toggleBg}`} />
-        {PRIMARY_AXES.flatMap(a => axisChips(books, a)).map(c => (
+        {topGenres.map(c => (
           <Chip key={c.tag} t={t} count={c.count} active={selected.has(c.tag)} onClick={() => toggleTag(c.tag)}>{c.tag}</Chip>
         ))}
         <button type="button" onClick={() => setMore(m => !m)} aria-expanded={more}
@@ -132,19 +154,53 @@ export default function LibraryToolbar({ books, filters, onChange, sort, setSort
       </div>
 
       {more && (
-        <div className={`grid gap-2 pt-2 border-t ${t.divider}`}>
-          {MORE_AXES.map(axis => {
-            const chips = axisChips(books, axis)
-            if (!chips.length) return null
-            return (
-              <div key={axis} className="flex items-baseline gap-2 flex-wrap">
-                <span className={`text-[11px] uppercase tracking-wide w-16 shrink-0 ${t.chipCount}`}>{AXIS_LABEL[axis]}</span>
-                {chips.map(c => (
+        <div className={`grid gap-2 pt-2 border-t ${t.divider} max-h-[40vh] overflow-y-auto overscroll-contain`}>
+          {moreGenres.length > 0 && (
+            <div className="flex items-baseline gap-2">
+              <span className={`text-[11px] uppercase tracking-wide w-16 shrink-0 ${t.chipCount}`}>Genres</span>
+              <div className="flex-1 min-w-0 flex items-baseline gap-1.5 flex-wrap">
+                {moreGenres.map(c => (
                   <Chip key={c.tag} t={t} count={c.count} active={selected.has(c.tag)} onClick={() => toggleTag(c.tag)}>{c.tag}</Chip>
                 ))}
               </div>
-            )
-          })}
+            </div>
+          )}
+          {chips.tags.length > 0 && (
+            <div className="flex items-baseline gap-2">
+              <span className={`text-[11px] uppercase tracking-wide w-16 shrink-0 ${t.chipCount}`}>Tags</span>
+              <div className="flex-1 min-w-0 space-y-2">
+                {chips.tags.length > TAG_PREVIEW && (
+                  <label className={`flex items-center gap-1.5 px-2 h-7 max-w-xs rounded-md border ${t.searchBg} ${t.searchBorder}`}>
+                    <Search size={12} className="opacity-50 shrink-0" />
+                    <input
+                      type="search"
+                      value={tagQuery}
+                      onChange={(e) => setTagQuery(e.target.value)}
+                      placeholder={`Find a tag (${chips.tags.length})…`}
+                      aria-label="Find a tag"
+                      className={`flex-1 min-w-0 bg-transparent text-xs outline-none ${t.searchText}`}
+                    />
+                  </label>
+                )}
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  {shownTags.map(c => (
+                    <Chip key={c.tag} t={t} count={c.count} active={selected.has(c.tag)} onClick={() => toggleTag(c.tag)}>{c.tag}</Chip>
+                  ))}
+                  {tq && !matchingTags.length && <span className={`text-xs ${t.chipCount}`}>No tag matches “{tagQuery.trim()}”.</span>}
+                  {!tq && matchingTags.length > shownTags.length && (
+                    <button type="button" onClick={() => setAllTags(true)} className={`text-xs underline ${t.toggleInactive}`}>
+                      Show all {matchingTags.length}
+                    </button>
+                  )}
+                  {!tq && allTags && matchingTags.length > TAG_PREVIEW && (
+                    <button type="button" onClick={() => setAllTags(false)} className={`text-xs underline ${t.toggleInactive}`}>
+                      Show fewer
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
           {langs.length > 1 && (
             <div className="flex items-baseline gap-2 flex-wrap">
               <span className={`text-[11px] uppercase tracking-wide w-16 shrink-0 ${t.chipCount}`}>Language</span>
