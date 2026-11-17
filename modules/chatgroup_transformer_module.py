@@ -40,6 +40,16 @@ shapes are matched:
         小埋:开什么玩笑！……   →   【小埋:开什么玩笑！……】   (only if 小埋 is a gendered entity)
         Umaru: You've got to be kidding!……   →   【Umaru: You've got to be kidding!……】
 
+    A trailing numeric **user ID** after the username — ``吴军（20）：“…”``,
+    translated ``Wu Jun (20): "…"`` — is ignored by the gate (the name without
+    it must be the entity) and kept verbatim inside the wrapper::
+
+        吴军（20）：“好家伙……”   →   【吴军（20）：“好家伙……”】   (if 吴军 is an entity)
+
+    The username may be followed by **@-mentions** (``Fang Yun (3) @Wang Ping
+    (66): "…"``, ``方云（3）@王平（66）：“…”``); only the speaker before the first
+    ``@`` is gated, and the whole line is wrapped as is.
+
     The username may also come **bracketed**, ``【username】:message``. The
     brackets already delimit it, so the word-count and punctuation limits are
     relaxed (anything but a bracket, colon, pipe or quote, up to 60 chars), but
@@ -116,8 +126,12 @@ _DING_UNWRAP_RE = re.compile(r"^" + _DING_INNER)
 # start with a non-space character; a single space after the colon is allowed
 # (the translated-side convention).
 _NAME_TOKEN = r"[^\s:：【】|" + _DQUOTES + r"，。！？、,.!?]{1,20}"
+_NAME_WORDS = _NAME_TOKEN + r"(?: " + _NAME_TOKEN + r"){0,3}"
+# The username may be followed by @-mentions of other users (each up to four
+# words of its own): "Fang Yun (3) @Wang Ping (66): …", 方云（3）@王平（66）：….
+# Only the speaker — the part before the first @ — is gated (see _username_ok).
 _USER_RE = re.compile(
-    r"^\s*(" + _NAME_TOKEN + r"(?: " + _NAME_TOKEN + r"){0,3})[:：]\s?\S")
+    r"^\s*(" + _NAME_WORDS + r"(?:\s*[@＠]" + _NAME_WORDS + r"){0,3})[:：]\s?\S")
 
 # A chat line whose username is bracketed: 【username】:message. The brackets
 # delimit the name, so it may run longer and carry punctuation (the entity gate
@@ -177,9 +191,44 @@ def _load_entity_names(db, book_id, settings):
         return None
 
 
+# A numeric user ID some chat-group novels append to the username:
+# 吴军（20）：“…” / Wu Jun (20): "…". Full- or half-width parens, optional space
+# before. Only digits, so a parenthesized *word* (Mr. Li (Admin)) is untouched.
+_USER_ID_SUFFIX_RE = re.compile(r"\s*[（(]\s*\d{1,10}\s*[）)]\s*$")
+
+
+def _strip_user_id(name):
+    """``name`` without a trailing numeric user ID (``吴军（20）`` → ``吴军``)."""
+    return _USER_ID_SUFFIX_RE.sub("", name)
+
+
+def _split_mention(name):
+    """``(speaker, "@", rest)`` split at the first @ / ＠, or ``(name, "", "")``."""
+    m = re.search(r"[@＠]", name)
+    if not m:
+        return name, "", ""
+    return name[:m.start()], m.group(), name[m.end():]
+
+
 def _username_ok(name, names):
-    """Whether ``name`` clears the entity gate. ``None`` names → gate skipped."""
-    return True if names is None else name in names
+    """Whether ``name`` clears the entity gate. ``None`` names → gate skipped.
+
+    A name carrying a trailing user ID (``吴军（20）``) clears it when the name
+    without the ID is an entity — the ID is per-message decoration, never part
+    of the entity record.
+    """
+    if names is None or name in names:
+        return True
+    # "Speaker @Target (ID)": gate the speaker only — a mention target may be
+    # anyone (@全体成员), and the speaker is who the line belongs to.
+    speaker, at, target = _split_mention(name)
+    if at and not target.strip():
+        return False
+    speaker = speaker.strip()
+    if speaker != name and speaker in names:
+        return True
+    bare = _strip_user_id(speaker)
+    return bool(bare) and bare != name and bare in names
 
 
 def _bracketed_username_ok(name, names):
