@@ -960,6 +960,20 @@ inside the app, never translation.
     side Jev confidently called filler; a Jev decision wins. Kill switch
     `chapter_conflict_gap_slide` (default on, Settings → Translation Safeguards).
     Tests: `tests/test_chapter_conflict_gap_slide.py`.
+  - **Sequence slide** (2026-11-18, same switch, runs after the gap slide): a queue item
+    with **no `retranslation_reason`** (retranslations always carry one — the queue writes
+    a generic reason when none is typed) that collides with chN while this run just saved
+    chA, and A+1 is neither saved nor queued → renumbered to A+1, no prompt. Book 117: the
+    run saved 297, the next item claimed "290" (it was 298) and was appended onto 290.
+    Never on a run's first item, a confident Jev filler, or an incoming text sharing ≥ half
+    its lines with chN (a revised repost of that chapter). The run remembers its last save
+    in `WebInterface._last_saved_chapter` (set in `ui.py` after `save_chapter`).
+  - **Append target**: when the item is out of sequence (anchor = the run's last save,
+    else the book's max chapter; not N or N-1), the conflict payload carries
+    `append_target` (+ title) and `next_number`, and the panel offers **Translate as
+    ch{A+1}** and **Append to ch{A}** ahead of the plain append-to-N. `merge` takes an
+    optional `new_chapter_number` = the chapter to append to. Tests:
+    `tests/test_chapter_conflict_targets.py`.
   - Calibration 2026-09-29 on 22 stored author's-note chapters and 11 story chapters:
     21/22 notes `filler` ≥0.98 (the 22nd, a short "got a site message" note, 0.55 →
     modal), every story chapter `story` 1.00.

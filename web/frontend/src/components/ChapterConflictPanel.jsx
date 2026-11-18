@@ -21,6 +21,9 @@ export default function ChapterConflictPanel({
   newUntranslated,
   errorMessage,
   jev,
+  appendTarget,
+  appendTargetTitle,
+  nextNumber,
   onDone,
 }) {
   const [submitting, setSubmitting] = useState(false)
@@ -214,10 +217,17 @@ export default function ChapterConflictPanel({
           </div>
         ) : (
           <div className="px-5 py-4 border-t border-slate-700 shrink-0">
+            {appendTarget != null && (
+              <div className="text-xs text-sky-200 bg-sky-900/20 border border-sky-800/50 rounded px-3 py-2 mb-3">
+                This run last saved chapter {appendTarget}
+                {appendTargetTitle ? <> (&quot;{appendTargetTitle}&quot;)</> : null}, so the queue item is
+                probably mislabelled and belongs after it, not in chapter {chNum}.
+              </div>
+            )}
             <div className="text-xs text-slate-500 mb-3">
-              &quot;Skip&quot; drops the queue item. &quot;Append &amp; translate new part&quot; combines both
-              sides into this one chapter: the existing translation is kept as-is, only the
-              queue item is translated, and both source and translation are joined end to end.
+              &quot;Skip&quot; drops the queue item. &quot;Append&quot; joins the queue item onto the end of a
+              chapter: that chapter&apos;s translation is kept as-is, only the queue item is
+              translated, and both source and translation are joined end to end.
               &quot;Renumber&quot; moves either chapter to a new number. &quot;Insert &amp; shift queue&quot; translates
               this item as the next chapter and bumps every later queue item up by one.
               &quot;Overwrite&quot; replaces the existing chapter.
@@ -234,12 +244,33 @@ export default function ChapterConflictPanel({
             >
               <X size={13} /> Skip queue item
             </button>
+            {nextNumber != null && (
+              <button
+                className="btn-primary flex items-center gap-1.5"
+                onClick={() => submit('renumber_new', nextNumber)}
+                disabled={submitting}
+                title={`Translate the queue item as chapter ${nextNumber}, right after the last chapter saved`}
+              >
+                <ArrowRightLeft size={13} /> Translate as ch{nextNumber}
+              </button>
+            )}
+            {appendTarget != null && (
+              <button
+                className={`${nextNumber != null ? 'btn-secondary' : 'btn-primary'} flex items-center gap-1.5`}
+                onClick={() => submit('merge', appendTarget)}
+                disabled={submitting}
+                title={`Append the queue item to the end of chapter ${appendTarget} and translate only the new part`}
+              >
+                <Merge size={13} /> Append to ch{appendTarget}
+              </button>
+            )}
             <button
               className="btn-secondary flex items-center gap-1.5"
               onClick={() => submit('merge')}
               disabled={submitting}
+              title={`Append the queue item to the end of chapter ${chNum} and translate only the new part`}
             >
-              <Merge size={13} /> Append &amp; translate new part
+              <Merge size={13} /> {appendTarget != null ? `Append to ch${chNum}` : <>Append &amp; translate new part</>}
             </button>
             <button
               className="btn-secondary flex items-center gap-1.5"

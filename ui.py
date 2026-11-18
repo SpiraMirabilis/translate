@@ -757,6 +757,9 @@ class UserInterface(ABC):
                     
                     if chapter_id:
                         print(f"Saved as Chapter {chapter_number} of Book ID {self.book_id}")
+                        # Anchor for the next chapter conflict in this run: an
+                        # out-of-sequence item most likely belongs after this one.
+                        self._last_saved_chapter = chapter_number
                         self._store_footnote_candidates(
                             chapter_number, end_object.get('title'), chapter_text,
                             chapter_id=chapter_id)

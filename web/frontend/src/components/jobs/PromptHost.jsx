@@ -108,6 +108,9 @@ export default function PromptHost() {
           newUntranslated={job.pending_chapter_conflict.new_untranslated}
           errorMessage={job.pending_chapter_conflict.error}
           jev={job.pending_chapter_conflict.jev}
+          appendTarget={job.pending_chapter_conflict.append_target}
+          appendTargetTitle={job.pending_chapter_conflict.append_target_title}
+          nextNumber={job.pending_chapter_conflict.next_number}
           onDone={done}
         />
       )}

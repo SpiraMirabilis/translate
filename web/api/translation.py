@@ -173,7 +173,7 @@ class JsonFixRequest(BaseModel):
 
 class ChapterConflictRequest(BaseModel):
     decision: str  # "proceed" | "cancel" | "merge" | "renumber_existing" | "renumber_new"
-    new_chapter_number: Optional[int] = None  # Required for renumber_* decisions
+    new_chapter_number: Optional[int] = None  # Required for renumber_*; optional merge target
     book_id: Optional[int] = None  # which job this answers
 
 
@@ -402,7 +402,9 @@ async def resolve_chapter_conflict(req: ChapterConflictRequest):
     book_name = pending.get("book_title")
     label_map = {
         "proceed":            "Overwriting existing chapter…",
-        "merge":              "Appending new source to existing chapter and retranslating…",
+        "merge":              (f"Appending new part to chapter {req.new_chapter_number} and translating it…"
+                               if req.new_chapter_number and req.new_chapter_number != ch else
+                               "Appending new part to existing chapter and translating it…"),
         "cancel":             "Skipping chapter — queue item dropped.",
         "renumber_existing":  f"Renumbering existing chapter to {req.new_chapter_number}…",
         "renumber_new":       f"Renumbering incoming chapter to {req.new_chapter_number}…",

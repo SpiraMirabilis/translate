@@ -373,11 +373,8 @@ class WebInterface(UserInterface):
         cqi = getattr(self, '_current_queue_item', None)
         if not isinstance(cqi, dict) or cqi.get('id') is None:
             return None
-        if jev and not jev.get("error"):
-            inc = jev.get("incoming") or {}
-            if (inc.get("choice") == "filler"
-                    and inc.get("confidence", 0.0) >= jev.get("threshold", 1.0)):
-                return None
+        if self._incoming_is_filler(jev):
+            return None
 
         target = chapter_number + 1
         try:
@@ -397,24 +394,117 @@ class WebInterface(UserInterface):
             return None
         return target
 
-    def _slide_incoming(self, book_id, book_title, chapter_number, target):
-        """Renumber the in-flight queue item to ``target`` and say so."""
-        cqi = self._current_queue_item
-        self.entity_manager.update_queue_chapter_number(cqi['id'], target)
-        cqi['chapter_number'] = target
-        self.chapter_number = target
+    def _conflict_targets(self, book_id, chapter_number):
+        """Where an out-of-sequence incoming chapter most likely belongs.
+
+        A queue item whose number collides with an *older* chapter is usually a
+        mislabelled continuation of the run, not part of that old chapter (book
+        117, 2026-11-18: after 297 the next item claimed "290" and was appended
+        to 290; it was 298). The anchor is the chapter this run saved last, or
+        the book's highest saved chapter on a run's first item.
+
+        Returns ``(append_target, next_number)``: the anchor chapter to offer as
+        an append target, and anchor+1 to offer as a renumber when it is free
+        (neither saved nor queued). Both None when the item is in sequence
+        (anchor is N-1 or N, e.g. a retranslation run) -- then appending to N,
+        the old behaviour, is the right default.
+        """
+        anchor = getattr(self, '_last_saved_chapter', None)
+        if not isinstance(anchor, int) or anchor <= 0:
+            try:
+                anchor = self.entity_manager.max_translated_chapter(book_id)
+            except Exception as e:
+                self.logger.error(f"Chapter conflict: max_translated_chapter failed: {e}")
+                anchor = None
+        if not isinstance(anchor, int) or anchor <= 0 or anchor in (chapter_number, chapter_number - 1):
+            return None, None
+
+        next_number = anchor + 1
         try:
-            self.job_manager.chapter_number = target
+            cqi = getattr(self, '_current_queue_item', None) or {}
+            if next_number == chapter_number or self.entity_manager.get_chapter(
+                    book_id=book_id, chapter_number=next_number):
+                next_number = None
+            else:
+                queued = self.entity_manager.list_queue(book_id=book_id, include_processing=True)
+                if any(i.get('chapter_number') == next_number and i.get('id') != cqi.get('id')
+                       for i in queued):
+                    next_number = None
+        except Exception as e:
+            self.logger.error(f"Chapter conflict: next-number check failed: {e}")
+            next_number = None
+        return anchor, next_number
+
+    @staticmethod
+    def _incoming_is_filler(jev):
+        """Jev confidently called the incoming side an author's note/ad."""
+        if not jev or jev.get("error"):
+            return False
+        inc = jev.get("incoming") or {}
+        return (inc.get("choice") == "filler"
+                and inc.get("confidence", 0.0) >= jev.get("threshold", 1.0))
+
+    def _sequence_slide_target(self, book_id, chapter_number, existing_lines, incoming_lines,
+                               jev=None):
+        """The chapter right after the one this run just saved, or None.
+
+        A new (non-retranslation) queue item that collides with a stored chapter
+        while the run is translating ahead of it is mislabelled: it belongs
+        right after the chapter the run saved last (book 117, 2026-11-18: after
+        297 the next item claimed "290"; it was 298). Retranslations always
+        carry a ``retranslation_reason`` (the queue writes a generic one when
+        none is typed), so its absence is what "new" means here.
+
+        Never slides: a run's first item (nothing saved yet), a slot that is
+        saved or queued, an incoming side Jev confidently calls filler, or an
+        incoming text that shares most of its lines with the stored chapter --
+        that is a revised repost of *that* chapter, not a new one.
+        """
+        import settings_store
+        if not settings_store.get("chapter_conflict_gap_slide", True):
+            return None
+        cqi = getattr(self, '_current_queue_item', None)
+        if not isinstance(cqi, dict) or cqi.get('id') is None:
+            return None
+        if (cqi.get('retranslation_reason') or '').strip():
+            return None
+        if not isinstance(getattr(self, '_last_saved_chapter', None), int):
+            return None
+        if self._incoming_is_filler(jev):
+            return None
+
+        def norm(lines):
+            return {str(l).strip() for l in lines if str(l).strip()}
+        inc, ex = norm(incoming_lines), norm(existing_lines)
+        if inc and len(inc & ex) * 2 >= min(len(inc), len(ex) or 1):
+            return None
+
+        _anchor, next_number = self._conflict_targets(book_id, chapter_number)
+        return next_number
+
+    def _move_incoming(self, chapter_number):
+        """Point this run (and its queue row) at ``chapter_number``."""
+        self.chapter_number = chapter_number
+        try:
+            self.job_manager.chapter_number = chapter_number
         except Exception:
             pass
+        cqi = getattr(self, '_current_queue_item', None)
+        if isinstance(cqi, dict) and cqi.get('id') is not None:
+            self.entity_manager.update_queue_chapter_number(cqi['id'], chapter_number)
+            cqi['chapter_number'] = chapter_number
+
+    def _slide_incoming(self, book_id, book_title, chapter_number, target, why=None):
+        """Renumber the in-flight queue item to ``target`` and say so."""
+        self._move_incoming(target)
+        why = why or f'chapter {target} was missing and the next queued is {target + 1}'
         self.logger.info(
-            f"Chapter conflict book {book_id} ch{chapter_number}: chapter {target} is "
-            f"missing and the next queued is {target + 1} — sliding the incoming item to {target}")
+            f"Chapter conflict book {book_id} ch{chapter_number}: {why} — "
+            f"sliding the incoming item to {target}")
         self.job_manager.log_activity(
             type='info',
             message=(f'Chapter {chapter_number} of "{book_title or book_id}" already exists; '
-                     f'chapter {target} was missing and the next queued is {target + 1}, '
-                     f'so the incoming chapter was slid into {target}.'),
+                     f'{why}, so the incoming chapter was slid into {target}.'),
             book_id=book_id, chapter=target, book_name=book_title,
         )
         self.job_manager.send_message_sync({
@@ -527,6 +617,19 @@ class WebInterface(UserInterface):
                     chapter_number = slot
                     continue
 
+                # Sequence slide: a new (non-retranslation) item colliding with
+                # an older chapter belongs right after the one this run just
+                # saved (297 saved, incoming "290" -> it's 298).
+                slot = self._sequence_slide_target(
+                    book_id, chapter_number, existing_untranslated, new_untranslated, jev)
+                if slot is not None:
+                    self._slide_incoming(
+                        book_id, book_title, chapter_number, slot,
+                        why=(f'it is a new chapter (no retranslation reason) and this run '
+                             f'just saved chapter {slot - 1}'))
+                    chapter_number = slot
+                    continue
+
             payload = {
                 "book_id": book_id,
                 "chapter_number": chapter_number,
@@ -538,6 +641,18 @@ class WebInterface(UserInterface):
             }
             if jev:
                 payload["jev"] = jev
+            append_target, next_number = self._conflict_targets(book_id, chapter_number)
+            if append_target is not None:
+                payload["append_target"] = append_target
+                payload["append_target_title"] = ''
+                try:
+                    tgt = self.entity_manager.get_chapter(
+                        book_id=book_id, chapter_number=append_target)
+                    payload["append_target_title"] = (tgt or {}).get('title') or ''
+                except Exception:
+                    pass
+            if next_number is not None:
+                payload["next_number"] = next_number
             if error_message:
                 payload["error"] = error_message
                 error_message = None
@@ -559,6 +674,26 @@ class WebInterface(UserInterface):
             result = self.job_manager.wait_for_chapter_conflict()
             decision = (result or {}).get("decision", "cancel")
             new_num = (result or {}).get("new_chapter_number")
+
+            if decision == "merge" and isinstance(new_num, int) and new_num != chapter_number:
+                # Append to a different chapter (normally the one this run saved
+                # last -- see _conflict_targets). Move the incoming item there and
+                # merge against that chapter's text instead.
+                try:
+                    target = self.entity_manager.get_chapter(
+                        book_id=book_id, chapter_number=new_num) if new_num > 0 else None
+                except Exception as e:
+                    self.logger.error(f"Chapter conflict — get_chapter({new_num}) failed: {e}")
+                    target = None
+                if not target:
+                    error_message = f"Chapter {new_num} does not exist — nothing to append to."
+                    continue
+                self._move_incoming(new_num)
+                chapter_number = new_num
+                existing = target
+                existing_untranslated = target.get('untranslated') or []
+                if isinstance(existing_untranslated, str):
+                    existing_untranslated = existing_untranslated.splitlines()
 
             if decision == "merge":
                 # Combine both sides into ONE chapter at this number, no renumbering:
@@ -628,15 +763,7 @@ class WebInterface(UserInterface):
                     error_message = "Pick a different positive chapter number."
                     continue
                 # Move the incoming queue item to the new number and re-check.
-                self.chapter_number = new_num
-                try:
-                    self.job_manager.chapter_number = new_num
-                except Exception:
-                    pass
-                cqi = getattr(self, '_current_queue_item', None)
-                if isinstance(cqi, dict) and cqi.get('id') is not None:
-                    self.entity_manager.update_queue_chapter_number(cqi['id'], new_num)
-                    cqi['chapter_number'] = new_num
+                self._move_incoming(new_num)
                 chapter_number = new_num
                 continue
 
