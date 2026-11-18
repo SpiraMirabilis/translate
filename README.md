@@ -230,7 +230,7 @@ Codex receives only the T9 server and its research-tool allowlist through explic
 sandbox, and disabled shell/web/apps/plugins. MCP connections are made by the CLI
 outside the command sandbox; they do not require enabling sandbox network access.
 Codex CLI must support Streamable HTTP MCP, headers, and `enabled_tools` (validated
-locally with CLI 0.162.1). No CLI `--max-turns` equivalent exists: Codex gets a prompt
+with CLI 0.162.1 and 0.170.0). No CLI `--max-turns` equivalent exists: Codex gets a prompt
 budget of `max_turns - 1` lookups and the provider aborts/reaps a call that exceeds it.
 Code-mode models receive T9 as a direct tool namespace so lookups stay observable.
 An excess read may already be in flight when its JSON event arrives. This fails the
@@ -238,7 +238,7 @@ chunk through the usual retry path without saving partial output. Claude Code ke
 its existing native turn cap. Both providers exclude tool output and intermediate
 reasoning from translations.
 
-Codex CLI 0.162.1 supports `features.code_mode.direct_only_tool_namespaces`:
+Codex CLI 0.162.1 and later (re-checked on 0.170.0) support `features.code_mode.direct_only_tool_namespaces`:
 strict configuration parsing accepts `["mcp__t9"]` and rejects an invented sibling
 key. This matches the [official configuration reference](https://developers.openai.com/codex/config-reference).
 The CLI also requires `agents.enabled=false` to hide agent tools; the legacy

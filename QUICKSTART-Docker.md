@@ -124,7 +124,7 @@ as T9. It shares T9's network namespace and binds only to loopback, so the exist
 `http://127.0.0.1:8766/mcp` endpoint works for both CLI providers without publishing
 an unauthenticated MCP port. The separate public reader cannot reach that listener.
 Keep the default MCP URL, or restore it in Settings if it points at a host service.
-The image includes Codex 0.162.1; Claude Code still requires installing its CLI.
+The image includes Codex 0.170.0; Claude Code still requires installing its CLI.
 
 For a published release containing this feature, omit `--build`. Normal Compose
 upgrades also update the MCP service. Starting it does not enable research:

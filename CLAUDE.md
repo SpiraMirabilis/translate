@@ -878,7 +878,9 @@ are enforced by the server rather than remembered by the agent.
   Standard Docker Compose starts this same server in T9's network namespace on
   loopback; no MCP port is published and the URL is unchanged. Research use remains
   disabled by default through the existing global/per-book settings.
-  The Docker image pins the integration-tested Codex CLI 0.162.1.
+  The Docker image pins the integration-tested Codex CLI 0.170.0 (research path re-checked
+  2026-11-18 in the built image: strict `features.code_mode` parsing, direct `mcp__t9` tools,
+  no agent tools). 0.162.1 answered `model_not_found` for the GPT-6.2 models.
 - **Research scope** (`mcp_server/research_scope.py`): read-only HTTP requests require
   `X-T9-Caller: translation` plus positive `X-T9-Book` / `X-T9-Chapter` headers. A
   `ContextVar` holds the scope for one tool dispatch, reset in `finally`; no process-wide

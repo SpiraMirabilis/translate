@@ -61,7 +61,7 @@ _DISABLED_FEATURES = (
 
 _CONFIG_OVERRIDES = (
     'web_search="disabled"',
-    "agents.enabled=false",  # 0.162.1 agent-tool switch; also retain the legacy feature flag
+    "agents.enabled=false",  # agent-tool switch since 0.162.1 (still so in 0.170.0); also retain the legacy feature flag
     "include_permissions_instructions=false",
     "include_apps_instructions=false",
     "include_environment_context=false",
