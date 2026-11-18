@@ -473,10 +473,8 @@ class WebInterface(UserInterface):
         if self._incoming_is_filler(jev):
             return None
 
-        def norm(lines):
-            return {str(l).strip() for l in lines if str(l).strip()}
-        inc, ex = norm(incoming_lines), norm(existing_lines)
-        if inc and len(inc & ex) * 2 >= min(len(inc), len(ex) or 1):
+        from queue_sequence import is_repost
+        if is_repost(incoming_lines, existing_lines):
             return None
 
         _anchor, next_number = self._conflict_targets(book_id, chapter_number)

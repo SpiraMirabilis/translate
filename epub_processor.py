@@ -13,6 +13,8 @@ import ebooklib
 from ebooklib import epub
 import html2text
 from illustrations import IllustrationCollector, make_marker, store_chapter_illustrations, MARKER_RE
+from queue_sequence import (next_in_sequence, resequence_for_book,
+                            log_resequenced, renumber_metadata)
 
 
 # --- Chapter-number parsing -------------------------------------------------
@@ -214,19 +216,23 @@ class EPUBProcessor:
         self.logger.info(f"Extracted {len(toc)} TOC entries")
         return toc
     
-    def extract_chapters(self, book, toc=None):
+    def extract_chapters(self, book, toc=None, book_id=None):
         """
         Extract chapters from the book, using TOC if available.
         
         Args:
             book: epub.EpubBook object
             toc: Optional list of (title, href) tuples
+            book_id: the book these will be queued into. When given, a parsed
+                number the EPUB's own sequence contradicts is renumbered
+                against that book (``queue_sequence.resequence_batch``).
             
         Returns:
             list: List of dicts with chapter info {title, content, number}
         """
         chapters = []
         chapter_regex = re.compile(r'chapter|第.{1,3}[章节篇回]|卷', re.IGNORECASE)
+        prev_number = None
         
         # Check if we should use TOC or process all items
         if toc:
@@ -246,8 +252,11 @@ class EPUBProcessor:
                 if not content or (len(content) < 50 and "⟦IMG:" not in content):
                     continue
 
-                # Extract chapter number from title (Arabic or Chinese numerals)
-                chapter_number = chapter_number_from_title(title, default=i)
+                # Extract chapter number from title (Arabic or Chinese numerals);
+                # an unparseable title continues the previous chapter's number.
+                chapter_number = next_in_sequence(
+                    chapter_number_from_title(title), prev_number, i)
+                prev_number = chapter_number
 
                 chapters.append({
                     'title': title,
@@ -273,22 +282,28 @@ class EPUBProcessor:
 
                 # If title found, extract chapter number (Arabic or Chinese numerals)
                 if title:
-                    chapter_number = chapter_number_from_title(title, default=i)
+                    parsed = chapter_number_from_title(title)
                 else:
                     title = f"Chapter {i}"
-                    chapter_number = i
+                    parsed = None
                 
                 # Only treat as chapter if it resembles one
                 if len(content.split('\n')) > 5 and (
                     chapter_regex.search(title) or 
                     chapter_regex.search(content[:200])
                 ):
+                    chapter_number = next_in_sequence(parsed, prev_number, i)
+                    prev_number = chapter_number
                     chapters.append({
                         'title': title,
                         'content': content,
                         'number': chapter_number
                     })
         
+        # In reading order, before the sort below moves a mislabelled chapter
+        # away from the slot it actually occupies.
+        resequence_for_book(self.db_manager, book_id, chapters, self.logger)
+
         # Sort chapters by number
         chapters.sort(key=lambda x: x['number'])
         
@@ -526,7 +541,8 @@ class EPUBProcessor:
                 content=content_lines,
                 title=chapter['title'],
                 chapter_number=chapter['number'],
-                source=chapter.get('file_path', epub_path)
+                source=chapter.get('file_path', epub_path),
+                metadata=renumber_metadata(chapter),
             )
 
             if queue_item_id:
@@ -543,10 +559,12 @@ class EPUBProcessor:
             else:
                 self.logger.error(f"Failed to add chapter {chapter['number']} to queue")
 
+        log_resequenced(self.db_manager, book_id,
+                        [c for c in chapters if c.get('number') not in skip])
         self.logger.info(f"Added {added_count} chapters to queue")
         return added_count
 
-    def extract_chapter_numbers(self, epub_path):
+    def extract_chapter_numbers(self, epub_path, book_id=None):
         """Chapter numbers this EPUB would contribute, without queuing anything.
 
         Lets callers detect collisions with chapters already in the book/queue
@@ -557,7 +575,7 @@ class EPUBProcessor:
         if not book:
             return []
         toc = self.extract_toc(book)
-        chapters = self.extract_chapters(book, toc) if toc else self.extract_chapters(book)
+        chapters = self.extract_chapters(book, toc, book_id=book_id)
         return [c['number'] for c in chapters if isinstance(c.get('number'), int)]
 
     def process_epub(self, epub_path, book_id=None, skip_numbers=None):
@@ -585,11 +603,8 @@ class EPUBProcessor:
         toc = self.extract_toc(book)
         
         # Extract chapters
-        if toc:
-            chapters = self.extract_chapters(book, toc)
-        else:
-            chapters = self.extract_chapters(book)
-        
+        chapters = self.extract_chapters(book, toc or None, book_id=book_id)
+
         if not chapters:
             return False, 0, "No chapters found in EPUB"
         

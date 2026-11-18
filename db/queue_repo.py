@@ -33,8 +33,53 @@ def _pid_is_alive(pid):
     return True
 
 
+# An unnumbered item queued within this many seconds of the book's previous
+# item continues its sequence (previous number + 1). See _infer_sequence_number.
+QUEUE_SEQUENCE_WINDOW_SECONDS = 10
+
+
 class QueueRepo:
     """Translation queue management (translation_queue table)."""
+
+    def _infer_sequence_number(self, book_id, retranslation_reason):
+        """Chapter number for an item queued without one, or None.
+
+        An unnumbered item queued right behind a numbered one for the same book
+        is the next chapter of the same feed (pasting or scripting a run of
+        chapters), so it takes previous + 1. Deliberately not max(chapter) + 1:
+        re-queueing an earlier stretch (a rescrape) must continue *that*
+        stretch, not jump to the book's head.
+
+        Only when neither side is a retranslation — a retranslation of chN says
+        nothing about what comes after it — and the previous item was queued
+        within QUEUE_SEQUENCE_WINDOW_SECONDS. Otherwise None: the number stays
+        NULL and is settled at translation time as before.
+        """
+        if (retranslation_reason or "").strip():
+            return None
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT chapter_number, created_date, retranslation_reason "
+                "FROM queue WHERE book_id = ? ORDER BY id DESC LIMIT 1",
+                (book_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        prev_number, prev_created, prev_reason = row
+        if not isinstance(prev_number, int) or prev_number <= 0:
+            return None
+        if (prev_reason or "").strip():
+            return None
+        try:
+            prev_dt = datetime.datetime.fromisoformat(str(prev_created))
+        except (TypeError, ValueError):
+            return None
+        age = (datetime.datetime.now() - prev_dt).total_seconds()
+        if not 0 <= age <= QUEUE_SEQUENCE_WINDOW_SECONDS:
+            return None
+        return prev_number + 1
 
     def shift_queue_chapter_numbers(self, book_id, from_chapter, delta=1, exclude_queue_id=None):
         """Bulk-shift queue.chapter_number for one book.
@@ -94,6 +139,23 @@ class QueueRepo:
                 return False
         return True
 
+    def queued_source_lines(self, book_id, chapter_number):
+        """Content lines of the book's first queue row numbered
+        ``chapter_number`` (queued or claimed), or None."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT content FROM queue WHERE book_id = ? AND chapter_number = ? "
+                "ORDER BY id LIMIT 1", (book_id, chapter_number))
+            row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        try:
+            content = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            content = row[0]
+        return content.split("\n") if isinstance(content, str) else content
+
     # Queue management section
     def add_to_queue(self, book_id, content, title=None, chapter_number=None, source=None, metadata=None, priority=False, retranslation_reason=None):
         """
@@ -119,6 +181,15 @@ class QueueRepo:
             if not book:
                 self.logger.error(f"Book with ID {book_id} not found")
                 return None
+
+            if chapter_number is None:
+                inferred = self._infer_sequence_number(book_id, retranslation_reason)
+                if inferred is not None:
+                    chapter_number = inferred
+                    self.logger.info(
+                        f"Queue item for book {book_id} had no chapter number; "
+                        f"continuing the previous item's sequence as ch{inferred}"
+                    )
 
             # Per-book module source transforms (trad→simp, novel543 boilerplate strip, …)
             content = apply_source_ingest(book, content, self.config, self.logger, db=self,

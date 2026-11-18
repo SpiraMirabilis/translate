@@ -315,11 +315,26 @@ def upload_batch_to_queue(
         file_entries.sort(key=lambda e: e["filename"])
 
     # Assign the chapter number each file would take (detected, else sequential).
-    base_chapter = start_chapter or 1
-    for i, entry in enumerate(file_entries):
-        entry["assigned_number"] = (
-            entry["chapter_number"] if entry["chapter_number"] is not None else base_chapter + i
-        )
+    # An unnumbered file continues the previous file's number; only a first
+    # file without one starts at start_chapter.
+    prev_number = None
+    for entry in file_entries:
+        if entry["chapter_number"] is not None:
+            entry["assigned_number"] = entry["chapter_number"]
+        elif prev_number is not None:
+            entry["assigned_number"] = prev_number + 1
+        else:
+            entry["assigned_number"] = start_chapter or 1
+        prev_number = entry["assigned_number"]
+
+    # A parsed number the batch's own sequence contradicts (50, 51, "40", 53)
+    # is renumbered into its slot before the duplicate check below sees it.
+    from queue_sequence import resequence_for_book, log_resequenced, renumber_metadata
+    seq = [{"number": e["assigned_number"], "content": e["text"]} for e in file_entries]
+    resequence_for_book(_entity_manager, book_id, seq, _entity_manager.logger)
+    for entry, item in zip(file_entries, seq):
+        entry["assigned_number"] = item["number"]
+        entry["renumbered_from"] = item.get("renumbered_from")
 
     # Duplicate detection against chapters already in the book/queue.
     existing = _existing_chapter_numbers(book_id)
@@ -343,9 +358,14 @@ def upload_batch_to_queue(
             title=title,
             chapter_number=entry["assigned_number"],
             source=f"upload:{entry['filename']}",
+            metadata=renumber_metadata(entry),
         )
         if queue_id:
             added += 1
+
+    log_resequenced(_entity_manager, book_id,
+                    [{"number": e["assigned_number"], "renumbered_from": e["renumbered_from"]}
+                     for e in file_entries if e["assigned_number"] not in skip])
 
     # Batch boundary: emit any pending module-transform summaries as one line.
     module_activity.flush(book_id)
@@ -439,7 +459,7 @@ def upload_epub(
         skip_numbers = None
         if not create_book:
             existing = _existing_chapter_numbers(book_id)
-            conflicts = sorted(set(processor.extract_chapter_numbers(tmp_path)) & existing)
+            conflicts = sorted(set(processor.extract_chapter_numbers(tmp_path, book_id=book_id)) & existing)
             if conflicts and on_conflict == "ask":
                 return _conflict_response(book_id, conflicts)
             if on_conflict == "discard":
@@ -544,7 +564,7 @@ def upload_fb2(
         skip_numbers = None
         if not create_book:
             existing = _existing_chapter_numbers(book_id)
-            conflicts = sorted(set(processor.extract_chapter_numbers(tmp_path)) & existing)
+            conflicts = sorted(set(processor.extract_chapter_numbers(tmp_path, book_id=book_id)) & existing)
             if conflicts and on_conflict == "ask":
                 return _conflict_response(book_id, conflicts)
             if on_conflict == "discard":

@@ -674,6 +674,27 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
 - Batch processing of multiple files/chapters
 - Resume functionality for interrupted translations
 - Metadata preservation for book/chapter association
+- **Chapter number of an item queued without one** (2026-11-18) = its place in the run
+  it was queued in, never max + 1 (a rescrape of an earlier stretch must continue
+  *that* stretch). Batch importers (EPUB, FB2, directory, batch upload): an
+  unparseable title/filename takes the previous chapter's number + 1
+  (`queue_sequence.next_in_sequence`); only a batch's first item falls back to its
+  position (`start_chapter` for batch upload).
+  **A parsed number is questioned too** (`queue_sequence.resequence_batch`, same four
+  importers, run in reading order before any sort and before the on_conflict check):
+  in 50, 51, "40", 53 the "40" is queued as 52 when it has neighbours on both sides
+  leaving exactly that one slot, the slot is free (book and batch), "40" collides
+  with a saved/queued chapter or another batch item, it isn't a retranslation, and
+  its text is not a repost of what it collides with (`is_repost` — ≥ half the lines
+  shared, the same predicate the translation-time sequence slide uses; unreadable
+  existing text = no renumber). The row's metadata keeps `renumbered_from`, and one
+  activity line lists the moves. ⚠️ Never applied to the scraper — it queues the
+  source's own numbers on purpose and its backfill dedup is keyed on them.
+  Single items (`add_to_queue`, e.g. paste/single upload): previous item of the same book + 1 if it was queued within
+  `QUEUE_SEQUENCE_WINDOW_SECONDS` (10, `db/queue_repo.py`) and neither side carries a
+  `retranslation_reason`; otherwise NULL, settled at save time (the model's
+  `chapter`, else 1, and the pre-translation conflict check is skipped for NULL).
+  Tests: `tests/test_queue_sequence_number.py`.
 
 ### Entity notes and gender (model-updatable, versioned)
 An entity's `note` is standing guidance injected into every prompt that mentions the entity (`entities_inside_text` attaches it). The model may **write a note on any new entity** — as many per chapter as it judges useful — and may **update a note on an entity it already knows** whenever a fact in it has moved on: an age after a time skip, a cultivation realm after a breakthrough, a rank/sect/office after a promotion or defection, a shifted allegiance. A stale note is worse than none, because every later chapter is translated against it.

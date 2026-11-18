@@ -9,6 +9,9 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Tuple
 
+from queue_sequence import (next_in_sequence, resequence_for_book,
+                            log_resequenced, renumber_metadata)
+
 
 class DirectoryProcessor:
     """
@@ -59,6 +62,7 @@ class DirectoryProcessor:
         
         # Process each file and add to queue
         chapters = []
+        prev_number = None
         for i, (file_path, metadata) in enumerate(sorted_files, 1):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -68,8 +72,11 @@ class DirectoryProcessor:
                 filename = os.path.basename(file_path)
                 title = os.path.splitext(filename)[0]
                 
-                # Determine chapter number
-                chapter_number = metadata.get("chapter_number", i)
+                # Determine chapter number: the filename's, else the
+                # previous file's + 1 (position only for the first file).
+                chapter_number = next_in_sequence(
+                    metadata.get("chapter_number"), prev_number, i)
+                prev_number = chapter_number
                 
                 # Create chapter info
                 chapter = {
@@ -87,6 +94,7 @@ class DirectoryProcessor:
         
         # Add to queue
         if chapters:
+            resequence_for_book(self.db_manager, book_id, chapters, self.logger)
             num_added = self._add_chapters_to_queue(chapters, book_id)
             return True, num_added, f"Successfully added {num_added} files to queue"
         else:
@@ -175,7 +183,8 @@ class DirectoryProcessor:
                 content=content_lines,
                 title=chapter['title'],
                 chapter_number=chapter['number'],
-                source=chapter['file_path']
+                source=chapter['file_path'],
+                metadata=renumber_metadata(chapter),
             )
 
             if queue_item_id:
@@ -183,5 +192,6 @@ class DirectoryProcessor:
             else:
                 self.logger.error(f"Failed to add chapter {chapter['number']} to queue")
 
+        log_resequenced(self.db_manager, book_id, chapters)
         self.logger.info(f"Added {added_count} chapters to queue")
         return added_count

@@ -18,6 +18,8 @@ from lxml import etree
 # back to a sequential index for anything else (e.g. spelled-out Russian
 # numerals like 'Глава первая').
 from epub_processor import chapter_number_from_title
+from queue_sequence import (next_in_sequence, resequence_for_book,
+                            log_resequenced, renumber_metadata)
 from illustrations import IllustrationCollector, make_marker, store_chapter_illustrations
 
 
@@ -166,13 +168,17 @@ class FB2Processor:
 
     # -- chapter extraction ------------------------------------------------
 
-    def extract_chapters(self, root):
+    def extract_chapters(self, root, book_id=None):
         """Extract chapters from the parsed FB2 tree.
 
         FB2 bodies contain nested <section> elements; the natural mapping is one
         chapter per leaf-ish section. Sections that only contain sub-sections
         (e.g. a Volume wrapping Chapters) are recursed into rather than emitted,
         so the result is a flat chapter list regardless of nesting depth.
+
+        book_id: the book these will be queued into. When given, a parsed
+        number the file's own sequence contradicts is renumbered against that
+        book (``queue_sequence.resequence_batch``).
 
         Returns a list of dicts: {title, content, number}.
         """
@@ -203,6 +209,7 @@ class FB2Processor:
                 if text.strip():
                     raw_chapters.append((self._section_title(body), text))
 
+        prev_number = None
         for i, (title, content) in enumerate(raw_chapters, 1):
             content = content.strip()
             # skip empty / title-only sections, but keep image-only chapters
@@ -211,13 +218,18 @@ class FB2Processor:
 
             if not title:
                 title = f"Chapter {i}"
-            chapter_number = chapter_number_from_title(title, default=i)
+            chapter_number = next_in_sequence(
+                chapter_number_from_title(title), prev_number, i)
+            prev_number = chapter_number
 
             chapters.append({
                 "title": title,
                 "content": content,
                 "number": chapter_number,
             })
+
+        # In document order, before any re-sort below.
+        resequence_for_book(self.db_manager, book_id, chapters, self.logger)
 
         # Preserve document order; only re-sort when titles yield a clean,
         # unique numbering (otherwise the sequential fallback already matches
@@ -453,6 +465,7 @@ class FB2Processor:
                 title=chapter["title"],
                 chapter_number=chapter["number"],
                 source=chapter.get("file_path", fb2_path),
+                metadata=renumber_metadata(chapter),
             )
 
             if queue_item_id:
@@ -469,10 +482,12 @@ class FB2Processor:
             else:
                 self.logger.error(f"Failed to add chapter {chapter['number']} to queue")
 
+        log_resequenced(self.db_manager, book_id,
+                        [c for c in chapters if c.get("number") not in skip])
         self.logger.info(f"Added {added_count} chapters to queue")
         return added_count
 
-    def extract_chapter_numbers(self, fb2_path):
+    def extract_chapter_numbers(self, fb2_path, book_id=None):
         """Chapter numbers this FB2 would contribute, without queuing anything.
 
         Lets callers detect collisions with chapters already in the book/queue
@@ -481,7 +496,7 @@ class FB2Processor:
         root = self.load_fb2(fb2_path)
         if root is None:
             return []
-        chapters = self.extract_chapters(root)
+        chapters = self.extract_chapters(root, book_id=book_id)
         return [c["number"] for c in chapters if isinstance(c.get("number"), int)]
 
     def process_fb2(self, fb2_path, book_id=None, skip_numbers=None):
@@ -498,7 +513,7 @@ class FB2Processor:
         # Enable illustration extraction for this run.
         self._collector = IllustrationCollector()
 
-        chapters = self.extract_chapters(root)
+        chapters = self.extract_chapters(root, book_id=book_id)
         if not chapters:
             return False, 0, "No chapters found in FB2"
 
