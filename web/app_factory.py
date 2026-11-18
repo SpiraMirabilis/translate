@@ -131,7 +131,7 @@ def create_app(config=None, logger=None, public_only: bool = False) -> FastAPI:
         # broadcasts and logs through the hub directly.
         wordpress_api.init(config, entity_manager, job_hub)
         recommendations_admin.init(entity_manager)
-        error_reports_admin.init(entity_manager)
+        error_reports_admin.init(entity_manager, config)
         mail_ingest.init(entity_manager)
         reader_stats_api.init(entity_manager)
         comments_admin.init(entity_manager)

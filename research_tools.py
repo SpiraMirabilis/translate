@@ -92,6 +92,8 @@ def mcp_tools_section(tools: dict) -> str:
     number, so without this the model could not pass book_id."""
     book_id = tools.get("book_id")
     title = tools.get("book_title") or ""
+    # What the model is doing in this book; translation is the default caller.
+    task = tools.get("task") or "translating"
     ch = tools.get("chapter_number")
     where = f"chapter {ch}" if ch else "the current chapter"
     lookups = max(1, int(tools.get("max_turns") or 8) - 1)
@@ -105,7 +107,7 @@ def mcp_tools_section(tools: dict) -> str:
                       f'"{max(1, n - 20)}-{n - 1}")' if n > 1 else "")
     return (
         "\n\nRESEARCH TOOLS (read-only):\n"
-        f'You are translating book_id={book_id} ("{title}"), {where}. You have tools '
+        f'You are {task} book_id={book_id} ("{title}"), {where}. You have tools '
         "that look up this book's own records, and you are encouraged to use them "
         "whenever they would make the translation more accurate or more consistent "
         "with earlier chapters. Lookups are quick and cheap; a wrong or inconsistent "

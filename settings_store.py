@@ -106,6 +106,13 @@ SCHEMA = {
     "languagetool_url":        ("LANGUAGETOOL_URL",        "http://127.0.0.1:8081",   str),
     "grammar_language":        ("GRAMMAR_LANGUAGE",        "en-US",                   str),
     "polish_model":            ("POLISH_MODEL",            "claude:claude-sonnet-4-6", str),
+    # Reader error reports → Auto-fix button (web/services/report_autofix.py).
+    # Proposes edits/footnotes for one chapter; the admin previews and applies.
+    "error_report_fix_model":  ("ERROR_REPORT_FIX_MODEL",  "claudecode:claude-opus-5-5", str),
+    # Attach the read-only t9 MCP research server (t9-mcp-readonly.service) when
+    # the fix model can take tools (claudecode/codex): earlier chapters, the full
+    # glossary, prior renderings. Scoped to the report's book, up to its chapter.
+    "error_report_fix_research": ("ERROR_REPORT_FIX_RESEARCH", True,               bool),
     # Automated source scraping (scrape_worker.py / t9-scraper.service). The
     # scraper runs on a home server; its bearer token is a secret and lives in
     # .env as SCRAPER_TOKEN. Which books are scraped is per book (book_scrape

@@ -147,6 +147,17 @@
   // env: POLISH_MODEL
   "polish_model": "claude:claude-sonnet-4-6",
 
+  // Reader error reports → Auto-fix button (web/services/report_autofix.py).
+  // Proposes edits/footnotes for one chapter; the admin previews and applies.
+  // env: ERROR_REPORT_FIX_MODEL
+  "error_report_fix_model": "claudecode:claude-opus-5-5",
+
+  // Attach the read-only t9 MCP research server (t9-mcp-readonly.service) when
+  // the fix model can take tools (claudecode/codex): earlier chapters, the full
+  // glossary, prior renderings. Scoped to the report's book, up to its chapter.
+  // env: ERROR_REPORT_FIX_RESEARCH
+  "error_report_fix_research": true,
+
   // Automated source scraping (scrape_worker.py / t9-scraper.service). The
   // scraper runs on a home server; its bearer token is a secret and lives in
   // .env as SCRAPER_TOKEN. Which books are scraped is per book (book_scrape

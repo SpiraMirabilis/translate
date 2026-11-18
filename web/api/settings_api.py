@@ -212,6 +212,9 @@ def get_settings():
         "languagetool_url": getattr(_config, "languagetool_url", "http://127.0.0.1:8081"),
         "grammar_language": getattr(_config, "grammar_language", "en-US"),
         "polish_model": getattr(_config, "polish_model", "claude:claude-sonnet-4-6"),
+        "error_report_fix_model": settings_store.get("error_report_fix_model",
+                                                      "claudecode:claude-opus-5-5"),
+        "error_report_fix_research": settings_store.get("error_report_fix_research", True),
         # Jev: read from the store -- chapter_triage consults it live.
         "jev_model": settings_store.get("jev_model", "jev-latest"),
         "jev_chapter_conflict": settings_store.get("jev_chapter_conflict", "auto"),
@@ -286,6 +289,8 @@ class SettingsUpdate(BaseModel):
     languagetool_url: Optional[str] = None
     grammar_language: Optional[str] = None
     polish_model: Optional[str] = None
+    error_report_fix_model: Optional[str] = None
+    error_report_fix_research: Optional[bool] = None
     jev_model: Optional[str] = None
     jev_chapter_conflict: Optional[str] = None
     chapter_conflict_gap_slide: Optional[bool] = None
@@ -374,6 +379,11 @@ def update_settings(req: SettingsUpdate):
         updates["scrape_translation_model"] = updates["scrape_translation_model"].strip()
         if not scrape_sync.valid_model_spec(updates["scrape_translation_model"]):
             raise HTTPException(status_code=400, detail="scrape_translation_model must be provider:model")
+    if "error_report_fix_model" in updates:
+        import scrape_sync
+        updates["error_report_fix_model"] = updates["error_report_fix_model"].strip()
+        if not scrape_sync.valid_model_spec(updates["error_report_fix_model"]):
+            raise HTTPException(status_code=400, detail="error_report_fix_model must be provider:model")
     if updates:
         settings_store.update(updates)
     # Mirror onto the in-memory _config object so callers reading _config.X see

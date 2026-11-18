@@ -1183,6 +1183,18 @@ def _m035_book_scrape_cursor_unverified(conn, cursor, backend, logger):
                           "ALTER TABLE book_scrape ADD COLUMN cursor_unverified INTEGER NOT NULL DEFAULT 0")
 
 
+def _m036_error_reports_autofix(conn, cursor, backend, logger):
+    """Auto-fix proposals for reader error reports: the LLM's validated edit /
+    footnote proposal lives on the report row so it survives a reload or a
+    restart. `autofix_status` NULL = never run, else running|done|failed."""
+    big_text = "MEDIUMTEXT" if backend.name == "mysql" else "TEXT"
+    status_type = "VARCHAR(20)" if backend.name == "mysql" else "TEXT"
+    add_column_if_missing(conn, cursor, backend, "error_reports", "autofix_status",
+                          f"ALTER TABLE error_reports ADD COLUMN autofix_status {status_type}")
+    add_column_if_missing(conn, cursor, backend, "error_reports", "autofix_result",
+                          f"ALTER TABLE error_reports ADD COLUMN autofix_result {big_text}")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1219,6 +1231,7 @@ MIGRATIONS = [
     Migration(33, "nu_backlog", _m033_nu_backlog),
     Migration(34, "recommendations_book_id", _m034_recommendations_book_id),
     Migration(35, "book_scrape_cursor_unverified", _m035_book_scrape_cursor_unverified),
+    Migration(36, "error_reports_autofix", _m036_error_reports_autofix),
 ]
 
 

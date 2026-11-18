@@ -270,6 +270,9 @@ export const api = {
   countErrorReports: (status) => get(`/api/error-reports/count${status ? '?status=' + status : ''}`),
   updateErrorReport: (id, body) => put(`/api/error-reports/${id}`, body),
   deleteErrorReport: (id) => del(`/api/error-reports/${id}`),
+  getErrorReport:    (id) => get(`/api/error-reports/${id}`),
+  autofixErrorReport: (id) => post(`/api/error-reports/${id}/autofix`, {}),
+  applyErrorReportFix: (id, body) => post(`/api/error-reports/${id}/autofix/apply`, body),
 
   // Automated scraping (scrape_worker.py owns the lane; these queue work for it)
   scrapeOverview:     () => get('/api/scrape/overview'),

@@ -1,4 +1,5 @@
 import datetime
+import json
 
 
 class ErrorReportsRepo:
@@ -90,6 +91,35 @@ class ErrorReportsRepo:
         with self._conn() as conn:
             cursor = conn.cursor()
             cursor.execute(f'UPDATE error_reports SET {", ".join(parts)} WHERE id = ?', vals)
+
+    # ---- auto-fix proposals (web/services/report_autofix.py) ----------------
+
+    def set_error_report_autofix(self, report_id: int, status: str, result=None):
+        """Store an auto-fix run's state. `result` (dict) is JSON-encoded; None
+        leaves the previous proposal in place (a re-run keeps showing the old
+        one until the new one lands)."""
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            if result is None:
+                cursor.execute('UPDATE error_reports SET autofix_status = ? WHERE id = ?',
+                               (status, report_id))
+            else:
+                cursor.execute(
+                    'UPDATE error_reports SET autofix_status = ?, autofix_result = ? WHERE id = ?',
+                    (status, json.dumps(result, ensure_ascii=False), report_id))
+
+    def fail_stale_error_report_autofix(self) -> int:
+        """At startup any 'running' auto-fix is an orphan of a previous process."""
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE error_reports SET autofix_status = 'failed' "
+                    "WHERE autofix_status = 'running'")
+                return cursor.rowcount or 0
+        except Exception as e:  # pre-migration DB, or a read-only test double
+            self.logger.error(f"Error failing stale auto-fix runs: {e}")
+            return 0
 
     def delete_error_report(self, report_id: int):
         """Delete an error report."""

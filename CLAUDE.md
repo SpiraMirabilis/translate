@@ -345,6 +345,36 @@ the recommendations one — an abusive reporter has to be identifiable).
   nothing.
 - Covered by `tests/test_error_reports.py` (which stubs `turnstile.verify` — the
   suite must never make a live siteverify call).
+- **Auto-fix** (`web/services/report_autofix.py`, added 2026-11-18): the admin queue's
+  **Auto-fix** button sends the report, the whole chapter (numbered `S`/`T` lines), the
+  chapter glossary (gender, point-in-time notes) and the book's footnote conventions to
+  `error_report_fix_model` (default `claudecode:claude-opus-5-5`, Settings → Grammar &
+  Polish). The model answers `fix | no_change | unclear | needs_other_tool` plus
+  find/replace **edits** inside one numbered line (`\n` in `replace` splits a line; whole
+  line → `""` deletes it), new **footnotes** (`{line, anchor, source_term, body}`, the
+  火器 → "gunpowder weapons"[n] case), and **gender** corrections. **Nothing is written
+  until the admin applies**: the validated proposal is stored on the report
+  (`error_reports.autofix_status/autofix_result`, migration 36), previewed as word diffs,
+  and applied in whole or in part (`POST /api/error-reports/{id}/autofix[/apply]`).
+  Apply records the pre-fix text as a `manual` chapter revision, saves through
+  `save_chapter`, places footnotes with `add_footnote` + `rerender_chapter_footnotes`,
+  applies chosen genders via `set_entity_gender(author='human')`, and resolves the report
+  with the explanation as its notes. A term **rename** is never applied here (book-wide
+  `--substitute` job) — it comes back as `other_action` advice.
+  - The model sees **clean prose** (`strip_footnotes`); markers are re-rendered from the
+    table. An edit that would orphan an existing footnote (rewrites its anchor) is
+    rejected. ⚠️ A chapter whose rendered footnotes are **not in the table** (pre-migration
+    inline footnotes — 51 chapters existed on 2026-11-18, mostly books 42/54/56) is
+    edited with markers in place, keeps its definition block verbatim, and gets no new
+    footnotes; a chapter mixing tracked and untracked ones is refused (any save would
+    drop the untracked) — run `backfill_footnotes.py --book-id N`.
+  - The proposal is pinned to the chapter's `translation_date`; apply on a changed
+    chapter is a 409 ("re-run").
+  - **Research**: with a claudecode/codex model the read-only MCP server is attached
+    (`research_kwargs`, same shape as `TranslationEngine._mcp_tools_kwargs`, scoped to the
+    report's book up to its chapter, 10 turns; `mcp_tools_section` takes a `task` phrase).
+    Switch: `error_report_fix_research` (default on). Server down → runs without tools.
+  - Tests: `tests/test_report_autofix.py` (fake provider, no live model).
 
 ### Country geoblock (`web/services/geoblock.py`, added 2026-10-29)
 Settings → `geoblock_countries` (comma-separated ISO codes, blank = off; normalised to

@@ -429,6 +429,25 @@ export default function Settings() {
               />
               <p className="text-xs text-slate-500 mt-1">Used by the ✦ polish button for the LLM line-editing pass. A strong model (Sonnet/Opus) is worth it here.</p>
             </div>
+            <div>
+              <label className="label">Error report auto-fix model</label>
+              <input
+                className="input font-mono text-sm"
+                value={settings.error_report_fix_model || ''}
+                onChange={e => setSettings(s => ({ ...s, error_report_fix_model: e.target.value }))}
+                placeholder="e.g. claudecode:claude-opus-5-5"
+              />
+              <p className="text-xs text-slate-500 mt-1">Used by Auto-fix on the Error Reports page. It reads the whole chapter (source and translation) and proposes edits and footnotes for you to review — use the strongest model you have.</p>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.error_report_fix_research ?? true}
+                onChange={e => setSettings(s => ({ ...s, error_report_fix_research: e.target.checked }))}
+              />
+              Let auto-fix research the book (claudecode / codex models)
+            </label>
+            <p className="text-xs text-slate-500 -mt-2">Attaches the read-only research server: the full glossary, earlier chapters, earlier renderings. Lookups never go past the reported chapter. Other providers ignore this.</p>
             <div className="flex items-center gap-2">
               <button className="btn-primary flex items-center gap-1.5" onClick={handleSaveSettings}>
                 <Check size={13} />
