@@ -160,7 +160,7 @@ Chapters from the translation pipeline go live immediately by default; original-
 | DeepSeek | `ds` | deepseek-chat | `DEEPSEEK_KEY` |
 | OpenRouter | `or` | any model on OpenRouter | `OPENROUTER_KEY` |
 | Claude Code | `cc` | sonnet, opus | *(none — uses your local Claude Code login)* |
-| Codex | `cx` | gpt-6.1-sol, gpt-6-luna | *(none — uses your local Codex / ChatGPT login)* |
+| Codex | `cx` | gpt-6.2-sol, gpt-6.2-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna | *(none — uses your local Codex / ChatGPT login)* |
 
 Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `cc:sonnet`, `cx:gpt-6-luna`)
 
