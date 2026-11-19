@@ -107,6 +107,24 @@ so on) translates on a ChatGPT subscription. It needs a Codex login. Pick one:
 Check it with `docker compose exec t9 codex login status`, or with the
 **Test** button on the Codex card on the Settings page.
 
+## Using the Antigravity provider
+
+The image also includes Google's Antigravity CLI (`agy`), so the `agy` provider
+(`ag:gemini-4-neon-medium`, `ag:gemini-4-hydrogen-medium` and so on) translates
+on an Antigravity sign-in instead of a Gemini API key. agy keeps its sign-in
+under its home directory, which in the container is `data/agy`, so it survives
+rebuilds.
+
+Sign in once inside the container and follow the prompts:
+
+```bash
+docker compose exec -it t9 agy
+```
+
+Then check it with `docker compose exec t9 agy models`, which lists the models
+your account can use, or with the **Test** button on the agy card on the
+Settings page.
+
 ## Translation research tools
 
 The standard deployment automatically starts the existing read-only MCP server

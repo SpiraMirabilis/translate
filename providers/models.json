@@ -155,6 +155,28 @@
       ],
       "max_chars": 16000,
       "timeout": 1800
+    },
+    "agy": {
+      "class": "AgyProvider",
+      "default_model": "gemini-4-neon-medium",
+      "models": [
+        "gemini-4-neon-low",
+        "gemini-4-neon-medium",
+        "gemini-4-neon-high",
+        "gemini-4-neon-xhigh",
+        "gemini-4-hydrogen-low",
+        "gemini-4-hydrogen-medium",
+        "gemini-4-hydrogen-high",
+        "gemini-4-hydrogen-xhigh",
+        "gemini-4-argon-low",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-high",
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-high"
+      ],
+      "max_chars": 16000,
+      "timeout": 1800
     }
   },
   "aliases": {
@@ -167,6 +189,7 @@
     "gemini": "google",
     "or": "openrouter",
     "cc": "claudecode",
-    "cx": "codex"
+    "cx": "codex",
+    "ag": "agy"
   }
 }

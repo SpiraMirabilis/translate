@@ -13,6 +13,7 @@ from prompt_contract import (
     genre_example, response_contract_section, strip_legacy_contract,
 )
 from providers.base import (
+    ClassifiedProviderError,
     OverloadedError,
     looks_overloaded,
     SessionLimitError,
@@ -115,11 +116,8 @@ class TranslationEngine:
                 pass
         self._interruptible_sleep(wait, should_cancel)
 
-    # Fallback pause when a *weekly* limit notice carries no parseable reset
-    # time. The overload interval (5 min by default) is right for a session
-    # limit, which resets within hours, but a weekly reset can be days out —
-    # retrying that often would be hundreds of pointless calls.
-    UNPARSEABLE_WEEKLY_WAIT_SECONDS = 30 * 60
+    # Account and weekly quotas can take days to reset.
+    LONG_LIMIT_RETRY_WAIT_SECONDS = 30 * 60
 
     def _sleep_for_session_limit(self, reason, progress_callback=None, chunk_index=None, should_cancel=None):
         """Pause the queue until just past the usage-limit reset time named in
@@ -135,10 +133,13 @@ class TranslationEngine:
         chapter resumes from the same chunk once it resets. If the reset time
         can't be parsed we fall back to a fixed interval and loop again,
         re-reading the (still-current) limit notice next time."""
-        kind = limit_kind(reason) or "session"
+        kind = None
+        if isinstance(reason, SessionLimitError):
+            reason, kind = reason.reset_text, reason.kind
+        kind = limit_kind(reason) or kind or "session"
         wait = parse_session_reset_seconds(str(reason))
         if wait is None:
-            wait = (self.UNPARSEABLE_WEEKLY_WAIT_SECONDS if kind == "weekly"
+            wait = (self.LONG_LIMIT_RETRY_WAIT_SECONDS if kind in ("weekly", "account")
                     else self._overload_retry_wait_seconds())
             detail = "reset time unparseable, using fallback interval"
         else:
@@ -156,8 +157,6 @@ class TranslationEngine:
         if progress_callback:
             try:
                 progress_callback({
-                    # Phase name kept as-is (the UI and job_manager key on it);
-                    # "limit" says which of the two kinds it is.
                     "phase": "session_limit",
                     "limit": kind,
                     "wait_seconds": wait,
@@ -181,12 +180,14 @@ class TranslationEngine:
             except TranslationCancelled:
                 raise
             except SessionLimitError as e:
-                self._sleep_for_session_limit(e.reset_text, progress_callback, should_cancel=should_cancel)
+                self._sleep_for_session_limit(e, progress_callback, should_cancel=should_cancel)
                 continue
             except OverloadedError as e:
                 self._sleep_for_overload(e, progress_callback, should_cancel=should_cancel)
                 continue
             except Exception as e:
+                if isinstance(e, ClassifiedProviderError):
+                    raise
                 if looks_session_limited(str(e)):
                     self._sleep_for_session_limit(e, progress_callback, should_cancel=should_cancel)
                     continue
@@ -1784,9 +1785,10 @@ class TranslationEngine:
                         start_time = time.time()
                         call_start_time = time.time()
                         repetition_detected = False
-                        overloaded = False
+                        overloaded = None
                         session_limited = None
 
+                        response_stream = None
                         try:
                             response_stream = provider.chat_completion(
                                 messages=[
@@ -1864,45 +1866,54 @@ class TranslationEngine:
                             if looks_session_limited(response_text):
                                 session_limited = response_text
                             elif looks_overloaded(response_text):
-                                overloaded = True
+                                overloaded = "529 Overloaded"
 
                         except TranslationCancelled:
                             raise
                         except SessionLimitError as e:
-                            self._sleep_for_session_limit(e.reset_text, progress_callback, chunk_index, should_cancel=should_cancel)
-                            continue
+                            session_limited = e
                         except OverloadedError as e:
-                            self._sleep_for_overload(e, progress_callback, chunk_index, should_cancel=should_cancel)
-                            continue
+                            overloaded = e
                         except Exception as e:
-                            if looks_session_limited(str(e)):
-                                self._sleep_for_session_limit(e, progress_callback, chunk_index, should_cancel=should_cancel)
-                                continue
-                            if looks_overloaded(str(e), strict=False):
-                                self._sleep_for_overload(e, progress_callback, chunk_index, should_cancel=should_cancel)
-                                continue
-                            print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
-                            self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
-                            self.entity_manager.log_api_call(
-                                session_id=session_id, book_id=book_id, chapter_number=chapter_number,
-                                chunk_index=chunk_index, total_chunks=len(split_text),
-                                system_prompt=system_prompt, user_prompt=user_text, response_text="",
-                                model_name=model_name, provider=provider.provider_name,
-                                duration_ms=int((time.time() - call_start_time) * 1000),
-                                success=0, attempt=attempt,
-                            )
-                            if attempt < MAX_STREAM_RETRIES:
-                                connection_failed = True
-                                break
+                            classified = isinstance(e, ClassifiedProviderError)
+                            if not classified and looks_session_limited(str(e)):
+                                session_limited = e
+                            elif not classified and looks_overloaded(str(e), strict=False):
+                                overloaded = e
                             else:
+                                print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
+                                self.logger.error(f"Connection error during chunk {chunk_index} (attempt {attempt + 1}): {e}")
+                                self.entity_manager.log_api_call(
+                                    session_id=session_id, book_id=book_id, chapter_number=chapter_number,
+                                    chunk_index=chunk_index, total_chunks=len(split_text),
+                                    system_prompt=system_prompt, user_prompt=user_text, response_text="",
+                                    model_name=model_name, provider=provider.provider_name,
+                                    duration_ms=int((time.time() - call_start_time) * 1000),
+                                    success=0, attempt=attempt,
+                                )
+                                if attempt < MAX_STREAM_RETRIES:
+                                    connection_failed = True
+                                    break
                                 raise
+                        finally:
+                            # Stop the provider's process/connection before any
+                            # retry or cancellation propagates: an abandoned
+                            # stream (repetition break, cancel, error) must not
+                            # keep running beside its replacement. Closing a
+                            # stream that already finished is a no-op.
+                            _close = getattr(response_stream, "close", None)
+                            if callable(_close):
+                                try:
+                                    _close()
+                                except Exception as close_err:
+                                    self.logger.debug(f"Closing stream for chunk {chunk_index} failed: {close_err}")
 
-                        if session_limited:
+                        if session_limited is not None:
                             self._sleep_for_session_limit(session_limited, progress_callback, chunk_index, should_cancel=should_cancel)
                             continue
 
-                        if overloaded:
-                            self._sleep_for_overload("529 Overloaded", progress_callback, chunk_index, should_cancel=should_cancel)
+                        if overloaded is not None:
+                            self._sleep_for_overload(overloaded, progress_callback, chunk_index, should_cancel=should_cancel)
                             continue
 
                         break  # streamed without an overload / session limit

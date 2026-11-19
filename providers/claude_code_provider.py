@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -231,6 +232,7 @@ class ClaudeCodeProvider(ModelProvider):
                     stderr=subprocess.PIPE,
                     text=True,
                     bufsize=1,
+                    start_new_session=os.name == "posix",
                 )
                 # Drain stderr in a thread to prevent pipe-buffer deadlock.
                 # `--verbose` (required by stream-json) can emit substantial
@@ -322,6 +324,7 @@ class ClaudeCodeProvider(ModelProvider):
     def _stream_iter(self, proc: subprocess.Popen, sys_path: Optional[str],
                      stderr_buf: Optional[deque] = None, tools: bool = False):
         got_partial = False
+        got_result = False
         # With tools a call spans several assistant messages, and one that ends
         # in a tool call may open with prose ("Let me check the glossary") that
         # must not reach the JSON. So in tools mode a message's text is held
@@ -400,6 +403,7 @@ class ClaudeCodeProvider(ModelProvider):
                                 raise OverloadedError(text.strip()[:200])
                             yield _Chunk(text=text)
                 elif etype == "result":
+                    got_result = True
                     if held:  # tools mode: the answer's tail was still held
                         got_partial = True
                         yield _Chunk(text="".join(held))
@@ -417,14 +421,21 @@ class ClaudeCodeProvider(ModelProvider):
                         raise OverloadedError(str(result_text).strip()[:200])
                     yield _Chunk(done=True)
                     break
+        except BaseException:
+            if not got_result and proc.returncode is None:
+                # Kill the whole group before waiting can reap its leader.
+                self._signal_stream_process(proc, getattr(signal, "SIGKILL", signal.SIGTERM))
+            raise
         finally:
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
-            self._unlink(sys_path)
-            self._schedule_orphan_cleanup()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._signal_stream_process(proc, getattr(signal, "SIGKILL", signal.SIGTERM))
+                    proc.wait(timeout=2)
+            finally:
+                self._unlink(sys_path)
+                self._schedule_orphan_cleanup()
 
         if proc.returncode not in (0, None):
             stderr = "".join(stderr_buf) if stderr_buf else ""
@@ -435,6 +446,16 @@ class ClaudeCodeProvider(ModelProvider):
             raise RuntimeError(
                 f"claude CLI failed (exit {proc.returncode}): {stderr.strip()[-2000:]}"
             )
+
+    @staticmethod
+    def _signal_stream_process(proc: subprocess.Popen, sig: int) -> None:
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, sig)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            pass
 
     @staticmethod
     def _unlink(path: Optional[str]) -> None:
