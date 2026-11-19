@@ -40,11 +40,12 @@ class SessionLimitError(Exception):
     text is preserved so the engine can parse the reset clock time from it.
     """
 
-    def __init__(self, message, reset_text: Optional[str] = None):
+    def __init__(self, message, reset_text: Optional[str] = None, kind: Optional[str] = None):
         super().__init__(message)
         # Text containing the "resets <time>" clause to parse. Defaults to the
         # message itself when a separate copy isn't supplied.
         self.reset_text = reset_text if reset_text is not None else str(message)
+        self.kind = kind
 
 
 # The Claude Code CLI prints the usage-limit notice as plain text. Two kinds

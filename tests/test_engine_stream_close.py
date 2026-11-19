@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from providers.base import StreamingResponse
+from providers.base import OverloadedError, SessionLimitError, StreamingResponse
 from translation_engine import TranslationCancelled, TranslationEngine
 
 
@@ -133,3 +133,41 @@ def test_classified_provider_failure_is_not_treated_as_a_limit():
     finally:
         te.time.sleep = orig_sleep
     assert "parked the queue" not in str(exc.value)
+
+
+@pytest.mark.parametrize("error, sleeper", [
+    (OverloadedError("overloaded"), "_sleep_for_overload"),
+    (SessionLimitError("session limit"), "_sleep_for_session_limit"),
+    (RuntimeError("API Error: 529 Overloaded"), "_sleep_for_overload"),
+    (RuntimeError("You've hit your weekly limit"), "_sleep_for_session_limit"),
+])
+def test_stream_is_closed_before_waiting_on_a_limit(error, sleeper):
+    class LimitedStream:
+        closed = False
+
+        def __iter__(self):
+            raise error
+
+        def close(self):
+            self.closed = True
+
+    stream = LimitedStream()
+    provider = _Provider()
+    provider.chat_completion = lambda **kwargs: stream
+    eng = _engine(provider)
+
+    def wait(*args, **kwargs):
+        assert stream.closed
+        raise TranslationCancelled()
+
+    setattr(eng, sleeper, wait)
+    with pytest.raises(TranslationCancelled):
+        eng.translate_chapter(["你好"] * 3, book_id=1, chapter_number=1, stream=True)
+
+
+def test_unparseable_account_limit_uses_long_pause():
+    eng = _engine(_Provider())
+    waits = []
+    eng._interruptible_sleep = lambda seconds, should_cancel: waits.append(seconds)
+    eng._sleep_for_session_limit(SessionLimitError("daily quota exceeded", kind="account"))
+    assert waits == [30 * 60]

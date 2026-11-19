@@ -30,7 +30,7 @@ ARG AGY_VERSION=1.5.12-5281398513336320
 ARG AGY_SHA256_AMD64=0f0cb851cdc9fbedd50432570aa6ae9c4c398b9ea3f1e23e7776f707643c5b3e
 ARG AGY_SHA256_ARM64=594046de1b91561f7fe16476365e3843038ecca56f5f59af45cf9d3091e43bd4
 COPY docker/fetch_agy.py /fetch_agy.py
-RUN python /fetch_agy.py "$AGY_VERSION" "${TARGETARCH:-amd64}" \
+RUN python /fetch_agy.py "$AGY_VERSION" "${TARGETARCH:-$(dpkg --print-architecture)}" \
         "$AGY_SHA256_AMD64" "$AGY_SHA256_ARM64" /agy
 
 # ---- Runtime ----------------------------------------------------------------

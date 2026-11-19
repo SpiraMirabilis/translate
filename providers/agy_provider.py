@@ -60,6 +60,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Union
 
@@ -119,6 +120,11 @@ _ACCOUNT_LIMIT_RE = re.compile(
     r"\b(?:daily|weekly|monthly|individual|account|plan|subscription|usage)\s+(?:quota|limit)",
     re.IGNORECASE,
 )
+_QUOTA_METRIC_RE = re.compile(r'''\bquota metric\s+(?:'[^'\n]+'|"[^"\n]+"|[\w./-]+)''', re.IGNORECASE)
+_LONG_QUOTA_RE = re.compile(
+    r"(?<![a-z0-9])(?:per[ _-]+(?:day|week|month)|account|daily|weekly|monthly)(?![a-z0-9])",
+    re.IGNORECASE,
+)
 _EXHAUSTED_RE = re.compile(
     r"\b(?:reached|exceeded|exhausted|hit|used up|run out|ran out|no (?:more|remaining))\b",
     re.IGNORECASE,
@@ -129,7 +135,7 @@ _PAYG_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 _SHORT_TERM_RE = re.compile(
-    r"per[- ](?:minute|second|hour)|\brpm\b|\btpm\b|"
+    r"per[- _](?:minute|second|hour)|\brpm\b|\btpm\b|"
     r"\bin\s+\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|ms|minutes?|mins?)\b",
     re.IGNORECASE,
 )
@@ -145,10 +151,24 @@ _NOT_A_LIMIT_RE = re.compile(
 # unavailable for your account" is permanent and must fail, not loop.
 _TRANSIENT_RE = re.compile(
     r"overloaded|at capacity|high demand|rate[ -]limit|too many requests|\b429\b|"
-    r"resource[_ ]exhausted|quota exceeded|service unavailable|temporarily unavailable|try again later|"
+    r"service unavailable|temporarily unavailable|try again later|"
     r"deadline exceeded|\b50[0234]\b|internal (?:server )?error|connection (?:reset|refused)",
     re.IGNORECASE,
 )
+_STDERR_LOG_RE = re.compile(
+    r"^(?:\d{4}-\d\d-\d\d[ T]\S+\s+)?\[?(?:trace|debug|info|warn(?:ing)?)\b|"
+    r"^[IDW]\d{4}\s+\d\d:\d\d:\d\d|\bretrying in\s+\d",
+    re.IGNORECASE,
+)
+_TOOL_STEP_TYPES = {"tool_call", "tool_result", "run_command"}
+
+
+def _last_stderr_error(stderr_lines: deque, fallback: str) -> str:
+    for line in reversed(stderr_lines.copy()):
+        line = line.strip()
+        if line and not _STDERR_LOG_RE.search(line):
+            return line
+    return fallback
 
 
 def _real_home() -> str:
@@ -180,7 +200,6 @@ def _try_lock(fd: int, seconds: float = 2.0, shared: bool = False) -> bool:
     """flock (exclusive, or shared), waiting at most `seconds`: an interactive
     sign-in can hold the lock for minutes and a translation must never block
     on it."""
-    import time
     op = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
     deadline = time.monotonic() + seconds
     while True:
@@ -191,6 +210,9 @@ def _try_lock(fd: int, seconds: float = 2.0, shared: bool = False) -> bool:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.05)
+        except OSError as e:
+            logger.warning("agy: could not acquire the sign-in lock: %s", e)
+            return False
 
 
 def _open_lock(real_home: str) -> int:
@@ -200,7 +222,6 @@ def _open_lock(real_home: str) -> int:
     there."""
     path = os.path.join(real_home, _LOCK_FILE)
     flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
         created = True
@@ -317,7 +338,9 @@ class AgyProvider(ModelProvider):
                 os.close(lock_fd)
                 # A direct `agy` run (the sign-in, `agy models`) is writing the
                 # login; a copy taken now could be half a token.
-                raise OverloadedError("agy sign-in is in use by another agy run; retrying later")
+                raise ClassifiedProviderError(
+                    "Could not lock the agy sign-in. If another agy run is using it, "
+                    "finish that run and retry the translation.")
             try:
                 AgyProvider._copy_login(real_home, home, snapshot)
             finally:
@@ -478,8 +501,11 @@ class AgyProvider(ModelProvider):
             # Only signal: the reader sees EOF, notices the flag and cleans up
             # on its own thread. Closing pipes here would pull stdout out from
             # under a blocked read.
-            timed_out.set()
-            if proc is not None:
+            with lock:
+                # Polling would reap the leader before we signal its group.
+                if done["cleaned"] or proc.returncode is not None:
+                    return
+                timed_out.set()
                 self._signal_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM))
 
         def cleanup(graceful: bool = False):
@@ -494,7 +520,10 @@ class AgyProvider(ModelProvider):
                     self._stop_process(proc, graceful)
                     if err_thread is not None:
                         err_thread.join(timeout=2)  # stderr fully drained
-                    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                    pipes = [proc.stdin, proc.stdout]
+                    if err_thread is None or not err_thread.is_alive():
+                        pipes.append(proc.stderr)
+                    for pipe in pipes:
                         try:
                             if pipe:
                                 pipe.close()
@@ -503,6 +532,8 @@ class AgyProvider(ModelProvider):
             finally:
                 try:
                     self._publish_login(root, real_home, snapshot)
+                except Exception:
+                    logger.exception("agy: could not publish the refreshed sign-in")
                 finally:
                     shutil.rmtree(root, ignore_errors=True)
 
@@ -530,8 +561,8 @@ class AgyProvider(ModelProvider):
                 if timed_out.is_set():
                     raise ClassifiedProviderError(
                         f"agy CLI timed out after {self.timeout}s without reading the prompt")
-                self._raise_failure("".join(stderr_buf).strip()[-2000:]
-                                    or f"agy CLI exited {proc.returncode} before reading the prompt")
+                self._raise_failure(_last_stderr_error(
+                    stderr_buf, f"agy CLI exited {proc.returncode} before reading the prompt"))
 
             events = self._events(proc, stderr_buf, cleanup, timed_out, self.timeout)
             handed_off = True
@@ -553,6 +584,8 @@ class AgyProvider(ModelProvider):
         ("final", (full_text, usage)). Raises on a failed turn. Every exit
         path runs `cleanup` (graceful only after a successful result)."""
         final = None
+        failure = None
+        advertised_tools = ()
         try:
             for line in proc.stdout:
                 line = line.strip()
@@ -563,20 +596,28 @@ class AgyProvider(ModelProvider):
                 except json.JSONDecodeError:
                     continue
                 kind = ev.get("event")
-                if kind == "step_update":
+                if kind == "init":
+                    init = ev.get("init") or {}
+                    if init.get("agent") and init["agent"] != AGENT_NAME:
+                        raise ClassifiedProviderError(f"agy CLI selected an unexpected agent: {init['agent']}")
+                    # agy 1.5.12 advertises its registry even for agents with tools: [].
+                    advertised_tools = init.get("tools") or ()
+                elif kind == "step_update":
                     step = ev.get("step_update") or {}
                     stype = step.get("step_type")
+                    if (step.get("tool_name") or step.get("tool_info")
+                            or stype in _TOOL_STEP_TYPES or stype in advertised_tools):
+                        raise ClassifiedProviderError(f"agy CLI ran an unexpected tool step: {stype}")
                     if stype == "agent_response":
                         if step.get("text_delta"):
                             yield ("delta", step["text_delta"])
                     elif stype not in (None, "user_input"):
-                        # No tools are declared; anything else means the agent
-                        # definition didn't take and we'd be running an agent.
-                        raise ClassifiedProviderError(f"agy CLI ran an unexpected step: {stype}")
+                        logger.debug("agy: ignoring step type %s", stype)
                 elif kind == "result":
                     res = ev.get("result") or {}
                     if res.get("status") != "SUCCESS" or res.get("finished_reason"):
-                        self._raise_failure(res.get("error") or res.get("finished_reason") or "agy turn failed")
+                        failure = res
+                        break
                     final = (res.get("response") or "", res.get("usage") or {})
                     break
         finally:
@@ -584,8 +625,10 @@ class AgyProvider(ModelProvider):
         if final is None and timed_out is not None and timed_out.is_set():
             raise ClassifiedProviderError(f"agy CLI timed out after {timeout}s without a response")
         if final is None:
-            self._raise_failure("".join(stderr_buf).strip()[-2000:]
-                                or f"agy CLI exited {proc.returncode} without a response")
+            fallback = f"agy CLI exited {proc.returncode} without a response"
+            if failure is not None:
+                fallback = failure.get("finished_reason") or "agy turn failed"
+            self._raise_failure((failure or {}).get("error") or _last_stderr_error(stderr_buf, fallback))
         yield ("final", final)
 
     @staticmethod
@@ -602,24 +645,28 @@ class AgyProvider(ModelProvider):
     def _stop_process(cls, proc, graceful: bool):
         """Graceful: after a successful result agy may still be finishing
         (title generation, saving a refreshed sign-in), so give it a few
-        seconds. Otherwise (abort, timeout, error) signal at once. Either way
-        the whole process group is killed and the child is always reaped."""
-        def signal_group(sig):
-            cls._signal_group(proc, sig)
-
-        if proc.poll() is None and graceful:
+        seconds. Otherwise (abort, timeout, error) kill the group at once.
+        Once the leader is reaped its PID can be reused."""
+        if graceful and hasattr(os, "waitid") and proc.returncode is None:
+            # Observe exit without reaping, so even a surviving helper can be
+            # killed while the process group ID still belongs to this call.
+            deadline = time.monotonic() + 5
+            try:
+                while not os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+            except ChildProcessError:
+                proc.wait()
+                return
+        elif graceful:
             try:
                 proc.wait(timeout=5)
+                return
             except subprocess.TimeoutExpired:
                 pass
-        if proc.poll() is None:
-            signal_group(signal.SIGTERM)
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-        # Children may outlive the leader; the group is ours alone.
-        signal_group(getattr(signal, "SIGKILL", signal.SIGTERM))
+        if proc.returncode is None:
+            cls._signal_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM))
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -630,12 +677,14 @@ class AgyProvider(ModelProvider):
         message = message or ""
         if _NOT_A_LIMIT_RE.search(message):
             raise ClassifiedProviderError(f"agy CLI failed: {message.strip()[-2000:]}")
+        metric = _QUOTA_METRIC_RE.search(message)
+        account_quota = _ACCOUNT_LIMIT_RE.search(message) or (metric and _LONG_QUOTA_RE.search(metric[0]))
         account = looks_session_limited(message) or _PAYG_LIMIT_RE.search(message) or (
-            _ACCOUNT_LIMIT_RE.search(message) and _EXHAUSTED_RE.search(message))
+            account_quota and _EXHAUSTED_RE.search(message))
         short = _SHORT_TERM_RE.search(message)
         if account and not short:
             raise SessionLimitError(message.strip()[:300] or "agy account limit reached",
-                                    reset_text=message)
+                                    reset_text=message, kind="account")
         # A limit that lifts within seconds or minutes ("weekly limit … resets
         # in 30 seconds", "quota resets in 30 seconds") is a throttle: wait it
         # out instead of spending the chunk's retries.

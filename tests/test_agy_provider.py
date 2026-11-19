@@ -5,6 +5,7 @@ writes the per-call state a real agy writes (a conversation, a log, a cache)
 under its HOME, then prints the stream-json events `agy -p` would, chosen by
 FAKE_AGY_MODE.
 """
+import errno
 import json
 import os
 import stat
@@ -18,7 +19,7 @@ from providers.base import ClassifiedProviderError, OverloadedError, SessionLimi
 from providers.factory import ProviderFactory
 
 FAKE = r'''#!PYTHON
-import json, os, sys, time
+import json, os, subprocess, sys, time
 mode = os.environ.get("FAKE_AGY_MODE", "ok")
 if mode == "early":
     sys.stderr.write("agy: fatal: sign-in expired, run agy to sign in again\n")
@@ -26,6 +27,10 @@ if mode == "early":
 if mode == "noread":
     time.sleep(30)
 stdin = sys.stdin.read()
+if mode in ("helper_success", "helper_timeout"):
+    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    if mode == "helper_timeout":
+        sys.exit(0)
 home = os.environ["HOME"]
 agent_file = os.path.join(os.getcwd(), ".agents", "agents", "t9-translate.md")
 tok = os.path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
@@ -65,7 +70,8 @@ elif mode == "refresh_race":     # another call saves a newer login meanwhile
 def ev(**e):
     print(json.dumps(e), flush=True)
 
-ev(event="init", conversation_id="c1", init={"model": "m", "agent": "t9-translate", "tools": ["run_command"]})
+ev(event="init", conversation_id="c1", init={"model": "m", "agent": "t9-translate",
+   "tools": ["run_command", "future_tool"]})
 ev(event="step_update", step_update={"step_index": 0, "state": "DONE", "step_type": "user_input"})
 def delta(t):
     ev(event="step_update", step_update={"step_index": 1, "state": "ACTIVE",
@@ -75,6 +81,18 @@ def result(text, **extra):
        "usage": {"input_tokens": 120, "output_tokens": 30}}, **extra))
 if mode == "tool":
     ev(event="step_update", step_update={"step_index": 1, "state": "ACTIVE", "step_type": "run_command"})
+elif mode == "tool_metadata":
+    ev(event="step_update", step_update={"step_type": "future_step", "tool_name": "new_tool"})
+elif mode == "advertised_tool":
+    ev(event="step_update", step_update={"step_type": "future_tool"})
+elif mode in ("stderr", "result_error"):
+    sys.stderr.write("429 Too Many Requests, retrying in 30s\n"
+                     "model not found for your account\n"
+                     "INFO shutting down\n")
+    sys.stderr.flush()
+    if mode == "result_error":
+        ev(event="result", result={"status": "ERROR", "error": "429 Too Many Requests"})
+    sys.exit(1)
 elif mode.startswith("error:"):
     ev(event="result", result={"status": "ERROR", "response": "", "error": mode[6:], "finished_reason": "error"})
 elif mode == "partial":
@@ -87,6 +105,7 @@ elif mode == "slow":
     delta('{"content":')
     time.sleep(60)
 else:
+    ev(event="step_update", step_update={"step_type": "planner_response", "thinking_delta": "thinking"})
     for part in ['{"content":', '["Translation"]}']:
         delta(part)
     result('{"content":["Translation"]}')
@@ -272,10 +291,25 @@ def test_closing_an_unread_stream_cleans_up(fake_agy, monkeypatch):
     assert after <= before
 
 
-def test_unexpected_tool_step_is_refused(fake_agy, monkeypatch):
+@pytest.mark.parametrize("mode", ["tool", "tool_metadata", "advertised_tool"])
+def test_unexpected_tools_are_refused(fake_agy, monkeypatch, mode):
     bin_path, _, _ = fake_agy
-    monkeypatch.setenv("FAKE_AGY_MODE", "tool")
-    with pytest.raises(RuntimeError, match="unexpected step"):
+    monkeypatch.setenv("FAKE_AGY_MODE", mode)
+    with pytest.raises(ClassifiedProviderError, match="tool"):
+        AgyProvider(bin_path=bin_path).chat_completion(MESSAGES, model="m")
+
+
+def test_final_stderr_line_decides_classification(fake_agy, monkeypatch):
+    bin_path, _, _ = fake_agy
+    monkeypatch.setenv("FAKE_AGY_MODE", "stderr")
+    with pytest.raises(ClassifiedProviderError, match="model not found for your account"):
+        AgyProvider(bin_path=bin_path).chat_completion(MESSAGES, model="m")
+
+
+def test_result_error_wins_over_stderr(fake_agy, monkeypatch):
+    bin_path, _, _ = fake_agy
+    monkeypatch.setenv("FAKE_AGY_MODE", "result_error")
+    with pytest.raises(OverloadedError, match="429 Too Many Requests"):
         AgyProvider(bin_path=bin_path).chat_completion(MESSAGES, model="m")
 
 
@@ -285,7 +319,13 @@ def test_unexpected_tool_step_is_refused(fake_agy, monkeypatch):
     ("Your prepaid balance is too low to continue", SessionLimitError),
     ("429 Too Many Requests: rate limit exceeded", OverloadedError),
     ("429 Too Many Requests: per-minute request quota exceeded", OverloadedError),
-    ("RESOURCE_EXHAUSTED: quota exceeded", OverloadedError),
+    ("RESOURCE_EXHAUSTED: quota exceeded", ClassifiedProviderError),
+    ("RESOURCE_EXHAUSTED: Quota exceeded for quota metric generate_requests_per_model_per_day", SessionLimitError),
+    ("RESOURCE_EXHAUSTED: Quota exceeded for quota metric generate_requests_per_month", SessionLimitError),
+    ("RESOURCE_EXHAUSTED: Quota exceeded for quota metric requests_per_account", SessionLimitError),
+    ("RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Generate requests per day'", SessionLimitError),
+    ("RESOURCE_EXHAUSTED: Quota exceeded for quota metric requests_per_minute", OverloadedError),
+    ("RESOURCE_EXHAUSTED: Quota exceeded for quota metric request_size for your account", ClassifiedProviderError),
     ("You have exhausted your daily quota", SessionLimitError),
     ("write failed: disk quota exceeded", ClassifiedProviderError),
     ("429: quota resets in 30 seconds", OverloadedError),
@@ -353,6 +393,53 @@ def test_refresh_is_not_saved_while_the_sign_in_is_locked(fake_agy, monkeypatch)
     assert _token(real).read_text() == '{"t": 1}'
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX flock and signals")
+def test_sign_in_supervisor_keeps_lock_until_cli_exits(tmp_path):
+    import fcntl
+    from pathlib import Path
+    import select
+    import signal
+    import subprocess
+
+    supervisor = Path(__file__).resolve().parents[1] / "docker" / "agy-lock.py"
+    lock = tmp_path / "login.lock"
+    cli = """
+import signal, subprocess, sys, time
+
+def stop(*_):
+    print("stopping", flush=True)
+    sys.stdin.readline()
+    raise SystemExit(23)
+
+signal.signal(signal.SIGTERM, stop)
+helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+print(helper.pid, flush=True)
+time.sleep(30)
+"""
+    with subprocess.Popen([sys.executable, str(supervisor), str(lock), sys.executable, "-c", cli],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                          start_new_session=True) as proc:
+        try:
+            assert select.select([proc.stdout], [], [], 5)[0]
+            helper = int(proc.stdout.readline())
+            proc.terminate()
+            assert select.select([proc.stdout], [], [], 5)[0]
+            assert proc.stdout.readline().strip() == "stopping"
+            with lock.open() as candidate:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                proc.stdin.write("finish\n")
+                proc.stdin.flush()
+                assert proc.wait(timeout=5) == 23
+                os.kill(helper, 0)
+                fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def test_root_publish_keeps_the_sign_in_owner(tmp_path, monkeypatch):
     """Run as root (docker compose exec t9 python …), a saved token and the
     lock file must belong to the sign-in's owner, who runs agy."""
@@ -375,18 +462,75 @@ def test_root_publish_keeps_the_sign_in_owner(tmp_path, monkeypatch):
 
 def test_call_waits_out_a_sign_in_in_progress(fake_agy, monkeypatch):
     """A direct `agy` run holds the lock exclusively while it rewrites the
-    token; a call must not copy a half-written one. It reports a retryable
-    busy error instead, and never starts agy."""
+    token. A call times out acquiring the lock without copying it or starting agy."""
     import fcntl
     bin_path, log, real = fake_agy
     lock = real / ".gemini" / "antigravity-cli" / ".t9-login.lock"
     with open(lock, "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
         t0 = time.time()
-        with pytest.raises(OverloadedError, match="sign-in is in use"):
+        with pytest.raises(ClassifiedProviderError, match="Could not lock the agy sign-in"):
             AgyProvider(bin_path=bin_path).chat_completion(MESSAGES, model="m")
         assert time.time() - t0 < 10
     assert not os.path.exists(log)
+
+
+def test_refresh_lock_failure_preserves_translation(fake_agy, monkeypatch):
+    import fcntl
+    bin_path, _, real = fake_agy
+    monkeypatch.setenv("FAKE_AGY_MODE", "refresh")
+    flock = fcntl.flock
+
+    def fail_exclusive(fd, op):
+        if op & fcntl.LOCK_EX:
+            raise OSError(errno.ENOLCK, "No locks available")
+        flock(fd, op)
+
+    monkeypatch.setattr(fcntl, "flock", fail_exclusive)
+    provider = AgyProvider(bin_path=bin_path)
+    response = provider.chat_completion(MESSAGES, model="m")
+    assert provider.get_response_content(response) == '{"content":["Translation"]}'
+    assert _token(real).read_text() == '{"t": 1}'
+
+
+def test_publish_skips_missing_sign_in_directory(tmp_path, monkeypatch):
+    import providers.agy_provider as ap
+    real, root = tmp_path / "real", tmp_path / "call"
+    token = root / "home" / ap._TOKEN_FILE
+    token.parent.mkdir(parents=True)
+    token.write_text('{"t": 2}')
+    monkeypatch.setattr(ap.os, "geteuid", lambda: 0)
+    AgyProvider._publish_login(str(root), str(real), {})
+    assert not real.exists()
+
+
+def test_cleanup_does_not_signal_reaped_leader(monkeypatch):
+    from unittest.mock import Mock
+    proc = Mock()
+    proc.returncode = 0
+    signal_group = Mock()
+    monkeypatch.setattr(AgyProvider, "_signal_group", signal_group)
+    AgyProvider._stop_process(proc, graceful=False)
+    signal_group.assert_not_called()
+
+
+@pytest.mark.skipif(not hasattr(os, "waitid"), reason="requires POSIX waitid")
+def test_success_cleans_up_helpers_after_leader_exits(fake_agy, monkeypatch):
+    bin_path, _, _ = fake_agy
+    monkeypatch.setenv("FAKE_AGY_MODE", "helper_success")
+    started = time.monotonic()
+    AgyProvider(bin_path=bin_path).chat_completion(MESSAGES, model="m")
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+def test_timeout_cleans_up_helpers_after_leader_exits(fake_agy, monkeypatch):
+    bin_path, _, _ = fake_agy
+    monkeypatch.setenv("FAKE_AGY_MODE", "helper_timeout")
+    started = time.monotonic()
+    with pytest.raises(ClassifiedProviderError, match="timed out after 1s"):
+        AgyProvider(bin_path=bin_path, timeout=1).chat_completion(MESSAGES, model="m")
+    assert time.monotonic() - started < 5
 
 
 def test_symlinked_lock_is_never_followed(fake_agy, tmp_path, monkeypatch):

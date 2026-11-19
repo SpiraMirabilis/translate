@@ -50,14 +50,8 @@ if [ "$(id -u)" = "0" ]; then
     fi
 fi
 
-# A direct run (not a T9 call) holds the sign-in lock for its whole life:
-# the lock is taken on fd 9, which agy itself inherits, so it lasts exactly as
-# long as agy (and anything it starts) — no supervisor whose death drops it.
-if [ -z "$AGY_CALL_HOME" ] && command -v flock >/dev/null 2>&1 \
-        && $DROP mkdir -p "$(dirname "$LOCK")" && $DROP touch "$LOCK" \
-        && [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
-    exec 9<"$LOCK"
-    flock 9
-    exec $DROP env HOME="$RUN_HOME" "$BIN" "$@"
+if [ -z "$AGY_CALL_HOME" ]; then
+    $DROP mkdir -p "$(dirname "$LOCK")" || exit 1
+    exec $DROP env HOME="$RUN_HOME" python /app/docker/agy-lock.py "$LOCK" "$BIN" "$@"
 fi
 exec $DROP env HOME="$RUN_HOME" "$BIN" "$@"
