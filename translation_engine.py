@@ -13,6 +13,7 @@ from prompt_contract import (
     genre_example, response_contract_section, strip_legacy_contract,
 )
 from providers.base import (
+    ClassifiedProviderError,
     OverloadedError,
     looks_overloaded,
     SessionLimitError,
@@ -187,6 +188,8 @@ class TranslationEngine:
                 self._sleep_for_overload(e, progress_callback, should_cancel=should_cancel)
                 continue
             except Exception as e:
+                if isinstance(e, ClassifiedProviderError):
+                    raise
                 if looks_session_limited(str(e)):
                     self._sleep_for_session_limit(e, progress_callback, should_cancel=should_cancel)
                     continue
@@ -1787,6 +1790,7 @@ class TranslationEngine:
                         overloaded = False
                         session_limited = None
 
+                        response_stream = None
                         try:
                             response_stream = provider.chat_completion(
                                 messages=[
@@ -1875,10 +1879,11 @@ class TranslationEngine:
                             self._sleep_for_overload(e, progress_callback, chunk_index, should_cancel=should_cancel)
                             continue
                         except Exception as e:
-                            if looks_session_limited(str(e)):
+                            classified = isinstance(e, ClassifiedProviderError)
+                            if not classified and looks_session_limited(str(e)):
                                 self._sleep_for_session_limit(e, progress_callback, chunk_index, should_cancel=should_cancel)
                                 continue
-                            if looks_overloaded(str(e), strict=False):
+                            if not classified and looks_overloaded(str(e), strict=False):
                                 self._sleep_for_overload(e, progress_callback, chunk_index, should_cancel=should_cancel)
                                 continue
                             print(f"\n⚠️  Connection error on chunk {chunk_index}: {e}")
@@ -1896,6 +1901,18 @@ class TranslationEngine:
                                 break
                             else:
                                 raise
+                        finally:
+                            # Stop the provider's process/connection before any
+                            # retry or cancellation propagates: an abandoned
+                            # stream (repetition break, cancel, error) must not
+                            # keep running beside its replacement. Closing a
+                            # stream that already finished is a no-op.
+                            _close = getattr(response_stream, "close", None)
+                            if callable(_close):
+                                try:
+                                    _close()
+                                except Exception as close_err:
+                                    self.logger.debug(f"Closing stream for chunk {chunk_index} failed: {close_err}")
 
                         if session_limited:
                             self._sleep_for_session_limit(session_limited, progress_callback, chunk_index, should_cancel=should_cancel)

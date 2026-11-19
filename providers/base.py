@@ -18,6 +18,14 @@ class OverloadedError(Exception):
     """
 
 
+class ClassifiedProviderError(RuntimeError):
+    """A plain failure the provider has already classified as neither a
+    usage limit nor overload. The engine must not re-sniff its text with
+    looks_session_limited / looks_overloaded: "you hit your weekly limit,
+    resets in 30 seconds" is a short throttle the provider has already
+    weighed, and re-matching it would park the queue."""
+
+
 class SessionLimitError(Exception):
     """Raised when a subscription CLI (Claude Code, Codex) reports the user's
     usage limit is exhausted — Claude Code's session limit ("You've hit your
@@ -263,6 +271,18 @@ class StreamingResponse:
     
     def __next__(self):
         return next(self.response_iterator)
+
+    def close(self):
+        """Release what the stream holds — a CLI provider's generator owns its
+        subprocess and reaps it in a `finally`, which only runs on close (or
+        exhaustion). The engine closes every stream it abandons. Idempotent;
+        closing a finished stream is a no-op."""
+        close = getattr(self.response_iterator, "close", None)
+        if callable(close):
+            try:
+                close()
+            except ValueError:
+                pass  # generator still executing in another thread; it cleans up itself
 
 
 class ModelProvider(ABC):

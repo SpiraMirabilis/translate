@@ -10,7 +10,7 @@ SUBDIRS="covers illustrations epub_cache output logs sitemaps scraper"
 
 if [ "$(id -u)" = "0" ]; then
     mkdir -p "$DATA"
-    for d in $SUBDIRS codex; do mkdir -p "$DATA/$d"; done
+    for d in $SUBDIRS codex agy; do mkdir -p "$DATA/$d"; done
 
     # Run as the host user who owns the mounted state, so files in ./data and
     # a bind-mounted ~/.codex stay theirs: PUID/PGID if given, else the owner
@@ -30,16 +30,28 @@ if [ "$(id -u)" = "0" ]; then
 
     # Take over only what is root-owned (i.e. just created); never re-own an
     # existing directory, which may be the user's own ~/.codex.
-    for p in "$DATA" $(for d in $SUBDIRS codex; do echo "$DATA/$d"; done); do
+    for p in "$DATA" $(for d in $SUBDIRS codex agy; do echo "$DATA/$d"; done); do
+        # A symlink's stat is the link's own, but chown would change its target.
+        [ -L "$p" ] && continue
         [ "$(owner %u "$p")" = "0" ] && chown "$uid:$gid" "$p"
     done
+    # Login dirs hold credentials: keep them private to the app user. Never
+    # through a symlink (chmod as root would follow it). codex is left as it
+    # was: a mounted ~/.codex arrives as a real directory.
     [ "$(owner %a "$DATA/codex")" = "700" ] || [ "$(owner %u "$DATA/codex")" != "$uid" ] || chmod 700 "$DATA/codex"
+    if [ ! -L "$DATA/agy" ]; then
+        [ "$(owner %a "$DATA/agy")" = "700" ] || [ "$(owner %u "$DATA/agy")" != "$uid" ] || chmod 700 "$DATA/agy"
+    fi
     if [ ! -e "$DATA/.env" ]; then
         touch "$DATA/.env" && chown "$uid:$gid" "$DATA/.env" && chmod 600 "$DATA/.env"
     fi
     if [ "$(owner %u "$DATA/codex")" != "$uid" ]; then
         echo "WARNING: $DATA/codex is owned by uid $(owner %u "$DATA/codex") but T9 runs as uid $uid;" >&2
         echo "         the codex provider won't be able to use the login there." >&2
+    fi
+    if [ "$(owner %u "$DATA/agy")" != "$uid" ]; then
+        echo "WARNING: $DATA/agy is owned by uid $(owner %u "$DATA/agy") but T9 runs as uid $uid;" >&2
+        echo "         the agy provider won't be able to use the sign-in there (fix: chown -R $uid:$gid data/agy)." >&2
     fi
 
     # The uid may have no passwd entry, so HOME can't come from one.
