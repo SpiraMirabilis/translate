@@ -258,18 +258,28 @@ def upload_file_to_queue(
     file: UploadFile = File(...),
     book_id: int = Form(...),
     chapter_number: Optional[int] = Form(None),
+    on_conflict: str = Form("ask"),
 ):
     # Sync handler on purpose: FastAPI runs it in a threadpool, so parsing and
     # DB work can't starve the event loop (and the /api/health watchdog).
     book = _entity_manager.get_book(book_id=book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found.")
+    on_conflict = _norm_on_conflict(on_conflict)
 
     content = file.file.read()
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         text = content.decode("gbk", errors="replace")
+
+    # A flat-text novel (several 第N章 / "001 标题" headers) is split into one
+    # queue item per chapter, the same parser queue_flat_text.py uses.
+    from queue_flat_text import parse_chapters_text
+    chapters, _volumes = parse_chapters_text(text)
+    if len(chapters) > 1:
+        return _queue_flat_chapters(book_id, file.filename, chapters,
+                                    chapter_number, on_conflict)
 
     lines = text.splitlines()
     queue_id = _entity_manager.add_to_queue(
@@ -284,6 +294,50 @@ def upload_file_to_queue(
     # Single-item boundary: log any module transform now, not on the timer.
     module_activity.flush(book_id)
     return {"queue_id": queue_id, "filename": file.filename, "count": _entity_manager.get_queue_count()}
+
+
+def _queue_flat_chapters(book_id, filename, chapters, start, on_conflict):
+    """Queue the chapters of one flat-text upload.
+
+    Numbered sequentially in file order (queue_flat_text's default — the
+    source's own numbers repeat across volumes and skip now and then), starting
+    at the form's chapter number, else at the file's first source number.
+    """
+    first = start or chapters[0]["src_number"] or 1
+    for n, ch in enumerate(chapters):
+        ch["number"] = first + n
+
+    existing = _existing_chapter_numbers(book_id)
+    conflicts = {ch["number"] for ch in chapters} & existing
+    if conflicts and on_conflict == "ask":
+        return _conflict_response(book_id, conflicts)
+    skip = conflicts if on_conflict == "discard" else set()
+
+    added = skipped = 0
+    for ch in chapters:
+        if ch["number"] in skip:
+            skipped += 1
+            continue
+        queue_id = _entity_manager.add_to_queue(
+            book_id=book_id,
+            content=ch["content_lines"],
+            # A header with no title text keeps the whole header.
+            title=ch["title"] or ch["raw_header"],
+            chapter_number=ch["number"],
+            source=f"upload:{filename}",
+        )
+        if queue_id:
+            added += 1
+
+    module_activity.flush(book_id)
+    return {
+        "status": "ok",
+        "filename": filename,
+        "chapters_added": added,
+        "skipped": skipped,
+        "total_chapters": len(chapters),
+        "count": _entity_manager.get_queue_count(),
+    }
 
 
 # ------------------------------------------------------------------

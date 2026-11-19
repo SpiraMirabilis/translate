@@ -698,11 +698,13 @@ function UploadModal({ books, onClose, onDone }) {
       fd.append('on_conflict', onConflict)
       return api.uploadBatch(fd)
     }
-    // Single text file: no duplicate prompt.
+    // Single text file. A flat-text novel (several chapter headers) is split
+    // server-side and can hit the duplicate prompt; a lone chapter never does.
     const fd = new FormData()
     fd.append('file', files[0])
     fd.append('book_id', bookId)
     if (chapterNum) fd.append('chapter_number', chapterNum)
+    fd.append('on_conflict', onConflict)
     return api.uploadToQueue(fd)
   }
 
@@ -780,9 +782,14 @@ function UploadModal({ books, onClose, onDone }) {
               <input className="input" type="number" min="1" value={chapterNum} onChange={e => setChapterNum(e.target.value)}
                 placeholder={isBatch ? 'Auto-detect from filenames' : ''}
               />
-              {isBatch && (
+              {isBatch ? (
                 <p className="text-xs text-slate-500 mt-1">
                   Chapter numbers are extracted from filenames when possible (e.g. chapter_001.txt, 003.txt)
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500 mt-1">
+                  A file with several chapter headers (第N章 …, or 001 …) is split into chapters,
+                  numbered in order from this number (default: the first header's).
                 </p>
               )}
             </div>

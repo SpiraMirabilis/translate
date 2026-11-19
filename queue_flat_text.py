@@ -5,6 +5,14 @@ Chapters are delimited by a header line matching ``^第<number>章 <title>``.
 The number may be Arabic (``第4章  漏财引祸``) or Chinese (``第八十一章  无限延伸的洞穴``);
 some raws mix both styles inside a single book.
 
+A file with **no** 第…章 headers falls back to bare numbered headers
+(``001 夜之城？`` / ``001: 标题`` / ``001：标题``): digits at the very start of an
+unindented line, then whitespace or a colon. Those are only accepted while they
+count upward (each one above the last and at most NUMERIC_MAX_STEP past it, or a
+restart at 1), so a body line that happens to open with a year can't split a
+chapter. The prose in these raws is indented with ideographic spaces; a header
+is not.
+
 Volumes
 -------
 Many raws are split into volumes (``第二卷 云游四海``) and **restart chapter
@@ -61,6 +69,12 @@ _NUM_CHARS = "0-9０-９〇零一二三四五六七八九十百千两"
 # Tolerate leading whitespace (incl. the ideographic space) — some raws indent.
 CHAPTER_RE = re.compile(rf"^[\s　]*第\s*([{_NUM_CHARS}]{{1,12}})\s*章\s*(.*?)\s*$")
 VOLUME_RE = re.compile(rf"^[\s　]*第\s*([{_NUM_CHARS}]{{1,12}})\s*卷\s*(.*?)\s*$")
+
+# Bare numbered header: 001 标题 / 001: 标题 / 001：标题. Column 0 only.
+NUMERIC_CHAPTER_RE = re.compile(r"^([0-9０-９]{1,4})(?:[ \t　]+|\s*[:：]\s*)(.*?)\s*$")
+# The next numbered header may skip at most this many numbers (raws do skip
+# one now and then — nightcity.txt goes 082 -> 084).
+NUMERIC_MAX_STEP = 10
 
 # An *indented* line is prose unless the 章/卷 is followed by whitespace or
 # ends the line: body text opens paragraphs with 第一章的名字…, 第二章3k字送上~
@@ -137,19 +151,41 @@ def parse_number(s):
 
 
 def parse_chapters(path):
+    """Parse a flat-text file; see parse_chapters_text."""
+    with open(path, "r", encoding="utf-8") as f:
+        return parse_chapters_text(f.read())
+
+
+def _numeric_header(line, prev_num):
+    """Match a bare ``001 标题`` header, or None.
+
+    Accepted only in sequence: the first one, a restart at 1, or a number above
+    the previous header's by at most NUMERIC_MAX_STEP.
+    """
+    m = NUMERIC_CHAPTER_RE.match(line)
+    if not m:
+        return None
+    num = parse_number(m.group(1))
+    if prev_num is None or num == 1 or prev_num < num <= prev_num + NUMERIC_MAX_STEP:
+        return m
+    return None
+
+
+def parse_chapters_text(text):
     """Return (chapters, volumes).
 
     chapters: list of dicts with keys
         src_number   number as written in the source (per-volume)
-        title        header text with the 第…章 prefix stripped
+        title        header text with the 第…章 / number prefix stripped
         raw_header   the full header line
         volume       1-based volume index this chapter belongs to
         line_no      1-based line number of the header
         content_lines
     volumes: list of dicts {index, label, title, line_no, explicit}
     """
-    with open(path, "r", encoding="utf-8") as f:
-        lines = f.read().splitlines()
+    lines = text.splitlines()
+    # Header style: 第…章 wherever the file has any, else bare numbers.
+    numeric = not any(match_header(CHAPTER_RE, line) for line in lines)
 
     chapters = []
     volumes = []
@@ -170,7 +206,10 @@ def parse_chapters(path):
                 current = None
             continue
 
-        m = match_header(CHAPTER_RE, line)
+        if numeric:
+            m = _numeric_header(line, prev_num)
+        else:
+            m = match_header(CHAPTER_RE, line)
         if m:
             num = parse_number(m.group(1))
             # Implicit volume break: numbering falls back to 1 (or otherwise
