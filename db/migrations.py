@@ -1195,6 +1195,15 @@ def _m036_error_reports_autofix(conn, cursor, backend, logger):
                           f"ALTER TABLE error_reports ADD COLUMN autofix_result {big_text}")
 
 
+def _m037_queue_chapter_instructions(conn, cursor, backend, logger):
+    """Free-text instructions a human attaches to one queued chapter (Queue
+    page), appended to that chapter's translation prompt — e.g. how to handle
+    a passage most models refuse. Separate from `retranslation_reason`, whose
+    presence marks a row as a retranslation and changes how it is numbered."""
+    add_column_if_missing(conn, cursor, backend, "queue", "chapter_instructions",
+                          "ALTER TABLE queue ADD COLUMN chapter_instructions TEXT")
+
+
 MIGRATIONS = [
     Migration(1, "baseline_schema", _m001_baseline),
     Migration(2, "entities_origin_chapter", _m002_entities_origin_chapter),
@@ -1232,6 +1241,7 @@ MIGRATIONS = [
     Migration(34, "recommendations_book_id", _m034_recommendations_book_id),
     Migration(35, "book_scrape_cursor_unverified", _m035_book_scrape_cursor_unverified),
     Migration(36, "error_reports_autofix", _m036_error_reports_autofix),
+    Migration(37, "queue_chapter_instructions", _m037_queue_chapter_instructions),
 ]
 
 

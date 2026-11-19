@@ -551,7 +551,7 @@ class TranslationEngine:
             self.logger.error(f"Error loading system prompt from file: {e}")
             raise
 
-    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None, mode='full', chapter_title=None, gendered_categories=None, book=None, chunk_index=None, total_chunks=None, previous_summary=None, footnote_section=None):
+    def generate_system_prompt(self, pretext, entities, do_count=True, book_prompt_template=None, provider=None, chapter_number=None, source_language='zh', retranslation_reason=None, mode='full', chapter_title=None, gendered_categories=None, book=None, chunk_index=None, total_chunks=None, previous_summary=None, footnote_section=None, chapter_instructions=None):
         """
         Generate the system (instruction) prompt for translation, incorporating any discovered entities.
 
@@ -561,6 +561,10 @@ class TranslationEngine:
             source_language: Source language code for the book (default: zh)
             retranslation_reason: Optional free-text reason for retranslating this chapter,
                 appended as an extra section at the end of the prompt.
+            chapter_instructions: Optional free-text instructions a human attached to
+                this one queued chapter (queue.chapter_instructions) — e.g. how to
+                handle a passage models refuse. Appended last, after the
+                retranslation note, as the highest-priority section.
             mode: 'full' (default — translate + extract entities),
                   'entity_only' (pass-1 of two-pass — identify entities, no prose),
                   'translate_only' (pass-2 of two-pass — translate prose, no entity output).
@@ -801,6 +805,22 @@ class TranslationEngine:
                 f"{reason}\n"
             )
             self.logger.info(f"Appended retranslation reason to system prompt ({len(reason)} chars)")
+
+        # Per-chapter instructions from the Queue page. Last, so they read as the
+        # final word on anything they contradict — except the response format,
+        # which a broken JSON reply would cost the whole chapter.
+        instructions = (chapter_instructions or "").strip()
+        if instructions:
+            prompt = prompt.rstrip() + (
+                "\n\n---\n\n"
+                "INSTRUCTIONS FOR THIS CHAPTER:\n"
+                "The editor attached the instructions below to this chapter only. Follow "
+                "them; where they conflict with the general guidelines above, they take "
+                "precedence. They never change the RESPONSE FORMAT: the reply must still "
+                "be the complete JSON object described above.\n\n"
+                f"{instructions}\n"
+            )
+            self.logger.info(f"Appended chapter instructions to system prompt ({len(instructions)} chars)")
 
         # Per-book module transforms of the assembled system prompt.
         prompt = apply_system_prompt(book, prompt, self.config, self.logger,
@@ -1412,7 +1432,7 @@ class TranslationEngine:
 
     def extract_entities(self, chapter_text, book_id=None, chapter_number=None,
                          progress_callback=None, retranslation_reason=None, should_cancel=None,
-                         return_note_updates=False):
+                         return_note_updates=False, chapter_instructions=None):
         """
         Pass-1 of two-pass mode: identify new entities in the chapter without
         translating any prose. Makes a single non-streaming API call over the
@@ -1426,6 +1446,7 @@ class TranslationEngine:
             chapter_number (int|None): Known chapter number (injected into the prompt).
             progress_callback (callable|None): Receives {"phase": "entity_extract", ...} updates.
             retranslation_reason (str|None): Forwarded to generate_system_prompt.
+            chapter_instructions (str|None): Forwarded to generate_system_prompt.
 
         Returns:
             dict: {category: {untranslated: entity_data}} containing only NEW entities
@@ -1488,6 +1509,7 @@ class TranslationEngine:
             retranslation_reason=retranslation_reason, mode='entity_only',
             gendered_categories=gendered_categories, book=book_info,
             footnote_section=footnote_section,
+            chapter_instructions=chapter_instructions,
         )
 
         # Save the pass-1 prompt for debugging (mirrors translate_chapter's behavior)
@@ -1601,7 +1623,7 @@ class TranslationEngine:
 
         return new_entities
 
-    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None, pass2_only=False, chapter_title=None, should_cancel=None):
+    def translate_chapter(self, chapter_text, book_id=None, stream=True, progress_callback=None, chapter_number=None, json_fix_callback=None, retranslation_reason=None, pass2_only=False, chapter_title=None, should_cancel=None, chapter_instructions=None):
         """
         Translate a chapter of text using the configured LLM.
 
@@ -1614,6 +1636,8 @@ class TranslationEngine:
             retranslation_reason (str, optional): Free-text reason for retranslating an
                 existing chapter. Appended to the system prompt so the model knows what
                 the previous attempt got wrong.
+            chapter_instructions (str, optional): Per-chapter instructions from the
+                queue row, appended to every chunk's system prompt.
 
         Returns:
             dict: A dictionary containing the translated chapter data.
@@ -1722,7 +1746,8 @@ class TranslationEngine:
                                                retranslation_reason=retranslation_reason, mode=_mode,
                                                chapter_title=chapter_title, gendered_categories=gendered_categories,
                                                book=book_info, chunk_index=1, total_chunks=len(split_text),
-                                               footnote_section=footnote_section)
+                                               footnote_section=footnote_section,
+                                               chapter_instructions=chapter_instructions)
 
         if len(split_text) > 1:
             self.logger.info(f"Input text is {total_char_count} characters. Splitting text into {len(split_text)} chunks.")
@@ -2136,7 +2161,9 @@ class TranslationEngine:
                                                                gendered_categories=gendered_categories, book=book_info,
                                                                chunk_index=chunk_index + 1, total_chunks=len(split_text),
                                                                previous_summary=end_object.get('summary', ''),
-                                                               footnote_section=footnote_section)
+                                                               footnote_section=footnote_section,
+                                                               retranslation_reason=retranslation_reason,
+                                                               chapter_instructions=chapter_instructions)
         
         self.logger.debug("Finished processing all chunks")
 

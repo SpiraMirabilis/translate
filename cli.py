@@ -499,6 +499,11 @@ class CommandLineInterface(UserInterface):
             # in queue.title and strip it from the content; without this the
             # title is lost and the model falls back to "Chapter N".
             self.chapter_title = queue_item.get('title')
+            # Per-item prompt additions, as the web runner applies them
+            # (queue_api._setup_job). Set unconditionally so one item's text
+            # can't carry over to the next.
+            self.retranslation_reason = queue_item.get('retranslation_reason') or None
+            self.chapter_instructions = queue_item.get('chapter_instructions') or None
 
             self.logger.info(f"Processing queue item for book '{self.book_title}' (ID: {self.book_id})")
             print(f"Processing: {queue_item['title']} from '{self.book_title}'")

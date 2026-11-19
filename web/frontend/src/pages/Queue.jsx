@@ -4,7 +4,8 @@ import { api } from '../services/api'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useJobs } from '../hooks/useJobs'
 import {
-  Play, Trash2, Upload, FileText, Loader2, ListChecks, X, StopCircle, RefreshCw, Info
+  Play, Trash2, Upload, FileText, Loader2, ListChecks, X, StopCircle, RefreshCw, Info,
+  NotebookPen,
 } from 'lucide-react'
 import JobList from '../components/jobs/JobList'
 import ComboBox from '../components/ComboBox'
@@ -21,6 +22,8 @@ export default function Queue() {
   // the line. It applies to the next start, then clears.
   const [priority, setPriority] = useState(false)
   const [starting, setStarting] = useState(false)
+  // The one queue row whose instructions editor is open (id), or null.
+  const [editingId, setEditingId] = useState(null)
 
   // Job state is shared and keyed by book — several can run at once.
   const {
@@ -475,8 +478,11 @@ export default function Queue() {
         <div className="card divide-y divide-slate-700">
           {queue.map((item, i) => {
             const processing = item.status === 'processing'
+            const hasInstructions = !!(item.chapter_instructions || '').trim()
+            const editing = editingId === item.id
             return (
-              <div key={item.id} className="flex items-center gap-3 px-4 py-3">
+              <div key={item.id}>
+              <div className="flex items-center gap-3 px-4 py-3">
                 <span className="text-xs text-slate-600 w-5 text-right">{i + 1}</span>
                 {processing
                   ? <Loader2 size={14} className="text-amber-400 shrink-0 animate-spin" />
@@ -493,8 +499,24 @@ export default function Queue() {
                   <p className="text-xs text-slate-500">
                     {item.book_title || `Book ${item.book_id}`}
                     {item.chapter_number ? ` · Ch. ${item.chapter_number}` : ''}
+                    {item.retranslation_reason && (
+                      <span className="ml-2 text-slate-400" title={item.retranslation_reason}>· retranslation</span>
+                    )}
                   </p>
+                  {hasInstructions && !editing && (
+                    <p className="text-xs text-sky-300/80 truncate mt-0.5" title={item.chapter_instructions}>
+                      <NotebookPen size={11} className="inline mr-1 -mt-0.5" />
+                      {item.chapter_instructions}
+                    </p>
+                  )}
                 </div>
+                <button
+                  className={`btn-ghost p-1.5 shrink-0 ${hasInstructions ? 'text-sky-300' : ''} hover:text-sky-300`}
+                  onClick={() => setEditingId(editing ? null : item.id)}
+                  title={hasInstructions ? 'Edit instructions for this chapter' : 'Add instructions for this chapter'}
+                >
+                  <NotebookPen size={13} />
+                </button>
                 {/* A claimed row is strandable only when ITS OWN book has no live
                     worker — a job on another book has no claim on it, and gating
                     on "anything running" made the escape hatch useless as soon as
@@ -516,6 +538,15 @@ export default function Queue() {
                   <Trash2 size={13} />
                 </button>
               </div>
+              {editing && (
+                <InstructionsEditor
+                  item={item}
+                  processing={processing}
+                  onClose={() => setEditingId(null)}
+                  onSaved={() => { setEditingId(null); invalidateQueue() }}
+                />
+              )}
+              </div>
             )
           })}
         </div>
@@ -529,6 +560,96 @@ export default function Queue() {
           invalidateQueue()
         }} />
       )}
+    </div>
+  )
+}
+
+
+// One-click starting points for the common case: a chapter (or a passage in
+// it) that models refuse. Inserted into the box, not sent as-is — the useful
+// part is usually naming WHICH passage, which only the editor knows.
+const INSTRUCTION_PRESETS = [
+  {
+    label: 'Leave a passage untranslated',
+    text: 'If there is any passage in this chapter you cannot or will not translate, '
+      + 'do not refuse the chapter: copy that passage unchanged, in the original language, '
+      + 'in its place among the translated lines, and translate everything else normally. '
+      + 'A human will translate it.',
+  },
+  {
+    label: 'Skip a passage',
+    text: 'Omit the passage beginning "…" and ending "…". Put a single line reading '
+      + '[Passage omitted] in its place and translate the rest of the chapter normally.',
+  },
+]
+
+function InstructionsEditor({ item, processing, onClose, onSaved }) {
+  const [text, setText] = useState(item.chapter_instructions || '')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState(null)
+  const MAX = 4000  // mirrors MAX_CHAPTER_INSTRUCTIONS in queue_api.py
+
+  const save = async (value) => {
+    setSaving(true)
+    setErr(null)
+    try {
+      await api.setQueueInstructions(item.id, value.trim() || null)
+      onSaved()
+    } catch (e) {
+      setErr(e.message)
+      setSaving(false)
+    }
+  }
+
+  const insert = (preset) =>
+    setText(t => (t.trim() ? `${t.trimEnd()}\n\n${preset}` : preset))
+
+  return (
+    <div className="px-4 pb-4 pl-12 space-y-2">
+      <p className="text-xs text-slate-400">
+        Instructions for the translator, added to this chapter's prompt only
+        (both passes of a two-pass run, every chunk).
+        {processing && ' This chapter is translating now — the change applies the next time it is translated.'}
+      </p>
+      {item.retranslation_reason && (
+        <p className="text-xs text-slate-500">
+          <span className="text-slate-400">Retranslation reason (already sent):</span> {item.retranslation_reason}
+        </p>
+      )}
+      <textarea
+        className="input w-full text-sm font-mono min-h-[96px]"
+        value={text}
+        onChange={e => setText(e.target.value)}
+        maxLength={MAX}
+        autoFocus
+        placeholder='e.g. Leave the passage from "…" to "…" in the original Chinese, inline; translate the rest.'
+        onKeyDown={e => {
+          if (e.key === 'Escape') onClose()
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(text)
+        }}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        {INSTRUCTION_PRESETS.map(p => (
+          <button key={p.label} type="button" className="btn-ghost text-xs border border-slate-600 rounded px-2 py-1"
+                  onClick={() => insert(p.text)} title={p.text}>
+            + {p.label}
+          </button>
+        ))}
+        <span className="flex-1" />
+        <span className="text-xs text-slate-500">{text.length}/{MAX}</span>
+        {item.chapter_instructions && (
+          <button type="button" className="btn-ghost text-xs hover:text-rose-400" disabled={saving}
+                  onClick={() => save('')}>
+            Clear
+          </button>
+        )}
+        <button type="button" className="btn-ghost text-xs" onClick={onClose} disabled={saving}>Cancel</button>
+        <button type="button" className="btn-primary text-xs flex items-center gap-1" disabled={saving}
+                onClick={() => save(text)}>
+          {saving && <Loader2 size={12} className="animate-spin" />} Save
+        </button>
+      </div>
+      {err && <p className="text-xs text-rose-400">{err}</p>}
     </div>
   )
 }

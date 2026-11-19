@@ -66,6 +66,8 @@ def main():
         print(f"Queued:    {item.get('created_date')}")
         if item.get('retranslation_reason'):
             print(f"Retranslate reason: {item['retranslation_reason']}")
+        if item.get('chapter_instructions'):
+            print(f"Chapter instructions: {item['chapter_instructions']}")
         print(f"Content:   {len(lines)} lines, {chars} characters")
         print("-" * 60)
 

@@ -334,6 +334,7 @@ class UserInterface(ABC):
                             retranslation_reason=getattr(self, 'retranslation_reason', None),
                             should_cancel=getattr(self, 'should_cancel', None),
                             return_note_updates=True,
+                            chapter_instructions=getattr(self, 'chapter_instructions', None),
                         )
                     except TranslationCancelled:
                         raise
@@ -381,6 +382,7 @@ class UserInterface(ABC):
                     chapter_number=getattr(self, 'chapter_number', None),
                     json_fix_callback=getattr(self, 'json_fix_callback', None),
                     retranslation_reason=getattr(self, 'retranslation_reason', None),
+                    chapter_instructions=getattr(self, 'chapter_instructions', None),
                     pass2_only=pass2_only,
                     chapter_title=getattr(self, 'chapter_title', None),
                     should_cancel=getattr(self, 'should_cancel', None),

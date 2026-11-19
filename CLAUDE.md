@@ -674,6 +674,19 @@ scraper (t9-scraper @ b4dd33b) drives a logged-in browser and exposes each step 
 - Batch processing of multiple files/chapters
 - Resume functionality for interrupted translations
 - Metadata preservation for book/chapter association
+- **Per-chapter instructions** (`queue.chapter_instructions`, migration 37, added
+  2026-11-19): free text attached to one queued chapter from the Queue page (notebook
+  icon on the row → inline editor with presets; `PUT /api/queue/{id}/instructions`,
+  blank clears, ≤4000 chars). `generate_system_prompt(chapter_instructions=…)` appends
+  it **last**, after the RETRANSLATION NOTE, as `INSTRUCTIONS FOR THIS CHAPTER` — it
+  overrides the general guidelines but never the response format. Reaches every chunk
+  and both two-pass passes, on the web runner (`queue_api._setup_job`) and CLI
+  `--resume`. The point is a chapter models refuse: it is released back to the queue on
+  failure with its instructions intact, the editor adds e.g. "leave that passage in the
+  original language", and re-runs it. Editable while processing (applies next attempt).
+  Deliberately **not** `retranslation_reason`: a row carrying one is treated as a
+  retranslation, which turns off sequence inference and the conflict sequence slide.
+  Tests: `tests/test_queue_chapter_instructions.py`.
 - **Chapter number of an item queued without one** (2026-11-18) = its place in the run
   it was queued in, never max + 1 (a rescrape of an earlier stretch must continue
   *that* stretch). Batch importers (EPUB, FB2, directory, batch upload): an

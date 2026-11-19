@@ -280,6 +280,7 @@ class QueueRepo:
             'created_date': row[8],
             'book_title': row[9],
             'retranslation_reason': row[10],
+            'chapter_instructions': row[11],
         }
 
     def get_next_queue_item(self, book_id=None):
@@ -296,7 +297,7 @@ class QueueRepo:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason
+                       q.retranslation_reason, q.chapter_instructions
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE q.book_id = ? AND {self._QUEUED_STATUS}
@@ -307,7 +308,7 @@ class QueueRepo:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason
+                       q.retranslation_reason, q.chapter_instructions
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE {self._QUEUED_STATUS}
@@ -395,7 +396,7 @@ class QueueRepo:
                 cursor.execute('''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, q.content,
                        q.metadata, q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason
+                       q.retranslation_reason, q.chapter_instructions
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE q.id = ?
@@ -409,6 +410,32 @@ class QueueRepo:
             if self.strict_writes:
                 raise
             return None
+
+    def set_queue_item_instructions(self, queue_id, instructions):
+        """Set (or, with blank/None, clear) a queued chapter's translator
+        instructions. Returns True if the row exists.
+
+        Allowed on a row that is processing too: the run in flight already
+        built its prompt, so the text takes effect the next time the chapter
+        is translated — which, after a refusal, is the point.
+        """
+        text = (instructions or "").strip() or None
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM queue WHERE id = ?", (queue_id,))
+                if not cursor.fetchone():
+                    return False
+                cursor.execute(
+                    "UPDATE queue SET chapter_instructions = ? WHERE id = ?",
+                    (text, queue_id),
+                )
+            return True
+        except Exception as e:
+            self.logger.error(f"Error setting instructions on queue item {queue_id}: {e}")
+            if self.strict_writes:
+                raise
+            return False
 
     def release_queue_item(self, queue_id):
         """Return a claimed item to the queue (status=queued) after cancel/error."""
@@ -581,7 +608,8 @@ class QueueRepo:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
                        q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason, q.status, q.claimed_at
+                       q.retranslation_reason, q.status, q.claimed_at,
+                       q.chapter_instructions
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE q.book_id = ? AND {status_filter}
@@ -591,7 +619,8 @@ class QueueRepo:
                     cursor.execute(f'''
                 SELECT q.id, q.book_id, q.chapter_number, q.title, q.source, {content_cols}
                        q.position, q.created_date, b.title as book_title,
-                       q.retranslation_reason, q.status, q.claimed_at
+                       q.retranslation_reason, q.status, q.claimed_at,
+                       q.chapter_instructions
                 FROM queue q
                 JOIN books b ON q.book_id = b.id
                 WHERE {status_filter}
@@ -638,6 +667,7 @@ class QueueRepo:
                     'retranslation_reason': tail[3],
                     'status': tail[4] or 'queued',
                     'claimed_at': tail[5],
+                    'chapter_instructions': tail[6],
                 })
 
             return result

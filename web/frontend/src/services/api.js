@@ -167,6 +167,7 @@ export const api = {
   listQueue:        (bookId)     => get(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
   removeQueueItem:  (id)         => del(`/api/queue/${id}`),
   releaseQueueItem: (id)         => post(`/api/queue/${id}/release`, {}),
+  setQueueInstructions: (id, instructions) => put(`/api/queue/${id}/instructions`, { instructions }),
   clearQueue:       (bookId)     => del(`/api/queue${bookId != null ? '?book_id=' + bookId : ''}`),
   addToQueue:       (body)       => post('/api/queue/add', body),
   uploadToQueue:    (formData)   => postForm('/api/queue/upload', formData),

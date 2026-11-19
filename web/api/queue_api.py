@@ -174,6 +174,36 @@ def release_queue_item(item_id: int):
     return {"status": "ok"}
 
 
+# Long enough for a passage list plus handling rules; short enough that a
+# paste of the whole chapter into the wrong box is caught.
+MAX_CHAPTER_INSTRUCTIONS = 4000
+
+
+class QueueInstructionsRequest(BaseModel):
+    instructions: Optional[str] = None
+
+
+@router.put("/{item_id}/instructions")
+def set_queue_item_instructions(item_id: int, req: QueueInstructionsRequest):
+    """Attach per-chapter instructions to a queued chapter (blank clears them).
+
+    Appended to that chapter's translation prompt as INSTRUCTIONS FOR THIS
+    CHAPTER — e.g. "leave the passage starting X in the original Chinese" for a
+    chapter models refuse. Editable while the row is processing; the run in
+    flight keeps the prompt it built, the next attempt gets the new text.
+    """
+    text = (req.instructions or "").strip()
+    if len(text) > MAX_CHAPTER_INSTRUCTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Instructions are limited to {MAX_CHAPTER_INSTRUCTIONS} characters "
+                   f"(got {len(text)}).",
+        )
+    if not _entity_manager.set_queue_item_instructions(item_id, text or None):
+        raise HTTPException(status_code=404, detail="Queue item not found.")
+    return {"status": "ok", "chapter_instructions": text or None}
+
+
 @router.delete("")
 def clear_queue(book_id: Optional[int] = Query(None)):
     try:
@@ -802,6 +832,7 @@ def _setup_job(job, web_interface, queue_item, settings):
     web_interface.stream = not settings["no_stream"]
     web_interface.save_as_draft = settings.get("save_as_draft", False)
     web_interface.retranslation_reason = queue_item.get("retranslation_reason") or None
+    web_interface.chapter_instructions = queue_item.get("chapter_instructions") or None
     web_interface._current_queue_item = queue_item
 
 
