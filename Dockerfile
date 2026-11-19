@@ -21,6 +21,18 @@ RUN npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
  && bin=$(find /usr/local/lib/node_modules/@openai -path '*/vendor/*/bin/codex' -type f | head -n1) \
  && test -n "$bin" && install -m 755 "$bin" /codex
 
+# ---- Antigravity CLI (for the `agy` provider) ----------------------------------
+# Google's release tarball for this image's architecture, checked against the
+# pinned SHA-256s (a mismatch fails the build). Bump all three together.
+FROM python:3.14-slim AS agy
+ARG TARGETARCH
+ARG AGY_VERSION=1.5.12-5281398513336320
+ARG AGY_SHA256_AMD64=0f0cb851cdc9fbedd50432570aa6ae9c4c398b9ea3f1e23e7776f707643c5b3e
+ARG AGY_SHA256_ARM64=594046de1b91561f7fe16476365e3843038ecca56f5f59af45cf9d3091e43bd4
+COPY docker/fetch_agy.py /fetch_agy.py
+RUN python /fetch_agy.py "$AGY_VERSION" "${TARGETARCH:-$(dpkg --print-architecture)}" \
+        "$AGY_SHA256_AMD64" "$AGY_SHA256_ARM64" /agy
+
 # ---- Runtime ----------------------------------------------------------------
 FROM python:3.14-slim
 
@@ -28,6 +40,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     T9_DOCKER=1 \
     CODEX_HOME=/data/codex \
+    AGY_HOME=/data/agy \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -53,8 +66,10 @@ RUN useradd --uid 1000 --create-home t9 \
 
 COPY --from=codex /codex /usr/local/lib/codex/codex
 COPY docker/codex-wrapper.sh /usr/local/bin/codex
+COPY --from=agy /agy /usr/local/lib/agy/agy
+COPY docker/agy-wrapper.sh /usr/local/bin/agy
 COPY docker/entrypoint.sh /usr/local/bin/t9-entrypoint
-RUN chmod 755 /usr/local/bin/t9-entrypoint /usr/local/bin/codex
+RUN chmod 755 /usr/local/bin/t9-entrypoint /usr/local/bin/codex /usr/local/bin/agy
 
 VOLUME /data
 EXPOSE 8000

@@ -18,6 +18,14 @@ class OverloadedError(Exception):
     """
 
 
+class ClassifiedProviderError(RuntimeError):
+    """A plain failure the provider has already classified as neither a
+    usage limit nor overload. The engine must not re-sniff its text with
+    looks_session_limited / looks_overloaded: "you hit your weekly limit,
+    resets in 30 seconds" is a short throttle the provider has already
+    weighed, and re-matching it would park the queue."""
+
+
 class SessionLimitError(Exception):
     """Raised when a subscription CLI (Claude Code, Codex) reports the user's
     usage limit is exhausted — Claude Code's session limit ("You've hit your
@@ -32,11 +40,12 @@ class SessionLimitError(Exception):
     text is preserved so the engine can parse the reset clock time from it.
     """
 
-    def __init__(self, message, reset_text: Optional[str] = None):
+    def __init__(self, message, reset_text: Optional[str] = None, kind: Optional[str] = None):
         super().__init__(message)
         # Text containing the "resets <time>" clause to parse. Defaults to the
         # message itself when a separate copy isn't supplied.
         self.reset_text = reset_text if reset_text is not None else str(message)
+        self.kind = kind
 
 
 # The Claude Code CLI prints the usage-limit notice as plain text. Two kinds
@@ -263,6 +272,18 @@ class StreamingResponse:
     
     def __next__(self):
         return next(self.response_iterator)
+
+    def close(self):
+        """Release what the stream holds — a CLI provider's generator owns its
+        subprocess and reaps it in a `finally`, which only runs on close (or
+        exhaustion). The engine closes every stream it abandons. Idempotent;
+        closing a finished stream is a no-op."""
+        close = getattr(self.response_iterator, "close", None)
+        if callable(close):
+            try:
+                close()
+            except ValueError:
+                pass  # generator still executing in another thread; it cleans up itself
 
 
 class ModelProvider(ABC):

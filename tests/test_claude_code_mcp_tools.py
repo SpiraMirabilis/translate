@@ -2,6 +2,7 @@
 told, and that lookup-turn prose never reaches the streamed JSON."""
 import io
 import json
+import os
 from pathlib import Path
 import types
 
@@ -156,6 +157,54 @@ def provider(monkeypatch):
 
 def _collect(provider, events, tools):
     return "".join(c.text or "" for c in provider._stream_iter(_Proc(events), None, tools=tools))
+
+
+def test_early_stream_close_signals_before_waiting(provider, monkeypatch):
+    import signal
+
+    proc = _Proc([_text("partial")])
+    calls = []
+    proc.returncode = None
+    proc.wait = lambda timeout: calls.append("wait")
+    monkeypatch.setattr(provider, "_signal_stream_process",
+                        lambda process, sig: calls.append((process, sig)))
+    stream = provider._stream_iter(proc, None)
+    assert next(stream).text == "partial"
+    stream.close()
+    assert calls == [(proc, getattr(signal, "SIGKILL", signal.SIGTERM)), "wait"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+def test_early_stream_close_kills_a_helper_that_ignores_term(provider):
+    import select
+    import signal
+    import subprocess
+    import sys
+
+    event = json.dumps(_text("partial"))
+    cli = f"""
+import signal, subprocess, sys, time
+
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                 preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN))
+print({event!r}, flush=True)
+time.sleep(30)
+"""
+    with subprocess.Popen([sys.executable, "-c", cli], stdout=subprocess.PIPE, text=True,
+                          start_new_session=True) as proc:
+        stream = provider._stream_iter(proc, None)
+        try:
+            assert select.select([proc.stdout], [], [], 5)[0]
+            assert next(stream).text == "partial"
+            stream.close()
+            assert select.select([proc.stdout], [], [], 5)[0], "helper still holds stdout open"
+            assert proc.stdout.read() == ""
+        except BaseException:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            raise
 
 
 def test_lookup_turn_prose_is_dropped(provider):

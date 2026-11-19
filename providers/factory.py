@@ -10,6 +10,7 @@ from .claude_provider import ClaudeProvider
 from .gemini_provider import GeminiProvider
 from .claude_code_provider import ClaudeCodeProvider
 from .codex_provider import CodexProvider
+from .agy_provider import AgyProvider
 
 
 class ProviderFactory:
@@ -116,6 +117,7 @@ class ProviderFactory:
             'GeminiProvider': GeminiProvider,
             'ClaudeCodeProvider': ClaudeCodeProvider,
             'CodexProvider': CodexProvider,
+            'AgyProvider': AgyProvider,
         }
         
         if class_name not in classes:

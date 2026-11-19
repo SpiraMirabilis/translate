@@ -248,7 +248,7 @@ class Job:
         self.is_running = False
         self.status = "idle"  # idle | running | waiting | awaiting_review | complete | error
         self._waiting_reason: Optional[str] = None  # 'session_limit' | 'overloaded' while status == waiting
-        self._waiting_limit: Optional[str] = None  # 'session' | 'weekly' | 'usage' for a session_limit wait
+        self._waiting_limit: Optional[str] = None  # limit kind for a session_limit wait
         self.error: Optional[str] = None
         self.last_result: Optional[dict] = None
 
@@ -399,7 +399,6 @@ class Job:
                 wait = progress.get("wait_seconds")
                 mins = max(1, round(wait / 60)) if wait else None
                 if phase == "session_limit":
-                    # "session" or "weekly" — a weekly reset can be days out.
                     self._waiting_limit = progress.get("limit") or "session"
                     msg = f"{self._waiting_limit.capitalize()} limit reached — queue paused"
                     if mins:

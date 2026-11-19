@@ -39,7 +39,7 @@ export default function TranslationProgress({ progress, status }) {
   // translation thread is sleeping until the reset time; show that clearly
   // rather than an active bar.
   if (phase === 'session_limit') {
-    const limitLabel = { weekly: 'Weekly limit', usage: 'Usage limit' }[progress.limit] || 'Session limit'
+    const limitLabel = { weekly: 'Weekly limit', usage: 'Usage limit', account: 'Account limit' }[progress.limit] || 'Session limit'
     const mins = progress.wait_seconds ? Math.max(1, Math.round(progress.wait_seconds / 60)) : null
     // A weekly reset can be days out, so a bare clock time would be
     // ambiguous — include the date once the wait passes half a day.

@@ -161,12 +161,15 @@ Chapters from the translation pipeline go live immediately by default; original-
 | OpenRouter | `or` | any model on OpenRouter | `OPENROUTER_KEY` |
 | Claude Code | `cc` | sonnet, opus | *(none — uses your local Claude Code login)* |
 | Codex | `cx` | gpt-6.2-sol, gpt-6.2-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna | *(none — uses your local Codex / ChatGPT login)* |
+| Antigravity CLI | `ag` | gemini-4-neon-medium, gemini-4-hydrogen-medium, gemini-4-argon-medium, gemini-3.8-flash-medium | *(none — uses your local `agy` login)* |
 
 Model format: `provider:model-name` (e.g. `claude:claude-sonnet-4-6`, `cc:sonnet`, `cx:gpt-6-luna`)
 
 The `cc` and `cx` providers shell out to the Claude Code and Codex CLIs, so translation costs come out of a Claude or ChatGPT subscription instead of API billing. When a usage limit is hit mid-queue, T9 parks the job and resumes automatically when the limit resets.
 
 `cx` runs each call as an ephemeral `codex exec` turn in an empty directory with a read-only sandbox, your Codex config ignored, and Codex's agent tools switched off. That keeps Codex's own per-call overhead to about 4k input tokens. `CODEX_EFFORT` sets the reasoning effort (default `medium`), and `CODEX_BIN` points at a non-default binary. Codex returns each response whole rather than token by token, so the progress bar jumps once per chunk. Both `cx` and `cc` support the optional Research tools module described below.
+
+`ag` drives Google's Antigravity CLI (`agy`). agy is an agent harness that normally adds about 9.6k tokens of its own instructions and a large tool list (browser, shell, file edits) to every call, so T9 runs each call as a throwaway custom agent with `excludeDefaultComponents: true` and no tools: the translation prompt is the agent's entire system prompt (a trivial call costs ~430 input tokens instead of ~9.6k). agy also stores every call (a ~1 MB conversation, search-index rows, previews, a log) and has no option to stop it, so each call runs with its own throwaway home holding a private copy of the sign-in; the whole directory is deleted afterwards, and nothing accumulates. A token agy refreshes during a call is saved back only if it is valid and no other call saved a newer one. The call runs with `--sandbox`; the user prompt goes in on stdin as one `stream-json` message, and the answer streams back token by token. Account limits (subscription quota, spend cap, prepaid balance) pause the queue the way a Codex usage limit does. Reasoning effort is part of the model id (`gemini-4-neon-medium`, `-high`, …). `AGY_BIN` points at a non-default binary. Research tools are not supported on `ag`.
 
 To enable research, run the existing read-only MCP service (`deploy/t9-mcp-readonly.service`,
 or `python3 -m mcp_server --read-only --transport streamable-http --port 8766`). In a
