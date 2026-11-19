@@ -155,6 +155,12 @@ _TRANSIENT_RE = re.compile(
     r"deadline exceeded|\b50[0234]\b|internal (?:server )?error|connection (?:reset|refused)",
     re.IGNORECASE,
 )
+# Google's stock throttle ("RESOURCE_EXHAUSTED: Resource has been exhausted
+# (e.g. check quota).") often arrives without the 429 and names no period.
+# Unqualified, it is a rate limit: retry. One naming a quota metric is settled
+# by the metric (per-day → account limit, per-minute → throttle, anything else,
+# e.g. request_size, → a real failure).
+_RESOURCE_EXHAUSTED_RE = re.compile(r"resource[_ ]exhausted|resource has been exhausted", re.IGNORECASE)
 _STDERR_LOG_RE = re.compile(
     r"^(?:\d{4}-\d\d-\d\d[ T]\S+\s+)?\[?(?:trace|debug|info|warn(?:ing)?)\b|"
     r"^[IDW]\d{4}\s+\d\d:\d\d:\d\d|\bretrying in\s+\d",
@@ -689,6 +695,8 @@ class AgyProvider(ModelProvider):
         # in 30 seconds", "quota resets in 30 seconds") is a throttle: wait it
         # out instead of spending the chunk's retries.
         throttled = account or (short and _LIMIT_WORD_RE.search(message))
+        if not metric and _RESOURCE_EXHAUSTED_RE.search(message):
+            throttled = True
         if throttled or looks_overloaded(message, strict=False) or _TRANSIENT_RE.search(message):
             raise OverloadedError(message.strip()[:200] or "Antigravity service unavailable")
         raise ClassifiedProviderError(f"agy CLI failed: {message.strip()[-2000:]}")
